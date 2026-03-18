@@ -1,0 +1,1766 @@
+[
+  {
+    "type": "BlockComment",
+    "text": "/* Measuring the relaxation time of a qubit\n * This example demonstrates the repeated use of fixed delays.\n*/",
+    "line": 1,
+    "column": 0,
+    "start": 0,
+    "stop": 108,
+    "channel": 1
+  },
+  {
+    "type": "INCLUDE",
+    "text": "include",
+    "line": 4,
+    "column": 0,
+    "start": 110,
+    "stop": 116,
+    "channel": 0
+  },
+  {
+    "type": "StringLiteral",
+    "text": "\"stdgates.inc\"",
+    "line": 4,
+    "column": 8,
+    "start": 118,
+    "stop": 131,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 4,
+    "column": 22,
+    "start": 132,
+    "stop": 132,
+    "channel": 0
+  },
+  {
+    "type": "DURATION",
+    "text": "duration",
+    "line": 6,
+    "column": 0,
+    "start": 135,
+    "stop": 142,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "stride",
+    "line": 6,
+    "column": 9,
+    "start": 144,
+    "stop": 149,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 6,
+    "column": 16,
+    "start": 151,
+    "stop": 151,
+    "channel": 0
+  },
+  {
+    "type": "TimingLiteral",
+    "text": "1us",
+    "line": 6,
+    "column": 18,
+    "start": 153,
+    "stop": 155,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 6,
+    "column": 21,
+    "start": 156,
+    "stop": 156,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// time resolution of points taken",
+    "line": 6,
+    "column": 34,
+    "start": 169,
+    "stop": 202,
+    "channel": 1
+  },
+  {
+    "type": "CONST",
+    "text": "const",
+    "line": 7,
+    "column": 0,
+    "start": 204,
+    "stop": 208,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 7,
+    "column": 6,
+    "start": 210,
+    "stop": 212,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 7,
+    "column": 9,
+    "start": 213,
+    "stop": 213,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "32",
+    "line": 7,
+    "column": 10,
+    "start": 214,
+    "stop": 215,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 7,
+    "column": 12,
+    "start": 216,
+    "stop": 216,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "points",
+    "line": 7,
+    "column": 14,
+    "start": 218,
+    "stop": 223,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 7,
+    "column": 21,
+    "start": 225,
+    "stop": 225,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "50",
+    "line": 7,
+    "column": 23,
+    "start": 227,
+    "stop": 228,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 7,
+    "column": 25,
+    "start": 229,
+    "stop": 229,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// number of points taken",
+    "line": 7,
+    "column": 40,
+    "start": 244,
+    "stop": 268,
+    "channel": 1
+  },
+  {
+    "type": "CONST",
+    "text": "const",
+    "line": 8,
+    "column": 0,
+    "start": 270,
+    "stop": 274,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 8,
+    "column": 6,
+    "start": 276,
+    "stop": 278,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 8,
+    "column": 9,
+    "start": 279,
+    "stop": 279,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "32",
+    "line": 8,
+    "column": 10,
+    "start": 280,
+    "stop": 281,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 8,
+    "column": 12,
+    "start": 282,
+    "stop": 282,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "shots",
+    "line": 8,
+    "column": 14,
+    "start": 284,
+    "stop": 288,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 8,
+    "column": 20,
+    "start": 290,
+    "stop": 290,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1000",
+    "line": 8,
+    "column": 22,
+    "start": 292,
+    "stop": 295,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 8,
+    "column": 26,
+    "start": 296,
+    "stop": 296,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// how many shots per point",
+    "line": 8,
+    "column": 40,
+    "start": 310,
+    "stop": 336,
+    "channel": 1
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 10,
+    "column": 0,
+    "start": 339,
+    "stop": 341,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 10,
+    "column": 3,
+    "start": 342,
+    "stop": 342,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "32",
+    "line": 10,
+    "column": 4,
+    "start": 343,
+    "stop": 344,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 10,
+    "column": 6,
+    "start": 345,
+    "stop": 345,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "counts0",
+    "line": 10,
+    "column": 8,
+    "start": 347,
+    "stop": 353,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 10,
+    "column": 15,
+    "start": 354,
+    "stop": 354,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 11,
+    "column": 0,
+    "start": 356,
+    "stop": 358,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 11,
+    "column": 3,
+    "start": 359,
+    "stop": 359,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "32",
+    "line": 11,
+    "column": 4,
+    "start": 360,
+    "stop": 361,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 11,
+    "column": 6,
+    "start": 362,
+    "stop": 362,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "counts1",
+    "line": 11,
+    "column": 8,
+    "start": 364,
+    "stop": 370,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 11,
+    "column": 16,
+    "start": 372,
+    "stop": 372,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "0",
+    "line": 11,
+    "column": 18,
+    "start": 374,
+    "stop": 374,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 11,
+    "column": 19,
+    "start": 375,
+    "stop": 375,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// surviving |1> populations of qubits",
+    "line": 11,
+    "column": 23,
+    "start": 379,
+    "stop": 416,
+    "channel": 1
+  },
+  {
+    "type": "EXTERN",
+    "text": "extern",
+    "line": 13,
+    "column": 0,
+    "start": 419,
+    "stop": 424,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "tabulate",
+    "line": 13,
+    "column": 7,
+    "start": 426,
+    "stop": 433,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 13,
+    "column": 15,
+    "start": 434,
+    "stop": 434,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 13,
+    "column": 16,
+    "start": 435,
+    "stop": 437,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 13,
+    "column": 19,
+    "start": 438,
+    "stop": 438,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "32",
+    "line": 13,
+    "column": 20,
+    "start": 439,
+    "stop": 440,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 13,
+    "column": 22,
+    "start": 441,
+    "stop": 441,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 13,
+    "column": 23,
+    "start": 442,
+    "stop": 442,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 13,
+    "column": 25,
+    "start": 444,
+    "stop": 446,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 13,
+    "column": 28,
+    "start": 447,
+    "stop": 447,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "32",
+    "line": 13,
+    "column": 29,
+    "start": 448,
+    "stop": 449,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 13,
+    "column": 31,
+    "start": 450,
+    "stop": 450,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 13,
+    "column": 32,
+    "start": 451,
+    "stop": 451,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 13,
+    "column": 34,
+    "start": 453,
+    "stop": 455,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 13,
+    "column": 37,
+    "start": 456,
+    "stop": 456,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "32",
+    "line": 13,
+    "column": 38,
+    "start": 457,
+    "stop": 458,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 13,
+    "column": 40,
+    "start": 459,
+    "stop": 459,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 13,
+    "column": 41,
+    "start": 460,
+    "stop": 460,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 13,
+    "column": 42,
+    "start": 461,
+    "stop": 461,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 15,
+    "column": 0,
+    "start": 464,
+    "stop": 466,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c0",
+    "line": 15,
+    "column": 4,
+    "start": 468,
+    "stop": 469,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 15,
+    "column": 6,
+    "start": 470,
+    "stop": 470,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 16,
+    "column": 0,
+    "start": 472,
+    "stop": 474,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c1",
+    "line": 16,
+    "column": 4,
+    "start": 476,
+    "stop": 477,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 16,
+    "column": 6,
+    "start": 478,
+    "stop": 478,
+    "channel": 0
+  },
+  {
+    "type": "DEFCALGRAMMAR",
+    "text": "defcalgrammar",
+    "line": 18,
+    "column": 0,
+    "start": 481,
+    "stop": 493,
+    "channel": 0
+  },
+  {
+    "type": "StringLiteral",
+    "text": "\"openpulse\"",
+    "line": 18,
+    "column": 14,
+    "start": 495,
+    "stop": 505,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 18,
+    "column": 25,
+    "start": 506,
+    "stop": 506,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// define a gate calibration for an X gate on any qubit",
+    "line": 20,
+    "column": 0,
+    "start": 509,
+    "stop": 563,
+    "channel": 1
+  },
+  {
+    "type": "DEFCAL",
+    "text": "defcal",
+    "line": 21,
+    "column": 0,
+    "start": 565,
+    "stop": 570,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 21,
+    "column": 7,
+    "start": 572,
+    "stop": 572,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 21,
+    "column": 9,
+    "start": 574,
+    "stop": 574,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 21,
+    "column": 11,
+    "start": 576,
+    "stop": 576,
+    "channel": 0
+  },
+  {
+    "type": "CalibrationBlock",
+    "text": "\n   play drive(q), gaussian(100, 30, 5);\n",
+    "line": 21,
+    "column": 12,
+    "start": 577,
+    "stop": 617,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 23,
+    "column": 0,
+    "start": 618,
+    "stop": 618,
+    "channel": 0
+  },
+  {
+    "type": "FOR",
+    "text": "for",
+    "line": 25,
+    "column": 0,
+    "start": 621,
+    "stop": 623,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 25,
+    "column": 4,
+    "start": 625,
+    "stop": 627,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 25,
+    "column": 7,
+    "start": 628,
+    "stop": 628,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "32",
+    "line": 25,
+    "column": 8,
+    "start": 629,
+    "stop": 630,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 25,
+    "column": 10,
+    "start": 631,
+    "stop": 631,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "p",
+    "line": 25,
+    "column": 12,
+    "start": 633,
+    "stop": 633,
+    "channel": 0
+  },
+  {
+    "type": "IN",
+    "text": "in",
+    "line": 25,
+    "column": 14,
+    "start": 635,
+    "stop": 636,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 25,
+    "column": 17,
+    "start": 638,
+    "stop": 638,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "0",
+    "line": 25,
+    "column": 18,
+    "start": 639,
+    "stop": 639,
+    "channel": 0
+  },
+  {
+    "type": "COLON",
+    "text": ":",
+    "line": 25,
+    "column": 20,
+    "start": 641,
+    "stop": 641,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "points",
+    "line": 25,
+    "column": 22,
+    "start": 643,
+    "stop": 648,
+    "channel": 0
+  },
+  {
+    "type": "MINUS",
+    "text": "-",
+    "line": 25,
+    "column": 28,
+    "start": 649,
+    "stop": 649,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 25,
+    "column": 29,
+    "start": 650,
+    "stop": 650,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 25,
+    "column": 30,
+    "start": 651,
+    "stop": 651,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 25,
+    "column": 32,
+    "start": 653,
+    "stop": 653,
+    "channel": 0
+  },
+  {
+    "type": "FOR",
+    "text": "for",
+    "line": 26,
+    "column": 4,
+    "start": 659,
+    "stop": 661,
+    "channel": 0
+  },
+  {
+    "type": "UINT",
+    "text": "uint",
+    "line": 26,
+    "column": 8,
+    "start": 663,
+    "stop": 666,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "i",
+    "line": 26,
+    "column": 13,
+    "start": 668,
+    "stop": 668,
+    "channel": 0
+  },
+  {
+    "type": "IN",
+    "text": "in",
+    "line": 26,
+    "column": 15,
+    "start": 670,
+    "stop": 671,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 26,
+    "column": 18,
+    "start": 673,
+    "stop": 673,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 26,
+    "column": 19,
+    "start": 674,
+    "stop": 674,
+    "channel": 0
+  },
+  {
+    "type": "COLON",
+    "text": ":",
+    "line": 26,
+    "column": 21,
+    "start": 676,
+    "stop": 676,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "shots",
+    "line": 26,
+    "column": 23,
+    "start": 678,
+    "stop": 682,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 26,
+    "column": 28,
+    "start": 683,
+    "stop": 683,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 26,
+    "column": 30,
+    "start": 685,
+    "stop": 685,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// start of a basic block",
+    "line": 27,
+    "column": 8,
+    "start": 695,
+    "stop": 719,
+    "channel": 1
+  },
+  {
+    "type": "RESET",
+    "text": "reset",
+    "line": 28,
+    "column": 8,
+    "start": 729,
+    "stop": 733,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 28,
+    "column": 14,
+    "start": 735,
+    "stop": 736,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 28,
+    "column": 16,
+    "start": 737,
+    "stop": 737,
+    "channel": 0
+  },
+  {
+    "type": "RESET",
+    "text": "reset",
+    "line": 29,
+    "column": 8,
+    "start": 747,
+    "stop": 751,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$1",
+    "line": 29,
+    "column": 14,
+    "start": 753,
+    "stop": 754,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 29,
+    "column": 16,
+    "start": 755,
+    "stop": 755,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// excite qubits",
+    "line": 30,
+    "column": 8,
+    "start": 765,
+    "stop": 780,
+    "channel": 1
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 31,
+    "column": 8,
+    "start": 790,
+    "stop": 790,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 31,
+    "column": 10,
+    "start": 792,
+    "stop": 793,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 31,
+    "column": 12,
+    "start": 794,
+    "stop": 794,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 32,
+    "column": 8,
+    "start": 804,
+    "stop": 804,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$1",
+    "line": 32,
+    "column": 10,
+    "start": 806,
+    "stop": 807,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 32,
+    "column": 12,
+    "start": 808,
+    "stop": 808,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// wait for a fixed time indicated by loop counter",
+    "line": 33,
+    "column": 8,
+    "start": 818,
+    "stop": 867,
+    "channel": 1
+  },
+  {
+    "type": "DELAY",
+    "text": "delay",
+    "line": 34,
+    "column": 8,
+    "start": 877,
+    "stop": 881,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 34,
+    "column": 13,
+    "start": 882,
+    "stop": 882,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "p",
+    "line": 34,
+    "column": 14,
+    "start": 883,
+    "stop": 883,
+    "channel": 0
+  },
+  {
+    "type": "ASTERISK",
+    "text": "*",
+    "line": 34,
+    "column": 16,
+    "start": 885,
+    "stop": 885,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "stride",
+    "line": 34,
+    "column": 18,
+    "start": 887,
+    "stop": 892,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 34,
+    "column": 24,
+    "start": 893,
+    "stop": 893,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 34,
+    "column": 26,
+    "start": 895,
+    "stop": 896,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 34,
+    "column": 28,
+    "start": 897,
+    "stop": 897,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// wait for a fixed time indicated by loop counters",
+    "line": 35,
+    "column": 8,
+    "start": 907,
+    "stop": 957,
+    "channel": 1
+  },
+  {
+    "type": "DELAY",
+    "text": "delay",
+    "line": 36,
+    "column": 8,
+    "start": 967,
+    "stop": 971,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 36,
+    "column": 13,
+    "start": 972,
+    "stop": 972,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "p",
+    "line": 36,
+    "column": 14,
+    "start": 973,
+    "stop": 973,
+    "channel": 0
+  },
+  {
+    "type": "ASTERISK",
+    "text": "*",
+    "line": 36,
+    "column": 16,
+    "start": 975,
+    "stop": 975,
+    "channel": 0
+  },
+  {
+    "type": "DURATIONOF",
+    "text": "durationof",
+    "line": 36,
+    "column": 18,
+    "start": 977,
+    "stop": 986,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 36,
+    "column": 28,
+    "start": 987,
+    "stop": 987,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 36,
+    "column": 29,
+    "start": 988,
+    "stop": 988,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 36,
+    "column": 30,
+    "start": 989,
+    "stop": 989,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$1",
+    "line": 36,
+    "column": 32,
+    "start": 991,
+    "stop": 992,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 36,
+    "column": 34,
+    "start": 993,
+    "stop": 993,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 36,
+    "column": 35,
+    "start": 994,
+    "stop": 994,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 36,
+    "column": 36,
+    "start": 995,
+    "stop": 995,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 36,
+    "column": 37,
+    "start": 996,
+    "stop": 996,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 36,
+    "column": 38,
+    "start": 997,
+    "stop": 997,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// read out qubit states",
+    "line": 37,
+    "column": 8,
+    "start": 1007,
+    "stop": 1030,
+    "channel": 1
+  },
+  {
+    "type": "Identifier",
+    "text": "c0",
+    "line": 38,
+    "column": 8,
+    "start": 1040,
+    "stop": 1041,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 38,
+    "column": 11,
+    "start": 1043,
+    "stop": 1043,
+    "channel": 0
+  },
+  {
+    "type": "MEASURE",
+    "text": "measure",
+    "line": 38,
+    "column": 13,
+    "start": 1045,
+    "stop": 1051,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 38,
+    "column": 21,
+    "start": 1053,
+    "stop": 1054,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 38,
+    "column": 23,
+    "start": 1055,
+    "stop": 1055,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c1",
+    "line": 39,
+    "column": 8,
+    "start": 1065,
+    "stop": 1066,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 39,
+    "column": 11,
+    "start": 1068,
+    "stop": 1068,
+    "channel": 0
+  },
+  {
+    "type": "MEASURE",
+    "text": "measure",
+    "line": 39,
+    "column": 13,
+    "start": 1070,
+    "stop": 1076,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$1",
+    "line": 39,
+    "column": 21,
+    "start": 1078,
+    "stop": 1079,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 39,
+    "column": 23,
+    "start": 1080,
+    "stop": 1080,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// increment counts memories, if a 1 is seen",
+    "line": 40,
+    "column": 8,
+    "start": 1090,
+    "stop": 1133,
+    "channel": 1
+  },
+  {
+    "type": "Identifier",
+    "text": "counts0",
+    "line": 41,
+    "column": 8,
+    "start": 1143,
+    "stop": 1149,
+    "channel": 0
+  },
+  {
+    "type": "CompoundAssignmentOperator",
+    "text": "+=",
+    "line": 41,
+    "column": 16,
+    "start": 1151,
+    "stop": 1152,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 41,
+    "column": 19,
+    "start": 1154,
+    "stop": 1156,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 41,
+    "column": 22,
+    "start": 1157,
+    "stop": 1157,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 41,
+    "column": 23,
+    "start": 1158,
+    "stop": 1158,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 41,
+    "column": 24,
+    "start": 1159,
+    "stop": 1159,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 41,
+    "column": 25,
+    "start": 1160,
+    "stop": 1160,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c0",
+    "line": 41,
+    "column": 26,
+    "start": 1161,
+    "stop": 1162,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 41,
+    "column": 28,
+    "start": 1163,
+    "stop": 1163,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 41,
+    "column": 29,
+    "start": 1164,
+    "stop": 1164,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "counts1",
+    "line": 42,
+    "column": 8,
+    "start": 1174,
+    "stop": 1180,
+    "channel": 0
+  },
+  {
+    "type": "CompoundAssignmentOperator",
+    "text": "+=",
+    "line": 42,
+    "column": 16,
+    "start": 1182,
+    "stop": 1183,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 42,
+    "column": 19,
+    "start": 1185,
+    "stop": 1187,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 42,
+    "column": 22,
+    "start": 1188,
+    "stop": 1188,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 42,
+    "column": 23,
+    "start": 1189,
+    "stop": 1189,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 42,
+    "column": 24,
+    "start": 1190,
+    "stop": 1190,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 42,
+    "column": 25,
+    "start": 1191,
+    "stop": 1191,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c1",
+    "line": 42,
+    "column": 26,
+    "start": 1192,
+    "stop": 1193,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 42,
+    "column": 28,
+    "start": 1194,
+    "stop": 1194,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 42,
+    "column": 29,
+    "start": 1195,
+    "stop": 1195,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 43,
+    "column": 4,
+    "start": 1201,
+    "stop": 1201,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// log survival probability curve",
+    "line": 44,
+    "column": 4,
+    "start": 1207,
+    "stop": 1239,
+    "channel": 1
+  },
+  {
+    "type": "Identifier",
+    "text": "tabulate",
+    "line": 45,
+    "column": 4,
+    "start": 1245,
+    "stop": 1252,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 45,
+    "column": 12,
+    "start": 1253,
+    "stop": 1253,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "counts0",
+    "line": 45,
+    "column": 13,
+    "start": 1254,
+    "stop": 1260,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 45,
+    "column": 20,
+    "start": 1261,
+    "stop": 1261,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "shots",
+    "line": 45,
+    "column": 22,
+    "start": 1263,
+    "stop": 1267,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 45,
+    "column": 27,
+    "start": 1268,
+    "stop": 1268,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "p",
+    "line": 45,
+    "column": 29,
+    "start": 1270,
+    "stop": 1270,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 45,
+    "column": 30,
+    "start": 1271,
+    "stop": 1271,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 45,
+    "column": 31,
+    "start": 1272,
+    "stop": 1272,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "tabulate",
+    "line": 46,
+    "column": 4,
+    "start": 1278,
+    "stop": 1285,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 46,
+    "column": 12,
+    "start": 1286,
+    "stop": 1286,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "counts1",
+    "line": 46,
+    "column": 13,
+    "start": 1287,
+    "stop": 1293,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 46,
+    "column": 20,
+    "start": 1294,
+    "stop": 1294,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "shots",
+    "line": 46,
+    "column": 22,
+    "start": 1296,
+    "stop": 1300,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 46,
+    "column": 27,
+    "start": 1301,
+    "stop": 1301,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "p",
+    "line": 46,
+    "column": 29,
+    "start": 1303,
+    "stop": 1303,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 46,
+    "column": 30,
+    "start": 1304,
+    "stop": 1304,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 46,
+    "column": 31,
+    "start": 1305,
+    "stop": 1305,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 47,
+    "column": 0,
+    "start": 1307,
+    "stop": 1307,
+    "channel": 0
+  }
+]

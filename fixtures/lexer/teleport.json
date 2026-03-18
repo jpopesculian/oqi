@@ -1,0 +1,1262 @@
+[
+  {
+    "type": "LineComment",
+    "text": "// quantum teleportation example",
+    "line": 1,
+    "column": 0,
+    "start": 0,
+    "stop": 31,
+    "channel": 1
+  },
+  {
+    "type": "OPENQASM",
+    "text": "OPENQASM",
+    "line": 2,
+    "column": 0,
+    "start": 33,
+    "stop": 40,
+    "channel": 0
+  },
+  {
+    "type": "VersionSpecifier",
+    "text": "3",
+    "line": 2,
+    "column": 9,
+    "start": 42,
+    "stop": 42,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 2,
+    "column": 10,
+    "start": 43,
+    "stop": 43,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// Version statement is optional",
+    "line": 2,
+    "column": 12,
+    "start": 45,
+    "stop": 76,
+    "channel": 1
+  },
+  {
+    "type": "INCLUDE",
+    "text": "include",
+    "line": 3,
+    "column": 0,
+    "start": 78,
+    "stop": 84,
+    "channel": 0
+  },
+  {
+    "type": "StringLiteral",
+    "text": "\"stdgates.inc\"",
+    "line": 3,
+    "column": 8,
+    "start": 86,
+    "stop": 99,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 3,
+    "column": 22,
+    "start": 100,
+    "stop": 100,
+    "channel": 0
+  },
+  {
+    "type": "QUBIT",
+    "text": "qubit",
+    "line": 4,
+    "column": 0,
+    "start": 102,
+    "stop": 106,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 4,
+    "column": 5,
+    "start": 107,
+    "stop": 107,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "3",
+    "line": 4,
+    "column": 6,
+    "start": 108,
+    "stop": 108,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 4,
+    "column": 7,
+    "start": 109,
+    "stop": 109,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 4,
+    "column": 9,
+    "start": 111,
+    "stop": 111,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 4,
+    "column": 10,
+    "start": 112,
+    "stop": 112,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 5,
+    "column": 0,
+    "start": 114,
+    "stop": 116,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c0",
+    "line": 5,
+    "column": 4,
+    "start": 118,
+    "stop": 119,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 5,
+    "column": 6,
+    "start": 120,
+    "stop": 120,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 6,
+    "column": 0,
+    "start": 122,
+    "stop": 124,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c1",
+    "line": 6,
+    "column": 4,
+    "start": 126,
+    "stop": 127,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 6,
+    "column": 6,
+    "start": 128,
+    "stop": 128,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 7,
+    "column": 0,
+    "start": 130,
+    "stop": 132,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c2",
+    "line": 7,
+    "column": 4,
+    "start": 134,
+    "stop": 135,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 7,
+    "column": 6,
+    "start": 136,
+    "stop": 136,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// optional post-rotation for state tomography",
+    "line": 8,
+    "column": 0,
+    "start": 138,
+    "stop": 183,
+    "channel": 1
+  },
+  {
+    "type": "LineComment",
+    "text": "// empty gate body => identity gate",
+    "line": 9,
+    "column": 0,
+    "start": 185,
+    "stop": 219,
+    "channel": 1
+  },
+  {
+    "type": "GATE",
+    "text": "gate",
+    "line": 10,
+    "column": 0,
+    "start": 221,
+    "stop": 224,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "post",
+    "line": 10,
+    "column": 5,
+    "start": 226,
+    "stop": 229,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 10,
+    "column": 10,
+    "start": 231,
+    "stop": 231,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 10,
+    "column": 12,
+    "start": 233,
+    "stop": 233,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 10,
+    "column": 14,
+    "start": 235,
+    "stop": 235,
+    "channel": 0
+  },
+  {
+    "type": "RESET",
+    "text": "reset",
+    "line": 11,
+    "column": 0,
+    "start": 237,
+    "stop": 241,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 11,
+    "column": 6,
+    "start": 243,
+    "stop": 243,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 11,
+    "column": 7,
+    "start": 244,
+    "stop": 244,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "U",
+    "line": 12,
+    "column": 0,
+    "start": 246,
+    "stop": 246,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 12,
+    "column": 1,
+    "start": 247,
+    "stop": 247,
+    "channel": 0
+  },
+  {
+    "type": "FloatLiteral",
+    "text": "0.3",
+    "line": 12,
+    "column": 2,
+    "start": 248,
+    "stop": 250,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 12,
+    "column": 5,
+    "start": 251,
+    "stop": 251,
+    "channel": 0
+  },
+  {
+    "type": "FloatLiteral",
+    "text": "0.2",
+    "line": 12,
+    "column": 7,
+    "start": 253,
+    "stop": 255,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 12,
+    "column": 10,
+    "start": 256,
+    "stop": 256,
+    "channel": 0
+  },
+  {
+    "type": "FloatLiteral",
+    "text": "0.1",
+    "line": 12,
+    "column": 12,
+    "start": 258,
+    "stop": 260,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 12,
+    "column": 15,
+    "start": 261,
+    "stop": 261,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 12,
+    "column": 17,
+    "start": 263,
+    "stop": 263,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 12,
+    "column": 18,
+    "start": 264,
+    "stop": 264,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "0",
+    "line": 12,
+    "column": 19,
+    "start": 265,
+    "stop": 265,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 12,
+    "column": 20,
+    "start": 266,
+    "stop": 266,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 12,
+    "column": 21,
+    "start": 267,
+    "stop": 267,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "h",
+    "line": 13,
+    "column": 0,
+    "start": 269,
+    "stop": 269,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 13,
+    "column": 2,
+    "start": 271,
+    "stop": 271,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 13,
+    "column": 3,
+    "start": 272,
+    "stop": 272,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 13,
+    "column": 4,
+    "start": 273,
+    "stop": 273,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 13,
+    "column": 5,
+    "start": 274,
+    "stop": 274,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 13,
+    "column": 6,
+    "start": 275,
+    "stop": 275,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "cx",
+    "line": 14,
+    "column": 0,
+    "start": 277,
+    "stop": 278,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 14,
+    "column": 3,
+    "start": 280,
+    "stop": 280,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 14,
+    "column": 4,
+    "start": 281,
+    "stop": 281,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 14,
+    "column": 5,
+    "start": 282,
+    "stop": 282,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 14,
+    "column": 6,
+    "start": 283,
+    "stop": 283,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 14,
+    "column": 7,
+    "start": 284,
+    "stop": 284,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 14,
+    "column": 9,
+    "start": 286,
+    "stop": 286,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 14,
+    "column": 10,
+    "start": 287,
+    "stop": 287,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 14,
+    "column": 11,
+    "start": 288,
+    "stop": 288,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 14,
+    "column": 12,
+    "start": 289,
+    "stop": 289,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 14,
+    "column": 13,
+    "start": 290,
+    "stop": 290,
+    "channel": 0
+  },
+  {
+    "type": "BARRIER",
+    "text": "barrier",
+    "line": 15,
+    "column": 0,
+    "start": 292,
+    "stop": 298,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 15,
+    "column": 8,
+    "start": 300,
+    "stop": 300,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 15,
+    "column": 9,
+    "start": 301,
+    "stop": 301,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "cx",
+    "line": 16,
+    "column": 0,
+    "start": 303,
+    "stop": 304,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 16,
+    "column": 3,
+    "start": 306,
+    "stop": 306,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 16,
+    "column": 4,
+    "start": 307,
+    "stop": 307,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "0",
+    "line": 16,
+    "column": 5,
+    "start": 308,
+    "stop": 308,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 16,
+    "column": 6,
+    "start": 309,
+    "stop": 309,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 16,
+    "column": 7,
+    "start": 310,
+    "stop": 310,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 16,
+    "column": 9,
+    "start": 312,
+    "stop": 312,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 16,
+    "column": 10,
+    "start": 313,
+    "stop": 313,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 16,
+    "column": 11,
+    "start": 314,
+    "stop": 314,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 16,
+    "column": 12,
+    "start": 315,
+    "stop": 315,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 16,
+    "column": 13,
+    "start": 316,
+    "stop": 316,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "h",
+    "line": 17,
+    "column": 0,
+    "start": 318,
+    "stop": 318,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 17,
+    "column": 2,
+    "start": 320,
+    "stop": 320,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 17,
+    "column": 3,
+    "start": 321,
+    "stop": 321,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "0",
+    "line": 17,
+    "column": 4,
+    "start": 322,
+    "stop": 322,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 17,
+    "column": 5,
+    "start": 323,
+    "stop": 323,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 17,
+    "column": 6,
+    "start": 324,
+    "stop": 324,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c0",
+    "line": 18,
+    "column": 0,
+    "start": 326,
+    "stop": 327,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 18,
+    "column": 3,
+    "start": 329,
+    "stop": 329,
+    "channel": 0
+  },
+  {
+    "type": "MEASURE",
+    "text": "measure",
+    "line": 18,
+    "column": 5,
+    "start": 331,
+    "stop": 337,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 18,
+    "column": 13,
+    "start": 339,
+    "stop": 339,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 18,
+    "column": 14,
+    "start": 340,
+    "stop": 340,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "0",
+    "line": 18,
+    "column": 15,
+    "start": 341,
+    "stop": 341,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 18,
+    "column": 16,
+    "start": 342,
+    "stop": 342,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 18,
+    "column": 17,
+    "start": 343,
+    "stop": 343,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c1",
+    "line": 19,
+    "column": 0,
+    "start": 345,
+    "stop": 346,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 19,
+    "column": 3,
+    "start": 348,
+    "stop": 348,
+    "channel": 0
+  },
+  {
+    "type": "MEASURE",
+    "text": "measure",
+    "line": 19,
+    "column": 5,
+    "start": 350,
+    "stop": 356,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 19,
+    "column": 13,
+    "start": 358,
+    "stop": 358,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 19,
+    "column": 14,
+    "start": 359,
+    "stop": 359,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 19,
+    "column": 15,
+    "start": 360,
+    "stop": 360,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 19,
+    "column": 16,
+    "start": 361,
+    "stop": 361,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 19,
+    "column": 17,
+    "start": 362,
+    "stop": 362,
+    "channel": 0
+  },
+  {
+    "type": "IF",
+    "text": "if",
+    "line": 20,
+    "column": 0,
+    "start": 364,
+    "stop": 365,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 20,
+    "column": 2,
+    "start": 366,
+    "stop": 366,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c0",
+    "line": 20,
+    "column": 3,
+    "start": 367,
+    "stop": 368,
+    "channel": 0
+  },
+  {
+    "type": "EqualityOperator",
+    "text": "==",
+    "line": 20,
+    "column": 5,
+    "start": 369,
+    "stop": 370,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 20,
+    "column": 7,
+    "start": 371,
+    "stop": 371,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 20,
+    "column": 8,
+    "start": 372,
+    "stop": 372,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "z",
+    "line": 20,
+    "column": 10,
+    "start": 374,
+    "stop": 374,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 20,
+    "column": 12,
+    "start": 376,
+    "stop": 376,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 20,
+    "column": 13,
+    "start": 377,
+    "stop": 377,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 20,
+    "column": 14,
+    "start": 378,
+    "stop": 378,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 20,
+    "column": 15,
+    "start": 379,
+    "stop": 379,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 20,
+    "column": 16,
+    "start": 380,
+    "stop": 380,
+    "channel": 0
+  },
+  {
+    "type": "IF",
+    "text": "if",
+    "line": 21,
+    "column": 0,
+    "start": 382,
+    "stop": 383,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 21,
+    "column": 2,
+    "start": 384,
+    "stop": 384,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c1",
+    "line": 21,
+    "column": 3,
+    "start": 385,
+    "stop": 386,
+    "channel": 0
+  },
+  {
+    "type": "EqualityOperator",
+    "text": "==",
+    "line": 21,
+    "column": 5,
+    "start": 387,
+    "stop": 388,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 21,
+    "column": 7,
+    "start": 389,
+    "stop": 389,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 21,
+    "column": 8,
+    "start": 390,
+    "stop": 390,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 21,
+    "column": 10,
+    "start": 392,
+    "stop": 392,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 21,
+    "column": 12,
+    "start": 394,
+    "stop": 394,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 21,
+    "column": 14,
+    "start": 396,
+    "stop": 396,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 21,
+    "column": 15,
+    "start": 397,
+    "stop": 397,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 21,
+    "column": 16,
+    "start": 398,
+    "stop": 398,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 21,
+    "column": 17,
+    "start": 399,
+    "stop": 399,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 21,
+    "column": 18,
+    "start": 400,
+    "stop": 400,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 21,
+    "column": 20,
+    "start": 402,
+    "stop": 402,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// braces optional in this case",
+    "line": 21,
+    "column": 23,
+    "start": 405,
+    "stop": 435,
+    "channel": 1
+  },
+  {
+    "type": "Identifier",
+    "text": "post",
+    "line": 22,
+    "column": 0,
+    "start": 437,
+    "stop": 440,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 22,
+    "column": 5,
+    "start": 442,
+    "stop": 442,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 22,
+    "column": 6,
+    "start": 443,
+    "stop": 443,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 22,
+    "column": 7,
+    "start": 444,
+    "stop": 444,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 22,
+    "column": 8,
+    "start": 445,
+    "stop": 445,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 22,
+    "column": 9,
+    "start": 446,
+    "stop": 446,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c2",
+    "line": 23,
+    "column": 0,
+    "start": 448,
+    "stop": 449,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 23,
+    "column": 3,
+    "start": 451,
+    "stop": 451,
+    "channel": 0
+  },
+  {
+    "type": "MEASURE",
+    "text": "measure",
+    "line": 23,
+    "column": 5,
+    "start": 453,
+    "stop": 459,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 23,
+    "column": 13,
+    "start": 461,
+    "stop": 461,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 23,
+    "column": 14,
+    "start": 462,
+    "stop": 462,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 23,
+    "column": 15,
+    "start": 463,
+    "stop": 463,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 23,
+    "column": 16,
+    "start": 464,
+    "stop": 464,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 23,
+    "column": 17,
+    "start": 465,
+    "stop": 465,
+    "channel": 0
+  }
+]

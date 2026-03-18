@@ -1,0 +1,470 @@
+[
+  {
+    "type": "DEFCALGRAMMAR",
+    "text": "defcalgrammar",
+    "line": 1,
+    "column": 0,
+    "start": 0,
+    "stop": 12,
+    "channel": 0
+  },
+  {
+    "type": "StringLiteral",
+    "text": "\"openpulse\"",
+    "line": 1,
+    "column": 14,
+    "start": 14,
+    "stop": 24,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 1,
+    "column": 25,
+    "start": 25,
+    "stop": 25,
+    "channel": 0
+  },
+  {
+    "type": "DEFCAL",
+    "text": "defcal",
+    "line": 3,
+    "column": 0,
+    "start": 28,
+    "stop": 33,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 3,
+    "column": 7,
+    "start": 35,
+    "stop": 35,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 3,
+    "column": 9,
+    "start": 37,
+    "stop": 38,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 3,
+    "column": 12,
+    "start": 40,
+    "stop": 40,
+    "channel": 0
+  },
+  {
+    "type": "CalibrationBlock",
+    "text": "\n   play drive($0), gaussian(...);\n",
+    "line": 3,
+    "column": 13,
+    "start": 41,
+    "stop": 75,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 5,
+    "column": 0,
+    "start": 76,
+    "stop": 76,
+    "channel": 0
+  },
+  {
+    "type": "DEFCAL",
+    "text": "defcal",
+    "line": 7,
+    "column": 0,
+    "start": 79,
+    "stop": 84,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 7,
+    "column": 7,
+    "start": 86,
+    "stop": 86,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$1",
+    "line": 7,
+    "column": 9,
+    "start": 88,
+    "stop": 89,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 7,
+    "column": 12,
+    "start": 91,
+    "stop": 91,
+    "channel": 0
+  },
+  {
+    "type": "CalibrationBlock",
+    "text": "\n  play drive($1), gaussian(...);\n",
+    "line": 7,
+    "column": 13,
+    "start": 92,
+    "stop": 125,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 9,
+    "column": 0,
+    "start": 126,
+    "stop": 126,
+    "channel": 0
+  },
+  {
+    "type": "DEFCAL",
+    "text": "defcal",
+    "line": 11,
+    "column": 0,
+    "start": 129,
+    "stop": 134,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "rz",
+    "line": 11,
+    "column": 7,
+    "start": 136,
+    "stop": 137,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 11,
+    "column": 9,
+    "start": 138,
+    "stop": 138,
+    "channel": 0
+  },
+  {
+    "type": "ANGLE",
+    "text": "angle",
+    "line": 11,
+    "column": 10,
+    "start": 139,
+    "stop": 143,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 11,
+    "column": 15,
+    "start": 144,
+    "stop": 144,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "20",
+    "line": 11,
+    "column": 16,
+    "start": 145,
+    "stop": 146,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 11,
+    "column": 18,
+    "start": 147,
+    "stop": 147,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "theta",
+    "line": 11,
+    "column": 20,
+    "start": 149,
+    "stop": 153,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 11,
+    "column": 25,
+    "start": 154,
+    "stop": 154,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 11,
+    "column": 27,
+    "start": 156,
+    "stop": 156,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 11,
+    "column": 29,
+    "start": 158,
+    "stop": 158,
+    "channel": 0
+  },
+  {
+    "type": "CalibrationBlock",
+    "text": "\n  shift_phase drive(q), -theta;\n",
+    "line": 11,
+    "column": 30,
+    "start": 159,
+    "stop": 191,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 13,
+    "column": 0,
+    "start": 192,
+    "stop": 192,
+    "channel": 0
+  },
+  {
+    "type": "DEFCAL",
+    "text": "defcal",
+    "line": 15,
+    "column": 0,
+    "start": 195,
+    "stop": 200,
+    "channel": 0
+  },
+  {
+    "type": "MEASURE",
+    "text": "measure",
+    "line": 15,
+    "column": 7,
+    "start": 202,
+    "stop": 208,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 15,
+    "column": 15,
+    "start": 210,
+    "stop": 211,
+    "channel": 0
+  },
+  {
+    "type": "ARROW",
+    "text": "->",
+    "line": 15,
+    "column": 18,
+    "start": 213,
+    "stop": 214,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 15,
+    "column": 21,
+    "start": 216,
+    "stop": 218,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 15,
+    "column": 25,
+    "start": 220,
+    "stop": 220,
+    "channel": 0
+  },
+  {
+    "type": "CalibrationBlock",
+    "text": "\n  complex[int[24]] iq;\n  bit state;\n  complex[int[12]] k0[1024] = [i0 + q0*j, i1 + q1*j, i2 + q2*j, ...];\n  play measure($0), flat_top_gaussian(...);\n  iq = capture acquire($0), 2048, extern(k0);\n  return threshold(iq, 1234);\n",
+    "line": 15,
+    "column": 26,
+    "start": 221,
+    "stop": 447,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 22,
+    "column": 0,
+    "start": 448,
+    "stop": 448,
+    "channel": 0
+  },
+  {
+    "type": "DEFCAL",
+    "text": "defcal",
+    "line": 24,
+    "column": 0,
+    "start": 451,
+    "stop": 456,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "zx90_ix",
+    "line": 24,
+    "column": 7,
+    "start": 458,
+    "stop": 464,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 24,
+    "column": 15,
+    "start": 466,
+    "stop": 467,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 24,
+    "column": 17,
+    "start": 468,
+    "stop": 468,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$1",
+    "line": 24,
+    "column": 19,
+    "start": 470,
+    "stop": 471,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 24,
+    "column": 22,
+    "start": 473,
+    "stop": 473,
+    "channel": 0
+  },
+  {
+    "type": "CalibrationBlock",
+    "text": "\n  play drive($0, \"cr1\"), flat_top_gaussian(...);  // uses a non-default\n                                                  // frame labeled \"cr1\"\n",
+    "line": 24,
+    "column": 23,
+    "start": 474,
+    "stop": 619,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 27,
+    "column": 0,
+    "start": 620,
+    "stop": 620,
+    "channel": 0
+  },
+  {
+    "type": "DEFCAL",
+    "text": "defcal",
+    "line": 29,
+    "column": 0,
+    "start": 623,
+    "stop": 628,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "cx",
+    "line": 29,
+    "column": 7,
+    "start": 630,
+    "stop": 631,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 29,
+    "column": 10,
+    "start": 633,
+    "stop": 634,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 29,
+    "column": 12,
+    "start": 635,
+    "stop": 635,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$1",
+    "line": 29,
+    "column": 14,
+    "start": 637,
+    "stop": 638,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 29,
+    "column": 17,
+    "start": 640,
+    "stop": 640,
+    "channel": 0
+  },
+  {
+    "type": "CalibrationBlock",
+    "text": "\n  zx90_ix $0, $1;\n  x $0;\n  shift_phase drive($0, \"cr1\");\n  zx90_ix $0, $1;\n  x $0;\n  x $1;\n",
+    "line": 29,
+    "column": 18,
+    "start": 641,
+    "stop": 733,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 36,
+    "column": 0,
+    "start": 734,
+    "stop": 734,
+    "channel": 0
+  }
+]

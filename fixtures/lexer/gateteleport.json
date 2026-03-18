@@ -1,0 +1,992 @@
+[
+  {
+    "type": "LineComment",
+    "text": "// Repetition code gate teleportation",
+    "line": 1,
+    "column": 0,
+    "start": 0,
+    "stop": 36,
+    "channel": 1
+  },
+  {
+    "type": "INCLUDE",
+    "text": "include",
+    "line": 2,
+    "column": 0,
+    "start": 38,
+    "stop": 44,
+    "channel": 0
+  },
+  {
+    "type": "StringLiteral",
+    "text": "\"stdgates.inc\"",
+    "line": 2,
+    "column": 8,
+    "start": 46,
+    "stop": 59,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 2,
+    "column": 22,
+    "start": 60,
+    "stop": 60,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// declarations",
+    "line": 4,
+    "column": 0,
+    "start": 63,
+    "stop": 77,
+    "channel": 1
+  },
+  {
+    "type": "CONST",
+    "text": "const",
+    "line": 5,
+    "column": 0,
+    "start": 79,
+    "stop": 83,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 5,
+    "column": 6,
+    "start": 85,
+    "stop": 87,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 5,
+    "column": 9,
+    "start": 88,
+    "stop": 88,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "32",
+    "line": 5,
+    "column": 10,
+    "start": 89,
+    "stop": 90,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 5,
+    "column": 12,
+    "start": 91,
+    "stop": 91,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "n",
+    "line": 5,
+    "column": 14,
+    "start": 93,
+    "stop": 93,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 5,
+    "column": 16,
+    "start": 95,
+    "stop": 95,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "3",
+    "line": 5,
+    "column": 18,
+    "start": 97,
+    "stop": 97,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 5,
+    "column": 19,
+    "start": 98,
+    "stop": 98,
+    "channel": 0
+  },
+  {
+    "type": "EXTERN",
+    "text": "extern",
+    "line": 6,
+    "column": 0,
+    "start": 100,
+    "stop": 105,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "vote",
+    "line": 6,
+    "column": 7,
+    "start": 107,
+    "stop": 110,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 6,
+    "column": 11,
+    "start": 111,
+    "stop": 111,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 6,
+    "column": 12,
+    "start": 112,
+    "stop": 114,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 6,
+    "column": 15,
+    "start": 115,
+    "stop": 115,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "n",
+    "line": 6,
+    "column": 16,
+    "start": 116,
+    "stop": 116,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 6,
+    "column": 17,
+    "start": 117,
+    "stop": 117,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 6,
+    "column": 18,
+    "start": 118,
+    "stop": 118,
+    "channel": 0
+  },
+  {
+    "type": "ARROW",
+    "text": "->",
+    "line": 6,
+    "column": 20,
+    "start": 120,
+    "stop": 121,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 6,
+    "column": 23,
+    "start": 123,
+    "stop": 125,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 6,
+    "column": 26,
+    "start": 126,
+    "stop": 126,
+    "channel": 0
+  },
+  {
+    "type": "DEF",
+    "text": "def",
+    "line": 8,
+    "column": 0,
+    "start": 129,
+    "stop": 131,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "logical_meas",
+    "line": 8,
+    "column": 4,
+    "start": 133,
+    "stop": 144,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 8,
+    "column": 16,
+    "start": 145,
+    "stop": 145,
+    "channel": 0
+  },
+  {
+    "type": "QUBIT",
+    "text": "qubit",
+    "line": 8,
+    "column": 17,
+    "start": 146,
+    "stop": 150,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 8,
+    "column": 22,
+    "start": 151,
+    "stop": 151,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "3",
+    "line": 8,
+    "column": 23,
+    "start": 152,
+    "stop": 152,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 8,
+    "column": 24,
+    "start": 153,
+    "stop": 153,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "d",
+    "line": 8,
+    "column": 26,
+    "start": 155,
+    "stop": 155,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 8,
+    "column": 27,
+    "start": 156,
+    "stop": 156,
+    "channel": 0
+  },
+  {
+    "type": "ARROW",
+    "text": "->",
+    "line": 8,
+    "column": 29,
+    "start": 158,
+    "stop": 159,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 8,
+    "column": 32,
+    "start": 161,
+    "stop": 163,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 8,
+    "column": 36,
+    "start": 165,
+    "stop": 165,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 9,
+    "column": 4,
+    "start": 171,
+    "stop": 173,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 9,
+    "column": 7,
+    "start": 174,
+    "stop": 174,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "3",
+    "line": 9,
+    "column": 8,
+    "start": 175,
+    "stop": 175,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 9,
+    "column": 9,
+    "start": 176,
+    "stop": 176,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c",
+    "line": 9,
+    "column": 11,
+    "start": 178,
+    "stop": 178,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 9,
+    "column": 12,
+    "start": 179,
+    "stop": 179,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 10,
+    "column": 4,
+    "start": 185,
+    "stop": 187,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "r",
+    "line": 10,
+    "column": 8,
+    "start": 189,
+    "stop": 189,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 10,
+    "column": 9,
+    "start": 190,
+    "stop": 190,
+    "channel": 0
+  },
+  {
+    "type": "MEASURE",
+    "text": "measure",
+    "line": 11,
+    "column": 4,
+    "start": 196,
+    "stop": 202,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "d",
+    "line": 11,
+    "column": 12,
+    "start": 204,
+    "stop": 204,
+    "channel": 0
+  },
+  {
+    "type": "ARROW",
+    "text": "->",
+    "line": 11,
+    "column": 14,
+    "start": 206,
+    "stop": 207,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c",
+    "line": 11,
+    "column": 17,
+    "start": 209,
+    "stop": 209,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 11,
+    "column": 18,
+    "start": 210,
+    "stop": 210,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "r",
+    "line": 12,
+    "column": 4,
+    "start": 216,
+    "stop": 216,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 12,
+    "column": 6,
+    "start": 218,
+    "stop": 218,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "vote",
+    "line": 12,
+    "column": 8,
+    "start": 220,
+    "stop": 223,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 12,
+    "column": 12,
+    "start": 224,
+    "stop": 224,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c",
+    "line": 12,
+    "column": 13,
+    "start": 225,
+    "stop": 225,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 12,
+    "column": 14,
+    "start": 226,
+    "stop": 226,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 12,
+    "column": 15,
+    "start": 227,
+    "stop": 227,
+    "channel": 0
+  },
+  {
+    "type": "RETURN",
+    "text": "return",
+    "line": 13,
+    "column": 4,
+    "start": 233,
+    "stop": 238,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "r",
+    "line": 13,
+    "column": 11,
+    "start": 240,
+    "stop": 240,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 13,
+    "column": 12,
+    "start": 241,
+    "stop": 241,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 14,
+    "column": 0,
+    "start": 243,
+    "stop": 243,
+    "channel": 0
+  },
+  {
+    "type": "QUBIT",
+    "text": "qubit",
+    "line": 16,
+    "column": 0,
+    "start": 246,
+    "stop": 250,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 16,
+    "column": 5,
+    "start": 251,
+    "stop": 251,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "3",
+    "line": 16,
+    "column": 6,
+    "start": 252,
+    "stop": 252,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 16,
+    "column": 7,
+    "start": 253,
+    "stop": 253,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 16,
+    "column": 9,
+    "start": 255,
+    "stop": 255,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 16,
+    "column": 10,
+    "start": 256,
+    "stop": 256,
+    "channel": 0
+  },
+  {
+    "type": "QUBIT",
+    "text": "qubit",
+    "line": 17,
+    "column": 0,
+    "start": 258,
+    "stop": 262,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 17,
+    "column": 5,
+    "start": 263,
+    "stop": 263,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "3",
+    "line": 17,
+    "column": 6,
+    "start": 264,
+    "stop": 264,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 17,
+    "column": 7,
+    "start": 265,
+    "stop": 265,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "a",
+    "line": 17,
+    "column": 9,
+    "start": 267,
+    "stop": 267,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 17,
+    "column": 10,
+    "start": 268,
+    "stop": 268,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 18,
+    "column": 0,
+    "start": 270,
+    "stop": 272,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "r",
+    "line": 18,
+    "column": 4,
+    "start": 274,
+    "stop": 274,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 18,
+    "column": 5,
+    "start": 275,
+    "stop": 275,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// prep magic state",
+    "line": 20,
+    "column": 0,
+    "start": 278,
+    "stop": 296,
+    "channel": 1
+  },
+  {
+    "type": "Identifier",
+    "text": "rz",
+    "line": 21,
+    "column": 0,
+    "start": 298,
+    "stop": 299,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 21,
+    "column": 2,
+    "start": 300,
+    "stop": 300,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "pi",
+    "line": 21,
+    "column": 3,
+    "start": 301,
+    "stop": 302,
+    "channel": 0
+  },
+  {
+    "type": "SLASH",
+    "text": "/",
+    "line": 21,
+    "column": 5,
+    "start": 303,
+    "stop": 303,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "4",
+    "line": 21,
+    "column": 6,
+    "start": 304,
+    "stop": 304,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 21,
+    "column": 7,
+    "start": 305,
+    "stop": 305,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "a",
+    "line": 21,
+    "column": 9,
+    "start": 307,
+    "stop": 307,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 21,
+    "column": 10,
+    "start": 308,
+    "stop": 308,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// entangle two logical registers",
+    "line": 23,
+    "column": 0,
+    "start": 311,
+    "stop": 343,
+    "channel": 1
+  },
+  {
+    "type": "Identifier",
+    "text": "cx",
+    "line": 24,
+    "column": 0,
+    "start": 345,
+    "stop": 346,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 24,
+    "column": 3,
+    "start": 348,
+    "stop": 348,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 24,
+    "column": 4,
+    "start": 349,
+    "stop": 349,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "a",
+    "line": 24,
+    "column": 6,
+    "start": 351,
+    "stop": 351,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 24,
+    "column": 7,
+    "start": 352,
+    "stop": 352,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// measure out the ancilla",
+    "line": 26,
+    "column": 0,
+    "start": 355,
+    "stop": 380,
+    "channel": 1
+  },
+  {
+    "type": "Identifier",
+    "text": "r",
+    "line": 27,
+    "column": 0,
+    "start": 382,
+    "stop": 382,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 27,
+    "column": 2,
+    "start": 384,
+    "stop": 384,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "logical_meas",
+    "line": 27,
+    "column": 4,
+    "start": 386,
+    "stop": 397,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 27,
+    "column": 16,
+    "start": 398,
+    "stop": 398,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "a",
+    "line": 27,
+    "column": 17,
+    "start": 399,
+    "stop": 399,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 27,
+    "column": 18,
+    "start": 400,
+    "stop": 400,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 27,
+    "column": 19,
+    "start": 401,
+    "stop": 401,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// if we get a logical |1> then we need to apply a logical Z correction",
+    "line": 29,
+    "column": 0,
+    "start": 404,
+    "stop": 474,
+    "channel": 1
+  },
+  {
+    "type": "IF",
+    "text": "if",
+    "line": 30,
+    "column": 0,
+    "start": 476,
+    "stop": 477,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 30,
+    "column": 3,
+    "start": 479,
+    "stop": 479,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "r",
+    "line": 30,
+    "column": 4,
+    "start": 480,
+    "stop": 480,
+    "channel": 0
+  },
+  {
+    "type": "EqualityOperator",
+    "text": "==",
+    "line": 30,
+    "column": 6,
+    "start": 482,
+    "stop": 483,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 30,
+    "column": 9,
+    "start": 485,
+    "stop": 485,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 30,
+    "column": 10,
+    "start": 486,
+    "stop": 486,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "z",
+    "line": 30,
+    "column": 12,
+    "start": 488,
+    "stop": 488,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 30,
+    "column": 14,
+    "start": 490,
+    "stop": 490,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 30,
+    "column": 15,
+    "start": 491,
+    "stop": 491,
+    "channel": 0
+  }
+]

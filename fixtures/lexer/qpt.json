@@ -1,0 +1,398 @@
+[
+  {
+    "type": "INCLUDE",
+    "text": "include",
+    "line": 1,
+    "column": 0,
+    "start": 0,
+    "stop": 6,
+    "channel": 0
+  },
+  {
+    "type": "StringLiteral",
+    "text": "\"stdgates.inc\"",
+    "line": 1,
+    "column": 8,
+    "start": 8,
+    "stop": 21,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 1,
+    "column": 22,
+    "start": 22,
+    "stop": 22,
+    "channel": 0
+  },
+  {
+    "type": "GATE",
+    "text": "gate",
+    "line": 3,
+    "column": 0,
+    "start": 25,
+    "stop": 28,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "pre",
+    "line": 3,
+    "column": 5,
+    "start": 30,
+    "stop": 32,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 3,
+    "column": 9,
+    "start": 34,
+    "stop": 34,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 3,
+    "column": 11,
+    "start": 36,
+    "stop": 36,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 3,
+    "column": 13,
+    "start": 38,
+    "stop": 38,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// pre-rotation",
+    "line": 3,
+    "column": 17,
+    "start": 42,
+    "stop": 56,
+    "channel": 1
+  },
+  {
+    "type": "GATE",
+    "text": "gate",
+    "line": 4,
+    "column": 0,
+    "start": 58,
+    "stop": 61,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "post",
+    "line": 4,
+    "column": 5,
+    "start": 63,
+    "stop": 66,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 4,
+    "column": 10,
+    "start": 68,
+    "stop": 68,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 4,
+    "column": 12,
+    "start": 70,
+    "stop": 70,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 4,
+    "column": 14,
+    "start": 72,
+    "stop": 72,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// post-rotation",
+    "line": 4,
+    "column": 17,
+    "start": 75,
+    "stop": 90,
+    "channel": 1
+  },
+  {
+    "type": "QUBIT",
+    "text": "qubit",
+    "line": 6,
+    "column": 0,
+    "start": 93,
+    "stop": 97,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 6,
+    "column": 6,
+    "start": 99,
+    "stop": 99,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 6,
+    "column": 7,
+    "start": 100,
+    "stop": 100,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 7,
+    "column": 0,
+    "start": 102,
+    "stop": 104,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c",
+    "line": 7,
+    "column": 4,
+    "start": 106,
+    "stop": 106,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 7,
+    "column": 5,
+    "start": 107,
+    "stop": 107,
+    "channel": 0
+  },
+  {
+    "type": "RESET",
+    "text": "reset",
+    "line": 8,
+    "column": 0,
+    "start": 109,
+    "stop": 113,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 8,
+    "column": 6,
+    "start": 115,
+    "stop": 115,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 8,
+    "column": 7,
+    "start": 116,
+    "stop": 116,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "pre",
+    "line": 9,
+    "column": 0,
+    "start": 118,
+    "stop": 120,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 9,
+    "column": 4,
+    "start": 122,
+    "stop": 122,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 9,
+    "column": 5,
+    "start": 123,
+    "stop": 123,
+    "channel": 0
+  },
+  {
+    "type": "BARRIER",
+    "text": "barrier",
+    "line": 10,
+    "column": 0,
+    "start": 125,
+    "stop": 131,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 10,
+    "column": 8,
+    "start": 133,
+    "stop": 133,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 10,
+    "column": 9,
+    "start": 134,
+    "stop": 134,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "h",
+    "line": 11,
+    "column": 0,
+    "start": 136,
+    "stop": 136,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 11,
+    "column": 2,
+    "start": 138,
+    "stop": 138,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 11,
+    "column": 3,
+    "start": 139,
+    "stop": 139,
+    "channel": 0
+  },
+  {
+    "type": "BARRIER",
+    "text": "barrier",
+    "line": 12,
+    "column": 0,
+    "start": 141,
+    "stop": 147,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 12,
+    "column": 8,
+    "start": 149,
+    "stop": 149,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 12,
+    "column": 9,
+    "start": 150,
+    "stop": 150,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "post",
+    "line": 13,
+    "column": 0,
+    "start": 152,
+    "stop": 155,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 13,
+    "column": 5,
+    "start": 157,
+    "stop": 157,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 13,
+    "column": 6,
+    "start": 158,
+    "stop": 158,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "c",
+    "line": 14,
+    "column": 0,
+    "start": 160,
+    "stop": 160,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 14,
+    "column": 2,
+    "start": 162,
+    "stop": 162,
+    "channel": 0
+  },
+  {
+    "type": "MEASURE",
+    "text": "measure",
+    "line": 14,
+    "column": 4,
+    "start": 164,
+    "stop": 170,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "q",
+    "line": 14,
+    "column": 12,
+    "start": 172,
+    "stop": 172,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 14,
+    "column": 13,
+    "start": 173,
+    "stop": 173,
+    "channel": 0
+  }
+]

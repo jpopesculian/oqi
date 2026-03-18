@@ -1,0 +1,1361 @@
+[
+  {
+    "type": "BlockComment",
+    "text": "/*\n * Repeat-until-success circuit for Rz(theta),\n * cos(theta-pi)=3/5, from Nielsen and Chuang, Chapter 4.\n */",
+    "line": 1,
+    "column": 0,
+    "start": 0,
+    "stop": 110,
+    "channel": 1
+  },
+  {
+    "type": "INCLUDE",
+    "text": "include",
+    "line": 5,
+    "column": 0,
+    "start": 112,
+    "stop": 118,
+    "channel": 0
+  },
+  {
+    "type": "StringLiteral",
+    "text": "\"stdgates.inc\"",
+    "line": 5,
+    "column": 8,
+    "start": 120,
+    "stop": 133,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 5,
+    "column": 22,
+    "start": 134,
+    "stop": 134,
+    "channel": 0
+  },
+  {
+    "type": "BlockComment",
+    "text": "/*\n * Applies identity if out is 01, 10, or 11 and a Z-rotation by\n * theta + pi where cos(theta)=3/5 if out is 00.\n * The 00 outcome occurs with probability 5/8.\n */",
+    "line": 7,
+    "column": 0,
+    "start": 137,
+    "stop": 302,
+    "channel": 1
+  },
+  {
+    "type": "DEF",
+    "text": "def",
+    "line": 12,
+    "column": 0,
+    "start": 304,
+    "stop": 306,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "segment",
+    "line": 12,
+    "column": 4,
+    "start": 308,
+    "stop": 314,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 12,
+    "column": 11,
+    "start": 315,
+    "stop": 315,
+    "channel": 0
+  },
+  {
+    "type": "QUBIT",
+    "text": "qubit",
+    "line": 12,
+    "column": 12,
+    "start": 316,
+    "stop": 320,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 12,
+    "column": 17,
+    "start": 321,
+    "stop": 321,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 12,
+    "column": 18,
+    "start": 322,
+    "stop": 322,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 12,
+    "column": 19,
+    "start": 323,
+    "stop": 323,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "anc",
+    "line": 12,
+    "column": 21,
+    "start": 325,
+    "stop": 327,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 12,
+    "column": 24,
+    "start": 328,
+    "stop": 328,
+    "channel": 0
+  },
+  {
+    "type": "QUBIT",
+    "text": "qubit",
+    "line": 12,
+    "column": 26,
+    "start": 330,
+    "stop": 334,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "psi",
+    "line": 12,
+    "column": 32,
+    "start": 336,
+    "stop": 338,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 12,
+    "column": 35,
+    "start": 339,
+    "stop": 339,
+    "channel": 0
+  },
+  {
+    "type": "ARROW",
+    "text": "->",
+    "line": 12,
+    "column": 37,
+    "start": 341,
+    "stop": 342,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 12,
+    "column": 40,
+    "start": 344,
+    "stop": 346,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 12,
+    "column": 43,
+    "start": 347,
+    "stop": 347,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 12,
+    "column": 44,
+    "start": 348,
+    "stop": 348,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 12,
+    "column": 45,
+    "start": 349,
+    "stop": 349,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 12,
+    "column": 47,
+    "start": 351,
+    "stop": 351,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 13,
+    "column": 2,
+    "start": 355,
+    "stop": 357,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 13,
+    "column": 5,
+    "start": 358,
+    "stop": 358,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 13,
+    "column": 6,
+    "start": 359,
+    "stop": 359,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 13,
+    "column": 7,
+    "start": 360,
+    "stop": 360,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "b",
+    "line": 13,
+    "column": 9,
+    "start": 362,
+    "stop": 362,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 13,
+    "column": 10,
+    "start": 363,
+    "stop": 363,
+    "channel": 0
+  },
+  {
+    "type": "RESET",
+    "text": "reset",
+    "line": 14,
+    "column": 2,
+    "start": 367,
+    "stop": 371,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "anc",
+    "line": 14,
+    "column": 8,
+    "start": 373,
+    "stop": 375,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 14,
+    "column": 11,
+    "start": 376,
+    "stop": 376,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "h",
+    "line": 15,
+    "column": 2,
+    "start": 380,
+    "stop": 380,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "anc",
+    "line": 15,
+    "column": 4,
+    "start": 382,
+    "stop": 384,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 15,
+    "column": 7,
+    "start": 385,
+    "stop": 385,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "ccx",
+    "line": 16,
+    "column": 2,
+    "start": 389,
+    "stop": 391,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "anc",
+    "line": 16,
+    "column": 6,
+    "start": 393,
+    "stop": 395,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 16,
+    "column": 9,
+    "start": 396,
+    "stop": 396,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "0",
+    "line": 16,
+    "column": 10,
+    "start": 397,
+    "stop": 397,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 16,
+    "column": 11,
+    "start": 398,
+    "stop": 398,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 16,
+    "column": 12,
+    "start": 399,
+    "stop": 399,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "anc",
+    "line": 16,
+    "column": 14,
+    "start": 401,
+    "stop": 403,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 16,
+    "column": 17,
+    "start": 404,
+    "stop": 404,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 16,
+    "column": 18,
+    "start": 405,
+    "stop": 405,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 16,
+    "column": 19,
+    "start": 406,
+    "stop": 406,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 16,
+    "column": 20,
+    "start": 407,
+    "stop": 407,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "psi",
+    "line": 16,
+    "column": 22,
+    "start": 409,
+    "stop": 411,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 16,
+    "column": 25,
+    "start": 412,
+    "stop": 412,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "s",
+    "line": 17,
+    "column": 2,
+    "start": 416,
+    "stop": 416,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "psi",
+    "line": 17,
+    "column": 4,
+    "start": 418,
+    "stop": 420,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 17,
+    "column": 7,
+    "start": 421,
+    "stop": 421,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "ccx",
+    "line": 18,
+    "column": 2,
+    "start": 425,
+    "stop": 427,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "anc",
+    "line": 18,
+    "column": 6,
+    "start": 429,
+    "stop": 431,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 18,
+    "column": 9,
+    "start": 432,
+    "stop": 432,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "0",
+    "line": 18,
+    "column": 10,
+    "start": 433,
+    "stop": 433,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 18,
+    "column": 11,
+    "start": 434,
+    "stop": 434,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 18,
+    "column": 12,
+    "start": 435,
+    "stop": 435,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "anc",
+    "line": 18,
+    "column": 14,
+    "start": 437,
+    "stop": 439,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 18,
+    "column": 17,
+    "start": 440,
+    "stop": 440,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "1",
+    "line": 18,
+    "column": 18,
+    "start": 441,
+    "stop": 441,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 18,
+    "column": 19,
+    "start": 442,
+    "stop": 442,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 18,
+    "column": 20,
+    "start": 443,
+    "stop": 443,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "psi",
+    "line": 18,
+    "column": 22,
+    "start": 445,
+    "stop": 447,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 18,
+    "column": 25,
+    "start": 448,
+    "stop": 448,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "z",
+    "line": 19,
+    "column": 2,
+    "start": 452,
+    "stop": 452,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "psi",
+    "line": 19,
+    "column": 4,
+    "start": 454,
+    "stop": 456,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 19,
+    "column": 7,
+    "start": 457,
+    "stop": 457,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "h",
+    "line": 20,
+    "column": 2,
+    "start": 461,
+    "stop": 461,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "anc",
+    "line": 20,
+    "column": 4,
+    "start": 463,
+    "stop": 465,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 20,
+    "column": 7,
+    "start": 466,
+    "stop": 466,
+    "channel": 0
+  },
+  {
+    "type": "MEASURE",
+    "text": "measure",
+    "line": 21,
+    "column": 2,
+    "start": 470,
+    "stop": 476,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "anc",
+    "line": 21,
+    "column": 10,
+    "start": 478,
+    "stop": 480,
+    "channel": 0
+  },
+  {
+    "type": "ARROW",
+    "text": "->",
+    "line": 21,
+    "column": 14,
+    "start": 482,
+    "stop": 483,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "b",
+    "line": 21,
+    "column": 17,
+    "start": 485,
+    "stop": 485,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 21,
+    "column": 18,
+    "start": 486,
+    "stop": 486,
+    "channel": 0
+  },
+  {
+    "type": "RETURN",
+    "text": "return",
+    "line": 22,
+    "column": 2,
+    "start": 490,
+    "stop": 495,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "b",
+    "line": 22,
+    "column": 9,
+    "start": 497,
+    "stop": 497,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 22,
+    "column": 10,
+    "start": 498,
+    "stop": 498,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 23,
+    "column": 0,
+    "start": 500,
+    "stop": 500,
+    "channel": 0
+  },
+  {
+    "type": "QUBIT",
+    "text": "qubit",
+    "line": 25,
+    "column": 0,
+    "start": 503,
+    "stop": 507,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "input_qubit",
+    "line": 25,
+    "column": 6,
+    "start": 509,
+    "stop": 519,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 25,
+    "column": 17,
+    "start": 520,
+    "stop": 520,
+    "channel": 0
+  },
+  {
+    "type": "QUBIT",
+    "text": "qubit",
+    "line": 26,
+    "column": 0,
+    "start": 522,
+    "stop": 526,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 26,
+    "column": 5,
+    "start": 527,
+    "stop": 527,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 26,
+    "column": 6,
+    "start": 528,
+    "stop": 528,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 26,
+    "column": 7,
+    "start": 529,
+    "stop": 529,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "ancilla",
+    "line": 26,
+    "column": 9,
+    "start": 531,
+    "stop": 537,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 26,
+    "column": 16,
+    "start": 538,
+    "stop": 538,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 27,
+    "column": 0,
+    "start": 540,
+    "stop": 542,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 27,
+    "column": 3,
+    "start": 543,
+    "stop": 543,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 27,
+    "column": 4,
+    "start": 544,
+    "stop": 544,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 27,
+    "column": 5,
+    "start": 545,
+    "stop": 545,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "flags",
+    "line": 27,
+    "column": 7,
+    "start": 547,
+    "stop": 551,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 27,
+    "column": 13,
+    "start": 553,
+    "stop": 553,
+    "channel": 0
+  },
+  {
+    "type": "BitstringLiteral",
+    "text": "\"11\"",
+    "line": 27,
+    "column": 15,
+    "start": 555,
+    "stop": 558,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 27,
+    "column": 19,
+    "start": 559,
+    "stop": 559,
+    "channel": 0
+  },
+  {
+    "type": "BIT",
+    "text": "bit",
+    "line": 28,
+    "column": 0,
+    "start": 561,
+    "stop": 563,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "output_qubit",
+    "line": 28,
+    "column": 4,
+    "start": 565,
+    "stop": 576,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 28,
+    "column": 16,
+    "start": 577,
+    "stop": 577,
+    "channel": 0
+  },
+  {
+    "type": "RESET",
+    "text": "reset",
+    "line": 30,
+    "column": 0,
+    "start": 580,
+    "stop": 584,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "input_qubit",
+    "line": 30,
+    "column": 6,
+    "start": 586,
+    "stop": 596,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 30,
+    "column": 17,
+    "start": 597,
+    "stop": 597,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "h",
+    "line": 31,
+    "column": 0,
+    "start": 599,
+    "stop": 599,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "input_qubit",
+    "line": 31,
+    "column": 2,
+    "start": 601,
+    "stop": 611,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 31,
+    "column": 13,
+    "start": 612,
+    "stop": 612,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// braces are optional in this case",
+    "line": 33,
+    "column": 0,
+    "start": 615,
+    "stop": 649,
+    "channel": 1
+  },
+  {
+    "type": "WHILE",
+    "text": "while",
+    "line": 34,
+    "column": 0,
+    "start": 651,
+    "stop": 655,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 34,
+    "column": 5,
+    "start": 656,
+    "stop": 656,
+    "channel": 0
+  },
+  {
+    "type": "INT",
+    "text": "int",
+    "line": 34,
+    "column": 6,
+    "start": 657,
+    "stop": 659,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 34,
+    "column": 9,
+    "start": 660,
+    "stop": 660,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "2",
+    "line": 34,
+    "column": 10,
+    "start": 661,
+    "stop": 661,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 34,
+    "column": 11,
+    "start": 662,
+    "stop": 662,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 34,
+    "column": 12,
+    "start": 663,
+    "stop": 663,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "flags",
+    "line": 34,
+    "column": 13,
+    "start": 664,
+    "stop": 668,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 34,
+    "column": 18,
+    "start": 669,
+    "stop": 669,
+    "channel": 0
+  },
+  {
+    "type": "EqualityOperator",
+    "text": "!=",
+    "line": 34,
+    "column": 20,
+    "start": 671,
+    "stop": 672,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "0",
+    "line": 34,
+    "column": 23,
+    "start": 674,
+    "stop": 674,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 34,
+    "column": 24,
+    "start": 675,
+    "stop": 675,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 34,
+    "column": 26,
+    "start": 677,
+    "stop": 677,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "flags",
+    "line": 35,
+    "column": 2,
+    "start": 681,
+    "stop": 685,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 35,
+    "column": 8,
+    "start": 687,
+    "stop": 687,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "segment",
+    "line": 35,
+    "column": 10,
+    "start": 689,
+    "stop": 695,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 35,
+    "column": 17,
+    "start": 696,
+    "stop": 696,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "ancilla",
+    "line": 35,
+    "column": 18,
+    "start": 697,
+    "stop": 703,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 35,
+    "column": 25,
+    "start": 704,
+    "stop": 704,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "input_qubit",
+    "line": 35,
+    "column": 27,
+    "start": 706,
+    "stop": 716,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 35,
+    "column": 38,
+    "start": 717,
+    "stop": 717,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 35,
+    "column": 39,
+    "start": 718,
+    "stop": 718,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 36,
+    "column": 0,
+    "start": 720,
+    "stop": 720,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "rz",
+    "line": 37,
+    "column": 0,
+    "start": 722,
+    "stop": 723,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 37,
+    "column": 2,
+    "start": 724,
+    "stop": 724,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "pi",
+    "line": 37,
+    "column": 3,
+    "start": 725,
+    "stop": 726,
+    "channel": 0
+  },
+  {
+    "type": "MINUS",
+    "text": "-",
+    "line": 37,
+    "column": 6,
+    "start": 728,
+    "stop": 728,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "arccos",
+    "line": 37,
+    "column": 8,
+    "start": 730,
+    "stop": 735,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 37,
+    "column": 14,
+    "start": 736,
+    "stop": 736,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "3",
+    "line": 37,
+    "column": 15,
+    "start": 737,
+    "stop": 737,
+    "channel": 0
+  },
+  {
+    "type": "SLASH",
+    "text": "/",
+    "line": 37,
+    "column": 17,
+    "start": 739,
+    "stop": 739,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "5",
+    "line": 37,
+    "column": 19,
+    "start": 741,
+    "stop": 741,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 37,
+    "column": 20,
+    "start": 742,
+    "stop": 742,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 37,
+    "column": 21,
+    "start": 743,
+    "stop": 743,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "input_qubit",
+    "line": 37,
+    "column": 23,
+    "start": 745,
+    "stop": 755,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 37,
+    "column": 34,
+    "start": 756,
+    "stop": 756,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "h",
+    "line": 38,
+    "column": 0,
+    "start": 758,
+    "stop": 758,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "input_qubit",
+    "line": 38,
+    "column": 2,
+    "start": 760,
+    "stop": 770,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 38,
+    "column": 13,
+    "start": 771,
+    "stop": 771,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "output_qubit",
+    "line": 39,
+    "column": 0,
+    "start": 773,
+    "stop": 784,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 39,
+    "column": 13,
+    "start": 786,
+    "stop": 786,
+    "channel": 0
+  },
+  {
+    "type": "MEASURE",
+    "text": "measure",
+    "line": 39,
+    "column": 15,
+    "start": 788,
+    "stop": 794,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "input_qubit",
+    "line": 39,
+    "column": 23,
+    "start": 796,
+    "stop": 806,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 39,
+    "column": 34,
+    "start": 807,
+    "stop": 807,
+    "channel": 0
+  },
+  {
+    "type": "LineComment",
+    "text": "// should get zero",
+    "line": 39,
+    "column": 37,
+    "start": 810,
+    "stop": 827,
+    "channel": 1
+  }
+]

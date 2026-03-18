@@ -1,0 +1,1145 @@
+[
+  {
+    "type": "BlockComment",
+    "text": "/* CPMG XY4 decoupling w/ boxing\n * This example demonstrates the use of referential delays\n * and time alignment.\n*/",
+    "line": 1,
+    "column": 0,
+    "start": 0,
+    "stop": 116,
+    "channel": 1
+  },
+  {
+    "type": "INCLUDE",
+    "text": "include",
+    "line": 5,
+    "column": 0,
+    "start": 118,
+    "stop": 124,
+    "channel": 0
+  },
+  {
+    "type": "StringLiteral",
+    "text": "\"stdgates.inc\"",
+    "line": 5,
+    "column": 8,
+    "start": 126,
+    "stop": 139,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 5,
+    "column": 22,
+    "start": 140,
+    "stop": 140,
+    "channel": 0
+  },
+  {
+    "type": "STRETCH",
+    "text": "stretch",
+    "line": 7,
+    "column": 0,
+    "start": 143,
+    "stop": 149,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "a",
+    "line": 7,
+    "column": 8,
+    "start": 151,
+    "stop": 151,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 7,
+    "column": 9,
+    "start": 152,
+    "stop": 152,
+    "channel": 0
+  },
+  {
+    "type": "DURATION",
+    "text": "duration",
+    "line": 8,
+    "column": 0,
+    "start": 154,
+    "stop": 161,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "start_stretch",
+    "line": 8,
+    "column": 9,
+    "start": 163,
+    "stop": 175,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 8,
+    "column": 23,
+    "start": 177,
+    "stop": 177,
+    "channel": 0
+  },
+  {
+    "type": "MINUS",
+    "text": "-",
+    "line": 8,
+    "column": 25,
+    "start": 179,
+    "stop": 179,
+    "channel": 0
+  },
+  {
+    "type": "FloatLiteral",
+    "text": "0.5",
+    "line": 8,
+    "column": 26,
+    "start": 180,
+    "stop": 182,
+    "channel": 0
+  },
+  {
+    "type": "ASTERISK",
+    "text": "*",
+    "line": 8,
+    "column": 30,
+    "start": 184,
+    "stop": 184,
+    "channel": 0
+  },
+  {
+    "type": "DURATIONOF",
+    "text": "durationof",
+    "line": 8,
+    "column": 32,
+    "start": 186,
+    "stop": 195,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 8,
+    "column": 42,
+    "start": 196,
+    "stop": 196,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 8,
+    "column": 43,
+    "start": 197,
+    "stop": 197,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 8,
+    "column": 44,
+    "start": 198,
+    "stop": 198,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 8,
+    "column": 46,
+    "start": 200,
+    "stop": 201,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 8,
+    "column": 48,
+    "start": 202,
+    "stop": 202,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 8,
+    "column": 49,
+    "start": 203,
+    "stop": 203,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 8,
+    "column": 50,
+    "start": 204,
+    "stop": 204,
+    "channel": 0
+  },
+  {
+    "type": "PLUS",
+    "text": "+",
+    "line": 8,
+    "column": 52,
+    "start": 206,
+    "stop": 206,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "a",
+    "line": 8,
+    "column": 54,
+    "start": 208,
+    "stop": 208,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 8,
+    "column": 55,
+    "start": 209,
+    "stop": 209,
+    "channel": 0
+  },
+  {
+    "type": "DURATION",
+    "text": "duration",
+    "line": 9,
+    "column": 0,
+    "start": 211,
+    "stop": 218,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "middle_stretch",
+    "line": 9,
+    "column": 9,
+    "start": 220,
+    "stop": 233,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 9,
+    "column": 24,
+    "start": 235,
+    "stop": 235,
+    "channel": 0
+  },
+  {
+    "type": "MINUS",
+    "text": "-",
+    "line": 9,
+    "column": 26,
+    "start": 237,
+    "stop": 237,
+    "channel": 0
+  },
+  {
+    "type": "FloatLiteral",
+    "text": "0.5",
+    "line": 9,
+    "column": 27,
+    "start": 238,
+    "stop": 240,
+    "channel": 0
+  },
+  {
+    "type": "ASTERISK",
+    "text": "*",
+    "line": 9,
+    "column": 31,
+    "start": 242,
+    "stop": 242,
+    "channel": 0
+  },
+  {
+    "type": "DURATIONOF",
+    "text": "durationof",
+    "line": 9,
+    "column": 33,
+    "start": 244,
+    "stop": 253,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 9,
+    "column": 43,
+    "start": 254,
+    "stop": 254,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 9,
+    "column": 44,
+    "start": 255,
+    "stop": 255,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 9,
+    "column": 45,
+    "start": 256,
+    "stop": 256,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 9,
+    "column": 47,
+    "start": 258,
+    "stop": 259,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 9,
+    "column": 49,
+    "start": 260,
+    "stop": 260,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 9,
+    "column": 50,
+    "start": 261,
+    "stop": 261,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 9,
+    "column": 51,
+    "start": 262,
+    "stop": 262,
+    "channel": 0
+  },
+  {
+    "type": "MINUS",
+    "text": "-",
+    "line": 9,
+    "column": 53,
+    "start": 264,
+    "stop": 264,
+    "channel": 0
+  },
+  {
+    "type": "DecimalIntegerLiteral",
+    "text": "5",
+    "line": 9,
+    "column": 55,
+    "start": 266,
+    "stop": 266,
+    "channel": 0
+  },
+  {
+    "type": "ASTERISK",
+    "text": "*",
+    "line": 9,
+    "column": 57,
+    "start": 268,
+    "stop": 268,
+    "channel": 0
+  },
+  {
+    "type": "DURATIONOF",
+    "text": "durationof",
+    "line": 9,
+    "column": 59,
+    "start": 270,
+    "stop": 279,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 9,
+    "column": 69,
+    "start": 280,
+    "stop": 280,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 9,
+    "column": 70,
+    "start": 281,
+    "stop": 281,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "y",
+    "line": 9,
+    "column": 71,
+    "start": 282,
+    "stop": 282,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 9,
+    "column": 73,
+    "start": 284,
+    "stop": 285,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 9,
+    "column": 75,
+    "start": 286,
+    "stop": 286,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 9,
+    "column": 76,
+    "start": 287,
+    "stop": 287,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 9,
+    "column": 77,
+    "start": 288,
+    "stop": 288,
+    "channel": 0
+  },
+  {
+    "type": "PLUS",
+    "text": "+",
+    "line": 9,
+    "column": 79,
+    "start": 290,
+    "stop": 290,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "a",
+    "line": 9,
+    "column": 81,
+    "start": 292,
+    "stop": 292,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 9,
+    "column": 82,
+    "start": 293,
+    "stop": 293,
+    "channel": 0
+  },
+  {
+    "type": "DURATION",
+    "text": "duration",
+    "line": 10,
+    "column": 0,
+    "start": 295,
+    "stop": 302,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "end_stretch",
+    "line": 10,
+    "column": 9,
+    "start": 304,
+    "stop": 314,
+    "channel": 0
+  },
+  {
+    "type": "EQUALS",
+    "text": "=",
+    "line": 10,
+    "column": 21,
+    "start": 316,
+    "stop": 316,
+    "channel": 0
+  },
+  {
+    "type": "MINUS",
+    "text": "-",
+    "line": 10,
+    "column": 23,
+    "start": 318,
+    "stop": 318,
+    "channel": 0
+  },
+  {
+    "type": "FloatLiteral",
+    "text": "0.5",
+    "line": 10,
+    "column": 24,
+    "start": 319,
+    "stop": 321,
+    "channel": 0
+  },
+  {
+    "type": "ASTERISK",
+    "text": "*",
+    "line": 10,
+    "column": 28,
+    "start": 323,
+    "stop": 323,
+    "channel": 0
+  },
+  {
+    "type": "DURATIONOF",
+    "text": "durationof",
+    "line": 10,
+    "column": 30,
+    "start": 325,
+    "stop": 334,
+    "channel": 0
+  },
+  {
+    "type": "LPAREN",
+    "text": "(",
+    "line": 10,
+    "column": 40,
+    "start": 335,
+    "stop": 335,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 10,
+    "column": 41,
+    "start": 336,
+    "stop": 336,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "y",
+    "line": 10,
+    "column": 42,
+    "start": 337,
+    "stop": 337,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 10,
+    "column": 44,
+    "start": 339,
+    "stop": 340,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 10,
+    "column": 46,
+    "start": 341,
+    "stop": 341,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 10,
+    "column": 47,
+    "start": 342,
+    "stop": 342,
+    "channel": 0
+  },
+  {
+    "type": "RPAREN",
+    "text": ")",
+    "line": 10,
+    "column": 48,
+    "start": 343,
+    "stop": 343,
+    "channel": 0
+  },
+  {
+    "type": "PLUS",
+    "text": "+",
+    "line": 10,
+    "column": 50,
+    "start": 345,
+    "stop": 345,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "a",
+    "line": 10,
+    "column": 52,
+    "start": 347,
+    "stop": 347,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 10,
+    "column": 53,
+    "start": 348,
+    "stop": 348,
+    "channel": 0
+  },
+  {
+    "type": "BOX",
+    "text": "box",
+    "line": 12,
+    "column": 0,
+    "start": 351,
+    "stop": 353,
+    "channel": 0
+  },
+  {
+    "type": "LBRACE",
+    "text": "{",
+    "line": 12,
+    "column": 4,
+    "start": 355,
+    "stop": 355,
+    "channel": 0
+  },
+  {
+    "type": "DELAY",
+    "text": "delay",
+    "line": 13,
+    "column": 2,
+    "start": 359,
+    "stop": 363,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 13,
+    "column": 7,
+    "start": 364,
+    "stop": 364,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "start_stretch",
+    "line": 13,
+    "column": 8,
+    "start": 365,
+    "stop": 377,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 13,
+    "column": 21,
+    "start": 378,
+    "stop": 378,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 13,
+    "column": 23,
+    "start": 380,
+    "stop": 381,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 13,
+    "column": 25,
+    "start": 382,
+    "stop": 382,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 14,
+    "column": 2,
+    "start": 386,
+    "stop": 386,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 14,
+    "column": 4,
+    "start": 388,
+    "stop": 389,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 14,
+    "column": 6,
+    "start": 390,
+    "stop": 390,
+    "channel": 0
+  },
+  {
+    "type": "DELAY",
+    "text": "delay",
+    "line": 15,
+    "column": 2,
+    "start": 394,
+    "stop": 398,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 15,
+    "column": 7,
+    "start": 399,
+    "stop": 399,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "middle_stretch",
+    "line": 15,
+    "column": 8,
+    "start": 400,
+    "stop": 413,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 15,
+    "column": 22,
+    "start": 414,
+    "stop": 414,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 15,
+    "column": 24,
+    "start": 416,
+    "stop": 417,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 15,
+    "column": 26,
+    "start": 418,
+    "stop": 418,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "y",
+    "line": 16,
+    "column": 2,
+    "start": 422,
+    "stop": 422,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 16,
+    "column": 4,
+    "start": 424,
+    "stop": 425,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 16,
+    "column": 6,
+    "start": 426,
+    "stop": 426,
+    "channel": 0
+  },
+  {
+    "type": "DELAY",
+    "text": "delay",
+    "line": 17,
+    "column": 2,
+    "start": 430,
+    "stop": 434,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 17,
+    "column": 7,
+    "start": 435,
+    "stop": 435,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "middle_stretch",
+    "line": 17,
+    "column": 8,
+    "start": 436,
+    "stop": 449,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 17,
+    "column": 22,
+    "start": 450,
+    "stop": 450,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 17,
+    "column": 24,
+    "start": 452,
+    "stop": 453,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 17,
+    "column": 26,
+    "start": 454,
+    "stop": 454,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "x",
+    "line": 18,
+    "column": 2,
+    "start": 458,
+    "stop": 458,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 18,
+    "column": 4,
+    "start": 460,
+    "stop": 461,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 18,
+    "column": 6,
+    "start": 462,
+    "stop": 462,
+    "channel": 0
+  },
+  {
+    "type": "DELAY",
+    "text": "delay",
+    "line": 19,
+    "column": 2,
+    "start": 466,
+    "stop": 470,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 19,
+    "column": 7,
+    "start": 471,
+    "stop": 471,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "middle_stretch",
+    "line": 19,
+    "column": 8,
+    "start": 472,
+    "stop": 485,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 19,
+    "column": 22,
+    "start": 486,
+    "stop": 486,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 19,
+    "column": 24,
+    "start": 488,
+    "stop": 489,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 19,
+    "column": 26,
+    "start": 490,
+    "stop": 490,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "y",
+    "line": 20,
+    "column": 2,
+    "start": 494,
+    "stop": 494,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 20,
+    "column": 4,
+    "start": 496,
+    "stop": 497,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 20,
+    "column": 6,
+    "start": 498,
+    "stop": 498,
+    "channel": 0
+  },
+  {
+    "type": "DELAY",
+    "text": "delay",
+    "line": 21,
+    "column": 2,
+    "start": 502,
+    "stop": 506,
+    "channel": 0
+  },
+  {
+    "type": "LBRACKET",
+    "text": "[",
+    "line": 21,
+    "column": 7,
+    "start": 507,
+    "stop": 507,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "end_stretch",
+    "line": 21,
+    "column": 8,
+    "start": 508,
+    "stop": 518,
+    "channel": 0
+  },
+  {
+    "type": "RBRACKET",
+    "text": "]",
+    "line": 21,
+    "column": 19,
+    "start": 519,
+    "stop": 519,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$0",
+    "line": 21,
+    "column": 21,
+    "start": 521,
+    "stop": 522,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 21,
+    "column": 23,
+    "start": 523,
+    "stop": 523,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "cx",
+    "line": 23,
+    "column": 2,
+    "start": 528,
+    "stop": 529,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$2",
+    "line": 23,
+    "column": 5,
+    "start": 531,
+    "stop": 532,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 23,
+    "column": 7,
+    "start": 533,
+    "stop": 533,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$3",
+    "line": 23,
+    "column": 9,
+    "start": 535,
+    "stop": 536,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 23,
+    "column": 11,
+    "start": 537,
+    "stop": 537,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "cx",
+    "line": 24,
+    "column": 2,
+    "start": 541,
+    "stop": 542,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$1",
+    "line": 24,
+    "column": 5,
+    "start": 544,
+    "stop": 545,
+    "channel": 0
+  },
+  {
+    "type": "COMMA",
+    "text": ",",
+    "line": 24,
+    "column": 7,
+    "start": 546,
+    "stop": 546,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$2",
+    "line": 24,
+    "column": 9,
+    "start": 548,
+    "stop": 549,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 24,
+    "column": 11,
+    "start": 550,
+    "stop": 550,
+    "channel": 0
+  },
+  {
+    "type": "Identifier",
+    "text": "u",
+    "line": 25,
+    "column": 2,
+    "start": 554,
+    "stop": 554,
+    "channel": 0
+  },
+  {
+    "type": "HardwareQubit",
+    "text": "$3",
+    "line": 25,
+    "column": 4,
+    "start": 556,
+    "stop": 557,
+    "channel": 0
+  },
+  {
+    "type": "SEMICOLON",
+    "text": ";",
+    "line": 25,
+    "column": 6,
+    "start": 558,
+    "stop": 558,
+    "channel": 0
+  },
+  {
+    "type": "RBRACE",
+    "text": "}",
+    "line": 26,
+    "column": 0,
+    "start": 560,
+    "stop": 560,
+    "channel": 0
+  }
+]

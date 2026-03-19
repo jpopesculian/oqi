@@ -1,0 +1,14 @@
+[package]
+name = "oqi-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "oqi"
+path = "src/main.rs"
+
+[dependencies]
+ariadne = "0.6"
+clap = { version = "4", features = ["derive"] }
+oqi-format = { path = "../format" }
+rayon = "1"

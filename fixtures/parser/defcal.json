@@ -1,0 +1,669 @@
+{
+  "rule": "program",
+  "start": 0,
+  "stop": 734,
+  "children": [
+    {
+      "rule": "statementOrScope",
+      "start": 0,
+      "stop": 25,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 0,
+          "stop": 25,
+          "children": [
+            {
+              "rule": "calibrationGrammarStatement",
+              "start": 0,
+              "stop": 25,
+              "children": [
+                {
+                  "token": "DEFCALGRAMMAR",
+                  "text": "defcalgrammar",
+                  "start": 0,
+                  "stop": 12
+                },
+                {
+                  "token": "StringLiteral",
+                  "text": "\"openpulse\"",
+                  "start": 14,
+                  "stop": 24
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 25,
+                  "stop": 25
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 28,
+      "stop": 76,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 28,
+          "stop": 76,
+          "children": [
+            {
+              "rule": "defcalStatement",
+              "start": 28,
+              "stop": 76,
+              "children": [
+                {
+                  "token": "DEFCAL",
+                  "text": "defcal",
+                  "start": 28,
+                  "stop": 33
+                },
+                {
+                  "rule": "defcalTarget",
+                  "start": 35,
+                  "stop": 35,
+                  "children": [
+                    {
+                      "token": "Identifier",
+                      "text": "x",
+                      "start": 35,
+                      "stop": 35
+                    }
+                  ]
+                },
+                {
+                  "rule": "defcalOperandList",
+                  "start": 37,
+                  "stop": 38,
+                  "children": [
+                    {
+                      "rule": "defcalOperand",
+                      "start": 37,
+                      "stop": 38,
+                      "children": [
+                        {
+                          "token": "HardwareQubit",
+                          "text": "$0",
+                          "start": 37,
+                          "stop": 38
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "LBRACE",
+                  "text": "{",
+                  "start": 40,
+                  "stop": 40
+                },
+                {
+                  "token": "CalibrationBlock",
+                  "text": "\n   play drive($0), gaussian(...);\n",
+                  "start": 41,
+                  "stop": 75
+                },
+                {
+                  "token": "RBRACE",
+                  "text": "}",
+                  "start": 76,
+                  "stop": 76
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 79,
+      "stop": 126,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 79,
+          "stop": 126,
+          "children": [
+            {
+              "rule": "defcalStatement",
+              "start": 79,
+              "stop": 126,
+              "children": [
+                {
+                  "token": "DEFCAL",
+                  "text": "defcal",
+                  "start": 79,
+                  "stop": 84
+                },
+                {
+                  "rule": "defcalTarget",
+                  "start": 86,
+                  "stop": 86,
+                  "children": [
+                    {
+                      "token": "Identifier",
+                      "text": "x",
+                      "start": 86,
+                      "stop": 86
+                    }
+                  ]
+                },
+                {
+                  "rule": "defcalOperandList",
+                  "start": 88,
+                  "stop": 89,
+                  "children": [
+                    {
+                      "rule": "defcalOperand",
+                      "start": 88,
+                      "stop": 89,
+                      "children": [
+                        {
+                          "token": "HardwareQubit",
+                          "text": "$1",
+                          "start": 88,
+                          "stop": 89
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "LBRACE",
+                  "text": "{",
+                  "start": 91,
+                  "stop": 91
+                },
+                {
+                  "token": "CalibrationBlock",
+                  "text": "\n  play drive($1), gaussian(...);\n",
+                  "start": 92,
+                  "stop": 125
+                },
+                {
+                  "token": "RBRACE",
+                  "text": "}",
+                  "start": 126,
+                  "stop": 126
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 129,
+      "stop": 192,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 129,
+          "stop": 192,
+          "children": [
+            {
+              "rule": "defcalStatement",
+              "start": 129,
+              "stop": 192,
+              "children": [
+                {
+                  "token": "DEFCAL",
+                  "text": "defcal",
+                  "start": 129,
+                  "stop": 134
+                },
+                {
+                  "rule": "defcalTarget",
+                  "start": 136,
+                  "stop": 137,
+                  "children": [
+                    {
+                      "token": "Identifier",
+                      "text": "rz",
+                      "start": 136,
+                      "stop": 137
+                    }
+                  ]
+                },
+                {
+                  "token": "LPAREN",
+                  "text": "(",
+                  "start": 138,
+                  "stop": 138
+                },
+                {
+                  "rule": "defcalArgumentDefinitionList",
+                  "start": 139,
+                  "stop": 153,
+                  "children": [
+                    {
+                      "rule": "defcalArgumentDefinition",
+                      "start": 139,
+                      "stop": 153,
+                      "children": [
+                        {
+                          "rule": "argumentDefinition",
+                          "start": 139,
+                          "stop": 153,
+                          "children": [
+                            {
+                              "rule": "scalarType",
+                              "start": 139,
+                              "stop": 147,
+                              "children": [
+                                {
+                                  "token": "ANGLE",
+                                  "text": "angle",
+                                  "start": 139,
+                                  "stop": 143
+                                },
+                                {
+                                  "rule": "designator",
+                                  "start": 144,
+                                  "stop": 147,
+                                  "children": [
+                                    {
+                                      "token": "LBRACKET",
+                                      "text": "[",
+                                      "start": 144,
+                                      "stop": 144
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 145,
+                                      "stop": 146,
+                                      "children": [
+                                        {
+                                          "token": "DecimalIntegerLiteral",
+                                          "text": "20",
+                                          "start": 145,
+                                          "stop": 146
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RBRACKET",
+                                      "text": "]",
+                                      "start": 147,
+                                      "stop": 147
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "token": "Identifier",
+                              "text": "theta",
+                              "start": 149,
+                              "stop": 153
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "RPAREN",
+                  "text": ")",
+                  "start": 154,
+                  "stop": 154
+                },
+                {
+                  "rule": "defcalOperandList",
+                  "start": 156,
+                  "stop": 156,
+                  "children": [
+                    {
+                      "rule": "defcalOperand",
+                      "start": 156,
+                      "stop": 156,
+                      "children": [
+                        {
+                          "token": "Identifier",
+                          "text": "q",
+                          "start": 156,
+                          "stop": 156
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "LBRACE",
+                  "text": "{",
+                  "start": 158,
+                  "stop": 158
+                },
+                {
+                  "token": "CalibrationBlock",
+                  "text": "\n  shift_phase drive(q), -theta;\n",
+                  "start": 159,
+                  "stop": 191
+                },
+                {
+                  "token": "RBRACE",
+                  "text": "}",
+                  "start": 192,
+                  "stop": 192
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 195,
+      "stop": 448,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 195,
+          "stop": 448,
+          "children": [
+            {
+              "rule": "defcalStatement",
+              "start": 195,
+              "stop": 448,
+              "children": [
+                {
+                  "token": "DEFCAL",
+                  "text": "defcal",
+                  "start": 195,
+                  "stop": 200
+                },
+                {
+                  "rule": "defcalTarget",
+                  "start": 202,
+                  "stop": 208,
+                  "children": [
+                    {
+                      "token": "MEASURE",
+                      "text": "measure",
+                      "start": 202,
+                      "stop": 208
+                    }
+                  ]
+                },
+                {
+                  "rule": "defcalOperandList",
+                  "start": 210,
+                  "stop": 211,
+                  "children": [
+                    {
+                      "rule": "defcalOperand",
+                      "start": 210,
+                      "stop": 211,
+                      "children": [
+                        {
+                          "token": "HardwareQubit",
+                          "text": "$0",
+                          "start": 210,
+                          "stop": 211
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "rule": "returnSignature",
+                  "start": 213,
+                  "stop": 218,
+                  "children": [
+                    {
+                      "token": "ARROW",
+                      "text": "->",
+                      "start": 213,
+                      "stop": 214
+                    },
+                    {
+                      "rule": "scalarType",
+                      "start": 216,
+                      "stop": 218,
+                      "children": [
+                        {
+                          "token": "BIT",
+                          "text": "bit",
+                          "start": 216,
+                          "stop": 218
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "LBRACE",
+                  "text": "{",
+                  "start": 220,
+                  "stop": 220
+                },
+                {
+                  "token": "CalibrationBlock",
+                  "text": "\n  complex[int[24]] iq;\n  bit state;\n  complex[int[12]] k0[1024] = [i0 + q0*j, i1 + q1*j, i2 + q2*j, ...];\n  play measure($0), flat_top_gaussian(...);\n  iq = capture acquire($0), 2048, extern(k0);\n  return threshold(iq, 1234);\n",
+                  "start": 221,
+                  "stop": 447
+                },
+                {
+                  "token": "RBRACE",
+                  "text": "}",
+                  "start": 448,
+                  "stop": 448
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 451,
+      "stop": 620,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 451,
+          "stop": 620,
+          "children": [
+            {
+              "rule": "defcalStatement",
+              "start": 451,
+              "stop": 620,
+              "children": [
+                {
+                  "token": "DEFCAL",
+                  "text": "defcal",
+                  "start": 451,
+                  "stop": 456
+                },
+                {
+                  "rule": "defcalTarget",
+                  "start": 458,
+                  "stop": 464,
+                  "children": [
+                    {
+                      "token": "Identifier",
+                      "text": "zx90_ix",
+                      "start": 458,
+                      "stop": 464
+                    }
+                  ]
+                },
+                {
+                  "rule": "defcalOperandList",
+                  "start": 466,
+                  "stop": 471,
+                  "children": [
+                    {
+                      "rule": "defcalOperand",
+                      "start": 466,
+                      "stop": 467,
+                      "children": [
+                        {
+                          "token": "HardwareQubit",
+                          "text": "$0",
+                          "start": 466,
+                          "stop": 467
+                        }
+                      ]
+                    },
+                    {
+                      "token": "COMMA",
+                      "text": ",",
+                      "start": 468,
+                      "stop": 468
+                    },
+                    {
+                      "rule": "defcalOperand",
+                      "start": 470,
+                      "stop": 471,
+                      "children": [
+                        {
+                          "token": "HardwareQubit",
+                          "text": "$1",
+                          "start": 470,
+                          "stop": 471
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "LBRACE",
+                  "text": "{",
+                  "start": 473,
+                  "stop": 473
+                },
+                {
+                  "token": "CalibrationBlock",
+                  "text": "\n  play drive($0, \"cr1\"), flat_top_gaussian(...);  // uses a non-default\n                                                  // frame labeled \"cr1\"\n",
+                  "start": 474,
+                  "stop": 619
+                },
+                {
+                  "token": "RBRACE",
+                  "text": "}",
+                  "start": 620,
+                  "stop": 620
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 623,
+      "stop": 734,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 623,
+          "stop": 734,
+          "children": [
+            {
+              "rule": "defcalStatement",
+              "start": 623,
+              "stop": 734,
+              "children": [
+                {
+                  "token": "DEFCAL",
+                  "text": "defcal",
+                  "start": 623,
+                  "stop": 628
+                },
+                {
+                  "rule": "defcalTarget",
+                  "start": 630,
+                  "stop": 631,
+                  "children": [
+                    {
+                      "token": "Identifier",
+                      "text": "cx",
+                      "start": 630,
+                      "stop": 631
+                    }
+                  ]
+                },
+                {
+                  "rule": "defcalOperandList",
+                  "start": 633,
+                  "stop": 638,
+                  "children": [
+                    {
+                      "rule": "defcalOperand",
+                      "start": 633,
+                      "stop": 634,
+                      "children": [
+                        {
+                          "token": "HardwareQubit",
+                          "text": "$0",
+                          "start": 633,
+                          "stop": 634
+                        }
+                      ]
+                    },
+                    {
+                      "token": "COMMA",
+                      "text": ",",
+                      "start": 635,
+                      "stop": 635
+                    },
+                    {
+                      "rule": "defcalOperand",
+                      "start": 637,
+                      "stop": 638,
+                      "children": [
+                        {
+                          "token": "HardwareQubit",
+                          "text": "$1",
+                          "start": 637,
+                          "stop": 638
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "LBRACE",
+                  "text": "{",
+                  "start": 640,
+                  "stop": 640
+                },
+                {
+                  "token": "CalibrationBlock",
+                  "text": "\n  zx90_ix $0, $1;\n  x $0;\n  shift_phase drive($0, \"cr1\");\n  zx90_ix $0, $1;\n  x $0;\n  x $1;\n",
+                  "start": 641,
+                  "stop": 733
+                },
+                {
+                  "token": "RBRACE",
+                  "text": "}",
+                  "start": 734,
+                  "stop": 734
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "token": "EOF",
+      "text": "<EOF>",
+      "start": 736,
+      "stop": 735
+    }
+  ]
+}

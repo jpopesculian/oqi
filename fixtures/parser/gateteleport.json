@@ -1,0 +1,1446 @@
+{
+  "rule": "program",
+  "start": 38,
+  "stop": 491,
+  "children": [
+    {
+      "rule": "statementOrScope",
+      "start": 38,
+      "stop": 60,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 38,
+          "stop": 60,
+          "children": [
+            {
+              "rule": "includeStatement",
+              "start": 38,
+              "stop": 60,
+              "children": [
+                {
+                  "token": "INCLUDE",
+                  "text": "include",
+                  "start": 38,
+                  "stop": 44
+                },
+                {
+                  "token": "StringLiteral",
+                  "text": "\"stdgates.inc\"",
+                  "start": 46,
+                  "stop": 59
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 60,
+                  "stop": 60
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 79,
+      "stop": 98,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 79,
+          "stop": 98,
+          "children": [
+            {
+              "rule": "constDeclarationStatement",
+              "start": 79,
+              "stop": 98,
+              "children": [
+                {
+                  "token": "CONST",
+                  "text": "const",
+                  "start": 79,
+                  "stop": 83
+                },
+                {
+                  "rule": "scalarType",
+                  "start": 85,
+                  "stop": 91,
+                  "children": [
+                    {
+                      "token": "INT",
+                      "text": "int",
+                      "start": 85,
+                      "stop": 87
+                    },
+                    {
+                      "rule": "designator",
+                      "start": 88,
+                      "stop": 91,
+                      "children": [
+                        {
+                          "token": "LBRACKET",
+                          "text": "[",
+                          "start": 88,
+                          "stop": 88
+                        },
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 89,
+                          "stop": 90,
+                          "children": [
+                            {
+                              "token": "DecimalIntegerLiteral",
+                              "text": "32",
+                              "start": 89,
+                              "stop": 90
+                            }
+                          ]
+                        },
+                        {
+                          "token": "RBRACKET",
+                          "text": "]",
+                          "start": 91,
+                          "stop": 91
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "Identifier",
+                  "text": "n",
+                  "start": 93,
+                  "stop": 93
+                },
+                {
+                  "token": "EQUALS",
+                  "text": "=",
+                  "start": 95,
+                  "stop": 95
+                },
+                {
+                  "rule": "declarationExpression",
+                  "start": 97,
+                  "stop": 97,
+                  "children": [
+                    {
+                      "rule": "expression",
+                      "label": "LiteralExpression",
+                      "start": 97,
+                      "stop": 97,
+                      "children": [
+                        {
+                          "token": "DecimalIntegerLiteral",
+                          "text": "3",
+                          "start": 97,
+                          "stop": 97
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 98,
+                  "stop": 98
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 100,
+      "stop": 126,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 100,
+          "stop": 126,
+          "children": [
+            {
+              "rule": "externStatement",
+              "start": 100,
+              "stop": 126,
+              "children": [
+                {
+                  "token": "EXTERN",
+                  "text": "extern",
+                  "start": 100,
+                  "stop": 105
+                },
+                {
+                  "token": "Identifier",
+                  "text": "vote",
+                  "start": 107,
+                  "stop": 110
+                },
+                {
+                  "token": "LPAREN",
+                  "text": "(",
+                  "start": 111,
+                  "stop": 111
+                },
+                {
+                  "rule": "externArgumentList",
+                  "start": 112,
+                  "stop": 117,
+                  "children": [
+                    {
+                      "rule": "externArgument",
+                      "start": 112,
+                      "stop": 117,
+                      "children": [
+                        {
+                          "rule": "scalarType",
+                          "start": 112,
+                          "stop": 117,
+                          "children": [
+                            {
+                              "token": "BIT",
+                              "text": "bit",
+                              "start": 112,
+                              "stop": 114
+                            },
+                            {
+                              "rule": "designator",
+                              "start": 115,
+                              "stop": 117,
+                              "children": [
+                                {
+                                  "token": "LBRACKET",
+                                  "text": "[",
+                                  "start": 115,
+                                  "stop": 115
+                                },
+                                {
+                                  "rule": "expression",
+                                  "label": "LiteralExpression",
+                                  "start": 116,
+                                  "stop": 116,
+                                  "children": [
+                                    {
+                                      "token": "Identifier",
+                                      "text": "n",
+                                      "start": 116,
+                                      "stop": 116
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "RBRACKET",
+                                  "text": "]",
+                                  "start": 117,
+                                  "stop": 117
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "RPAREN",
+                  "text": ")",
+                  "start": 118,
+                  "stop": 118
+                },
+                {
+                  "rule": "returnSignature",
+                  "start": 120,
+                  "stop": 125,
+                  "children": [
+                    {
+                      "token": "ARROW",
+                      "text": "->",
+                      "start": 120,
+                      "stop": 121
+                    },
+                    {
+                      "rule": "scalarType",
+                      "start": 123,
+                      "stop": 125,
+                      "children": [
+                        {
+                          "token": "BIT",
+                          "text": "bit",
+                          "start": 123,
+                          "stop": 125
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 126,
+                  "stop": 126
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 129,
+      "stop": 243,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 129,
+          "stop": 243,
+          "children": [
+            {
+              "rule": "defStatement",
+              "start": 129,
+              "stop": 243,
+              "children": [
+                {
+                  "token": "DEF",
+                  "text": "def",
+                  "start": 129,
+                  "stop": 131
+                },
+                {
+                  "token": "Identifier",
+                  "text": "logical_meas",
+                  "start": 133,
+                  "stop": 144
+                },
+                {
+                  "token": "LPAREN",
+                  "text": "(",
+                  "start": 145,
+                  "stop": 145
+                },
+                {
+                  "rule": "argumentDefinitionList",
+                  "start": 146,
+                  "stop": 155,
+                  "children": [
+                    {
+                      "rule": "argumentDefinition",
+                      "start": 146,
+                      "stop": 155,
+                      "children": [
+                        {
+                          "rule": "qubitType",
+                          "start": 146,
+                          "stop": 153,
+                          "children": [
+                            {
+                              "token": "QUBIT",
+                              "text": "qubit",
+                              "start": 146,
+                              "stop": 150
+                            },
+                            {
+                              "rule": "designator",
+                              "start": 151,
+                              "stop": 153,
+                              "children": [
+                                {
+                                  "token": "LBRACKET",
+                                  "text": "[",
+                                  "start": 151,
+                                  "stop": 151
+                                },
+                                {
+                                  "rule": "expression",
+                                  "label": "LiteralExpression",
+                                  "start": 152,
+                                  "stop": 152,
+                                  "children": [
+                                    {
+                                      "token": "DecimalIntegerLiteral",
+                                      "text": "3",
+                                      "start": 152,
+                                      "stop": 152
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "RBRACKET",
+                                  "text": "]",
+                                  "start": 153,
+                                  "stop": 153
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "token": "Identifier",
+                          "text": "d",
+                          "start": 155,
+                          "stop": 155
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "RPAREN",
+                  "text": ")",
+                  "start": 156,
+                  "stop": 156
+                },
+                {
+                  "rule": "returnSignature",
+                  "start": 158,
+                  "stop": 163,
+                  "children": [
+                    {
+                      "token": "ARROW",
+                      "text": "->",
+                      "start": 158,
+                      "stop": 159
+                    },
+                    {
+                      "rule": "scalarType",
+                      "start": 161,
+                      "stop": 163,
+                      "children": [
+                        {
+                          "token": "BIT",
+                          "text": "bit",
+                          "start": 161,
+                          "stop": 163
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "rule": "scope",
+                  "start": 165,
+                  "stop": 243,
+                  "children": [
+                    {
+                      "token": "LBRACE",
+                      "text": "{",
+                      "start": 165,
+                      "stop": 165
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 171,
+                      "stop": 179,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 171,
+                          "stop": 179,
+                          "children": [
+                            {
+                              "rule": "classicalDeclarationStatement",
+                              "start": 171,
+                              "stop": 179,
+                              "children": [
+                                {
+                                  "rule": "scalarType",
+                                  "start": 171,
+                                  "stop": 176,
+                                  "children": [
+                                    {
+                                      "token": "BIT",
+                                      "text": "bit",
+                                      "start": 171,
+                                      "stop": 173
+                                    },
+                                    {
+                                      "rule": "designator",
+                                      "start": 174,
+                                      "stop": 176,
+                                      "children": [
+                                        {
+                                          "token": "LBRACKET",
+                                          "text": "[",
+                                          "start": 174,
+                                          "stop": 174
+                                        },
+                                        {
+                                          "rule": "expression",
+                                          "label": "LiteralExpression",
+                                          "start": 175,
+                                          "stop": 175,
+                                          "children": [
+                                            {
+                                              "token": "DecimalIntegerLiteral",
+                                              "text": "3",
+                                              "start": 175,
+                                              "stop": 175
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "token": "RBRACKET",
+                                          "text": "]",
+                                          "start": 176,
+                                          "stop": 176
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "Identifier",
+                                  "text": "c",
+                                  "start": 178,
+                                  "stop": 178
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 179,
+                                  "stop": 179
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 185,
+                      "stop": 190,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 185,
+                          "stop": 190,
+                          "children": [
+                            {
+                              "rule": "classicalDeclarationStatement",
+                              "start": 185,
+                              "stop": 190,
+                              "children": [
+                                {
+                                  "rule": "scalarType",
+                                  "start": 185,
+                                  "stop": 187,
+                                  "children": [
+                                    {
+                                      "token": "BIT",
+                                      "text": "bit",
+                                      "start": 185,
+                                      "stop": 187
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "Identifier",
+                                  "text": "r",
+                                  "start": 189,
+                                  "stop": 189
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 190,
+                                  "stop": 190
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 196,
+                      "stop": 210,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 196,
+                          "stop": 210,
+                          "children": [
+                            {
+                              "rule": "measureArrowAssignmentStatement",
+                              "start": 196,
+                              "stop": 210,
+                              "children": [
+                                {
+                                  "rule": "measureExpression",
+                                  "start": 196,
+                                  "stop": 204,
+                                  "children": [
+                                    {
+                                      "token": "MEASURE",
+                                      "text": "measure",
+                                      "start": 196,
+                                      "stop": 202
+                                    },
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 204,
+                                      "stop": 204,
+                                      "children": [
+                                        {
+                                          "rule": "indexedIdentifier",
+                                          "start": 204,
+                                          "stop": 204,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "d",
+                                              "start": 204,
+                                              "stop": 204
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "ARROW",
+                                  "text": "->",
+                                  "start": 206,
+                                  "stop": 207
+                                },
+                                {
+                                  "rule": "indexedIdentifier",
+                                  "start": 209,
+                                  "stop": 209,
+                                  "children": [
+                                    {
+                                      "token": "Identifier",
+                                      "text": "c",
+                                      "start": 209,
+                                      "stop": 209
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 210,
+                                  "stop": 210
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 216,
+                      "stop": 227,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 216,
+                          "stop": 227,
+                          "children": [
+                            {
+                              "rule": "assignmentStatement",
+                              "start": 216,
+                              "stop": 227,
+                              "children": [
+                                {
+                                  "rule": "indexedIdentifier",
+                                  "start": 216,
+                                  "stop": 216,
+                                  "children": [
+                                    {
+                                      "token": "Identifier",
+                                      "text": "r",
+                                      "start": 216,
+                                      "stop": 216
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "EQUALS",
+                                  "text": "=",
+                                  "start": 218,
+                                  "stop": 218
+                                },
+                                {
+                                  "rule": "expression",
+                                  "label": "CallExpression",
+                                  "start": 220,
+                                  "stop": 226,
+                                  "children": [
+                                    {
+                                      "token": "Identifier",
+                                      "text": "vote",
+                                      "start": 220,
+                                      "stop": 223
+                                    },
+                                    {
+                                      "token": "LPAREN",
+                                      "text": "(",
+                                      "start": 224,
+                                      "stop": 224
+                                    },
+                                    {
+                                      "rule": "expressionList",
+                                      "start": 225,
+                                      "stop": 225,
+                                      "children": [
+                                        {
+                                          "rule": "expression",
+                                          "label": "LiteralExpression",
+                                          "start": 225,
+                                          "stop": 225,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "c",
+                                              "start": 225,
+                                              "stop": 225
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RPAREN",
+                                      "text": ")",
+                                      "start": 226,
+                                      "stop": 226
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 227,
+                                  "stop": 227
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 233,
+                      "stop": 241,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 233,
+                          "stop": 241,
+                          "children": [
+                            {
+                              "rule": "returnStatement",
+                              "start": 233,
+                              "stop": 241,
+                              "children": [
+                                {
+                                  "token": "RETURN",
+                                  "text": "return",
+                                  "start": 233,
+                                  "stop": 238
+                                },
+                                {
+                                  "rule": "expression",
+                                  "label": "LiteralExpression",
+                                  "start": 240,
+                                  "stop": 240,
+                                  "children": [
+                                    {
+                                      "token": "Identifier",
+                                      "text": "r",
+                                      "start": 240,
+                                      "stop": 240
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 241,
+                                  "stop": 241
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "token": "RBRACE",
+                      "text": "}",
+                      "start": 243,
+                      "stop": 243
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 246,
+      "stop": 256,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 246,
+          "stop": 256,
+          "children": [
+            {
+              "rule": "quantumDeclarationStatement",
+              "start": 246,
+              "stop": 256,
+              "children": [
+                {
+                  "rule": "qubitType",
+                  "start": 246,
+                  "stop": 253,
+                  "children": [
+                    {
+                      "token": "QUBIT",
+                      "text": "qubit",
+                      "start": 246,
+                      "stop": 250
+                    },
+                    {
+                      "rule": "designator",
+                      "start": 251,
+                      "stop": 253,
+                      "children": [
+                        {
+                          "token": "LBRACKET",
+                          "text": "[",
+                          "start": 251,
+                          "stop": 251
+                        },
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 252,
+                          "stop": 252,
+                          "children": [
+                            {
+                              "token": "DecimalIntegerLiteral",
+                              "text": "3",
+                              "start": 252,
+                              "stop": 252
+                            }
+                          ]
+                        },
+                        {
+                          "token": "RBRACKET",
+                          "text": "]",
+                          "start": 253,
+                          "stop": 253
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "Identifier",
+                  "text": "q",
+                  "start": 255,
+                  "stop": 255
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 256,
+                  "stop": 256
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 258,
+      "stop": 268,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 258,
+          "stop": 268,
+          "children": [
+            {
+              "rule": "quantumDeclarationStatement",
+              "start": 258,
+              "stop": 268,
+              "children": [
+                {
+                  "rule": "qubitType",
+                  "start": 258,
+                  "stop": 265,
+                  "children": [
+                    {
+                      "token": "QUBIT",
+                      "text": "qubit",
+                      "start": 258,
+                      "stop": 262
+                    },
+                    {
+                      "rule": "designator",
+                      "start": 263,
+                      "stop": 265,
+                      "children": [
+                        {
+                          "token": "LBRACKET",
+                          "text": "[",
+                          "start": 263,
+                          "stop": 263
+                        },
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 264,
+                          "stop": 264,
+                          "children": [
+                            {
+                              "token": "DecimalIntegerLiteral",
+                              "text": "3",
+                              "start": 264,
+                              "stop": 264
+                            }
+                          ]
+                        },
+                        {
+                          "token": "RBRACKET",
+                          "text": "]",
+                          "start": 265,
+                          "stop": 265
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "Identifier",
+                  "text": "a",
+                  "start": 267,
+                  "stop": 267
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 268,
+                  "stop": 268
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 270,
+      "stop": 275,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 270,
+          "stop": 275,
+          "children": [
+            {
+              "rule": "classicalDeclarationStatement",
+              "start": 270,
+              "stop": 275,
+              "children": [
+                {
+                  "rule": "scalarType",
+                  "start": 270,
+                  "stop": 272,
+                  "children": [
+                    {
+                      "token": "BIT",
+                      "text": "bit",
+                      "start": 270,
+                      "stop": 272
+                    }
+                  ]
+                },
+                {
+                  "token": "Identifier",
+                  "text": "r",
+                  "start": 274,
+                  "stop": 274
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 275,
+                  "stop": 275
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 298,
+      "stop": 308,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 298,
+          "stop": 308,
+          "children": [
+            {
+              "rule": "gateCallStatement",
+              "start": 298,
+              "stop": 308,
+              "children": [
+                {
+                  "token": "Identifier",
+                  "text": "rz",
+                  "start": 298,
+                  "stop": 299
+                },
+                {
+                  "token": "LPAREN",
+                  "text": "(",
+                  "start": 300,
+                  "stop": 300
+                },
+                {
+                  "rule": "expressionList",
+                  "start": 301,
+                  "stop": 304,
+                  "children": [
+                    {
+                      "rule": "expression",
+                      "label": "MultiplicativeExpression",
+                      "start": 301,
+                      "stop": 304,
+                      "children": [
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 301,
+                          "stop": 302,
+                          "children": [
+                            {
+                              "token": "Identifier",
+                              "text": "pi",
+                              "start": 301,
+                              "stop": 302
+                            }
+                          ]
+                        },
+                        {
+                          "token": "SLASH",
+                          "text": "/",
+                          "start": 303,
+                          "stop": 303
+                        },
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 304,
+                          "stop": 304,
+                          "children": [
+                            {
+                              "token": "DecimalIntegerLiteral",
+                              "text": "4",
+                              "start": 304,
+                              "stop": 304
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "RPAREN",
+                  "text": ")",
+                  "start": 305,
+                  "stop": 305
+                },
+                {
+                  "rule": "gateOperandList",
+                  "start": 307,
+                  "stop": 307,
+                  "children": [
+                    {
+                      "rule": "gateOperand",
+                      "start": 307,
+                      "stop": 307,
+                      "children": [
+                        {
+                          "rule": "indexedIdentifier",
+                          "start": 307,
+                          "stop": 307,
+                          "children": [
+                            {
+                              "token": "Identifier",
+                              "text": "a",
+                              "start": 307,
+                              "stop": 307
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 308,
+                  "stop": 308
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 345,
+      "stop": 352,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 345,
+          "stop": 352,
+          "children": [
+            {
+              "rule": "gateCallStatement",
+              "start": 345,
+              "stop": 352,
+              "children": [
+                {
+                  "token": "Identifier",
+                  "text": "cx",
+                  "start": 345,
+                  "stop": 346
+                },
+                {
+                  "rule": "gateOperandList",
+                  "start": 348,
+                  "stop": 351,
+                  "children": [
+                    {
+                      "rule": "gateOperand",
+                      "start": 348,
+                      "stop": 348,
+                      "children": [
+                        {
+                          "rule": "indexedIdentifier",
+                          "start": 348,
+                          "stop": 348,
+                          "children": [
+                            {
+                              "token": "Identifier",
+                              "text": "q",
+                              "start": 348,
+                              "stop": 348
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "token": "COMMA",
+                      "text": ",",
+                      "start": 349,
+                      "stop": 349
+                    },
+                    {
+                      "rule": "gateOperand",
+                      "start": 351,
+                      "stop": 351,
+                      "children": [
+                        {
+                          "rule": "indexedIdentifier",
+                          "start": 351,
+                          "stop": 351,
+                          "children": [
+                            {
+                              "token": "Identifier",
+                              "text": "a",
+                              "start": 351,
+                              "stop": 351
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 352,
+                  "stop": 352
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 382,
+      "stop": 401,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 382,
+          "stop": 401,
+          "children": [
+            {
+              "rule": "assignmentStatement",
+              "start": 382,
+              "stop": 401,
+              "children": [
+                {
+                  "rule": "indexedIdentifier",
+                  "start": 382,
+                  "stop": 382,
+                  "children": [
+                    {
+                      "token": "Identifier",
+                      "text": "r",
+                      "start": 382,
+                      "stop": 382
+                    }
+                  ]
+                },
+                {
+                  "token": "EQUALS",
+                  "text": "=",
+                  "start": 384,
+                  "stop": 384
+                },
+                {
+                  "rule": "expression",
+                  "label": "CallExpression",
+                  "start": 386,
+                  "stop": 400,
+                  "children": [
+                    {
+                      "token": "Identifier",
+                      "text": "logical_meas",
+                      "start": 386,
+                      "stop": 397
+                    },
+                    {
+                      "token": "LPAREN",
+                      "text": "(",
+                      "start": 398,
+                      "stop": 398
+                    },
+                    {
+                      "rule": "expressionList",
+                      "start": 399,
+                      "stop": 399,
+                      "children": [
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 399,
+                          "stop": 399,
+                          "children": [
+                            {
+                              "token": "Identifier",
+                              "text": "a",
+                              "start": 399,
+                              "stop": 399
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "token": "RPAREN",
+                      "text": ")",
+                      "start": 400,
+                      "stop": 400
+                    }
+                  ]
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 401,
+                  "stop": 401
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 476,
+      "stop": 491,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 476,
+          "stop": 491,
+          "children": [
+            {
+              "rule": "ifStatement",
+              "start": 476,
+              "stop": 491,
+              "children": [
+                {
+                  "token": "IF",
+                  "text": "if",
+                  "start": 476,
+                  "stop": 477
+                },
+                {
+                  "token": "LPAREN",
+                  "text": "(",
+                  "start": 479,
+                  "stop": 479
+                },
+                {
+                  "rule": "expression",
+                  "label": "EqualityExpression",
+                  "start": 480,
+                  "stop": 485,
+                  "children": [
+                    {
+                      "rule": "expression",
+                      "label": "LiteralExpression",
+                      "start": 480,
+                      "stop": 480,
+                      "children": [
+                        {
+                          "token": "Identifier",
+                          "text": "r",
+                          "start": 480,
+                          "stop": 480
+                        }
+                      ]
+                    },
+                    {
+                      "token": "EqualityOperator",
+                      "text": "==",
+                      "start": 482,
+                      "stop": 483
+                    },
+                    {
+                      "rule": "expression",
+                      "label": "LiteralExpression",
+                      "start": 485,
+                      "stop": 485,
+                      "children": [
+                        {
+                          "token": "DecimalIntegerLiteral",
+                          "text": "1",
+                          "start": 485,
+                          "stop": 485
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "RPAREN",
+                  "text": ")",
+                  "start": 486,
+                  "stop": 486
+                },
+                {
+                  "rule": "statementOrScope",
+                  "start": 488,
+                  "stop": 491,
+                  "children": [
+                    {
+                      "rule": "statement",
+                      "start": 488,
+                      "stop": 491,
+                      "children": [
+                        {
+                          "rule": "gateCallStatement",
+                          "start": 488,
+                          "stop": 491,
+                          "children": [
+                            {
+                              "token": "Identifier",
+                              "text": "z",
+                              "start": 488,
+                              "stop": 488
+                            },
+                            {
+                              "rule": "gateOperandList",
+                              "start": 490,
+                              "stop": 490,
+                              "children": [
+                                {
+                                  "rule": "gateOperand",
+                                  "start": 490,
+                                  "stop": 490,
+                                  "children": [
+                                    {
+                                      "rule": "indexedIdentifier",
+                                      "start": 490,
+                                      "stop": 490,
+                                      "children": [
+                                        {
+                                          "token": "Identifier",
+                                          "text": "q",
+                                          "start": 490,
+                                          "stop": 490
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "token": "SEMICOLON",
+                              "text": ";",
+                              "start": 491,
+                              "stop": 491
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "token": "EOF",
+      "text": "<EOF>",
+      "start": 493,
+      "stop": 492
+    }
+  ]
+}

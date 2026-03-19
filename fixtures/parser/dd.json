@@ -1,0 +1,1804 @@
+{
+  "rule": "program",
+  "start": 118,
+  "stop": 560,
+  "children": [
+    {
+      "rule": "statementOrScope",
+      "start": 118,
+      "stop": 140,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 118,
+          "stop": 140,
+          "children": [
+            {
+              "rule": "includeStatement",
+              "start": 118,
+              "stop": 140,
+              "children": [
+                {
+                  "token": "INCLUDE",
+                  "text": "include",
+                  "start": 118,
+                  "stop": 124
+                },
+                {
+                  "token": "StringLiteral",
+                  "text": "\"stdgates.inc\"",
+                  "start": 126,
+                  "stop": 139
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 140,
+                  "stop": 140
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 143,
+      "stop": 152,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 143,
+          "stop": 152,
+          "children": [
+            {
+              "rule": "classicalDeclarationStatement",
+              "start": 143,
+              "stop": 152,
+              "children": [
+                {
+                  "rule": "scalarType",
+                  "start": 143,
+                  "stop": 149,
+                  "children": [
+                    {
+                      "token": "STRETCH",
+                      "text": "stretch",
+                      "start": 143,
+                      "stop": 149
+                    }
+                  ]
+                },
+                {
+                  "token": "Identifier",
+                  "text": "a",
+                  "start": 151,
+                  "stop": 151
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 152,
+                  "stop": 152
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 154,
+      "stop": 209,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 154,
+          "stop": 209,
+          "children": [
+            {
+              "rule": "classicalDeclarationStatement",
+              "start": 154,
+              "stop": 209,
+              "children": [
+                {
+                  "rule": "scalarType",
+                  "start": 154,
+                  "stop": 161,
+                  "children": [
+                    {
+                      "token": "DURATION",
+                      "text": "duration",
+                      "start": 154,
+                      "stop": 161
+                    }
+                  ]
+                },
+                {
+                  "token": "Identifier",
+                  "text": "start_stretch",
+                  "start": 163,
+                  "stop": 175
+                },
+                {
+                  "token": "EQUALS",
+                  "text": "=",
+                  "start": 177,
+                  "stop": 177
+                },
+                {
+                  "rule": "declarationExpression",
+                  "start": 179,
+                  "stop": 208,
+                  "children": [
+                    {
+                      "rule": "expression",
+                      "label": "AdditiveExpression",
+                      "start": 179,
+                      "stop": 208,
+                      "children": [
+                        {
+                          "rule": "expression",
+                          "label": "MultiplicativeExpression",
+                          "start": 179,
+                          "stop": 204,
+                          "children": [
+                            {
+                              "rule": "expression",
+                              "label": "UnaryExpression",
+                              "start": 179,
+                              "stop": 182,
+                              "children": [
+                                {
+                                  "token": "MINUS",
+                                  "text": "-",
+                                  "start": 179,
+                                  "stop": 179
+                                },
+                                {
+                                  "rule": "expression",
+                                  "label": "LiteralExpression",
+                                  "start": 180,
+                                  "stop": 182,
+                                  "children": [
+                                    {
+                                      "token": "FloatLiteral",
+                                      "text": "0.5",
+                                      "start": 180,
+                                      "stop": 182
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "token": "ASTERISK",
+                              "text": "*",
+                              "start": 184,
+                              "stop": 184
+                            },
+                            {
+                              "rule": "expression",
+                              "label": "DurationofExpression",
+                              "start": 186,
+                              "stop": 204,
+                              "children": [
+                                {
+                                  "token": "DURATIONOF",
+                                  "text": "durationof",
+                                  "start": 186,
+                                  "stop": 195
+                                },
+                                {
+                                  "token": "LPAREN",
+                                  "text": "(",
+                                  "start": 196,
+                                  "stop": 196
+                                },
+                                {
+                                  "rule": "scope",
+                                  "start": 197,
+                                  "stop": 203,
+                                  "children": [
+                                    {
+                                      "token": "LBRACE",
+                                      "text": "{",
+                                      "start": 197,
+                                      "stop": 197
+                                    },
+                                    {
+                                      "rule": "statementOrScope",
+                                      "start": 198,
+                                      "stop": 202,
+                                      "children": [
+                                        {
+                                          "rule": "statement",
+                                          "start": 198,
+                                          "stop": 202,
+                                          "children": [
+                                            {
+                                              "rule": "gateCallStatement",
+                                              "start": 198,
+                                              "stop": 202,
+                                              "children": [
+                                                {
+                                                  "token": "Identifier",
+                                                  "text": "x",
+                                                  "start": 198,
+                                                  "stop": 198
+                                                },
+                                                {
+                                                  "rule": "gateOperandList",
+                                                  "start": 200,
+                                                  "stop": 201,
+                                                  "children": [
+                                                    {
+                                                      "rule": "gateOperand",
+                                                      "start": 200,
+                                                      "stop": 201,
+                                                      "children": [
+                                                        {
+                                                          "token": "HardwareQubit",
+                                                          "text": "$0",
+                                                          "start": 200,
+                                                          "stop": 201
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "token": "SEMICOLON",
+                                                  "text": ";",
+                                                  "start": 202,
+                                                  "stop": 202
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RBRACE",
+                                      "text": "}",
+                                      "start": 203,
+                                      "stop": 203
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "RPAREN",
+                                  "text": ")",
+                                  "start": 204,
+                                  "stop": 204
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "token": "PLUS",
+                          "text": "+",
+                          "start": 206,
+                          "stop": 206
+                        },
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 208,
+                          "stop": 208,
+                          "children": [
+                            {
+                              "token": "Identifier",
+                              "text": "a",
+                              "start": 208,
+                              "stop": 208
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 209,
+                  "stop": 209
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 211,
+      "stop": 293,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 211,
+          "stop": 293,
+          "children": [
+            {
+              "rule": "classicalDeclarationStatement",
+              "start": 211,
+              "stop": 293,
+              "children": [
+                {
+                  "rule": "scalarType",
+                  "start": 211,
+                  "stop": 218,
+                  "children": [
+                    {
+                      "token": "DURATION",
+                      "text": "duration",
+                      "start": 211,
+                      "stop": 218
+                    }
+                  ]
+                },
+                {
+                  "token": "Identifier",
+                  "text": "middle_stretch",
+                  "start": 220,
+                  "stop": 233
+                },
+                {
+                  "token": "EQUALS",
+                  "text": "=",
+                  "start": 235,
+                  "stop": 235
+                },
+                {
+                  "rule": "declarationExpression",
+                  "start": 237,
+                  "stop": 292,
+                  "children": [
+                    {
+                      "rule": "expression",
+                      "label": "AdditiveExpression",
+                      "start": 237,
+                      "stop": 292,
+                      "children": [
+                        {
+                          "rule": "expression",
+                          "label": "AdditiveExpression",
+                          "start": 237,
+                          "stop": 288,
+                          "children": [
+                            {
+                              "rule": "expression",
+                              "label": "MultiplicativeExpression",
+                              "start": 237,
+                              "stop": 262,
+                              "children": [
+                                {
+                                  "rule": "expression",
+                                  "label": "UnaryExpression",
+                                  "start": 237,
+                                  "stop": 240,
+                                  "children": [
+                                    {
+                                      "token": "MINUS",
+                                      "text": "-",
+                                      "start": 237,
+                                      "stop": 237
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 238,
+                                      "stop": 240,
+                                      "children": [
+                                        {
+                                          "token": "FloatLiteral",
+                                          "text": "0.5",
+                                          "start": 238,
+                                          "stop": 240
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "ASTERISK",
+                                  "text": "*",
+                                  "start": 242,
+                                  "stop": 242
+                                },
+                                {
+                                  "rule": "expression",
+                                  "label": "DurationofExpression",
+                                  "start": 244,
+                                  "stop": 262,
+                                  "children": [
+                                    {
+                                      "token": "DURATIONOF",
+                                      "text": "durationof",
+                                      "start": 244,
+                                      "stop": 253
+                                    },
+                                    {
+                                      "token": "LPAREN",
+                                      "text": "(",
+                                      "start": 254,
+                                      "stop": 254
+                                    },
+                                    {
+                                      "rule": "scope",
+                                      "start": 255,
+                                      "stop": 261,
+                                      "children": [
+                                        {
+                                          "token": "LBRACE",
+                                          "text": "{",
+                                          "start": 255,
+                                          "stop": 255
+                                        },
+                                        {
+                                          "rule": "statementOrScope",
+                                          "start": 256,
+                                          "stop": 260,
+                                          "children": [
+                                            {
+                                              "rule": "statement",
+                                              "start": 256,
+                                              "stop": 260,
+                                              "children": [
+                                                {
+                                                  "rule": "gateCallStatement",
+                                                  "start": 256,
+                                                  "stop": 260,
+                                                  "children": [
+                                                    {
+                                                      "token": "Identifier",
+                                                      "text": "x",
+                                                      "start": 256,
+                                                      "stop": 256
+                                                    },
+                                                    {
+                                                      "rule": "gateOperandList",
+                                                      "start": 258,
+                                                      "stop": 259,
+                                                      "children": [
+                                                        {
+                                                          "rule": "gateOperand",
+                                                          "start": 258,
+                                                          "stop": 259,
+                                                          "children": [
+                                                            {
+                                                              "token": "HardwareQubit",
+                                                              "text": "$0",
+                                                              "start": 258,
+                                                              "stop": 259
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "token": "SEMICOLON",
+                                                      "text": ";",
+                                                      "start": 260,
+                                                      "stop": 260
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "token": "RBRACE",
+                                          "text": "}",
+                                          "start": 261,
+                                          "stop": 261
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RPAREN",
+                                      "text": ")",
+                                      "start": 262,
+                                      "stop": 262
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "token": "MINUS",
+                              "text": "-",
+                              "start": 264,
+                              "stop": 264
+                            },
+                            {
+                              "rule": "expression",
+                              "label": "MultiplicativeExpression",
+                              "start": 266,
+                              "stop": 288,
+                              "children": [
+                                {
+                                  "rule": "expression",
+                                  "label": "LiteralExpression",
+                                  "start": 266,
+                                  "stop": 266,
+                                  "children": [
+                                    {
+                                      "token": "DecimalIntegerLiteral",
+                                      "text": "5",
+                                      "start": 266,
+                                      "stop": 266
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "ASTERISK",
+                                  "text": "*",
+                                  "start": 268,
+                                  "stop": 268
+                                },
+                                {
+                                  "rule": "expression",
+                                  "label": "DurationofExpression",
+                                  "start": 270,
+                                  "stop": 288,
+                                  "children": [
+                                    {
+                                      "token": "DURATIONOF",
+                                      "text": "durationof",
+                                      "start": 270,
+                                      "stop": 279
+                                    },
+                                    {
+                                      "token": "LPAREN",
+                                      "text": "(",
+                                      "start": 280,
+                                      "stop": 280
+                                    },
+                                    {
+                                      "rule": "scope",
+                                      "start": 281,
+                                      "stop": 287,
+                                      "children": [
+                                        {
+                                          "token": "LBRACE",
+                                          "text": "{",
+                                          "start": 281,
+                                          "stop": 281
+                                        },
+                                        {
+                                          "rule": "statementOrScope",
+                                          "start": 282,
+                                          "stop": 286,
+                                          "children": [
+                                            {
+                                              "rule": "statement",
+                                              "start": 282,
+                                              "stop": 286,
+                                              "children": [
+                                                {
+                                                  "rule": "gateCallStatement",
+                                                  "start": 282,
+                                                  "stop": 286,
+                                                  "children": [
+                                                    {
+                                                      "token": "Identifier",
+                                                      "text": "y",
+                                                      "start": 282,
+                                                      "stop": 282
+                                                    },
+                                                    {
+                                                      "rule": "gateOperandList",
+                                                      "start": 284,
+                                                      "stop": 285,
+                                                      "children": [
+                                                        {
+                                                          "rule": "gateOperand",
+                                                          "start": 284,
+                                                          "stop": 285,
+                                                          "children": [
+                                                            {
+                                                              "token": "HardwareQubit",
+                                                              "text": "$0",
+                                                              "start": 284,
+                                                              "stop": 285
+                                                            }
+                                                          ]
+                                                        }
+                                                      ]
+                                                    },
+                                                    {
+                                                      "token": "SEMICOLON",
+                                                      "text": ";",
+                                                      "start": 286,
+                                                      "stop": 286
+                                                    }
+                                                  ]
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "token": "RBRACE",
+                                          "text": "}",
+                                          "start": 287,
+                                          "stop": 287
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RPAREN",
+                                      "text": ")",
+                                      "start": 288,
+                                      "stop": 288
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "token": "PLUS",
+                          "text": "+",
+                          "start": 290,
+                          "stop": 290
+                        },
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 292,
+                          "stop": 292,
+                          "children": [
+                            {
+                              "token": "Identifier",
+                              "text": "a",
+                              "start": 292,
+                              "stop": 292
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 293,
+                  "stop": 293
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 295,
+      "stop": 348,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 295,
+          "stop": 348,
+          "children": [
+            {
+              "rule": "classicalDeclarationStatement",
+              "start": 295,
+              "stop": 348,
+              "children": [
+                {
+                  "rule": "scalarType",
+                  "start": 295,
+                  "stop": 302,
+                  "children": [
+                    {
+                      "token": "DURATION",
+                      "text": "duration",
+                      "start": 295,
+                      "stop": 302
+                    }
+                  ]
+                },
+                {
+                  "token": "Identifier",
+                  "text": "end_stretch",
+                  "start": 304,
+                  "stop": 314
+                },
+                {
+                  "token": "EQUALS",
+                  "text": "=",
+                  "start": 316,
+                  "stop": 316
+                },
+                {
+                  "rule": "declarationExpression",
+                  "start": 318,
+                  "stop": 347,
+                  "children": [
+                    {
+                      "rule": "expression",
+                      "label": "AdditiveExpression",
+                      "start": 318,
+                      "stop": 347,
+                      "children": [
+                        {
+                          "rule": "expression",
+                          "label": "MultiplicativeExpression",
+                          "start": 318,
+                          "stop": 343,
+                          "children": [
+                            {
+                              "rule": "expression",
+                              "label": "UnaryExpression",
+                              "start": 318,
+                              "stop": 321,
+                              "children": [
+                                {
+                                  "token": "MINUS",
+                                  "text": "-",
+                                  "start": 318,
+                                  "stop": 318
+                                },
+                                {
+                                  "rule": "expression",
+                                  "label": "LiteralExpression",
+                                  "start": 319,
+                                  "stop": 321,
+                                  "children": [
+                                    {
+                                      "token": "FloatLiteral",
+                                      "text": "0.5",
+                                      "start": 319,
+                                      "stop": 321
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "token": "ASTERISK",
+                              "text": "*",
+                              "start": 323,
+                              "stop": 323
+                            },
+                            {
+                              "rule": "expression",
+                              "label": "DurationofExpression",
+                              "start": 325,
+                              "stop": 343,
+                              "children": [
+                                {
+                                  "token": "DURATIONOF",
+                                  "text": "durationof",
+                                  "start": 325,
+                                  "stop": 334
+                                },
+                                {
+                                  "token": "LPAREN",
+                                  "text": "(",
+                                  "start": 335,
+                                  "stop": 335
+                                },
+                                {
+                                  "rule": "scope",
+                                  "start": 336,
+                                  "stop": 342,
+                                  "children": [
+                                    {
+                                      "token": "LBRACE",
+                                      "text": "{",
+                                      "start": 336,
+                                      "stop": 336
+                                    },
+                                    {
+                                      "rule": "statementOrScope",
+                                      "start": 337,
+                                      "stop": 341,
+                                      "children": [
+                                        {
+                                          "rule": "statement",
+                                          "start": 337,
+                                          "stop": 341,
+                                          "children": [
+                                            {
+                                              "rule": "gateCallStatement",
+                                              "start": 337,
+                                              "stop": 341,
+                                              "children": [
+                                                {
+                                                  "token": "Identifier",
+                                                  "text": "y",
+                                                  "start": 337,
+                                                  "stop": 337
+                                                },
+                                                {
+                                                  "rule": "gateOperandList",
+                                                  "start": 339,
+                                                  "stop": 340,
+                                                  "children": [
+                                                    {
+                                                      "rule": "gateOperand",
+                                                      "start": 339,
+                                                      "stop": 340,
+                                                      "children": [
+                                                        {
+                                                          "token": "HardwareQubit",
+                                                          "text": "$0",
+                                                          "start": 339,
+                                                          "stop": 340
+                                                        }
+                                                      ]
+                                                    }
+                                                  ]
+                                                },
+                                                {
+                                                  "token": "SEMICOLON",
+                                                  "text": ";",
+                                                  "start": 341,
+                                                  "stop": 341
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RBRACE",
+                                      "text": "}",
+                                      "start": 342,
+                                      "stop": 342
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "RPAREN",
+                                  "text": ")",
+                                  "start": 343,
+                                  "stop": 343
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "token": "PLUS",
+                          "text": "+",
+                          "start": 345,
+                          "stop": 345
+                        },
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 347,
+                          "stop": 347,
+                          "children": [
+                            {
+                              "token": "Identifier",
+                              "text": "a",
+                              "start": 347,
+                              "stop": 347
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 348,
+                  "stop": 348
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 351,
+      "stop": 560,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 351,
+          "stop": 560,
+          "children": [
+            {
+              "rule": "boxStatement",
+              "start": 351,
+              "stop": 560,
+              "children": [
+                {
+                  "token": "BOX",
+                  "text": "box",
+                  "start": 351,
+                  "stop": 353
+                },
+                {
+                  "rule": "scope",
+                  "start": 355,
+                  "stop": 560,
+                  "children": [
+                    {
+                      "token": "LBRACE",
+                      "text": "{",
+                      "start": 355,
+                      "stop": 355
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 359,
+                      "stop": 382,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 359,
+                          "stop": 382,
+                          "children": [
+                            {
+                              "rule": "delayStatement",
+                              "start": 359,
+                              "stop": 382,
+                              "children": [
+                                {
+                                  "token": "DELAY",
+                                  "text": "delay",
+                                  "start": 359,
+                                  "stop": 363
+                                },
+                                {
+                                  "rule": "designator",
+                                  "start": 364,
+                                  "stop": 378,
+                                  "children": [
+                                    {
+                                      "token": "LBRACKET",
+                                      "text": "[",
+                                      "start": 364,
+                                      "stop": 364
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 365,
+                                      "stop": 377,
+                                      "children": [
+                                        {
+                                          "token": "Identifier",
+                                          "text": "start_stretch",
+                                          "start": 365,
+                                          "stop": 377
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RBRACKET",
+                                      "text": "]",
+                                      "start": 378,
+                                      "stop": 378
+                                    }
+                                  ]
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 380,
+                                  "stop": 381,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 380,
+                                      "stop": 381,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$0",
+                                          "start": 380,
+                                          "stop": 381
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 382,
+                                  "stop": 382
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 386,
+                      "stop": 390,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 386,
+                          "stop": 390,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 386,
+                              "stop": 390,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "x",
+                                  "start": 386,
+                                  "stop": 386
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 388,
+                                  "stop": 389,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 388,
+                                      "stop": 389,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$0",
+                                          "start": 388,
+                                          "stop": 389
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 390,
+                                  "stop": 390
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 394,
+                      "stop": 418,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 394,
+                          "stop": 418,
+                          "children": [
+                            {
+                              "rule": "delayStatement",
+                              "start": 394,
+                              "stop": 418,
+                              "children": [
+                                {
+                                  "token": "DELAY",
+                                  "text": "delay",
+                                  "start": 394,
+                                  "stop": 398
+                                },
+                                {
+                                  "rule": "designator",
+                                  "start": 399,
+                                  "stop": 414,
+                                  "children": [
+                                    {
+                                      "token": "LBRACKET",
+                                      "text": "[",
+                                      "start": 399,
+                                      "stop": 399
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 400,
+                                      "stop": 413,
+                                      "children": [
+                                        {
+                                          "token": "Identifier",
+                                          "text": "middle_stretch",
+                                          "start": 400,
+                                          "stop": 413
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RBRACKET",
+                                      "text": "]",
+                                      "start": 414,
+                                      "stop": 414
+                                    }
+                                  ]
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 416,
+                                  "stop": 417,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 416,
+                                      "stop": 417,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$0",
+                                          "start": 416,
+                                          "stop": 417
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 418,
+                                  "stop": 418
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 422,
+                      "stop": 426,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 422,
+                          "stop": 426,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 422,
+                              "stop": 426,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "y",
+                                  "start": 422,
+                                  "stop": 422
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 424,
+                                  "stop": 425,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 424,
+                                      "stop": 425,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$0",
+                                          "start": 424,
+                                          "stop": 425
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 426,
+                                  "stop": 426
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 430,
+                      "stop": 454,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 430,
+                          "stop": 454,
+                          "children": [
+                            {
+                              "rule": "delayStatement",
+                              "start": 430,
+                              "stop": 454,
+                              "children": [
+                                {
+                                  "token": "DELAY",
+                                  "text": "delay",
+                                  "start": 430,
+                                  "stop": 434
+                                },
+                                {
+                                  "rule": "designator",
+                                  "start": 435,
+                                  "stop": 450,
+                                  "children": [
+                                    {
+                                      "token": "LBRACKET",
+                                      "text": "[",
+                                      "start": 435,
+                                      "stop": 435
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 436,
+                                      "stop": 449,
+                                      "children": [
+                                        {
+                                          "token": "Identifier",
+                                          "text": "middle_stretch",
+                                          "start": 436,
+                                          "stop": 449
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RBRACKET",
+                                      "text": "]",
+                                      "start": 450,
+                                      "stop": 450
+                                    }
+                                  ]
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 452,
+                                  "stop": 453,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 452,
+                                      "stop": 453,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$0",
+                                          "start": 452,
+                                          "stop": 453
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 454,
+                                  "stop": 454
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 458,
+                      "stop": 462,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 458,
+                          "stop": 462,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 458,
+                              "stop": 462,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "x",
+                                  "start": 458,
+                                  "stop": 458
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 460,
+                                  "stop": 461,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 460,
+                                      "stop": 461,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$0",
+                                          "start": 460,
+                                          "stop": 461
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 462,
+                                  "stop": 462
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 466,
+                      "stop": 490,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 466,
+                          "stop": 490,
+                          "children": [
+                            {
+                              "rule": "delayStatement",
+                              "start": 466,
+                              "stop": 490,
+                              "children": [
+                                {
+                                  "token": "DELAY",
+                                  "text": "delay",
+                                  "start": 466,
+                                  "stop": 470
+                                },
+                                {
+                                  "rule": "designator",
+                                  "start": 471,
+                                  "stop": 486,
+                                  "children": [
+                                    {
+                                      "token": "LBRACKET",
+                                      "text": "[",
+                                      "start": 471,
+                                      "stop": 471
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 472,
+                                      "stop": 485,
+                                      "children": [
+                                        {
+                                          "token": "Identifier",
+                                          "text": "middle_stretch",
+                                          "start": 472,
+                                          "stop": 485
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RBRACKET",
+                                      "text": "]",
+                                      "start": 486,
+                                      "stop": 486
+                                    }
+                                  ]
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 488,
+                                  "stop": 489,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 488,
+                                      "stop": 489,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$0",
+                                          "start": 488,
+                                          "stop": 489
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 490,
+                                  "stop": 490
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 494,
+                      "stop": 498,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 494,
+                          "stop": 498,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 494,
+                              "stop": 498,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "y",
+                                  "start": 494,
+                                  "stop": 494
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 496,
+                                  "stop": 497,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 496,
+                                      "stop": 497,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$0",
+                                          "start": 496,
+                                          "stop": 497
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 498,
+                                  "stop": 498
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 502,
+                      "stop": 523,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 502,
+                          "stop": 523,
+                          "children": [
+                            {
+                              "rule": "delayStatement",
+                              "start": 502,
+                              "stop": 523,
+                              "children": [
+                                {
+                                  "token": "DELAY",
+                                  "text": "delay",
+                                  "start": 502,
+                                  "stop": 506
+                                },
+                                {
+                                  "rule": "designator",
+                                  "start": 507,
+                                  "stop": 519,
+                                  "children": [
+                                    {
+                                      "token": "LBRACKET",
+                                      "text": "[",
+                                      "start": 507,
+                                      "stop": 507
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 508,
+                                      "stop": 518,
+                                      "children": [
+                                        {
+                                          "token": "Identifier",
+                                          "text": "end_stretch",
+                                          "start": 508,
+                                          "stop": 518
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "RBRACKET",
+                                      "text": "]",
+                                      "start": 519,
+                                      "stop": 519
+                                    }
+                                  ]
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 521,
+                                  "stop": 522,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 521,
+                                      "stop": 522,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$0",
+                                          "start": 521,
+                                          "stop": 522
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 523,
+                                  "stop": 523
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 528,
+                      "stop": 537,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 528,
+                          "stop": 537,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 528,
+                              "stop": 537,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "cx",
+                                  "start": 528,
+                                  "stop": 529
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 531,
+                                  "stop": 536,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 531,
+                                      "stop": 532,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$2",
+                                          "start": 531,
+                                          "stop": 532
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "COMMA",
+                                      "text": ",",
+                                      "start": 533,
+                                      "stop": 533
+                                    },
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 535,
+                                      "stop": 536,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$3",
+                                          "start": 535,
+                                          "stop": 536
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 537,
+                                  "stop": 537
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 541,
+                      "stop": 550,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 541,
+                          "stop": 550,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 541,
+                              "stop": 550,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "cx",
+                                  "start": 541,
+                                  "stop": 542
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 544,
+                                  "stop": 549,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 544,
+                                      "stop": 545,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$1",
+                                          "start": 544,
+                                          "stop": 545
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "COMMA",
+                                      "text": ",",
+                                      "start": 546,
+                                      "stop": 546
+                                    },
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 548,
+                                      "stop": 549,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$2",
+                                          "start": 548,
+                                          "stop": 549
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 550,
+                                  "stop": 550
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 554,
+                      "stop": 558,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 554,
+                          "stop": 558,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 554,
+                              "stop": 558,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "u",
+                                  "start": 554,
+                                  "stop": 554
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 556,
+                                  "stop": 557,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 556,
+                                      "stop": 557,
+                                      "children": [
+                                        {
+                                          "token": "HardwareQubit",
+                                          "text": "$3",
+                                          "start": 556,
+                                          "stop": 557
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 558,
+                                  "stop": 558
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "token": "RBRACE",
+                      "text": "}",
+                      "start": 560,
+                      "stop": 560
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "token": "EOF",
+      "text": "<EOF>",
+      "start": 562,
+      "stop": 561
+    }
+  ]
+}

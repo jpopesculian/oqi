@@ -1,3 +1,5 @@
+mod utils;
+
 use core::fmt;
 
 use oqi_lexer::{Lexer, Span, Token};
@@ -32,6 +34,7 @@ impl<'a> Display<'a, ast::Program<'a>> {
                 .cloned()
                 .filter_map(Comment::from_lex)
                 .collect(),
+            utils::find_newlines(source),
         );
         let ast = Parser::new(tokens).parse_program()?;
         Ok(Display::new(ast, context, config))
@@ -109,24 +112,43 @@ pub struct Context<'a> {
     line: usize,
     column: usize,
     comments: Vec<Comment<'a>>,
+    newlines: Vec<usize>,
+    blank_lines: Vec<usize>,
     next_comment: usize,
 }
 
 impl<'a> Default for Context<'a> {
     fn default() -> Self {
-        Self::new(Vec::new())
+        let nl = utils::Newlines {
+            all: Vec::new(),
+            blank: Vec::new(),
+        };
+        Self::new(Vec::new(), nl)
     }
 }
 
 impl<'a> Context<'a> {
-    pub fn new(comments: Vec<Comment<'a>>) -> Self {
+    pub fn new(comments: Vec<Comment<'a>>, newlines: utils::Newlines) -> Self {
         Self {
             indent: 0,
             line: 1,
             column: 1,
             comments,
+            newlines: newlines.all,
+            blank_lines: newlines.blank,
             next_comment: 0,
         }
+    }
+
+    pub fn from_source(source: &'a str) -> Result<Self, ParseError> {
+        Ok(Context::new(
+            Lexer::new(source)
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .filter_map(Comment::from_lex)
+                .collect(),
+            utils::find_newlines(source),
+        ))
     }
 
     pub fn indent(&self) -> usize {
@@ -181,13 +203,23 @@ impl<'a> Context<'a> {
         config: &Config,
     ) -> Result<bool, fmt::Error> {
         let mut emitted = false;
+        let mut prev_end: Option<usize> = None;
 
         while let Some(comment) = self.comments.get(self.next_comment).cloned() {
             if pos <= comment.span.start {
                 break;
             }
-            self.write_comment(fmt, &comment, config)?;
             self.next_comment += 1;
+            if config.compact {
+                continue;
+            }
+            if let Some(end) = prev_end {
+                if self.has_blank_line_between(end, comment.span.start) {
+                    self.newline(fmt)?;
+                }
+            }
+            self.write_comment(fmt, &comment, config)?;
+            prev_end = Some(comment.span.end);
             emitted = true;
         }
 
@@ -252,6 +284,37 @@ impl<'a> Context<'a> {
         self.indent = self.indent.saturating_sub(1);
     }
 
+    fn has_newline_between(&self, start: usize, end: usize) -> bool {
+        let i = self.newlines.partition_point(|&pos| pos < start);
+        self.newlines.get(i).is_some_and(|&pos| pos < end)
+    }
+
+    fn has_blank_line_between(&self, start: usize, end: usize) -> bool {
+        let i = self.blank_lines.partition_point(|&pos| pos < start);
+        self.blank_lines.get(i).is_some_and(|&pos| pos < end)
+    }
+
+    fn emit_trailing_comments(
+        &mut self,
+        fmt: &mut fmt::Formatter<'_>,
+        after: usize,
+        config: &Config,
+    ) -> fmt::Result {
+        while let Some(comment) = self.comments.get(self.next_comment) {
+            if self.has_newline_between(after, comment.span.start) {
+                break;
+            }
+            let comment = comment.clone();
+            self.next_comment += 1;
+            if config.compact {
+                continue;
+            }
+            self.space(fmt)?;
+            self.write_str(fmt, comment.text)?;
+        }
+        Ok(())
+    }
+
     fn scope_separator<T: Format + CompactHint>(
         &mut self,
         fmt: &mut fmt::Formatter<'_>,
@@ -263,11 +326,15 @@ impl<'a> Context<'a> {
             return Ok(());
         };
 
-        if !config.compact
-            || previous.requires_trailing_newline()
-            || self.has_pending_comments_before(next.compact_anchor())
+        if !config.compact || previous.requires_trailing_newline()
         {
-            self.newline(fmt)
+            self.newline(fmt)?;
+            if !config.compact
+                && self.has_blank_line_between(previous.span_end(), next.compact_anchor())
+            {
+                self.newline(fmt)?;
+            }
+            Ok(())
         } else {
             self.space(fmt)
         }
@@ -276,6 +343,7 @@ impl<'a> Context<'a> {
 
 trait CompactHint {
     fn compact_anchor(&self) -> usize;
+    fn span_end(&self) -> usize;
 
     fn requires_trailing_newline(&self) -> bool {
         false
@@ -285,6 +353,10 @@ trait CompactHint {
 impl<'a> CompactHint for ast::StmtOrScope<'a> {
     fn compact_anchor(&self) -> usize {
         span_of_stmt_or_scope(self).start
+    }
+
+    fn span_end(&self) -> usize {
+        span_of_stmt_or_scope(self).end
     }
 
     fn requires_trailing_newline(&self) -> bool {
@@ -311,8 +383,17 @@ impl<'a> Format for ast::Program<'a> {
 
         if let Some(version) = &self.version {
             version.format(fmt, ctx, config)?;
+            ctx.emit_trailing_comments(fmt, version.span.end, config)?;
             if !self.body.is_empty() {
                 ctx.newline(fmt)?;
+                if !config.compact
+                    && ctx.has_blank_line_between(
+                        version.span.end,
+                        span_of_stmt_or_scope(&self.body[0]).start,
+                    )
+                {
+                    ctx.newline(fmt)?;
+                }
             }
         }
 
@@ -321,6 +402,7 @@ impl<'a> Format for ast::Program<'a> {
                 ctx.scope_separator(fmt, previous, item, config)?;
             }
             item.format(fmt, ctx, config)?;
+            ctx.emit_trailing_comments(fmt, span_of_stmt_or_scope(item).end, config)?;
             previous = Some(item);
         }
 
@@ -367,7 +449,7 @@ impl<'a> Format for ast::Scope<'a> {
         ctx.write_str(fmt, "{")?;
 
         let has_body = !self.body.is_empty();
-        let has_comments = ctx.has_pending_comments_before(self.span.end);
+        let has_comments = !config.compact && ctx.has_pending_comments_before(self.span.end);
 
         if !has_body && !has_comments {
             return ctx.write_str(fmt, "}");
@@ -381,6 +463,7 @@ impl<'a> Format for ast::Scope<'a> {
                 }
                 ctx.scope_separator(fmt, previous, item, config)?;
                 item.format(fmt, ctx, config)?;
+                ctx.emit_trailing_comments(fmt, span_of_stmt_or_scope(item).end, config)?;
                 previous = Some(item);
             }
             let emitted_comments = ctx.emit_comments_before(fmt, self.span.end, config)?;
@@ -397,6 +480,7 @@ impl<'a> Format for ast::Scope<'a> {
         for item in &self.body {
             ctx.scope_separator(fmt, previous, item, config)?;
             item.format(fmt, ctx, config)?;
+            ctx.emit_trailing_comments(fmt, span_of_stmt_or_scope(item).end, config)?;
             previous = Some(item);
         }
 
@@ -1715,13 +1799,7 @@ if (true) { x q[0]; }"#;
     #[test]
     fn collects_and_queries_comments() {
         let source = "/* head */\ninclude \"stdgates.inc\"; // tail\n";
-        let comments = Lexer::new(source)
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-            .into_iter()
-            .filter_map(Comment::from_lex)
-            .collect::<Vec<_>>();
-        let context = Context::new(comments);
+        let context = Context::from_source(source).unwrap();
 
         assert_eq!(context.comments().len(), 2);
         assert_eq!(context.comments()[0].kind, CommentKind::Block);

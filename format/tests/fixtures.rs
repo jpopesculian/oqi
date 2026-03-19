@@ -82,15 +82,30 @@ fn check_fixture(name: &str) {
     let source = std::fs::read_to_string(&qasm_path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", qasm_path.display()));
 
-    let formatted = format(&source, Config::default())
-        .unwrap_or_else(|error| panic!("{name}: format error: {} at {:?}", error.message, error.span));
+    let formatted_default = format(&source, Config::default()).unwrap_or_else(|error| {
+        panic!(
+            "{name}: format error: {} at {:?}",
+            error.message, error.span
+        )
+    });
+    let formatted_compact = format(&source, Config::compact()).unwrap_or_else(|error| {
+        panic!(
+            "{name}: format error: {} at {:?}",
+            error.message, error.span
+        )
+    });
 
     let expected = normalize_ast(&source);
-    let actual = normalize_ast(&formatted);
+    let default = normalize_ast(&formatted_default);
+    let compact = normalize_ast(&formatted_default);
 
     assert_eq!(
-        expected, actual,
-        "{name}: AST changed after formatting\nformatted:\n{formatted}"
+        expected, default,
+        "{name}: AST changed after formatting\nformatted:\n{formatted_default}"
+    );
+    assert_eq!(
+        expected, compact,
+        "{name}: AST changed after formatting\nformatted:\n{formatted_compact}"
     );
 }
 

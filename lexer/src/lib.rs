@@ -1,26 +1,10 @@
+mod error;
 mod token;
 
 use logos::Logos;
 
+pub use error::{Error, Result};
 pub use token::{Span, Token};
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct LexError {
-    pub span: Span,
-    pub kind: LexErrorKind,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum LexErrorKind {
-    /// Unexpected character that doesn't match any token rule.
-    UnexpectedCharacter,
-    /// Expected a version specifier (e.g. `3.0`) after `OPENQASM`.
-    ExpectedVersionSpecifier,
-    /// Expected a quoted string after `include` or `defcalgrammar`.
-    ExpectedStringLiteral,
-    /// A `/* ... */` comment was opened but never closed.
-    UnterminatedBlockComment,
-}
 
 // ---------------------------------------------------------------------------
 // Internal logos-derived enum for default mode tokenization
@@ -296,7 +280,7 @@ enum RawToken {
 // Mode management
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
     Default,
     VersionIdentifier,
@@ -311,6 +295,7 @@ enum Mode {
 // Lexer
 // ---------------------------------------------------------------------------
 
+#[derive(Clone)]
 pub struct Lexer<'a> {
     source: &'a str,
     pos: usize,
@@ -348,7 +333,7 @@ impl<'a> Lexer<'a> {
     // Default / DefcalPrelude mode — delegates to logos
     // ------------------------------------------------------------------
 
-    fn lex_default(&mut self) -> Option<Result<(Token<'a>, Span), LexError>> {
+    fn lex_default(&mut self) -> Option<Result<(Token<'a>, Span)>> {
         let remaining = &self.source[self.pos..];
         if remaining.is_empty() {
             return None;
@@ -366,7 +351,10 @@ impl<'a> Lexer<'a> {
                 let token = self.map_raw(raw_token, slice);
                 Some(Ok((token, abs)))
             }
-            Err(()) => Some(Err(LexError { span: abs, kind: LexErrorKind::UnexpectedCharacter })),
+            Err(()) => Some(Err(Error {
+                span: abs,
+                message: "unexpected character".into(),
+            })),
         }
     }
 
@@ -524,7 +512,7 @@ impl<'a> Lexer<'a> {
     // VERSION_IDENTIFIER mode — after OPENQASM
     // ------------------------------------------------------------------
 
-    fn lex_version_identifier(&mut self) -> Option<Result<(Token<'a>, Span), LexError>> {
+    fn lex_version_identifier(&mut self) -> Option<Result<(Token<'a>, Span)>> {
         self.skip_whitespace();
         if self.pos >= self.source.len() {
             self.pop_mode();
@@ -543,7 +531,10 @@ impl<'a> Lexer<'a> {
             let span = self.pos..self.pos + 1;
             self.pos += 1;
             self.pop_mode();
-            return Some(Err(LexError { span, kind: LexErrorKind::ExpectedVersionSpecifier }));
+            return Some(Err(Error {
+                span,
+                message: "expected version specifier".into(),
+            }));
         }
         if end < bytes.len() && bytes[end] == b'.' {
             end += 1;
@@ -563,7 +554,7 @@ impl<'a> Lexer<'a> {
     // ARBITRARY_STRING mode — after include / defcalgrammar
     // ------------------------------------------------------------------
 
-    fn lex_arbitrary_string(&mut self) -> Option<Result<(Token<'a>, Span), LexError>> {
+    fn lex_arbitrary_string(&mut self) -> Option<Result<(Token<'a>, Span)>> {
         self.skip_whitespace();
         if self.pos >= self.source.len() {
             self.pop_mode();
@@ -578,7 +569,10 @@ impl<'a> Lexer<'a> {
             let span = self.pos..self.pos + 1;
             self.pos += 1;
             self.pop_mode();
-            return Some(Err(LexError { span, kind: LexErrorKind::ExpectedStringLiteral }));
+            return Some(Err(Error {
+                span,
+                message: "expected quoted string".into(),
+            }));
         }
 
         let mut end = 1;
@@ -607,7 +601,7 @@ impl<'a> Lexer<'a> {
 
     /// Returns `None` when no token is emitted (bare newline); the outer loop
     /// retries in the restored mode.
-    fn lex_eat_to_line_end(&mut self) -> Option<Result<(Token<'a>, Span), LexError>> {
+    fn lex_eat_to_line_end(&mut self) -> Option<Result<(Token<'a>, Span)>> {
         // Skip leading spaces/tabs only (not newlines)
         while self.pos < self.source.len() {
             match self.source.as_bytes()[self.pos] {
@@ -656,7 +650,7 @@ impl<'a> Lexer<'a> {
     // CAL_PRELUDE mode — skip ws/comments, then '{' → CalBlock
     // ------------------------------------------------------------------
 
-    fn lex_cal_prelude(&mut self) -> Option<Result<(Token<'a>, Span), LexError>> {
+    fn lex_cal_prelude(&mut self) -> Option<Result<(Token<'a>, Span)>> {
         self.skip_whitespace();
         if self.pos >= self.source.len() {
             self.set_mode(Mode::Default);
@@ -685,7 +679,10 @@ impl<'a> Lexer<'a> {
             } else {
                 let span = self.pos..self.source.len();
                 self.pos = self.source.len();
-                return Some(Err(LexError { span, kind: LexErrorKind::UnterminatedBlockComment }));
+                return Some(Err(Error {
+                    span,
+                    message: "unterminated block comment".into(),
+                }));
             }
         }
 
@@ -700,14 +697,17 @@ impl<'a> Lexer<'a> {
         // Unexpected
         let span = self.pos..self.pos + 1;
         self.pos += 1;
-        Some(Err(LexError { span, kind: LexErrorKind::UnexpectedCharacter }))
+        Some(Err(Error {
+            span,
+            message: "unexpected character".into(),
+        }))
     }
 
     // ------------------------------------------------------------------
     // CAL_BLOCK mode — balanced-brace content, then '}'
     // ------------------------------------------------------------------
 
-    fn lex_cal_block(&mut self) -> Option<Result<(Token<'a>, Span), LexError>> {
+    fn lex_cal_block(&mut self) -> Option<Result<(Token<'a>, Span)>> {
         if self.pos >= self.source.len() {
             self.set_mode(Mode::Default);
             return None;
@@ -768,7 +768,7 @@ impl<'a> Lexer<'a> {
 // ---------------------------------------------------------------------------
 
 impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<(Token<'a>, Span), LexError>;
+    type Item = Result<(Token<'a>, Span)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {

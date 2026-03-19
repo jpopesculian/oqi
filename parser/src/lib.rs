@@ -1,34 +1,15 @@
 pub mod ast;
 
 use ast::*;
+pub use oqi_lexer::{Error, Result};
 use oqi_lexer::{Lexer, Token};
-
-// ---------------------------------------------------------------------------
-// Error
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub struct ParseError {
-    pub span: Span,
-    pub message: String,
-}
-
-impl std::fmt::Display for ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "parse error at {:?}: {}", self.span, self.message)
-    }
-}
-
-impl std::error::Error for ParseError {}
-
-type Result<T> = std::result::Result<T, ParseError>;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 pub fn parse(source: &str) -> Result<Program<'_>> {
-    Parser::new(source).parse_program()
+    Parser::new(Lexer::new(source).collect::<Result<Vec<_>>>()?).parse_program()
 }
 
 // ---------------------------------------------------------------------------
@@ -41,20 +22,21 @@ type DecomposedGateHead<'a> = (Ident<'a>, Option<Vec<Expr<'a>>>, Option<Box<Expr
 // ---------------------------------------------------------------------------
 
 pub struct Parser<'a> {
-    source: &'a str,
     tokens: Vec<(Token<'a>, Span)>,
+    max_pos: usize,
     pos: usize,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(source: &'a str) -> Self {
-        let tokens: Vec<(Token<'a>, Span)> = Lexer::new(source)
-            .filter_map(|r| r.ok())
+    pub fn new(tokens: impl IntoIterator<Item = (Token<'a>, Span)>) -> Self {
+        let tokens = tokens
+            .into_iter()
             .filter(|(tok, _)| !matches!(tok, Token::LineComment(_) | Token::BlockComment(_)))
-            .collect();
+            .collect::<Vec<_>>();
+        let max_pos = tokens.last().map(|(_, s)| s.end).unwrap_or(0);
         Self {
-            source,
             tokens,
+            max_pos,
             pos: 0,
         }
     }
@@ -71,7 +53,7 @@ impl<'a> Parser<'a> {
         self.tokens
             .get(self.pos)
             .map(|(_, s)| s.clone())
-            .unwrap_or(self.source.len()..self.source.len())
+            .unwrap_or(self.max_pos..self.max_pos)
     }
 
     fn advance(&mut self) -> (Token<'a>, Span) {
@@ -92,8 +74,8 @@ impl<'a> Parser<'a> {
         self.pos >= self.tokens.len()
     }
 
-    fn error(&self, msg: impl Into<String>) -> ParseError {
-        ParseError {
+    fn error(&self, msg: impl Into<String>) -> Error {
+        Error {
             span: self.peek_span(),
             message: msg.into(),
         }
@@ -209,7 +191,7 @@ impl<'a> Parser<'a> {
         Ok(Program {
             version,
             body,
-            span: 0..self.source.len(),
+            span: 0..self.max_pos,
         })
     }
 
@@ -227,7 +209,7 @@ impl<'a> Parser<'a> {
                 span: start.start..end.end,
             })
         } else {
-            Err(ParseError {
+            Err(Error {
                 span: spec_span,
                 message: "expected version specifier".into(),
             })
@@ -1882,7 +1864,7 @@ impl<'a> Parser<'a> {
                 indexed.span = span;
                 Ok(indexed)
             }
-            _ => Err(ParseError {
+            _ => Err(Error {
                 span: expr.span(),
                 message: "expected identifier for assignment target".into(),
             }),
@@ -1912,7 +1894,7 @@ impl<'a> Parser<'a> {
                 };
                 Ok((name, args, Some(Box::new(desig))))
             }
-            _ => Err(ParseError {
+            _ => Err(Error {
                 span: expr.span(),
                 message: "expected identifier for gate call".into(),
             }),
@@ -1929,7 +1911,7 @@ mod tests {
     use super::*;
 
     fn parse_ok(src: &str) -> Program<'_> {
-        parse(src).unwrap_or_else(|e| panic!("parse error: {e}"))
+        parse(src).unwrap_or_else(|e| panic!("parse error: {} at {:?}", e.message, e.span))
     }
 
     fn parse_stmt(src: &str) -> Stmt<'_> {

@@ -141,9 +141,7 @@ fn cst_stmt_rule(cst: &Cst) -> S {
         "endStatement" => S::leaf("End"),
 
         "forStatement" => {
-            let body = cst
-                .find_rule("statementOrScope")
-                .expect("for: no body");
+            let body = cst.find_rule("statementOrScope").expect("for: no body");
             S::node("For", vec![cst_stmt_or_scope(body)])
         }
 
@@ -183,9 +181,7 @@ fn cst_stmt_rule(cst: &Cst) -> S {
 
         "boxStatement" => S::node(
             "Box",
-            vec![cst_scope(
-                cst.find_rule("scope").expect("box: no scope"),
-            )],
+            vec![cst_scope(cst.find_rule("scope").expect("box: no scope"))],
         ),
 
         "delayStatement" => S::leaf("Delay"),
@@ -203,16 +199,12 @@ fn cst_stmt_rule(cst: &Cst) -> S {
 
         "defStatement" => S::node(
             "Def",
-            vec![cst_scope(
-                cst.find_rule("scope").expect("def: no scope"),
-            )],
+            vec![cst_scope(cst.find_rule("scope").expect("def: no scope"))],
         ),
         "externStatement" => S::leaf("Extern"),
         "gateStatement" => S::node(
             "Gate",
-            vec![cst_scope(
-                cst.find_rule("scope").expect("gate: no scope"),
-            )],
+            vec![cst_scope(cst.find_rule("scope").expect("gate: no scope"))],
         ),
 
         "assignmentStatement" => S::leaf("Assignment"),
@@ -236,14 +228,13 @@ fn cst_expr(cst: &Cst) -> S {
     let label = cst.label.as_deref().unwrap_or("");
     match label {
         "LiteralExpression" => {
-            let tok = cst
-                .children
-                .first()
-                .expect("LiteralExpression: no child");
+            let tok = cst.children.first().expect("LiteralExpression: no child");
             let kind = match tok.token.as_deref().unwrap_or("") {
                 "Identifier" => "Ident",
-                "DecimalIntegerLiteral" | "BinaryIntegerLiteral"
-                | "OctalIntegerLiteral" | "HexIntegerLiteral" => "IntLiteral",
+                "DecimalIntegerLiteral"
+                | "BinaryIntegerLiteral"
+                | "OctalIntegerLiteral"
+                | "HexIntegerLiteral" => "IntLiteral",
                 "FloatLiteral" => "FloatLiteral",
                 "ImaginaryLiteral" => "ImagLiteral",
                 "BooleanLiteral" => "BoolLiteral",
@@ -302,12 +293,7 @@ fn cst_expr(cst: &Cst) -> S {
             let op = cst
                 .children
                 .iter()
-                .find(|c| {
-                    matches!(
-                        c.token.as_deref(),
-                        Some("ASTERISK" | "SLASH" | "PERCENT")
-                    )
-                })
+                .find(|c| matches!(c.token.as_deref(), Some("ASTERISK" | "SLASH" | "PERCENT")))
                 .map(|c| c.text.as_deref().unwrap_or("?"))
                 .unwrap_or("?");
             S::node(format!("BinOp({op})"), exprs)
@@ -420,9 +406,7 @@ fn cst_expr(cst: &Cst) -> S {
         }
 
         "DurationofExpression" => {
-            let scope = cst
-                .find_rule("scope")
-                .expect("durationof: no scope");
+            let scope = cst.find_rule("scope").expect("durationof: no scope");
             S::node("DurationOf", vec![cst_scope(scope)])
         }
 
@@ -475,10 +459,7 @@ fn ast_stmt_or_scope(sos: &StmtOrScope) -> S {
 }
 
 fn ast_scope(scope: &Scope) -> S {
-    S::node(
-        "Scope",
-        scope.body.iter().map(ast_stmt_or_scope).collect(),
-    )
+    S::node("Scope", scope.body.iter().map(ast_stmt_or_scope).collect())
 }
 
 fn ast_stmt(stmt: &Stmt) -> S {
@@ -490,9 +471,7 @@ fn ast_stmt(stmt: &Stmt) -> S {
         StmtKind::Continue => S::leaf("Continue"),
         StmtKind::End => S::leaf("End"),
 
-        StmtKind::For { body, .. } => {
-            S::node("For", vec![ast_stmt_or_scope(body)])
-        }
+        StmtKind::For { body, .. } => S::node("For", vec![ast_stmt_or_scope(body)]),
 
         StmtKind::If {
             condition,
@@ -605,21 +584,13 @@ fn ast_expr(expr: &Expr) -> S {
             S::node(format!("UnaryOp({sym})"), vec![ast_expr(operand)])
         }
 
-        Expr::Index { expr: base, .. } => {
-            S::node("Index", vec![ast_expr(base)])
-        }
+        Expr::Index { expr: base, .. } => S::node("Index", vec![ast_expr(base)]),
 
-        Expr::Call { args, .. } => {
-            S::node("Call", args.iter().map(ast_expr).collect())
-        }
+        Expr::Call { args, .. } => S::node("Call", args.iter().map(ast_expr).collect()),
 
-        Expr::Cast { operand, .. } => {
-            S::node("Cast", vec![ast_expr(operand)])
-        }
+        Expr::Cast { operand, .. } => S::node("Cast", vec![ast_expr(operand)]),
 
-        Expr::DurationOf { scope, .. } => {
-            S::node("DurationOf", vec![ast_scope(scope)])
-        }
+        Expr::DurationOf { scope, .. } => S::node("DurationOf", vec![ast_scope(scope)]),
     }
 }
 
@@ -629,8 +600,7 @@ fn ast_expr(expr: &Expr) -> S {
 
 fn compare(expected: &S, actual: &S, path: &str) {
     assert_eq!(
-        expected.kind,
-        actual.kind,
+        expected.kind, actual.kind,
         "at {path}: kind mismatch\n\nantlr subtree:\n{expected}\nour subtree:\n{actual}",
     );
     assert_eq!(
@@ -638,7 +608,11 @@ fn compare(expected: &S, actual: &S, path: &str) {
         actual.children.len(),
         "at {path}/{}: child count mismatch\n  antlr: {:?}\n  ours:  {:?}",
         expected.kind,
-        expected.children.iter().map(|c| &c.kind).collect::<Vec<_>>(),
+        expected
+            .children
+            .iter()
+            .map(|c| &c.kind)
+            .collect::<Vec<_>>(),
         actual.children.iter().map(|c| &c.kind).collect::<Vec<_>>(),
     );
     for (i, (e, a)) in expected
@@ -656,13 +630,9 @@ fn compare(expected: &S, actual: &S, path: &str) {
 // ---------------------------------------------------------------------------
 
 fn check_fixture(name: &str) {
-    let base = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap();
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let qasm_path = base.join("fixtures/qasm").join(format!("{name}.qasm"));
-    let json_path = base
-        .join("fixtures/parser")
-        .join(format!("{name}.json"));
+    let json_path = base.join("fixtures/parser").join(format!("{name}.json"));
 
     let source = std::fs::read_to_string(&qasm_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", qasm_path.display()));
@@ -674,7 +644,7 @@ fn check_fixture(name: &str) {
     .unwrap();
 
     let program = oqi_parser::parse(&source)
-        .unwrap_or_else(|e| panic!("{name}: parse error: {e}"));
+        .unwrap_or_else(|e| panic!("{}: parse error: {} at {:?}", name, e.message, e.span));
 
     let expected = cst_program(&cst);
     let actual = ast_program(&program);

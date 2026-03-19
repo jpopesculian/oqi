@@ -7,6 +7,19 @@ pub use token::{Span, Token};
 #[derive(Debug, Clone, PartialEq)]
 pub struct LexError {
     pub span: Span,
+    pub kind: LexErrorKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum LexErrorKind {
+    /// Unexpected character that doesn't match any token rule.
+    UnexpectedCharacter,
+    /// Expected a version specifier (e.g. `3.0`) after `OPENQASM`.
+    ExpectedVersionSpecifier,
+    /// Expected a quoted string after `include` or `defcalgrammar`.
+    ExpectedStringLiteral,
+    /// A `/* ... */` comment was opened but never closed.
+    UnterminatedBlockComment,
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +366,7 @@ impl<'a> Lexer<'a> {
                 let token = self.map_raw(raw_token, slice);
                 Some(Ok((token, abs)))
             }
-            Err(()) => Some(Err(LexError { span: abs })),
+            Err(()) => Some(Err(LexError { span: abs, kind: LexErrorKind::UnexpectedCharacter })),
         }
     }
 
@@ -530,7 +543,7 @@ impl<'a> Lexer<'a> {
             let span = self.pos..self.pos + 1;
             self.pos += 1;
             self.pop_mode();
-            return Some(Err(LexError { span }));
+            return Some(Err(LexError { span, kind: LexErrorKind::ExpectedVersionSpecifier }));
         }
         if end < bytes.len() && bytes[end] == b'.' {
             end += 1;
@@ -565,7 +578,7 @@ impl<'a> Lexer<'a> {
             let span = self.pos..self.pos + 1;
             self.pos += 1;
             self.pop_mode();
-            return Some(Err(LexError { span }));
+            return Some(Err(LexError { span, kind: LexErrorKind::ExpectedStringLiteral }));
         }
 
         let mut end = 1;
@@ -672,7 +685,7 @@ impl<'a> Lexer<'a> {
             } else {
                 let span = self.pos..self.source.len();
                 self.pos = self.source.len();
-                return Some(Err(LexError { span }));
+                return Some(Err(LexError { span, kind: LexErrorKind::UnterminatedBlockComment }));
             }
         }
 
@@ -687,7 +700,7 @@ impl<'a> Lexer<'a> {
         // Unexpected
         let span = self.pos..self.pos + 1;
         self.pos += 1;
-        Some(Err(LexError { span }))
+        Some(Err(LexError { span, kind: LexErrorKind::UnexpectedCharacter }))
     }
 
     // ------------------------------------------------------------------

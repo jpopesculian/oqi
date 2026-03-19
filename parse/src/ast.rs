@@ -1,4 +1,4 @@
-pub use oqi_lexer::Span;
+pub use oqi_lex::Span;
 
 // ---- Identifiers ----
 

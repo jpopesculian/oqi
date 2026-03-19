@@ -1,10 +1,10 @@
 [package]
-name = "oqi-parser"
+name = "oqi-lex"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-oqi-lexer = { path = "../lexer" }
+logos = "0.16.1"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }

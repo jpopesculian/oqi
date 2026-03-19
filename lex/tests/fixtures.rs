@@ -1,4 +1,4 @@
-use oqi_lexer::{Lexer, Token};
+use oqi_lex::{Lexer, Token};
 use serde::Deserialize;
 use std::path::Path;
 

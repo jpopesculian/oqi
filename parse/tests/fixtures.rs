@@ -1,4 +1,4 @@
-use oqi_parser::ast::*;
+use oqi_parse::ast::*;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -643,7 +643,7 @@ fn check_fixture(name: &str) {
     )
     .unwrap();
 
-    let program = oqi_parser::parse(&source)
+    let program = oqi_parse::parse(&source)
         .unwrap_or_else(|e| panic!("{}: parse error: {} at {:?}", name, e.message, e.span));
 
     let expected = cst_program(&cst);

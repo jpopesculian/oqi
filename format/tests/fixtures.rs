@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use oqi_format::{Config, format};
-use oqi_parser::parse;
+use oqi_parse::parse;
 
 fn normalize_ast(source: &str) -> String {
     let program = parse(source).unwrap_or_else(|error| {

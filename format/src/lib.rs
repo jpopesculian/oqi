@@ -2,8 +2,8 @@ mod utils;
 
 use core::fmt;
 
-use oqi_lexer::{Lexer, Span, Token};
-use oqi_parser::{Error as ParseError, Parser, ast};
+use oqi_lex::{Lexer, Span, Token};
+use oqi_parse::{Error as ParseError, Parser, ast};
 
 pub struct Display<'a, T> {
     ast: T,
@@ -1767,7 +1767,7 @@ enum ExprSide {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oqi_parser::parse;
+    use oqi_parse::parse;
 
     #[test]
     fn pretty_formats_basic_program() {

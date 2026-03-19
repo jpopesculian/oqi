@@ -230,12 +230,12 @@ dependencies = [
 name = "oqi-format"
 version = "0.1.0"
 dependencies = [
- "oqi-lexer",
- "oqi-parser",
+ "oqi-lex",
+ "oqi-parse",
 ]
 
 [[package]]
-name = "oqi-lexer"
+name = "oqi-lex"
 version = "0.1.0"
 dependencies = [
  "logos",
@@ -244,10 +244,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "oqi-parser"
+name = "oqi-parse"
 version = "0.1.0"
 dependencies = [
- "oqi-lexer",
+ "oqi-lex",
  "serde",
  "serde_json",
 ]

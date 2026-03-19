@@ -1,8 +1,8 @@
 pub mod ast;
 
 use ast::*;
-pub use oqi_lexer::{Error, Result};
-use oqi_lexer::{Lexer, Token};
+pub use oqi_lex::{Error, Result};
+use oqi_lex::{Lexer, Token};
 
 // ---------------------------------------------------------------------------
 // Public API

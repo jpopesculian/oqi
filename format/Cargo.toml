@@ -4,5 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-oqi-lexer = { path = "../lexer" }
-oqi-parser = { path = "../parser" }
+oqi-lex = { path = "../lex" }
+oqi-parse = { path = "../parse" }

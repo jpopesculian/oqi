@@ -139,8 +139,9 @@ enum RawToken {
     Barrier,
 
     #[token("true")]
+    True,
     #[token("false")]
-    BooleanLiteral,
+    False,
 
     // ---- Symbols ----
     #[token("[")]
@@ -200,31 +201,46 @@ enum RawToken {
 
     // ---- Multi-value operators ----
     #[token("==")]
+    DoubleEquals,
     #[token("!=")]
-    EqualityOperator,
+    ExclamationEquals,
 
     #[token("+=")]
+    PlusEquals,
     #[token("-=")]
+    MinusEquals,
     #[token("*=")]
+    AsteriskEquals,
     #[token("/=")]
+    SlashEquals,
     #[token("&=")]
+    AmpersandEquals,
     #[token("|=")]
+    PipeEquals,
     #[token("^=")]
+    CaretEquals,
     #[token("<<=")]
+    LeftShiftEquals,
     #[token(">>=")]
+    RightShiftEquals,
     #[token("%=")]
+    PercentEquals,
     #[token("**=")]
-    CompoundAssignmentOperator,
+    DoubleAsteriskEquals,
 
     #[token(">")]
+    GreaterThan,
     #[token("<")]
+    LessThan,
     #[token(">=")]
+    GreaterThanEquals,
     #[token("<=")]
-    ComparisonOperator,
+    LessThanEquals,
 
     #[token(">>")]
+    DoubleGreater,
     #[token("<<")]
-    BitshiftOperator,
+    DoubleLess,
 
     #[token("im")]
     Imag,
@@ -453,7 +469,8 @@ impl<'a> Lexer<'a> {
             RawToken::Barrier => Token::Barrier,
 
             // Booleans
-            RawToken::BooleanLiteral => Token::BooleanLiteral(slice),
+            RawToken::True => Token::True,
+            RawToken::False => Token::False,
 
             // Symbols
             RawToken::LBracket => Token::LBracket,
@@ -484,10 +501,25 @@ impl<'a> Lexer<'a> {
             RawToken::ExclamationPoint => Token::ExclamationPoint,
 
             // Multi-value operators
-            RawToken::EqualityOperator => Token::EqualityOperator(slice),
-            RawToken::CompoundAssignmentOperator => Token::CompoundAssignmentOperator(slice),
-            RawToken::ComparisonOperator => Token::ComparisonOperator(slice),
-            RawToken::BitshiftOperator => Token::BitshiftOperator(slice),
+            RawToken::DoubleEquals => Token::DoubleEquals,
+            RawToken::ExclamationEquals => Token::ExclamationEquals,
+            RawToken::PlusEquals => Token::PlusEquals,
+            RawToken::MinusEquals => Token::MinusEquals,
+            RawToken::AsteriskEquals => Token::AsteriskEquals,
+            RawToken::SlashEquals => Token::SlashEquals,
+            RawToken::AmpersandEquals => Token::AmpersandEquals,
+            RawToken::PipeEquals => Token::PipeEquals,
+            RawToken::CaretEquals => Token::CaretEquals,
+            RawToken::LeftShiftEquals => Token::LeftShiftEquals,
+            RawToken::RightShiftEquals => Token::RightShiftEquals,
+            RawToken::PercentEquals => Token::PercentEquals,
+            RawToken::DoubleAsteriskEquals => Token::DoubleAsteriskEquals,
+            RawToken::GreaterThan => Token::GreaterThan,
+            RawToken::LessThan => Token::LessThan,
+            RawToken::GreaterThanEquals => Token::GreaterThanEquals,
+            RawToken::LessThanEquals => Token::LessThanEquals,
+            RawToken::DoubleGreater => Token::DoubleGreater,
+            RawToken::DoubleLess => Token::DoubleLess,
 
             // Literals
             RawToken::Imag => Token::Imag,
@@ -864,10 +896,10 @@ mod tests {
                 Token::Plus,
                 Token::DoublePlus,
                 Token::DoubleAsterisk,
-                Token::CompoundAssignmentOperator("**="),
-                Token::CompoundAssignmentOperator(">>="),
-                Token::EqualityOperator("=="),
-                Token::EqualityOperator("!="),
+                Token::DoubleAsteriskEquals,
+                Token::RightShiftEquals,
+                Token::DoubleEquals,
+                Token::ExclamationEquals,
             ]
         );
     }
@@ -959,10 +991,7 @@ mod tests {
     fn boolean_literal() {
         assert_eq!(
             lex("true false"),
-            vec![
-                Token::BooleanLiteral("true"),
-                Token::BooleanLiteral("false")
-            ]
+            vec![Token::True, Token::False]
         );
     }
 

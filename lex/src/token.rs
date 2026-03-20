@@ -65,7 +65,8 @@ pub enum Token<'a> {
     Imag,
 
     // Literals
-    BooleanLiteral(&'a str),
+    True,
+    False,
     BinaryIntegerLiteral(&'a str),
     OctalIntegerLiteral(&'a str),
     DecimalIntegerLiteral(&'a str),
@@ -107,10 +108,25 @@ pub enum Token<'a> {
     ExclamationPoint,
 
     // Multi-value operators
-    EqualityOperator(&'a str),
-    CompoundAssignmentOperator(&'a str),
-    ComparisonOperator(&'a str),
-    BitshiftOperator(&'a str),
+    DoubleEquals,
+    ExclamationEquals,
+    PlusEquals,
+    MinusEquals,
+    AsteriskEquals,
+    SlashEquals,
+    AmpersandEquals,
+    PipeEquals,
+    CaretEquals,
+    LeftShiftEquals,
+    RightShiftEquals,
+    PercentEquals,
+    DoubleAsteriskEquals,
+    GreaterThan,
+    LessThan,
+    GreaterThanEquals,
+    LessThanEquals,
+    DoubleGreater,
+    DoubleLess,
 
     // Mode-specific tokens
     VersionSpecifier(&'a str),

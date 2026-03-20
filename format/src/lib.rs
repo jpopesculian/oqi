@@ -1073,17 +1073,28 @@ impl Format for ast::OldStyleKind {
     }
 }
 
-impl<'a> Format for ast::AssignOp<'a> {
+impl Format for ast::AssignOp {
     fn format(
         &self,
         fmt: &mut fmt::Formatter<'_>,
         ctx: &mut Context<'_>,
         _config: &Config,
     ) -> fmt::Result {
-        match self {
-            ast::AssignOp::Assign => ctx.write_str(fmt, "="),
-            ast::AssignOp::Compound(op) => ctx.write_str(fmt, op),
-        }
+        let s = match self {
+            ast::AssignOp::Assign => "=",
+            ast::AssignOp::AddAssign => "+=",
+            ast::AssignOp::SubAssign => "-=",
+            ast::AssignOp::MulAssign => "*=",
+            ast::AssignOp::DivAssign => "/=",
+            ast::AssignOp::BitAndAssign => "&=",
+            ast::AssignOp::BitOrAssign => "|=",
+            ast::AssignOp::BitXorAssign => "^=",
+            ast::AssignOp::LeftShiftAssign => "<<=",
+            ast::AssignOp::RightShiftAssign => ">>=",
+            ast::AssignOp::ModAssign => "%=",
+            ast::AssignOp::PowAssign => "**=",
+        };
+        ctx.write_str(fmt, s)
     }
 }
 

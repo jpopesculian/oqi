@@ -376,11 +376,13 @@ pub enum IoDir {
     Output,
 }
 
+#[derive(Debug)]
 pub enum CallTarget {
     Symbol(SymbolId),
     Intrinsic(Intrinsic),
 }
 
+#[derive(Debug)]
 pub enum Intrinsic {
     Sin,
     Cos,

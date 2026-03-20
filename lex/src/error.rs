@@ -1,4 +1,4 @@
-use crate::token::Span;
+use crate::span::Span;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Error {

@@ -194,14 +194,22 @@ pub enum UnOp {
     LogNot,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IntEncoding {
+    Decimal,
+    Binary,
+    Octal,
+    Hex,
+}
+
 #[derive(Debug)]
 pub enum Expr<'a> {
     Ident(Ident<'a>),
     HardwareQubit(&'a str, Span),
-    IntLiteral(&'a str, Span),
+    IntLiteral(&'a str, IntEncoding, Span),
     FloatLiteral(&'a str, Span),
     ImagLiteral(&'a str, Span),
-    BoolLiteral(&'a str, Span),
+    BoolLiteral(bool, Span),
     BitstringLiteral(&'a str, Span),
     TimingLiteral(&'a str, Span),
     Paren(Box<Expr<'a>>, Span),
@@ -240,9 +248,9 @@ pub enum Expr<'a> {
 impl<'a> Expr<'a> {
     pub fn span(&self) -> Span {
         match self {
-            Expr::Ident(id) => id.span.clone(),
+            Expr::Ident(id) => id.span,
             Expr::HardwareQubit(_, s)
-            | Expr::IntLiteral(_, s)
+            | Expr::IntLiteral(_, _, s)
             | Expr::FloatLiteral(_, s)
             | Expr::ImagLiteral(_, s)
             | Expr::BoolLiteral(_, s)
@@ -254,7 +262,7 @@ impl<'a> Expr<'a> {
             | Expr::Index { span: s, .. }
             | Expr::Call { span: s, .. }
             | Expr::Cast { span: s, .. }
-            | Expr::DurationOf { span: s, .. } => s.clone(),
+            | Expr::DurationOf { span: s, .. } => *s,
         }
     }
 }
@@ -357,10 +365,10 @@ pub enum GateOperand<'a> {
 }
 
 impl<'a> GateOperand<'a> {
-    pub fn span(&self) -> &Span {
+    pub fn span(&self) -> Span {
         match self {
-            GateOperand::Indexed(id) => &id.span,
-            GateOperand::HardwareQubit(_, s) => s,
+            GateOperand::Indexed(id) => id.span,
+            GateOperand::HardwareQubit(_, s) => *s,
         }
     }
 }
@@ -456,7 +464,7 @@ pub enum ScalarType<'a> {
 }
 
 impl<'a> ScalarType<'a> {
-    pub fn span(&self) -> &Span {
+    pub fn span(&self) -> Span {
         match self {
             ScalarType::Bit(_, s)
             | ScalarType::Int(_, s)
@@ -466,7 +474,7 @@ impl<'a> ScalarType<'a> {
             | ScalarType::Bool(s)
             | ScalarType::Duration(s)
             | ScalarType::Stretch(s)
-            | ScalarType::Complex(_, s) => s,
+            | ScalarType::Complex(_, s) => *s,
         }
     }
 }

@@ -13,7 +13,39 @@ fn normalize_ast(source: &str) -> String {
     strip_spans(&format!("{program:#?}"))
 }
 
+fn strip_struct_spans(debug: &str) -> String {
+    let mut output = String::with_capacity(debug.len());
+    let mut rest = debug;
+
+    while let Some(start) = rest.find("Span {") {
+        output.push_str(&rest[..start]);
+
+        let mut depth = 0usize;
+        let mut end = start;
+        for (offset, ch) in rest[start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = start + offset + ch.len_utf8();
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        output.push_str("<span>");
+        rest = &rest[end..];
+    }
+
+    output.push_str(rest);
+    output
+}
+
 fn strip_spans(debug: &str) -> String {
+    let debug = strip_struct_spans(debug);
     let mut output = String::with_capacity(debug.len());
     let mut chars = debug.chars().peekable();
     let mut in_string = false;
@@ -97,7 +129,7 @@ fn check_fixture(name: &str) {
 
     let expected = normalize_ast(&source);
     let default = normalize_ast(&formatted_default);
-    let compact = normalize_ast(&formatted_default);
+    let compact = normalize_ast(&formatted_compact);
 
     assert_eq!(
         expected, default,

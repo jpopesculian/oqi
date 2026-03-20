@@ -1,10 +1,12 @@
 mod error;
+mod span;
 mod token;
 
 use logos::Logos;
 
 pub use error::{Error, Result};
-pub use token::{Span, Token};
+pub use span::{Span, span};
+pub use token::Token;
 
 // ---------------------------------------------------------------------------
 // Internal logos-derived enum for default mode tokenization
@@ -357,9 +359,9 @@ impl<'a> Lexer<'a> {
 
         let mut raw = RawToken::lexer(remaining);
         let result = raw.next()?;
-        let span = raw.span();
-        let slice = &remaining[span.clone()];
-        let abs = (self.pos + span.start)..(self.pos + span.end);
+        let span = Span::from(raw.span());
+        let slice = &remaining[span];
+        let abs = span.offset(self.pos);
         self.pos += span.end;
 
         match result {
@@ -560,7 +562,7 @@ impl<'a> Lexer<'a> {
             end += 1;
         }
         if end == 0 {
-            let span = self.pos..self.pos + 1;
+            let span = span(self.pos, self.pos + 1);
             self.pos += 1;
             self.pop_mode();
             return Some(Err(Error {
@@ -575,8 +577,8 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        let span = self.pos..self.pos + end;
-        let slice = &self.source[span.clone()];
+        let span = span(self.pos, self.pos + end);
+        let slice = &self.source[span];
         self.pos += end;
         self.pop_mode();
         Some(Ok((Token::VersionSpecifier(slice), span)))
@@ -598,7 +600,7 @@ impl<'a> Lexer<'a> {
         let quote = bytes[0];
 
         if quote != b'"' && quote != b'\'' {
-            let span = self.pos..self.pos + 1;
+            let span = span(self.pos, self.pos + 1);
             self.pos += 1;
             self.pop_mode();
             return Some(Err(Error {
@@ -620,8 +622,8 @@ impl<'a> Lexer<'a> {
             end += 1;
         }
 
-        let span = self.pos..self.pos + end;
-        let slice = &self.source[span.clone()];
+        let span = span(self.pos, self.pos + end);
+        let slice = &self.source[span];
         self.pos += end;
         self.pop_mode();
         Some(Ok((Token::StringLiteral(slice), span)))
@@ -672,8 +674,8 @@ impl<'a> Lexer<'a> {
             self.pos += 1;
         }
 
-        let span = start..self.pos;
-        let slice = &self.source[span.clone()];
+        let span = span(start, self.pos);
+        let slice = &self.source[span];
         // Don't pop yet — next call sees newline and pops
         Some(Ok((Token::RemainingLineContent(slice), span)))
     }
@@ -694,8 +696,8 @@ impl<'a> Lexer<'a> {
         // Line comment
         if remaining.starts_with("//") {
             let end = remaining.find(['\r', '\n']).unwrap_or(remaining.len());
-            let span = self.pos..self.pos + end;
-            let slice = &self.source[span.clone()];
+            let span = span(self.pos, self.pos + end);
+            let slice = &self.source[span];
             self.pos += end;
             return Some(Ok((Token::LineComment(slice), span)));
         }
@@ -704,12 +706,12 @@ impl<'a> Lexer<'a> {
         if let Some(stripped) = remaining.strip_prefix("/*") {
             if let Some(i) = stripped.find("*/") {
                 let end = i + 4; // include the closing */
-                let span = self.pos..self.pos + end;
-                let slice = &self.source[span.clone()];
+                let span = span(self.pos, self.pos + end);
+                let slice = &self.source[span];
                 self.pos += end;
                 return Some(Ok((Token::BlockComment(slice), span)));
             } else {
-                let span = self.pos..self.source.len();
+                let span = span(self.pos, self.source.len());
                 self.pos = self.source.len();
                 return Some(Err(Error {
                     span,
@@ -720,14 +722,14 @@ impl<'a> Lexer<'a> {
 
         // Opening brace
         if remaining.starts_with('{') {
-            let span = self.pos..self.pos + 1;
+            let span = span(self.pos, self.pos + 1);
             self.pos += 1;
             self.set_mode(Mode::CalBlock);
             return Some(Ok((Token::LBrace, span)));
         }
 
         // Unexpected
-        let span = self.pos..self.pos + 1;
+        let span = span(self.pos, self.pos + 1);
         self.pos += 1;
         Some(Err(Error {
             span,
@@ -747,7 +749,7 @@ impl<'a> Lexer<'a> {
 
         // Closing brace at top level
         if self.source.as_bytes()[self.pos] == b'}' {
-            let span = self.pos..self.pos + 1;
+            let span = span(self.pos, self.pos + 1);
             self.pos += 1;
             self.set_mode(Mode::Default);
             return Some(Ok((Token::RBrace, span)));
@@ -776,8 +778,8 @@ impl<'a> Lexer<'a> {
             return None;
         }
 
-        let span = start..self.pos;
-        let slice = &self.source[span.clone()];
+        let span = span(start, self.pos);
+        let slice = &self.source[span];
         Some(Ok((Token::CalibrationBlock(slice), span)))
     }
 
@@ -989,10 +991,7 @@ mod tests {
 
     #[test]
     fn boolean_literal() {
-        assert_eq!(
-            lex("true false"),
-            vec![Token::True, Token::False]
-        );
+        assert_eq!(lex("true false"), vec![Token::True, Token::False]);
     }
 
     #[test]

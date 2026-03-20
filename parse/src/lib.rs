@@ -52,21 +52,21 @@ impl<'a> Parser<'a> {
     fn peek_span(&self) -> Span {
         self.tokens
             .get(self.pos)
-            .map(|(_, s)| s.clone())
-            .unwrap_or(self.max_pos..self.max_pos)
+            .map(|(_, s)| *s)
+            .unwrap_or(oqi_lex::span(self.max_pos, self.max_pos))
     }
 
     fn advance(&mut self) -> (Token<'a>, Span) {
-        let item = self.tokens[self.pos].clone();
+        let item = self.tokens[self.pos];
         self.pos += 1;
         item
     }
 
     fn prev_span(&self) -> Span {
         if self.pos > 0 {
-            self.tokens[self.pos - 1].1.clone()
+            self.tokens[self.pos - 1].1
         } else {
-            0..0
+            Default::default()
         }
     }
 
@@ -191,7 +191,7 @@ impl<'a> Parser<'a> {
         Ok(Program {
             version,
             body,
-            span: 0..self.max_pos,
+            span: oqi_lex::span(0, self.max_pos),
         })
     }
 
@@ -206,7 +206,7 @@ impl<'a> Parser<'a> {
             let end = self.expect_semi()?;
             Ok(Version {
                 specifier,
-                span: start.start..end.end,
+                span: oqi_lex::span(start.start, end.end),
             })
         } else {
             Err(Error {
@@ -233,7 +233,7 @@ impl<'a> Parser<'a> {
         let end = self.expect_rbrace()?;
         Ok(Scope {
             body,
-            span: start.start..end.end,
+            span: oqi_lex::span(start.start, end.end),
         })
     }
 
@@ -247,7 +247,7 @@ impl<'a> Parser<'a> {
             return Ok(Stmt {
                 annotations: vec![],
                 kind,
-                span: start.start..end.end,
+                span: oqi_lex::span(start.start, end.end),
             });
         }
 
@@ -257,7 +257,7 @@ impl<'a> Parser<'a> {
         Ok(Stmt {
             annotations,
             kind,
-            span: start.start..end.end,
+            span: oqi_lex::span(start.start, end.end),
         })
     }
 
@@ -281,7 +281,7 @@ impl<'a> Parser<'a> {
             annotations.push(Annotation {
                 keyword,
                 content,
-                span: kw_span.start..end.end,
+                span: oqi_lex::span(kw_span.start, end.end),
             });
         }
         annotations
@@ -425,7 +425,7 @@ impl<'a> Parser<'a> {
                 let start = self.advance().1;
                 let range = self.parse_range_expression()?;
                 let end = self.expect_rbracket()?;
-                ForIterable::Range(range, start.start..end.end)
+                ForIterable::Range(range, oqi_lex::span(start.start, end.end))
             }
             _ => ForIterable::Expr(self.parse_expr(0)?),
         };
@@ -572,7 +572,7 @@ impl<'a> Parser<'a> {
     fn parse_measure_arrow(&mut self) -> Result<StmtKind<'a>> {
         let start = self.advance().1; // eat measure
         let operand = self.parse_gate_operand()?;
-        let mspan = start.start..operand.span().end;
+        let mspan = oqi_lex::span(start.start, operand.span().end);
         let measure = MeasureExpr::Measure {
             operand,
             span: mspan,
@@ -642,13 +642,13 @@ impl<'a> Parser<'a> {
                     self.advance();
                     let target = self.parse_indexed_identifier()?;
                     self.expect_semi()?;
-                    let span = name.span.start..target.span.end;
+                    let span = oqi_lex::span(name.span.start, target.span.end);
                     Ok(StmtKind::MeasureArrow {
                         measure: MeasureExpr::QuantumCall {
                             name,
                             args: args.unwrap_or_default(),
                             operands,
-                            span: span.clone(),
+                            span,
                         },
                         target: Some(target),
                     })
@@ -738,7 +738,7 @@ impl<'a> Parser<'a> {
                     return Err(self.error("expected '@'"));
                 }
                 let end = self.advance().1;
-                Ok(GateModifier::Inv(start.start..end.end))
+                Ok(GateModifier::Inv(oqi_lex::span(start.start, end.end)))
             }
             Some(Token::Pow) => {
                 self.advance();
@@ -749,7 +749,7 @@ impl<'a> Parser<'a> {
                     return Err(self.error("expected '@'"));
                 }
                 let end = self.advance().1;
-                Ok(GateModifier::Pow(expr, start.start..end.end))
+                Ok(GateModifier::Pow(expr, oqi_lex::span(start.start, end.end)))
             }
             Some(Token::Ctrl) => {
                 self.advance();
@@ -765,7 +765,10 @@ impl<'a> Parser<'a> {
                     return Err(self.error("expected '@'"));
                 }
                 let end = self.advance().1;
-                Ok(GateModifier::Ctrl(expr, start.start..end.end))
+                Ok(GateModifier::Ctrl(
+                    expr,
+                    oqi_lex::span(start.start, end.end),
+                ))
             }
             Some(Token::Negctrl) => {
                 self.advance();
@@ -781,7 +784,10 @@ impl<'a> Parser<'a> {
                     return Err(self.error("expected '@'"));
                 }
                 let end = self.advance().1;
-                Ok(GateModifier::NegCtrl(expr, start.start..end.end))
+                Ok(GateModifier::NegCtrl(
+                    expr,
+                    oqi_lex::span(start.start, end.end),
+                ))
             }
             _ => Err(self.error("expected gate modifier")),
         }
@@ -1069,7 +1075,7 @@ impl<'a> Parser<'a> {
             let start = self.peek_span();
             self.advance();
             let operand = self.parse_gate_operand()?;
-            let span = start.start..operand.span().end;
+            let span = oqi_lex::span(start.start, operand.span().end);
             return Ok(ExprOrMeasure::Measure(MeasureExpr::Measure {
                 operand,
                 span,
@@ -1083,7 +1089,7 @@ impl<'a> Parser<'a> {
             let (name, args, _) = self.decompose_gate_head(expr)?;
             let operands = self.parse_gate_operand_list()?;
             let end = operands.last().unwrap().span().end;
-            let span = name.span.start..end;
+            let span = oqi_lex::span(name.span.start, end);
             return Ok(ExprOrMeasure::Measure(MeasureExpr::QuantumCall {
                 name,
                 args: args.unwrap_or_default(),
@@ -1103,7 +1109,7 @@ impl<'a> Parser<'a> {
             let start = self.peek_span();
             self.advance();
             let operand = self.parse_gate_operand()?;
-            let span = start.start..operand.span().end;
+            let span = oqi_lex::span(start.start, operand.span().end);
             return Ok(DeclExpr::Measure(MeasureExpr::Measure { operand, span }));
         }
 
@@ -1113,7 +1119,7 @@ impl<'a> Parser<'a> {
             let (name, args, _) = self.decompose_gate_head(expr)?;
             let operands = self.parse_gate_operand_list()?;
             let end = operands.last().unwrap().span().end;
-            let span = name.span.start..end;
+            let span = oqi_lex::span(name.span.start, end);
             return Ok(DeclExpr::Measure(MeasureExpr::QuantumCall {
                 name,
                 args: args.unwrap_or_default(),
@@ -1148,7 +1154,7 @@ impl<'a> Parser<'a> {
         let end = self.expect_rbrace()?;
         Ok(ArrayLiteral {
             items,
-            span: start.start..end.end,
+            span: oqi_lex::span(start.start, end.end),
         })
     }
 
@@ -1167,7 +1173,7 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 let index = self.parse_index_operator()?;
-                let span = lhs.span().start..index.span.end;
+                let span = oqi_lex::span(lhs.span().start, index.span.end);
                 lhs = Expr::Index {
                     expr: Box::new(lhs),
                     index,
@@ -1187,7 +1193,7 @@ impl<'a> Parser<'a> {
             let (op_token, _) = self.advance();
             let op = Self::token_to_binop(&op_token);
             let rhs = self.parse_expr(r_bp)?;
-            let span = lhs.span().start..rhs.span().end;
+            let span = oqi_lex::span(lhs.span().start, rhs.span().end);
             lhs = Expr::BinOp {
                 left: Box::new(lhs),
                 op,
@@ -1210,7 +1216,7 @@ impl<'a> Parser<'a> {
                 _ => unreachable!(),
             };
             let operand = self.parse_expr(bp)?;
-            let span = op_span.start..operand.span().end;
+            let span = oqi_lex::span(op_span.start, operand.span().end);
             return Ok(Expr::UnaryOp {
                 op,
                 operand: Box::new(operand),
@@ -1223,7 +1229,10 @@ impl<'a> Parser<'a> {
             let start = self.advance().1;
             let inner = self.parse_expr(0)?;
             let end = self.expect_rparen()?;
-            return Ok(Expr::Paren(Box::new(inner), start.start..end.end));
+            return Ok(Expr::Paren(
+                Box::new(inner),
+                oqi_lex::span(start.start, end.end),
+            ));
         }
 
         // DurationOf
@@ -1234,7 +1243,7 @@ impl<'a> Parser<'a> {
             let end = self.expect_rparen()?;
             return Ok(Expr::DurationOf {
                 scope,
-                span: start.start..end.end,
+                span: oqi_lex::span(start.start, end.end),
             });
         }
 
@@ -1248,7 +1257,7 @@ impl<'a> Parser<'a> {
             return Ok(Expr::Cast {
                 ty: Box::new(ty),
                 operand: Box::new(operand),
-                span: start.start..end.end,
+                span: oqi_lex::span(start.start, end.end),
             });
         }
 
@@ -1258,10 +1267,7 @@ impl<'a> Parser<'a> {
             let Token::Identifier(name) = tok else {
                 unreachable!()
             };
-            let ident = Ident {
-                name,
-                span: span.clone(),
-            };
+            let ident = Ident { name, span };
 
             // Check for call: Identifier LPAREN expressionList? RPAREN
             if matches!(self.peek(), Some(Token::LParen)) {
@@ -1275,7 +1281,7 @@ impl<'a> Parser<'a> {
                 return Ok(Expr::Call {
                     name: ident,
                     args,
-                    span: span.start..end.end,
+                    span: oqi_lex::span(span.start, end.end),
                 });
             }
 
@@ -1285,12 +1291,21 @@ impl<'a> Parser<'a> {
         // Literals
         if let Some(tok) = self.peek().cloned() {
             match tok {
-                Token::DecimalIntegerLiteral(s)
-                | Token::BinaryIntegerLiteral(s)
-                | Token::OctalIntegerLiteral(s)
-                | Token::HexIntegerLiteral(s) => {
+                Token::DecimalIntegerLiteral(s) => {
                     let (_, span) = self.advance();
-                    return Ok(Expr::IntLiteral(s, span));
+                    return Ok(Expr::IntLiteral(s, IntEncoding::Decimal, span));
+                }
+                Token::BinaryIntegerLiteral(s) => {
+                    let (_, span) = self.advance();
+                    return Ok(Expr::IntLiteral(s, IntEncoding::Binary, span));
+                }
+                Token::OctalIntegerLiteral(s) => {
+                    let (_, span) = self.advance();
+                    return Ok(Expr::IntLiteral(s, IntEncoding::Octal, span));
+                }
+                Token::HexIntegerLiteral(s) => {
+                    let (_, span) = self.advance();
+                    return Ok(Expr::IntLiteral(s, IntEncoding::Hex, span));
                 }
                 Token::FloatLiteral(s) => {
                     let (_, span) = self.advance();
@@ -1302,11 +1317,11 @@ impl<'a> Parser<'a> {
                 }
                 Token::True => {
                     let (_, span) = self.advance();
-                    return Ok(Expr::BoolLiteral("true", span));
+                    return Ok(Expr::BoolLiteral(true, span));
                 }
                 Token::False => {
                     let (_, span) = self.advance();
-                    return Ok(Expr::BoolLiteral("false", span));
+                    return Ok(Expr::BoolLiteral(false, span));
                 }
                 Token::BitstringLiteral(s) => {
                     let (_, span) = self.advance();
@@ -1404,7 +1419,7 @@ impl<'a> Parser<'a> {
         let end = self.expect_rbracket()?;
         Ok(IndexOp {
             kind,
-            span: start.start..end.end,
+            span: oqi_lex::span(start.start, end.end),
         })
     }
 
@@ -1477,7 +1492,7 @@ impl<'a> Parser<'a> {
             exprs.push(self.parse_expr(0)?);
         }
         let end = self.expect_rbrace()?;
-        Ok((exprs, start.start..end.end))
+        Ok((exprs, oqi_lex::span(start.start, end.end)))
     }
 
     // ------------------------------------------------------------------
@@ -1492,31 +1507,46 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let desig = self.try_parse_designator()?;
                 let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
-                Ok(ScalarType::Bit(desig.map(Box::new), start.start..end))
+                Ok(ScalarType::Bit(
+                    desig.map(Box::new),
+                    oqi_lex::span(start.start, end),
+                ))
             }
             Some(Token::Int) => {
                 self.advance();
                 let desig = self.try_parse_designator()?;
                 let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
-                Ok(ScalarType::Int(desig.map(Box::new), start.start..end))
+                Ok(ScalarType::Int(
+                    desig.map(Box::new),
+                    oqi_lex::span(start.start, end),
+                ))
             }
             Some(Token::Uint) => {
                 self.advance();
                 let desig = self.try_parse_designator()?;
                 let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
-                Ok(ScalarType::Uint(desig.map(Box::new), start.start..end))
+                Ok(ScalarType::Uint(
+                    desig.map(Box::new),
+                    oqi_lex::span(start.start, end),
+                ))
             }
             Some(Token::Float) => {
                 self.advance();
                 let desig = self.try_parse_designator()?;
                 let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
-                Ok(ScalarType::Float(desig.map(Box::new), start.start..end))
+                Ok(ScalarType::Float(
+                    desig.map(Box::new),
+                    oqi_lex::span(start.start, end),
+                ))
             }
             Some(Token::Angle) => {
                 self.advance();
                 let desig = self.try_parse_designator()?;
                 let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
-                Ok(ScalarType::Angle(desig.map(Box::new), start.start..end))
+                Ok(ScalarType::Angle(
+                    desig.map(Box::new),
+                    oqi_lex::span(start.start, end),
+                ))
             }
             Some(Token::Bool) => {
                 self.advance();
@@ -1538,7 +1568,7 @@ impl<'a> Parser<'a> {
                     let end = self.expect_rbracket()?;
                     Ok(ScalarType::Complex(
                         Some(Box::new(inner)),
-                        start.start..end.end,
+                        oqi_lex::span(start.start, end.end),
                     ))
                 } else {
                     Ok(ScalarType::Complex(None, start))
@@ -1558,7 +1588,7 @@ impl<'a> Parser<'a> {
         let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
         Ok(QubitType {
             designator: desig.map(Box::new),
-            span: start.start..end,
+            span: oqi_lex::span(start.start, end),
         })
     }
 
@@ -1579,7 +1609,7 @@ impl<'a> Parser<'a> {
         Ok(ArrayType {
             element_type,
             dimensions,
-            span: start.start..end.end,
+            span: oqi_lex::span(start.start, end.end),
         })
     }
 
@@ -1621,7 +1651,7 @@ impl<'a> Parser<'a> {
             mutability,
             element_type,
             dimensions,
-            span: start.start..end.end,
+            span: oqi_lex::span(start.start, end.end),
         })
     }
 
@@ -1690,7 +1720,7 @@ impl<'a> Parser<'a> {
         Ok(IndexedIdent {
             name,
             indices,
-            span: start..end,
+            span: oqi_lex::span(start, end),
         })
     }
 
@@ -1857,7 +1887,7 @@ impl<'a> Parser<'a> {
     fn expr_to_indexed_ident(&self, expr: Expr<'a>) -> Result<IndexedIdent<'a>> {
         match expr {
             Expr::Ident(id) => {
-                let span = id.span.clone();
+                let span = id.span;
                 Ok(IndexedIdent {
                     name: id,
                     indices: vec![],

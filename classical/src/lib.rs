@@ -1,0 +1,21 @@
+mod array;
+mod array_ref;
+mod duration;
+mod error;
+mod index;
+pub mod ops;
+mod primitive;
+mod scalar;
+mod shared;
+mod ty;
+mod value;
+
+pub use array::{Array, ArrayDim, ArrayShape, ArrayTy, ScalarIter, adim, ashape};
+pub use array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
+pub use duration::{Duration, DurationUnit};
+pub use error::{Error, Result};
+pub use index::Index;
+pub use primitive::{BitWidth, FloatWidth, Primitive, PrimitiveTy, bw};
+pub use scalar::{Scalar, ScalarTy};
+pub use shared::Shared;
+pub use value::{Value, ValueTy};

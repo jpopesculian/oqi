@@ -154,9 +154,7 @@ fn check_fixture(name: &str) {
     )
     .unwrap();
 
-    let our_tokens: Vec<_> = Lexer::new(&source)
-        .filter_map(|r| r.ok())
-        .collect();
+    let our_tokens: Vec<_> = Lexer::new(&source).filter_map(|r| r.ok()).collect();
 
     assert_eq!(
         our_tokens.len(),
@@ -169,7 +167,7 @@ fn check_fixture(name: &str) {
     for (i, (ours, expected)) in our_tokens.iter().zip(fixture.iter()).enumerate() {
         let (token, span) = ours;
         let our_type = antlr_type_name(token);
-        let our_text = &source[span.clone()];
+        let our_text = &source[std::ops::Range::<usize>::from(*span)];
 
         assert_eq!(
             our_type, expected.r#type,
@@ -192,8 +190,7 @@ fn check_fixture(name: &str) {
         );
 
         assert_eq!(
-            char_stop,
-            expected.stop,
+            char_stop, expected.stop,
             "{name} token #{i} ({our_type}): stop offset mismatch (ours={char_stop}, antlr={})",
             expected.stop,
         );

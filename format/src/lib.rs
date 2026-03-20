@@ -167,7 +167,7 @@ impl<'a> Context<'a> {
         &self.comments
     }
 
-    pub fn comments_in<'b>(&'b self, span: &'b Span) -> impl Iterator<Item = &'b Comment<'a>> {
+    pub fn comments_in(&self, span: Span) -> impl Iterator<Item = &Comment<'a>> {
         self.comments
             .iter()
             .filter(move |comment| span.start <= comment.span.start && comment.span.end <= span.end)
@@ -213,10 +213,10 @@ impl<'a> Context<'a> {
             if config.compact {
                 continue;
             }
-            if let Some(end) = prev_end {
-                if self.has_blank_line_between(end, comment.span.start) {
-                    self.newline(fmt)?;
-                }
+            if let Some(end) = prev_end
+                && self.has_blank_line_between(end, comment.span.start)
+            {
+                self.newline(fmt)?;
             }
             self.write_comment(fmt, &comment, config)?;
             prev_end = Some(comment.span.end);
@@ -326,8 +326,7 @@ impl<'a> Context<'a> {
             return Ok(());
         };
 
-        if !config.compact || previous.requires_trailing_newline()
-        {
+        if !config.compact || previous.requires_trailing_newline() {
             self.newline(fmt)?;
             if !config.compact
                 && self.has_blank_line_between(previous.span_end(), next.compact_anchor())
@@ -1536,10 +1535,12 @@ fn format_expr(
     match expr {
         ast::Expr::Ident(ident) => ident.format(fmt, ctx, config)?,
         ast::Expr::HardwareQubit(name, _) => ctx.write_str(fmt, name)?,
-        ast::Expr::IntLiteral(value, _) => ctx.write_str(fmt, value)?,
+        ast::Expr::IntLiteral(value, _, _) => ctx.write_str(fmt, value)?,
         ast::Expr::FloatLiteral(value, _) => ctx.write_str(fmt, value)?,
         ast::Expr::ImagLiteral(value, _) => ctx.write_str(fmt, value)?,
-        ast::Expr::BoolLiteral(value, _) => ctx.write_str(fmt, value)?,
+        ast::Expr::BoolLiteral(value, _) => {
+            ctx.write_str(fmt, if *value { "true" } else { "false" })?
+        }
         ast::Expr::BitstringLiteral(value, _) => ctx.write_str(fmt, value)?,
         ast::Expr::TimingLiteral(value, _) => ctx.write_str(fmt, value)?,
         ast::Expr::Paren(inner, _) => {
@@ -1660,10 +1661,10 @@ fn format_optional_designator(
     Ok(())
 }
 
-fn span_of_stmt_or_scope<'a>(node: &'a ast::StmtOrScope<'a>) -> &'a Span {
+fn span_of_stmt_or_scope(node: &ast::StmtOrScope<'_>) -> Span {
     match node {
-        ast::StmtOrScope::Stmt(stmt) => &stmt.span,
-        ast::StmtOrScope::Scope(scope) => &scope.span,
+        ast::StmtOrScope::Stmt(stmt) => stmt.span,
+        ast::StmtOrScope::Scope(scope) => scope.span,
     }
 }
 
@@ -1816,8 +1817,8 @@ if (true) { x q[0]; }"#;
         assert_eq!(context.comments()[0].kind, CommentKind::Block);
         assert_eq!(context.comments()[1].kind, CommentKind::Line);
 
-        let include_span = 11..35;
-        let comments_in = context.comments_in(&include_span).count();
+        let include_span = oqi_lex::span(11, 35);
+        let comments_in = context.comments_in(include_span).count();
         let comments_before = context.comments_before(include_span.start).count();
         let comments_after = context.comments_after(include_span.end).count();
 

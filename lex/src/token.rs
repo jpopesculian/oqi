@@ -1,5 +1,3 @@
-pub type Span = std::ops::Range<usize>;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Token<'a> {
     // Keywords

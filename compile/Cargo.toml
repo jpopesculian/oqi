@@ -1,0 +1,11 @@
+[package]
+name = "oqi-compile"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+oqi-lex = { path = "../lex" }
+oqi-parse = { path = "../parse" }
+oqi-classical = { path = "../classical" }
+awint = "0.18"
+num-traits = "0.2.19"

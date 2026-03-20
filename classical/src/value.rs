@@ -1,0 +1,256 @@
+use crate::{
+    Primitive,
+    array::{Array, ArrayTy},
+    array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy},
+    error::{Error, Result},
+    scalar::{Scalar, ScalarTy},
+};
+use std::fmt;
+
+#[derive(Clone, Debug)]
+pub enum Value {
+    Scalar(Scalar),
+    Array(Array),
+    ArrayRef(ArrayRef),
+}
+
+impl Value {
+    pub const PI: Self = Value::Scalar(Scalar::PI);
+    pub const TAU: Self = Value::Scalar(Scalar::TAU);
+    pub const E: Self = Value::Scalar(Scalar::E);
+
+    pub fn ty(&self) -> ValueTy {
+        match self {
+            Value::Scalar(s) => ValueTy::Scalar(s.ty()),
+            Value::Array(a) => ValueTy::Array(a.ty()),
+            Value::ArrayRef(ar) => ValueTy::ArrayRef(ar.ty()),
+        }
+    }
+
+    pub fn cast(self, ty: ValueTy) -> Result<Self> {
+        match (self, ty) {
+            (Value::Scalar(s), ValueTy::Scalar(ty)) => Ok(Value::Scalar(s.cast(ty)?)),
+            (Value::Array(a), ValueTy::Array(ty)) => Ok(Value::Array(a.cast(ty)?)),
+            (Value::ArrayRef(ar), ValueTy::ArrayRef(ty)) => Ok(Value::Array(ar.cast(ty)?)),
+            (Value::Array(ar), ValueTy::ArrayRef(ty)) => {
+                Ok(Value::Array(ar.into_ref_mut().cast(ty)?))
+            }
+            (Value::ArrayRef(ar), ValueTy::Array(ty)) => Ok(Value::Array(ar.cast(ty.as_ref())?)),
+            (value, ty) => Err(Error::unsupported_cast(value.ty(), ty)),
+        }
+    }
+}
+
+impl From<Scalar> for Value {
+    fn from(scalar: Scalar) -> Self {
+        Value::Scalar(scalar)
+    }
+}
+
+impl From<Array> for Value {
+    fn from(array: Array) -> Self {
+        Value::Array(array)
+    }
+}
+
+impl From<ArrayRef> for Value {
+    fn from(array_ref: ArrayRef) -> Self {
+        Value::ArrayRef(array_ref)
+    }
+}
+
+impl From<Primitive> for Value {
+    #[inline]
+    fn from(primitive: Primitive) -> Self {
+        Value::Scalar(Scalar::from(primitive))
+    }
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Scalar(s) => write!(f, "{}", s),
+            Value::Array(a) => write!(f, "{}", a),
+            Value::ArrayRef(ar) => write!(f, "{}", ar),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Copy, PartialEq)]
+pub enum ValueTy {
+    Scalar(ScalarTy),
+    Array(ArrayTy),
+    ArrayRef(ArrayRefTy),
+}
+
+impl ValueTy {
+    pub fn size(&self, dim: usize) -> Option<usize> {
+        match self {
+            ValueTy::Scalar(ty) if dim == 0 => ty.bw().map(|bw| bw.get() as usize),
+            ValueTy::Array(ty) => {
+                if dim == ty.shape().dim() {
+                    ty.ty().bw().map(|bw| bw.get() as usize)
+                } else {
+                    ty.shape().get().get(dim).copied()
+                }
+            }
+            ValueTy::ArrayRef(ty) => match ty.shape() {
+                ArrayRefShape::Fixed(shape) => {
+                    if dim == shape.dim() {
+                        ty.ty().bw().map(|bw| bw.get() as usize)
+                    } else {
+                        shape.get().get(dim).copied()
+                    }
+                }
+                ArrayRefShape::Dim(_) => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+impl From<ScalarTy> for ValueTy {
+    #[inline]
+    fn from(scalar_ty: ScalarTy) -> Self {
+        ValueTy::Scalar(scalar_ty)
+    }
+}
+
+impl From<ArrayTy> for ValueTy {
+    #[inline]
+    fn from(array_ty: ArrayTy) -> Self {
+        ValueTy::Array(array_ty)
+    }
+}
+
+impl From<ArrayRefTy> for ValueTy {
+    #[inline]
+    fn from(array_ref_ty: ArrayRefTy) -> Self {
+        ValueTy::ArrayRef(array_ref_ty)
+    }
+}
+
+impl fmt::Display for ValueTy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ValueTy::Scalar(s) => write!(f, "{}", s),
+            ValueTy::Array(a) => write!(f, "{}", a),
+            ValueTy::ArrayRef(ar) => write!(f, "{}", ar),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        DurationUnit,
+        array::{Array, ArrayTy, ashape},
+        primitive::{FloatWidth::F64, Primitive, PrimitiveTy, PrimitiveTy::*, bw},
+        scalar::Scalar,
+    };
+
+    fn aty(ty: PrimitiveTy, shape: Vec<usize>) -> ArrayTy {
+        ArrayTy::new(ty, ashape(shape))
+    }
+
+    #[test]
+    fn scalar_cast_delegates_to_scalar_cast() {
+        let value = Value::Scalar(Scalar::new_unchecked(Primitive::uint(42_u128), Uint(bw(8))));
+
+        let cast = value.cast(ValueTy::Scalar(Float(F64))).unwrap();
+
+        match cast {
+            Value::Scalar(s) => {
+                assert!(matches!(s.ty(), Float(F64)));
+                assert_eq!(s.value().as_float(F64).unwrap(), 42.0);
+            }
+            _ => panic!("expected scalar"),
+        }
+    }
+
+    #[test]
+    fn array_cast_preserves_shape_and_casts_each_element() {
+        let value = Value::Array(Array::new_unchecked(
+            vec![Primitive::uint(1_u128), Primitive::uint(2_u128)],
+            aty(Uint(bw(8)), vec![2]),
+        ));
+
+        let cast = value
+            .cast(ValueTy::Array(aty(Float(F64), vec![2])))
+            .unwrap();
+
+        match cast {
+            Value::Array(a) => {
+                assert!(matches!(a.ty().ty(), Float(F64)));
+                assert_eq!(a.ty().shape().get(), &[2]);
+                assert_eq!(
+                    a.values()
+                        .iter()
+                        .map(|scalar| scalar.as_float(F64).unwrap())
+                        .collect::<Vec<_>>(),
+                    vec![1.0, 2.0]
+                );
+            }
+            _ => panic!("expected array"),
+        }
+    }
+
+    #[test]
+    fn array_allow_rejects_shape_changes() {
+        let value = Value::Array(Array::new_unchecked(
+            vec![Primitive::uint(1_u128), Primitive::uint(2_u128)],
+            aty(Uint(bw(8)), vec![2]),
+        ));
+
+        assert!(
+            value
+                .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1, 2])))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn array_cast_rejects_len_changes() {
+        let value = Value::Array(Array::new_unchecked(
+            vec![Primitive::uint(1_u128), Primitive::uint(2_u128)],
+            aty(Uint(bw(8)), vec![2]),
+        ));
+
+        assert!(
+            value
+                .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1, 3])))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn cast_rejects_scalar_array_mismatch() {
+        let scalar = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Uint(bw(8))));
+        let array = Value::Array(Array::new_unchecked(
+            vec![Primitive::uint(1_u128)],
+            aty(Uint(bw(8)), vec![1]),
+        ));
+
+        assert!(
+            scalar
+                .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1])))
+                .is_err()
+        );
+        assert!(array.cast(ValueTy::Scalar(Uint(bw(8)))).is_err());
+    }
+
+    #[test]
+    fn cast_returns_none_when_element_cast_fails() {
+        let value = Value::Array(Array::new_unchecked(
+            vec![Primitive::duration(1.0, DurationUnit::Ns)],
+            aty(Duration, vec![1]),
+        ));
+
+        assert!(
+            value
+                .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1])))
+                .is_err()
+        );
+    }
+}

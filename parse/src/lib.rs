@@ -599,30 +599,40 @@ impl<'a> Parser<'a> {
                 self.advance();
                 Ok(StmtKind::Expr(expr))
             }
-            Some(Token::Equals) => {
-                let target = self.expr_to_indexed_ident(expr)?;
-                self.advance(); // eat =
-                let value = self.parse_expr_or_measure()?;
-                self.expect_semi()?;
-                Ok(StmtKind::Assignment {
-                    target,
-                    op: AssignOp::Assign,
-                    value,
-                })
-            }
-            Some(Token::CompoundAssignmentOperator(_)) => {
+            Some(
+                Token::Equals
+                | Token::PlusEquals
+                | Token::MinusEquals
+                | Token::AsteriskEquals
+                | Token::SlashEquals
+                | Token::AmpersandEquals
+                | Token::PipeEquals
+                | Token::CaretEquals
+                | Token::LeftShiftEquals
+                | Token::RightShiftEquals
+                | Token::PercentEquals
+                | Token::DoubleAsteriskEquals,
+            ) => {
                 let target = self.expr_to_indexed_ident(expr)?;
                 let (tok, _) = self.advance();
-                let Token::CompoundAssignmentOperator(op) = tok else {
-                    unreachable!()
+                let op = match tok {
+                    Token::Equals => AssignOp::Assign,
+                    Token::PlusEquals => AssignOp::AddAssign,
+                    Token::MinusEquals => AssignOp::SubAssign,
+                    Token::AsteriskEquals => AssignOp::MulAssign,
+                    Token::SlashEquals => AssignOp::DivAssign,
+                    Token::AmpersandEquals => AssignOp::BitAndAssign,
+                    Token::PipeEquals => AssignOp::BitOrAssign,
+                    Token::CaretEquals => AssignOp::BitXorAssign,
+                    Token::LeftShiftEquals => AssignOp::LeftShiftAssign,
+                    Token::RightShiftEquals => AssignOp::RightShiftAssign,
+                    Token::PercentEquals => AssignOp::ModAssign,
+                    Token::DoubleAsteriskEquals => AssignOp::PowAssign,
+                    _ => unreachable!(),
                 };
                 let value = self.parse_expr_or_measure()?;
                 self.expect_semi()?;
-                Ok(StmtKind::Assignment {
-                    target,
-                    op: AssignOp::Compound(op),
-                    value,
-                })
+                Ok(StmtKind::Assignment { target, op, value })
             }
             Some(Token::Identifier(_) | Token::HardwareQubit(_)) => {
                 // Gate call or quantum call expression
@@ -1290,9 +1300,13 @@ impl<'a> Parser<'a> {
                     let (_, span) = self.advance();
                     return Ok(Expr::ImagLiteral(s, span));
                 }
-                Token::BooleanLiteral(s) => {
+                Token::True => {
                     let (_, span) = self.advance();
-                    return Ok(Expr::BoolLiteral(s, span));
+                    return Ok(Expr::BoolLiteral("true", span));
+                }
+                Token::False => {
+                    let (_, span) = self.advance();
+                    return Ok(Expr::BoolLiteral("false", span));
                 }
                 Token::BitstringLiteral(s) => {
                     let (_, span) = self.advance();
@@ -1320,9 +1334,12 @@ impl<'a> Parser<'a> {
             Token::Pipe => Some((6, 7)),
             Token::Caret => Some((8, 9)),
             Token::Ampersand => Some((10, 11)),
-            Token::EqualityOperator(_) => Some((12, 13)),
-            Token::ComparisonOperator(_) => Some((14, 15)),
-            Token::BitshiftOperator(_) => Some((16, 17)),
+            Token::DoubleEquals | Token::ExclamationEquals => Some((12, 13)),
+            Token::GreaterThan
+            | Token::LessThan
+            | Token::GreaterThanEquals
+            | Token::LessThanEquals => Some((14, 15)),
+            Token::DoubleGreater | Token::DoubleLess => Some((16, 17)),
             Token::Plus | Token::Minus => Some((18, 19)),
             Token::Asterisk | Token::Slash | Token::Percent => Some((20, 21)),
             Token::DoubleAsterisk => Some((22, 21)), // right-associative
@@ -1350,23 +1367,14 @@ impl<'a> Parser<'a> {
             Token::Caret => BinOp::BitXor,
             Token::DoubleAmpersand => BinOp::LogAnd,
             Token::DoublePipe => BinOp::LogOr,
-            Token::EqualityOperator(s) => match *s {
-                "==" => BinOp::Eq,
-                "!=" => BinOp::Neq,
-                _ => unreachable!(),
-            },
-            Token::ComparisonOperator(s) => match *s {
-                "<" => BinOp::Lt,
-                ">" => BinOp::Gt,
-                "<=" => BinOp::Lte,
-                ">=" => BinOp::Gte,
-                _ => unreachable!(),
-            },
-            Token::BitshiftOperator(s) => match *s {
-                "<<" => BinOp::Shl,
-                ">>" => BinOp::Shr,
-                _ => unreachable!(),
-            },
+            Token::DoubleEquals => BinOp::Eq,
+            Token::ExclamationEquals => BinOp::Neq,
+            Token::LessThan => BinOp::Lt,
+            Token::GreaterThan => BinOp::Gt,
+            Token::LessThanEquals => BinOp::Lte,
+            Token::GreaterThanEquals => BinOp::Gte,
+            Token::DoubleLess => BinOp::Shl,
+            Token::DoubleGreater => BinOp::Shr,
             _ => unreachable!(),
         }
     }
@@ -2129,7 +2137,7 @@ mod tests {
         let stmt = parse_stmt("x += 1;");
         match stmt.kind {
             StmtKind::Assignment { op, .. } => {
-                assert!(matches!(op, AssignOp::Compound("+=")));
+                assert_eq!(op, AssignOp::AddAssign);
             }
             _ => panic!("expected compound assignment"),
         }

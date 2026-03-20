@@ -148,7 +148,7 @@ pub enum StmtKind<'a> {
     },
     Assignment {
         target: IndexedIdent<'a>,
-        op: AssignOp<'a>,
+        op: AssignOp,
         value: ExprOrMeasure<'a>,
     },
     Expr(Expr<'a>),
@@ -320,10 +320,20 @@ pub enum OldStyleKind {
     Qreg,
 }
 
-#[derive(Debug)]
-pub enum AssignOp<'a> {
+#[derive(Debug, PartialEq, Eq)]
+pub enum AssignOp {
     Assign,
-    Compound(&'a str),
+    AddAssign,
+    SubAssign,
+    MulAssign,
+    DivAssign,
+    BitAndAssign,
+    BitOrAssign,
+    BitXorAssign,
+    LeftShiftAssign,
+    RightShiftAssign,
+    ModAssign,
+    PowAssign,
 }
 
 #[derive(Debug)]

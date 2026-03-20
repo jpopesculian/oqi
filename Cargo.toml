@@ -1,3 +1,3 @@
 [workspace]
-members = ["lex", "parse", "format", "compile", "cli"]
+members = ["lex", "parse", "format", "classical", "compile", "cli"]
 resolver = "2"

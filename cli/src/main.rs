@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -17,6 +17,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Compile an OpenQASM file
+    Compile {
+        /// The OpenQASM file to compile
+        path: PathBuf,
+
+        /// Dump the IR to stdout
+        #[arg(long)]
+        dump: bool,
+    },
+
     /// Format OpenQASM files
     Fmt {
         /// Use compact formatting
@@ -36,12 +46,44 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
+        Command::Compile { path, dump } => compile(&path, dump),
         Command::Fmt {
             compact,
             stdout,
             paths,
         } => fmt(compact, stdout, &paths),
     }
+}
+
+fn compile(path: &Path, dump: bool) -> ExitCode {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let program = match oqi_compile::lower::compile_source(&source, Some(path)) {
+        Ok(p) => p,
+        Err(e) => {
+            let filename = path.display().to_string();
+            let msg = e.to_string();
+            Report::build(ReportKind::Error, (&filename, e.span.clone()))
+                .with_message(&msg)
+                .with_label(Label::new((&filename, e.span)).with_message(&msg))
+                .finish()
+                .eprint((&filename, Source::from(&source)))
+                .ok();
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if dump {
+        print!("{program}");
+    }
+
+    ExitCode::SUCCESS
 }
 
 fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {

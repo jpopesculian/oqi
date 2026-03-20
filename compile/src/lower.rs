@@ -8,9 +8,9 @@ use crate::resolve::{IncludeSource, Resolver};
 use crate::sir;
 use crate::symbol::SymbolKind;
 use crate::types::{
-    eval_const_expr, eval_designator, parse_int_literal, resolve_array_ref_type,
-    resolve_old_style_type, resolve_qubit_type, resolve_scalar_type, resolve_type, CompileOptions,
-    Type,
+    eval_const_expr, eval_designator, float_width_from_system_width, parse_int_literal,
+    resolve_array_ref_type, resolve_old_style_type, resolve_qubit_type, resolve_scalar_type,
+    resolve_type, CompileOptions, FloatWidth, Type,
 };
 use crate::value::{FloatValue, TimeUnit, TimingNumber, TimingValue};
 
@@ -345,6 +345,9 @@ impl Lowerer {
                     )?),
                     None => None,
                 };
+                if let Some(ref ty) = ret_ty {
+                    self.resolver.symbols_mut().get_mut(sub_sym).ty = ty.clone();
+                }
                 let mut body_stmts = Vec::new();
                 for item in &body.body {
                     body_stmts.extend(self.lower_stmt_or_scope(item)?);
@@ -380,6 +383,9 @@ impl Lowerer {
                     )?),
                     None => None,
                 };
+                if let Some(ref ty) = ret_ty {
+                    self.resolver.symbols_mut().get_mut(ext_sym).ty = ty.clone();
+                }
                 self.externs.push(sir::ExternDecl {
                     symbol: ext_sym,
                     param_types,
@@ -820,9 +826,10 @@ impl Lowerer {
         match expr {
             ast::Expr::Ident(id) => {
                 let sym = self.resolver.resolve(id.name, id.span.clone())?;
+                let ty = self.resolver.symbols().get(sym).ty.clone();
                 Ok(sir::Expr {
                     kind: sir::ExprKind::Var(sym),
-                    ty: Type::Void,
+                    ty,
                     span,
                 })
             }
@@ -841,9 +848,13 @@ impl Lowerer {
                     kind: ErrorKind::Unsupported(format!("invalid integer literal: {s}")),
                     span: span.clone(),
                 })?;
+                let ty = Type::Int {
+                    width: self.system_width(),
+                    signed: true,
+                };
                 Ok(sir::Expr {
                     kind: sir::ExprKind::IntLit(awi),
-                    ty: Type::Void,
+                    ty,
                     span,
                 })
             }
@@ -853,9 +864,10 @@ impl Lowerer {
                     kind: ErrorKind::Unsupported(format!("invalid float literal: {s}")),
                     span: span.clone(),
                 })?;
+                let fw = float_width_from_system_width(self.system_width());
                 Ok(sir::Expr {
                     kind: sir::ExprKind::FloatLit(FloatValue::F64(v)),
-                    ty: Type::Void,
+                    ty: Type::Float(fw),
                     span,
                 })
             }
@@ -866,24 +878,26 @@ impl Lowerer {
                     kind: ErrorKind::Unsupported(format!("invalid imaginary literal: {s}")),
                     span: span.clone(),
                 })?;
+                let fw = float_width_from_system_width(self.system_width());
                 Ok(sir::Expr {
                     kind: sir::ExprKind::ImagLit(FloatValue::F64(v)),
-                    ty: Type::Void,
+                    ty: Type::Complex(fw),
                     span,
                 })
             }
 
             ast::Expr::BoolLiteral(b, _) => Ok(sir::Expr {
                 kind: sir::ExprKind::BoolLit(*b),
-                ty: Type::Void,
+                ty: Type::Bool,
                 span,
             }),
 
             ast::Expr::BitstringLiteral(s, _) => {
                 let bv = parse_bitstring(s, &span)?;
+                let len = bv.len() as u32;
                 Ok(sir::Expr {
                     kind: sir::ExprKind::BitstringLit(bv),
-                    ty: Type::Void,
+                    ty: Type::BitReg(len),
                     span,
                 })
             }
@@ -892,7 +906,7 @@ impl Lowerer {
                 let tv = parse_timing_literal(s, &span)?;
                 Ok(sir::Expr {
                     kind: sir::ExprKind::TimingLit(tv),
-                    ty: Type::Void,
+                    ty: Type::Duration,
                     span,
                 })
             }
@@ -904,25 +918,29 @@ impl Lowerer {
             } => {
                 let l = self.lower_expr(left)?;
                 let r = self.lower_expr(right)?;
+                let sir_op = map_bin_op(op);
+                let ty = binary_result_type(&sir_op, &l.ty, &r.ty, &span)?;
                 Ok(sir::Expr {
                     kind: sir::ExprKind::Binary {
-                        op: map_bin_op(op),
+                        op: sir_op,
                         left: Box::new(l),
                         right: Box::new(r),
                     },
-                    ty: Type::Void,
+                    ty,
                     span,
                 })
             }
 
             ast::Expr::UnaryOp { op, operand, .. } => {
                 let inner = self.lower_expr(operand)?;
+                let sir_op = map_un_op(op);
+                let ty = unary_result_type(&sir_op, &inner.ty);
                 Ok(sir::Expr {
                     kind: sir::ExprKind::Unary {
-                        op: map_un_op(op),
+                        op: sir_op,
                         operand: Box::new(inner),
                     },
-                    ty: Type::Void,
+                    ty,
                     span,
                 })
             }
@@ -930,28 +948,30 @@ impl Lowerer {
             ast::Expr::Index { expr, index, .. } => {
                 let base = self.lower_expr(expr)?;
                 let idx = self.lower_index_op(index)?;
+                let ty = index_result_type(&base.ty, &idx);
                 Ok(sir::Expr {
                     kind: sir::ExprKind::Index {
                         base: Box::new(base),
                         index: idx,
                     },
-                    ty: Type::Void,
+                    ty,
                     span,
                 })
             }
 
             ast::Expr::Call { name, args, .. } => {
                 let callee = self.resolver.resolve_call(name.name, name.span.clone())?;
-                let sir_args = args
+                let sir_args: Vec<sir::Expr> = args
                     .iter()
                     .map(|a| self.lower_expr(a))
                     .collect::<Result<_>>()?;
+                let ty = self.call_result_type(&callee, &sir_args);
                 Ok(sir::Expr {
                     kind: sir::ExprKind::Call {
                         callee,
                         args: sir_args,
                     },
-                    ty: Type::Void,
+                    ty,
                     span,
                 })
             }
@@ -960,12 +980,14 @@ impl Lowerer {
                 let target_ty =
                     resolve_type(ty, self.resolver.symbols(), self.resolver.options())?;
                 let inner = self.lower_expr(operand)?;
+                validate_cast(&inner.ty, &target_ty, &span)?;
+                let result_ty = target_ty.clone();
                 Ok(sir::Expr {
                     kind: sir::ExprKind::Cast {
                         target_ty,
                         operand: Box::new(inner),
                     },
-                    ty: Type::Void,
+                    ty: result_ty,
                     span,
                 })
             }
@@ -979,7 +1001,7 @@ impl Lowerer {
                 self.resolver.pop_scope();
                 Ok(sir::Expr {
                     kind: sir::ExprKind::DurationOf(stmts),
-                    ty: Type::Void,
+                    ty: Type::Duration,
                     span,
                 })
             }
@@ -1349,6 +1371,21 @@ impl Lowerer {
             })
             .collect()
     }
+
+    fn system_width(&self) -> u32 {
+        self.resolver.options().system_angle_width
+    }
+
+    fn call_result_type(&self, callee: &sir::CallTarget, args: &[sir::Expr]) -> Type {
+        match callee {
+            sir::CallTarget::Intrinsic(i) => {
+                intrinsic_result_type(i, args, self.system_width())
+            }
+            sir::CallTarget::Symbol(sym) => {
+                self.resolver.symbols().get(*sym).ty.clone()
+            }
+        }
+    }
 }
 
 // ── Free functions ──────────────────────────────────────────────────────
@@ -1505,6 +1542,285 @@ fn map_assign_op(op: &ast::AssignOp) -> sir::AssignOp {
         ast::AssignOp::BitXorAssign => sir::AssignOp::BitXorAssign,
         ast::AssignOp::LeftShiftAssign => sir::AssignOp::ShlAssign,
         ast::AssignOp::RightShiftAssign => sir::AssignOp::ShrAssign,
+    }
+}
+
+// ── Type inference ──────────────────────────────────────────────────────
+
+fn binary_result_type(
+    op: &sir::BinOp,
+    left: &Type,
+    right: &Type,
+    span: &oqi_lex::Span,
+) -> Result<Type> {
+    use sir::BinOp::*;
+    match op {
+        Eq | Neq | Lt | Gt | Lte | Gte => Ok(Type::Bool),
+        LogAnd | LogOr => Ok(Type::Bool),
+        Shl | Shr => Ok(left.clone()),
+        BitAnd | BitOr | BitXor => Ok(left.clone()),
+        Add | Sub | Mul | Div | Mod | Pow => {
+            // Angle special rules
+            if is_angle(left) && is_angle(right) {
+                return match op {
+                    Add | Sub => Ok(left.clone()),
+                    Div => {
+                        let w = angle_width(left);
+                        Ok(Type::Int {
+                            width: w,
+                            signed: false,
+                        })
+                    }
+                    _ => Err(CompileError {
+                        kind: ErrorKind::TypeMismatch {
+                            expected: left.clone(),
+                            got: right.clone(),
+                        },
+                        span: span.clone(),
+                    }),
+                };
+            }
+            if is_angle(left) && is_integer(right) {
+                return match op {
+                    Mul | Div => Ok(left.clone()),
+                    _ => Err(CompileError {
+                        kind: ErrorKind::TypeMismatch {
+                            expected: left.clone(),
+                            got: right.clone(),
+                        },
+                        span: span.clone(),
+                    }),
+                };
+            }
+            if is_integer(left) && is_angle(right) {
+                return match op {
+                    Mul => Ok(right.clone()),
+                    _ => Err(CompileError {
+                        kind: ErrorKind::TypeMismatch {
+                            expected: left.clone(),
+                            got: right.clone(),
+                        },
+                        span: span.clone(),
+                    }),
+                };
+            }
+            // Duration arithmetic
+            if matches!(left, Type::Duration) && matches!(right, Type::Duration) {
+                return match op {
+                    Add | Sub => Ok(Type::Duration),
+                    _ => Err(CompileError {
+                        kind: ErrorKind::TypeMismatch {
+                            expected: left.clone(),
+                            got: right.clone(),
+                        },
+                        span: span.clone(),
+                    }),
+                };
+            }
+            // Standard numeric promotion
+            promote_numeric(left, right).ok_or_else(|| CompileError {
+                kind: ErrorKind::TypeMismatch {
+                    expected: left.clone(),
+                    got: right.clone(),
+                },
+                span: span.clone(),
+            })
+        }
+    }
+}
+
+fn unary_result_type(op: &sir::UnOp, operand: &Type) -> Type {
+    match op {
+        sir::UnOp::LogNot => Type::Bool,
+        sir::UnOp::Neg | sir::UnOp::BitNot => operand.clone(),
+    }
+}
+
+fn index_result_type(base_ty: &Type, index: &sir::IndexOp) -> Type {
+    let is_single = match &index.kind {
+        sir::IndexKind::Items(items) => {
+            items.len() == 1 && matches!(&items[0], sir::IndexItem::Single(_))
+        }
+        _ => false,
+    };
+    if is_single {
+        match base_ty {
+            Type::QubitReg(_) => Type::Qubit,
+            Type::BitReg(_) | Type::Int { .. } => Type::Bit,
+            Type::Array { element, dims } if dims.len() <= 1 => *element.clone(),
+            Type::Array { element, dims } => Type::Array {
+                element: element.clone(),
+                dims: dims[1..].to_vec(),
+            },
+            _ => base_ty.clone(),
+        }
+    } else {
+        // Range/set index — conservatively return the base type
+        base_ty.clone()
+    }
+}
+
+fn intrinsic_result_type(
+    intrinsic: &sir::Intrinsic,
+    args: &[sir::Expr],
+    system_width: u32,
+) -> Type {
+    use sir::Intrinsic::*;
+    match intrinsic {
+        Sin | Cos | Tan | Arcsin | Arccos | Arctan | Exp | Log | Sqrt => {
+            args.first().map(|a| a.ty.clone()).unwrap_or(Type::Void)
+        }
+        Ceiling | Floor => Type::Int {
+            width: system_width,
+            signed: true,
+        },
+        Mod => args.first().map(|a| a.ty.clone()).unwrap_or(Type::Void),
+        Popcount => Type::Int {
+            width: system_width,
+            signed: false,
+        },
+        Rotl | Rotr => args.first().map(|a| a.ty.clone()).unwrap_or(Type::Void),
+        Real | Imag => match args.first().map(|a| &a.ty) {
+            Some(Type::Complex(w)) => Type::Float(*w),
+            _ => Type::Float(float_width_from_system_width(system_width)),
+        },
+        Sizeof => Type::Int {
+            width: system_width,
+            signed: false,
+        },
+    }
+}
+
+fn validate_cast(from: &Type, to: &Type, span: &oqi_lex::Span) -> Result<()> {
+    if from == to {
+        return Ok(());
+    }
+    let valid = match (cast_category(from), cast_category(to)) {
+        (CastCat::Bool, CastCat::Bool | CastCat::Int | CastCat::Float | CastCat::Bit) => true,
+        (CastCat::Int, CastCat::Bool | CastCat::Int | CastCat::Float | CastCat::Bit) => true,
+        (CastCat::Float, CastCat::Bool | CastCat::Int | CastCat::Float | CastCat::Angle) => true,
+        (CastCat::Angle, CastCat::Bool | CastCat::Angle | CastCat::Bit) => true,
+        (CastCat::Bit, CastCat::Bool | CastCat::Int | CastCat::Bit | CastCat::Angle) => true,
+        (cat_from, cat_to) if cat_from == cat_to => true,
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err(CompileError {
+            kind: ErrorKind::TypeMismatch {
+                expected: to.clone(),
+                got: from.clone(),
+            },
+            span: span.clone(),
+        })
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum CastCat {
+    Bool,
+    Int,
+    Float,
+    Complex,
+    Angle,
+    Bit,
+    Duration,
+    Other,
+}
+
+fn cast_category(ty: &Type) -> CastCat {
+    match ty {
+        Type::Bool => CastCat::Bool,
+        Type::Int { .. } => CastCat::Int,
+        Type::Float(_) => CastCat::Float,
+        Type::Complex(_) => CastCat::Complex,
+        Type::Angle(_) => CastCat::Angle,
+        Type::Bit | Type::BitReg(_) => CastCat::Bit,
+        Type::Duration | Type::Stretch => CastCat::Duration,
+        _ => CastCat::Other,
+    }
+}
+
+fn promote_numeric(a: &Type, b: &Type) -> Option<Type> {
+    if a == b {
+        return Some(a.clone());
+    }
+    let rank = |t: &Type| -> Option<u8> {
+        match t {
+            Type::Bool | Type::Bit => Some(0),
+            Type::Int { .. } => Some(1),
+            Type::Float(_) => Some(2),
+            Type::Complex(_) => Some(3),
+            _ => None,
+        }
+    };
+    let ra = rank(a)?;
+    let rb = rank(b)?;
+    if ra == rb {
+        match (a, b) {
+            (Type::Bool | Type::Bit, Type::Bool | Type::Bit) => Some(Type::Bool),
+            (
+                Type::Int {
+                    width: w1,
+                    signed: s1,
+                },
+                Type::Int {
+                    width: w2,
+                    signed: s2,
+                },
+            ) => {
+                if w1 == w2 {
+                    // C99: same width, unsigned wins
+                    Some(Type::Int {
+                        width: *w1,
+                        signed: *s1 && *s2,
+                    })
+                } else if w1 > w2 {
+                    Some(Type::Int {
+                        width: *w1,
+                        signed: *s1,
+                    })
+                } else {
+                    Some(Type::Int {
+                        width: *w2,
+                        signed: *s2,
+                    })
+                }
+            }
+            (Type::Float(w1), Type::Float(w2)) => Some(Type::Float(wider_float(*w1, *w2))),
+            (Type::Complex(w1), Type::Complex(w2)) => {
+                Some(Type::Complex(wider_float(*w1, *w2)))
+            }
+            _ => None,
+        }
+    } else {
+        // Higher rank wins
+        let hi = if ra > rb { a } else { b };
+        Some(hi.clone())
+    }
+}
+
+fn wider_float(a: FloatWidth, b: FloatWidth) -> FloatWidth {
+    if matches!(a, FloatWidth::F64) || matches!(b, FloatWidth::F64) {
+        FloatWidth::F64
+    } else {
+        FloatWidth::F32
+    }
+}
+
+fn is_angle(ty: &Type) -> bool {
+    matches!(ty, Type::Angle(_))
+}
+
+fn is_integer(ty: &Type) -> bool {
+    matches!(ty, Type::Int { .. } | Type::Bool | Type::Bit)
+}
+
+fn angle_width(ty: &Type) -> u32 {
+    match ty {
+        Type::Angle(w) => *w,
+        _ => 0,
     }
 }
 
@@ -1703,6 +2019,284 @@ mod tests {
         match compile_source(source, None) {
             Err(e) => assert!(matches!(e.kind, ErrorKind::UndefinedName(ref n) if n == "h")),
             Ok(_) => panic!("expected error for undeclared name"),
+        }
+    }
+
+    // ── Phase 5: Type inference tests ───────────────────────────────────
+
+    fn find_expr_stmt(program: &sir::Program) -> &sir::Expr {
+        for stmt in &program.body {
+            if let sir::StmtKind::ExprStmt(e) = &stmt.kind {
+                return e;
+            }
+        }
+        panic!("no ExprStmt found in program body");
+    }
+
+    #[test]
+    fn type_int_plus_float() {
+        let source = "1 + 2.0;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        let sw = usize::BITS;
+        assert_eq!(
+            e.ty,
+            Type::Float(float_width_from_system_width(sw)),
+            "1 + 2.0 should be Float"
+        );
+    }
+
+    #[test]
+    fn type_bool_and() {
+        let source = "true && false;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Bool, "true && false should be Bool");
+    }
+
+    #[test]
+    fn type_comparison_is_bool() {
+        let source = "int[32] x = 1; x == 2;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Bool, "x == 2 should be Bool");
+    }
+
+    #[test]
+    fn type_int_literal() {
+        let source = "42;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        let sw = usize::BITS;
+        assert_eq!(
+            e.ty,
+            Type::Int {
+                width: sw,
+                signed: true
+            },
+            "42 should be Int(system_width, signed)"
+        );
+    }
+
+    #[test]
+    fn type_float_literal() {
+        let source = "3.14;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        let sw = usize::BITS;
+        assert_eq!(
+            e.ty,
+            Type::Float(float_width_from_system_width(sw)),
+            "3.14 should be Float"
+        );
+    }
+
+    #[test]
+    fn type_bool_literal() {
+        let source = "true;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Bool);
+    }
+
+    #[test]
+    fn type_bitstring_literal() {
+        let source = r#""0110";"#;
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::BitReg(4));
+    }
+
+    #[test]
+    fn type_var_inherits_declared_type() {
+        let source = "float[64] x = 1.0; x;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Float(FloatWidth::F64));
+    }
+
+    #[test]
+    fn type_unary_neg_preserves_type() {
+        let source = "float[64] x = 1.0; -x;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Float(FloatWidth::F64));
+    }
+
+    #[test]
+    fn type_logical_not_is_bool() {
+        let source = "bool x = true; !x;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Bool);
+    }
+
+    #[test]
+    fn type_cast_result() {
+        let source = "int[32] x = 5; float[64](x);";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Float(FloatWidth::F64));
+    }
+
+    #[test]
+    fn type_cast_angle_to_float_invalid() {
+        let source = "angle[32] a; float[64](a);";
+        match compile_source(source, None) {
+            Err(e) => assert!(matches!(e.kind, ErrorKind::TypeMismatch { .. })),
+            Ok(_) => panic!("angle → float cast should be rejected"),
+        }
+    }
+
+    #[test]
+    fn type_cast_float_to_angle_valid() {
+        let source = "float[64] f = 1.0; angle[32](f);";
+        let program = compile_source(source, None).expect("float → angle should be valid");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Angle(32));
+    }
+
+    #[test]
+    fn type_index_into_qubit_reg() {
+        let source = "qubit[4] q; q[0];";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Qubit);
+    }
+
+    #[test]
+    fn type_index_into_int() {
+        let source = "uint[4] x = 5; x[0];";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Bit);
+    }
+
+    #[test]
+    fn type_angle_arithmetic() {
+        // angle + angle → angle
+        let source = "angle[32] a; angle[32] b; a + b;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Angle(32));
+    }
+
+    #[test]
+    fn type_angle_div_angle() {
+        // angle / angle → uint
+        let source = "angle[32] a; angle[32] b; a / b;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(
+            e.ty,
+            Type::Int {
+                width: 32,
+                signed: false
+            }
+        );
+    }
+
+    #[test]
+    fn type_angle_mul_uint() {
+        // angle * uint → angle
+        let source = "angle[32] a; uint[32] n = 2; a * n;";
+        let program = compile_source(source, None).expect("should compile");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::Angle(32));
+    }
+
+    #[test]
+    fn type_promote_int_int_same_width() {
+        // Same width, one signed one unsigned → unsigned wins (C99)
+        let result = promote_numeric(
+            &Type::Int {
+                width: 32,
+                signed: true,
+            },
+            &Type::Int {
+                width: 32,
+                signed: false,
+            },
+        );
+        assert_eq!(
+            result,
+            Some(Type::Int {
+                width: 32,
+                signed: false
+            })
+        );
+    }
+
+    #[test]
+    fn type_promote_int_float() {
+        let result = promote_numeric(
+            &Type::Int {
+                width: 32,
+                signed: true,
+            },
+            &Type::Float(FloatWidth::F64),
+        );
+        assert_eq!(result, Some(Type::Float(FloatWidth::F64)));
+    }
+
+    #[test]
+    fn type_promote_float_complex() {
+        let result = promote_numeric(&Type::Float(FloatWidth::F64), &Type::Complex(FloatWidth::F32));
+        assert_eq!(result, Some(Type::Complex(FloatWidth::F32)));
+    }
+
+    #[test]
+    fn type_promote_bool_int() {
+        let result = promote_numeric(
+            &Type::Bool,
+            &Type::Int {
+                width: 32,
+                signed: true,
+            },
+        );
+        assert_eq!(
+            result,
+            Some(Type::Int {
+                width: 32,
+                signed: true
+            })
+        );
+    }
+
+    #[test]
+    fn type_teleport_condition_is_bool() {
+        let source = include_str!("../../fixtures/qasm/teleport.qasm");
+        let program = compile_source(source, None).expect("teleport should compile");
+        // Find an if-statement and check its condition type
+        let if_stmt = program
+            .body
+            .iter()
+            .find(|s| matches!(s.kind, sir::StmtKind::If { .. }));
+        assert!(if_stmt.is_some());
+        if let sir::StmtKind::If { condition, .. } = &if_stmt.unwrap().kind {
+            assert_eq!(condition.ty, Type::Bool, "if condition should be Bool");
+        }
+    }
+
+    #[test]
+    fn type_adder_cast_is_bool() {
+        // adder.qasm uses bool(a_in[i]) - verify cast produces Bool
+        let source = include_str!("../../fixtures/qasm/adder.qasm");
+        let program = compile_source(source, None).expect("adder should compile");
+        // Find a for loop with if(bool(...))
+        let for_stmt = program
+            .body
+            .iter()
+            .find(|s| matches!(s.kind, sir::StmtKind::For { .. }));
+        assert!(for_stmt.is_some());
+        if let sir::StmtKind::For { body, .. } = &for_stmt.unwrap().kind {
+            let if_stmt = body
+                .iter()
+                .find(|s| matches!(s.kind, sir::StmtKind::If { .. }));
+            assert!(if_stmt.is_some());
+            if let sir::StmtKind::If { condition, .. } = &if_stmt.unwrap().kind {
+                assert_eq!(condition.ty, Type::Bool, "bool() cast should yield Bool");
+            }
         }
     }
 }

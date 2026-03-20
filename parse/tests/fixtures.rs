@@ -536,7 +536,7 @@ fn ast_expr(expr: &Expr) -> S {
     match expr {
         Expr::Ident(_) => S::leaf("Ident"),
         Expr::HardwareQubit(_, _) => S::leaf("HardwareQubit"),
-        Expr::IntLiteral(_, _) => S::leaf("IntLiteral"),
+        Expr::IntLiteral(_, _, _) => S::leaf("IntLiteral"),
         Expr::FloatLiteral(_, _) => S::leaf("FloatLiteral"),
         Expr::ImagLiteral(_, _) => S::leaf("ImagLiteral"),
         Expr::BoolLiteral(_, _) => S::leaf("BoolLiteral"),

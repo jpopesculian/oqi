@@ -1285,12 +1285,21 @@ impl<'a> Parser<'a> {
         // Literals
         if let Some(tok) = self.peek().cloned() {
             match tok {
-                Token::DecimalIntegerLiteral(s)
-                | Token::BinaryIntegerLiteral(s)
-                | Token::OctalIntegerLiteral(s)
-                | Token::HexIntegerLiteral(s) => {
+                Token::DecimalIntegerLiteral(s) => {
                     let (_, span) = self.advance();
-                    return Ok(Expr::IntLiteral(s, span));
+                    return Ok(Expr::IntLiteral(s, IntEncoding::Decimal, span));
+                }
+                Token::BinaryIntegerLiteral(s) => {
+                    let (_, span) = self.advance();
+                    return Ok(Expr::IntLiteral(s, IntEncoding::Binary, span));
+                }
+                Token::OctalIntegerLiteral(s) => {
+                    let (_, span) = self.advance();
+                    return Ok(Expr::IntLiteral(s, IntEncoding::Octal, span));
+                }
+                Token::HexIntegerLiteral(s) => {
+                    let (_, span) = self.advance();
+                    return Ok(Expr::IntLiteral(s, IntEncoding::Hex, span));
                 }
                 Token::FloatLiteral(s) => {
                     let (_, span) = self.advance();
@@ -1302,11 +1311,11 @@ impl<'a> Parser<'a> {
                 }
                 Token::True => {
                     let (_, span) = self.advance();
-                    return Ok(Expr::BoolLiteral("true", span));
+                    return Ok(Expr::BoolLiteral(true, span));
                 }
                 Token::False => {
                     let (_, span) = self.advance();
-                    return Ok(Expr::BoolLiteral("false", span));
+                    return Ok(Expr::BoolLiteral(false, span));
                 }
                 Token::BitstringLiteral(s) => {
                     let (_, span) = self.advance();

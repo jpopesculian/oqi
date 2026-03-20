@@ -213,11 +213,10 @@ impl<'a> Context<'a> {
             if config.compact {
                 continue;
             }
-            if let Some(end) = prev_end {
-                if self.has_blank_line_between(end, comment.span.start) {
+            if let Some(end) = prev_end
+                && self.has_blank_line_between(end, comment.span.start) {
                     self.newline(fmt)?;
                 }
-            }
             self.write_comment(fmt, &comment, config)?;
             prev_end = Some(comment.span.end);
             emitted = true;
@@ -326,8 +325,7 @@ impl<'a> Context<'a> {
             return Ok(());
         };
 
-        if !config.compact || previous.requires_trailing_newline()
-        {
+        if !config.compact || previous.requires_trailing_newline() {
             self.newline(fmt)?;
             if !config.compact
                 && self.has_blank_line_between(previous.span_end(), next.compact_anchor())
@@ -1536,10 +1534,12 @@ fn format_expr(
     match expr {
         ast::Expr::Ident(ident) => ident.format(fmt, ctx, config)?,
         ast::Expr::HardwareQubit(name, _) => ctx.write_str(fmt, name)?,
-        ast::Expr::IntLiteral(value, _) => ctx.write_str(fmt, value)?,
+        ast::Expr::IntLiteral(value, _, _) => ctx.write_str(fmt, value)?,
         ast::Expr::FloatLiteral(value, _) => ctx.write_str(fmt, value)?,
         ast::Expr::ImagLiteral(value, _) => ctx.write_str(fmt, value)?,
-        ast::Expr::BoolLiteral(value, _) => ctx.write_str(fmt, value)?,
+        ast::Expr::BoolLiteral(value, _) => {
+            ctx.write_str(fmt, if *value { "true" } else { "false" })?
+        }
         ast::Expr::BitstringLiteral(value, _) => ctx.write_str(fmt, value)?,
         ast::Expr::TimingLiteral(value, _) => ctx.write_str(fmt, value)?,
         ast::Expr::Paren(inner, _) => {

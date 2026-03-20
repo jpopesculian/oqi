@@ -194,14 +194,22 @@ pub enum UnOp {
     LogNot,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum IntEncoding {
+    Decimal,
+    Binary,
+    Octal,
+    Hex,
+}
+
 #[derive(Debug)]
 pub enum Expr<'a> {
     Ident(Ident<'a>),
     HardwareQubit(&'a str, Span),
-    IntLiteral(&'a str, Span),
+    IntLiteral(&'a str, IntEncoding, Span),
     FloatLiteral(&'a str, Span),
     ImagLiteral(&'a str, Span),
-    BoolLiteral(&'a str, Span),
+    BoolLiteral(bool, Span),
     BitstringLiteral(&'a str, Span),
     TimingLiteral(&'a str, Span),
     Paren(Box<Expr<'a>>, Span),
@@ -242,7 +250,7 @@ impl<'a> Expr<'a> {
         match self {
             Expr::Ident(id) => id.span.clone(),
             Expr::HardwareQubit(_, s)
-            | Expr::IntLiteral(_, s)
+            | Expr::IntLiteral(_, _, s)
             | Expr::FloatLiteral(_, s)
             | Expr::ImagLiteral(_, s)
             | Expr::BoolLiteral(_, s)

@@ -20,8 +20,8 @@ use oqi_classical::{
 use oqi_parse::ast;
 
 use crate::classical::{
-    PrimitiveTy, ValueTy, bitreg_value, bool_value, complex_value, duration_value, float_value,
-    int_value, value_as_usize,
+    ValueTy, bitreg_value, bool_value, complex_value, duration_value, float_value, int_value,
+    value_as_usize,
 };
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::resolve::{FileResolver, IncludeSource, Resolver, StdFileResolver};
@@ -1721,52 +1721,19 @@ fn validate_cast(from: &Type, to: &Type, span: oqi_lex::Span) -> Result<()> {
     if from == to {
         return Ok(());
     }
-    let valid = match (cast_category(from), cast_category(to)) {
-        (CastCat::Bool, CastCat::Bool | CastCat::Int | CastCat::Float | CastCat::Bit) => true,
-        (CastCat::Int, CastCat::Bool | CastCat::Int | CastCat::Float | CastCat::Bit) => true,
-        (CastCat::Float, CastCat::Bool | CastCat::Int | CastCat::Float | CastCat::Angle) => true,
-        (CastCat::Angle, CastCat::Bool | CastCat::Angle | CastCat::Bit) => true,
-        (CastCat::Bit, CastCat::Bool | CastCat::Int | CastCat::Bit | CastCat::Angle) => true,
-        (cat_from, cat_to) if cat_from == cat_to => true,
-        _ => false,
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(CompileError::new(ErrorKind::TypeMismatch {
+    match (from.value_ty(), to.value_ty()) {
+        (Some(from_ty), Some(to_ty)) => from_ty.cast(to_ty).map(|_| ()).map_err(|_| {
+            CompileError::new(ErrorKind::TypeMismatch {
+                expected: Box::new(to.clone()),
+                got: Box::new(from.clone()),
+            })
+            .with_span(span)
+        }),
+        _ => Err(CompileError::new(ErrorKind::TypeMismatch {
             expected: Box::new(to.clone()),
             got: Box::new(from.clone()),
         })
-        .with_span(span))
-    }
-}
-
-#[derive(PartialEq, Eq)]
-enum CastCat {
-    Bool,
-    Int,
-    Float,
-    Complex,
-    Angle,
-    Bit,
-    Duration,
-    Other,
-}
-
-fn cast_category(ty: &Type) -> CastCat {
-    match ty {
-        Type::Classical(ValueTy::Scalar(PrimitiveTy::Bool)) => CastCat::Bool,
-        Type::Classical(ValueTy::Scalar(PrimitiveTy::Int(_) | PrimitiveTy::Uint(_))) => {
-            CastCat::Int
-        }
-        Type::Classical(ValueTy::Scalar(PrimitiveTy::Float(_))) => CastCat::Float,
-        Type::Classical(ValueTy::Scalar(PrimitiveTy::Complex(_))) => CastCat::Complex,
-        Type::Classical(ValueTy::Scalar(PrimitiveTy::Angle(_))) => CastCat::Angle,
-        Type::Classical(ValueTy::Scalar(PrimitiveTy::Bit | PrimitiveTy::BitReg(_))) => CastCat::Bit,
-        Type::Classical(ValueTy::Scalar(PrimitiveTy::Duration)) | Type::Stretch => {
-            CastCat::Duration
-        }
-        _ => CastCat::Other,
+        .with_span(span)),
     }
 }
 
@@ -2153,12 +2120,11 @@ mod tests {
     }
 
     #[test]
-    fn type_cast_angle_to_float_invalid() {
+    fn type_cast_angle_to_float_valid() {
         let source = "angle[32] a; float[64](a);";
-        match compile_inline(source) {
-            Err(e) => assert!(matches!(e.kind, ErrorKind::TypeMismatch { .. })),
-            Ok(_) => panic!("angle → float cast should be rejected"),
-        }
+        let program = compile_inline(source).expect("angle -> float should be valid");
+        let e = find_expr_stmt(&program);
+        assert_eq!(e.ty, Type::float(FloatWidth::F64));
     }
 
     #[test]
@@ -2322,7 +2288,7 @@ mod tests {
             &sir::Intrinsic::Sizeof,
             &[
                 typed_expr(Type::array(
-                    PrimitiveTy::Uint(crate::classical::bit_width(8)),
+                    crate::classical::PrimitiveTy::Uint(crate::classical::bit_width(8)),
                     vec![2, 3],
                 )),
                 sir::Expr {
@@ -2357,7 +2323,7 @@ mod tests {
         };
         let result = index_result_type(
             &Type::array(
-                PrimitiveTy::Uint(crate::classical::bit_width(8)),
+                crate::classical::PrimitiveTy::Uint(crate::classical::bit_width(8)),
                 vec![2, 3],
             ),
             &index,
@@ -2365,7 +2331,7 @@ mod tests {
         assert_eq!(
             result,
             Type::array_ref_fixed(
-                PrimitiveTy::Uint(crate::classical::bit_width(8)),
+                crate::classical::PrimitiveTy::Uint(crate::classical::bit_width(8)),
                 vec![3],
                 crate::classical::RefAccess::Mutable,
             )

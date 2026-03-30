@@ -84,6 +84,29 @@ pub enum ValueTy {
 }
 
 impl ValueTy {
+    pub fn cast(self, ty: ValueTy) -> Result<Self> {
+        match (self, ty) {
+            (ValueTy::Scalar(from), ValueTy::Scalar(to)) => Ok(ValueTy::Scalar(from.cast(to)?)),
+            (ValueTy::Array(from), ValueTy::Array(to)) => {
+                from.cast(to)?;
+                Ok(ValueTy::Array(to))
+            }
+            (ValueTy::ArrayRef(from), ValueTy::ArrayRef(to)) => {
+                from.cast(to)?;
+                Ok(ValueTy::ArrayRef(to))
+            }
+            (ValueTy::Array(from), ValueTy::ArrayRef(to)) => {
+                from.as_ref_mut().cast(to)?;
+                Ok(ValueTy::ArrayRef(to))
+            }
+            (ValueTy::ArrayRef(from), ValueTy::Array(to)) => {
+                from.cast(to.as_ref())?;
+                Ok(ValueTy::Array(to))
+            }
+            (from, to) => Err(Error::unsupported_cast(from, to)),
+        }
+    }
+
     pub fn size(&self, dim: usize) -> Option<usize> {
         match self {
             ValueTy::Scalar(ty) if dim == 0 => ty.bw().map(|bw| bw.get() as usize),
@@ -145,7 +168,8 @@ mod tests {
     use super::*;
     use crate::{
         DurationUnit,
-        array::{Array, ArrayTy, ashape},
+        array::{Array, ArrayTy, adim, ashape},
+        array_ref::{ArrayRefShape, ArrayRefTy, RefAccess},
         primitive::{FloatWidth::F64, Primitive, PrimitiveTy, PrimitiveTy::*, bw},
         scalar::Scalar,
     };
@@ -249,6 +273,58 @@ mod tests {
 
         assert!(
             value
+                .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1])))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn value_ty_scalar_cast_returns_target_type() {
+        let cast = ValueTy::Scalar(Uint(bw(8)))
+            .cast(ValueTy::Scalar(Float(F64)))
+            .unwrap();
+
+        assert_eq!(cast, ValueTy::Scalar(Float(F64)));
+    }
+
+    #[test]
+    fn value_ty_array_cast_returns_target_type() {
+        let cast = ValueTy::Array(aty(Uint(bw(8)), vec![2]))
+            .cast(ValueTy::Array(aty(Float(F64), vec![1, 2])))
+            .unwrap();
+
+        assert_eq!(cast, ValueTy::Array(aty(Float(F64), vec![1, 2])));
+    }
+
+    #[test]
+    fn value_ty_array_to_array_ref_cast_uses_array_ref_rules() {
+        let target = ValueTy::ArrayRef(ArrayRefTy::new(
+            Float(F64),
+            ArrayRefShape::Dim(adim(1)),
+            RefAccess::Readonly,
+        ));
+        let cast = ValueTy::Array(aty(Uint(bw(8)), vec![2])).cast(target).unwrap();
+
+        assert_eq!(cast, target);
+    }
+
+    #[test]
+    fn value_ty_array_ref_to_array_cast_uses_array_ref_rules() {
+        let cast = ValueTy::ArrayRef(ArrayRefTy::new(
+            Uint(bw(8)),
+            ArrayRefShape::Fixed(ashape(vec![2])),
+            RefAccess::Mutable,
+        ))
+        .cast(ValueTy::Array(aty(Float(F64), vec![2])))
+        .unwrap();
+
+        assert_eq!(cast, ValueTy::Array(aty(Float(F64), vec![2])));
+    }
+
+    #[test]
+    fn value_ty_cast_rejects_scalar_array_mismatch() {
+        assert!(
+            ValueTy::Scalar(Uint(bw(8)))
                 .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1])))
                 .is_err()
         );

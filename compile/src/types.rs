@@ -1,9 +1,13 @@
 use oqi_parse::ast;
+use oqi_classical::ops::{
+    BinOp as ClassicalBinOp, Sizeof as ClassicalSizeof, SizeofDim as ClassicalSizeofDim,
+    UnOp as ClassicalUnOp,
+};
 
 use crate::classical::{
     ArrayRefShape, ArrayRefTy, ArrayShape, ArrayTy, Duration, DurationUnit, PrimitiveTy, RefAccess,
     ScalarTy, Value, ValueTy, adim, bit_width, bitreg_value, bool_value, complex_value,
-    duration_value, float_value, int_value, value_as_usize,
+    duration_value, float_value, int_value, uint_value, value_as_usize,
 };
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::resolve::lookup_intrinsic;
@@ -380,29 +384,51 @@ fn const_sizeof(
         _ => return Err(CompileError::new(ErrorKind::NonConstantExpression).with_span(span)),
     };
 
-    let dim = match dim_expr {
-        Some(dim) => value_as_usize(&eval_const_expr(dim, symbols, options)?)
-            .ok_or_else(|| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?,
-        None => 0,
-    };
+    let dim_value = dim_expr
+        .map(|dim| eval_const_expr(dim, symbols, options))
+        .transpose()?;
 
-    let value_ty = match value_expr {
-        ast::Expr::Ident(ident) => {
-            let sym_id = symbols.lookup(ident.name).ok_or_else(|| {
-                CompileError::new(ErrorKind::UndefinedName(ident.name.to_string()))
-                    .with_span(ident.span)
-            })?;
-            symbols.get(sym_id).ty.value_ty().ok_or_else(|| {
-                CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
-            })?
+    if let ast::Expr::Ident(ident) = value_expr {
+        let sym_id = symbols.lookup(ident.name).ok_or_else(|| {
+            CompileError::new(ErrorKind::UndefinedName(ident.name.to_string())).with_span(ident.span)
+        })?;
+        let value_ty = symbols.get(sym_id).ty.value_ty().ok_or_else(|| {
+            CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
+        })?;
+        return const_sizeof_ty(value_ty, dim_value.as_ref(), span);
+    }
+
+    let value = eval_const_expr(value_expr, symbols, options)?;
+    match dim_value {
+        Some(dim) => value
+            .sizeof_dim_(dim)
+            .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span)),
+        None => value
+            .sizeof_()
+            .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span)),
+    }
+}
+
+fn const_sizeof_ty(value_ty: ValueTy, dim: Option<&Value>, span: oqi_lex::Span) -> Result<Value> {
+    let size = match dim {
+        Some(dim) => {
+            ClassicalSizeofDim::return_ty(value_ty, dim.ty())
+                .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?;
+            let dim = value_as_usize(dim)
+                .ok_or_else(|| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?;
+            value_ty
+                .size(dim)
+                .ok_or_else(|| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?
         }
-        _ => eval_const_expr(value_expr, symbols, options)?.ty(),
+        None => {
+            ClassicalSizeof::return_ty(value_ty)
+                .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?;
+            value_ty
+                .size(0)
+                .ok_or_else(|| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?
+        }
     };
-
-    let size = value_ty
-        .size(dim)
-        .ok_or_else(|| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?;
-    Ok(int_value(size as i128))
+    Ok(uint_value(size as u128, 64))
 }
 
 #[inline]
@@ -1076,6 +1102,21 @@ mod tests {
         let options = CompileOptions::default();
         let val = eval_const_expr(&expr, &sym, &options).unwrap();
         assert_eq!(value_as_usize(&val), Some(3));
+    }
+
+    #[test]
+    fn test_eval_const_expr_intrinsic_sizeof_value_expr() {
+        let expr = ast::Expr::Call {
+            name: ast::Ident {
+                name: "sizeof",
+                span: span(0, 6),
+            },
+            args: vec![ast::Expr::BitstringLiteral(r#""1010""#, span(7, 13))],
+            span: span(0, 14),
+        };
+        let options = CompileOptions::default();
+        let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
+        assert_eq!(value_as_usize(&val), Some(4));
     }
 
     #[test]

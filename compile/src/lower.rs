@@ -13,7 +13,8 @@ use oqi_classical::{
         Mul as ClassicalMul, Neg as ClassicalNeg, Neq as ClassicalNeq,
         Popcount as ClassicalPopcount, Pow as ClassicalPow, Real as ClassicalReal,
         Rem as ClassicalRem, Rotl as ClassicalRotl, Rotr as ClassicalRotr, Shl as ClassicalShl,
-        Shr as ClassicalShr, Sin as ClassicalSin, Sqrt as ClassicalSqrt, Sub as ClassicalSub,
+        Shr as ClassicalShr, Sin as ClassicalSin, Sizeof as ClassicalSizeof,
+        SizeofDim as ClassicalSizeofDim, Sqrt as ClassicalSqrt, Sub as ClassicalSub,
         Tan as ClassicalTan, UnOp as ClassicalUnOp,
     },
 };
@@ -1632,6 +1633,8 @@ fn intrinsic_result_type(
             };
             let value_ty = intrinsic_arg_type(intrinsic, &value.ty)?;
             if let Some(dim) = dim {
+                let dim_ty = intrinsic_arg_type(intrinsic, &dim.ty)?;
+                ClassicalSizeofDim::return_ty(value_ty, dim_ty).map_err(classical_intrinsic_error)?;
                 if let sir::ExprKind::Literal(value) = &dim.kind {
                     let Some(dim) = value_as_usize(value) else {
                         return Err(CompileError::new(ErrorKind::Unsupported(format!(
@@ -1646,11 +1649,8 @@ fn intrinsic_result_type(
                         ))));
                     }
                 }
-            } else if value_ty.size(0).is_none() {
-                return Err(CompileError::new(ErrorKind::Unsupported(format!(
-                    "intrinsic `{intrinsic}` does not support argument type `{}`",
-                    value.ty
-                ))));
+            } else {
+                ClassicalSizeof::return_ty(value_ty).map_err(classical_intrinsic_error)?;
             }
             Ok(Type::int(system_width, false))
         }
@@ -2283,6 +2283,20 @@ mod tests {
     }
 
     #[test]
+    fn type_intrinsic_sizeof_uses_classical_return_ty() {
+        let result = intrinsic_result_type(
+            &sir::Intrinsic::Sizeof,
+            &[typed_expr(Type::array(
+                crate::classical::PrimitiveTy::Uint(crate::classical::bit_width(8)),
+                vec![2, 3],
+            ))],
+            usize::BITS as usize,
+        )
+        .unwrap();
+        assert_eq!(result, Type::int(usize::BITS as usize, false));
+    }
+
+    #[test]
     fn type_intrinsic_sizeof_rejects_invalid_literal_dimension() {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Sizeof,
@@ -2296,6 +2310,22 @@ mod tests {
                     ty: Type::int(64, true),
                     span: oqi_lex::span(0, 0),
                 },
+            ],
+            usize::BITS as usize,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn type_intrinsic_sizeof_rejects_invalid_dimension_type() {
+        let result = intrinsic_result_type(
+            &sir::Intrinsic::Sizeof,
+            &[
+                typed_expr(Type::array(
+                    crate::classical::PrimitiveTy::Uint(crate::classical::bit_width(8)),
+                    vec![2, 3],
+                )),
+                typed_expr(Type::angle(8)),
             ],
             usize::BITS as usize,
         );

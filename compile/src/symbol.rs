@@ -122,7 +122,7 @@ impl Default for SymbolTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classical::bool_value;
+    use crate::classical::{Value, ValueTy, bw};
 
     fn span(start: usize, end: usize) -> Span {
         oqi_lex::span(start, end)
@@ -134,7 +134,7 @@ mod tests {
         let id = table.insert(
             "x".to_string(),
             SymbolKind::Variable,
-            Type::bool(),
+            Type::Classical(ValueTy::bool()),
             span(0, 1),
         );
 
@@ -142,7 +142,7 @@ mod tests {
         assert_eq!(sym.id, id);
         assert_eq!(sym.name, "x");
         assert_eq!(sym.kind, SymbolKind::Variable);
-        assert_eq!(sym.ty, Type::bool());
+        assert_eq!(sym.ty, Type::Classical(ValueTy::bool()));
         assert_eq!(sym.span, span(0, 1));
         assert!(sym.const_value.is_none());
     }
@@ -153,11 +153,11 @@ mod tests {
         let id = table.insert(
             "N".to_string(),
             SymbolKind::Const,
-            Type::int(32, false),
+            Type::Classical(ValueTy::uint(bw(32))),
             span(0, 5),
         );
 
-        let val = bool_value(true);
+        let val = Value::bit(true);
         table.set_const_value(id, val);
 
         let sym = table.get(id);
@@ -170,13 +170,13 @@ mod tests {
         let id0 = table.insert(
             "a".to_string(),
             SymbolKind::Variable,
-            Type::bool(),
+            Type::Classical(ValueTy::bool()),
             span(0, 1),
         );
         let id1 = table.insert(
             "b".to_string(),
             SymbolKind::Const,
-            Type::duration(),
+            Type::Classical(ValueTy::duration()),
             span(2, 3),
         );
         let id2 = table.insert(
@@ -202,7 +202,7 @@ mod tests {
         let id = table.insert(
             "theta".to_string(),
             SymbolKind::Input,
-            Type::float(crate::types::FloatWidth::F64),
+            Type::Classical(ValueTy::float(crate::types::FloatWidth::F64)),
             span(0, 5),
         );
 
@@ -216,13 +216,13 @@ mod tests {
         let _id0 = table.insert(
             "x".to_string(),
             SymbolKind::Variable,
-            Type::bool(),
+            Type::Classical(ValueTy::bool()),
             span(0, 1),
         );
         let id1 = table.insert(
             "x".to_string(),
             SymbolKind::Variable,
-            Type::int(32, true),
+            Type::Classical(ValueTy::int(bw(32))),
             span(2, 3),
         );
 
@@ -236,14 +236,14 @@ mod tests {
         let id = table.insert(
             "y".to_string(),
             SymbolKind::Variable,
-            Type::bit(),
+            Type::Classical(ValueTy::bit()),
             span(0, 1),
         );
 
         let sym = table.get_mut(id);
-        sym.ty = Type::bitreg(8);
+        sym.ty = Type::Classical(ValueTy::bitreg(bw(8)));
 
-        assert_eq!(table.get(id).ty, Type::bitreg(8));
+        assert_eq!(table.get(id).ty, Type::Classical(ValueTy::bitreg(bw(8))));
     }
 
     #[test]
@@ -252,13 +252,13 @@ mod tests {
         table.insert(
             "a".to_string(),
             SymbolKind::Variable,
-            Type::bool(),
+            Type::Classical(ValueTy::bool()),
             span(0, 1),
         );
         table.insert(
             "b".to_string(),
             SymbolKind::Const,
-            Type::duration(),
+            Type::Classical(ValueTy::duration()),
             span(2, 3),
         );
 

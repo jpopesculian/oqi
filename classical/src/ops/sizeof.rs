@@ -157,7 +157,11 @@ mod tests {
 
     #[test]
     fn sizeof_rank_only_array_ref_is_rejected() {
-        let array_ref_ty = ArrayRefTy::new(Uint(bw(8)), crate::ArrayRefShape::Dim(crate::adim(2)), RefAccess::Readonly);
+        let array_ref_ty = ArrayRefTy::new(
+            Uint(bw(8)),
+            crate::ArrayRefShape::Dim(crate::adim(2)),
+            RefAccess::Readonly,
+        );
 
         assert!(Sizeof::return_ty(ValueTy::ArrayRef(array_ref_ty)).is_err());
     }

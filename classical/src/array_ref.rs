@@ -180,7 +180,7 @@ pub struct ArrayRefTy {
 
 impl ArrayRefTy {
     #[inline]
-    pub fn new(ty: ScalarTy, shape: ArrayRefShape, access: RefAccess) -> Self {
+    pub const fn new(ty: ScalarTy, shape: ArrayRefShape, access: RefAccess) -> Self {
         Self { ty, shape, access }
     }
 

@@ -1,7 +1,10 @@
 use std::fmt;
 
+use num_complex::{Complex32, Complex64};
+
+use crate::duration::{Duration, DurationUnit};
 use crate::error::Result;
-use crate::primitive::{BitWidth, FloatWidth, Primitive, PrimitiveTy};
+use crate::primitive::{BitWidth, FloatWidth, Primitive, PrimitiveTy, bw};
 
 pub type ScalarTy = PrimitiveTy;
 
@@ -40,12 +43,108 @@ impl Scalar {
         self.ty.cast(to)?;
         Self::new(self.value, to)
     }
+
+    #[inline]
+    pub const fn bit(v: bool) -> Self {
+        Self::new_unchecked(Primitive::bit(v), PrimitiveTy::Bit)
+    }
+    #[inline]
+    pub const fn int(v: i128, bw: BitWidth) -> Self {
+        Self::new_unchecked(Primitive::int(v), PrimitiveTy::Int(bw))
+    }
+    #[inline]
+    pub const fn uint(v: u128, bw: BitWidth) -> Self {
+        Self::new_unchecked(Primitive::uint(v), PrimitiveTy::Uint(bw))
+    }
+    #[inline]
+    pub const fn float(v: f64, fw: FloatWidth) -> Self {
+        Self::new_unchecked(Primitive::float(v), PrimitiveTy::Float(fw))
+    }
+    #[inline]
+    pub const fn complex(re: f64, im: f64, fw: FloatWidth) -> Self {
+        Self::new_unchecked(Primitive::complex(re, im), PrimitiveTy::Complex(fw))
+    }
+    #[inline]
+    pub const fn duration(v: f64, unit: DurationUnit) -> Self {
+        Self::new_unchecked(Primitive::duration(v, unit), PrimitiveTy::Duration)
+    }
+    #[inline]
+    pub const fn bitreg(bits: u128, bw: BitWidth) -> Self {
+        Self::new_unchecked(Primitive::bitreg(bits), PrimitiveTy::BitReg(bw))
+    }
+    #[inline]
+    pub fn angle(radians: f64) -> Self {
+        Self::from(Primitive::angle(radians))
+    }
 }
 
 impl From<Primitive> for Scalar {
     #[inline]
     fn from(value: Primitive) -> Self {
         Self::new_unchecked(value, value.default_ty())
+    }
+}
+
+macro_rules! impl_from_int {
+    ($($ty:ty: $bw:literal),* $(,)?) => {
+        $(
+        impl From<$ty> for Scalar {
+            fn from(value: $ty) -> Self {
+                Self::int(value as i128, bw($bw))
+            }
+        }
+        )*
+    };
+}
+
+macro_rules! impl_from_uint {
+    ($($ty:ty: $bw:literal),* $(,)?) => {
+        $(
+        impl From<$ty> for Scalar {
+            fn from(value: $ty) -> Self {
+                Self::uint(value as u128, bw($bw))
+            }
+        }
+        )*
+    };
+}
+
+impl_from_int!(i8: 8, i16: 16, i32: 32, i64: 64, i128: 128);
+impl_from_uint!(u8: 8, u16: 16, u32: 32, u64: 64, u128: 128);
+
+impl From<bool> for Scalar {
+    fn from(value: bool) -> Self {
+        Self::bit(value)
+    }
+}
+
+impl From<f32> for Scalar {
+    fn from(value: f32) -> Self {
+        Self::float(value as f64, FloatWidth::F32)
+    }
+}
+
+impl From<f64> for Scalar {
+    fn from(value: f64) -> Self {
+        Self::float(value, FloatWidth::F64)
+    }
+}
+
+impl From<Complex64> for Scalar {
+    fn from(value: Complex64) -> Self {
+        Self::complex(value.re, value.im, FloatWidth::F64)
+    }
+}
+
+impl From<Complex32> for Scalar {
+    fn from(value: Complex32) -> Self {
+        Self::complex(value.re as f64, value.im as f64, FloatWidth::F32)
+    }
+}
+
+impl From<Duration> for Scalar {
+    fn from(value: Duration) -> Self {
+        Self::duration(value.value, value.unit)
     }
 }
 

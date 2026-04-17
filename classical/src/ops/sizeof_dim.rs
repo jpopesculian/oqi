@@ -53,7 +53,8 @@ impl BinOp for SizeofDim {
                 Self::IS_FUNC,
             )
         })?;
-        let Value::Scalar(value) = sizeof_result(ValueTy::Scalar(lhs.ty()), dim, ValueTy::Scalar(rhs_ty))?
+        let Value::Scalar(value) =
+            sizeof_result(ValueTy::Scalar(lhs.ty()), dim, ValueTy::Scalar(rhs_ty))?
         else {
             unreachable!("sizeof scalar result is always scalar")
         };
@@ -70,7 +71,11 @@ impl BinOp for SizeofDim {
                 Self::IS_FUNC,
             ));
         }
-        Ok((lhs, SIZEOF_DIM_TY, ArrayTy::new(SIZEOF_OUT_TY, ashape(vec![1]))))
+        Ok((
+            lhs,
+            SIZEOF_DIM_TY,
+            ArrayTy::new(SIZEOF_OUT_TY, ashape(vec![1])),
+        ))
     }
 
     fn arr_ref_scalar_check(
@@ -86,11 +91,7 @@ impl BinOp for SizeofDim {
                 Self::IS_FUNC,
             ));
         }
-        Ok((
-            lhs,
-            SIZEOF_DIM_TY,
-            lhs.with_ty(SIZEOF_OUT_TY),
-        ))
+        Ok((lhs, SIZEOF_DIM_TY, lhs.with_ty(SIZEOF_OUT_TY)))
     }
 
     fn op(lhs: Value, rhs: Value, _out: ValueTy) -> Result<Value> {
@@ -99,9 +100,8 @@ impl BinOp for SizeofDim {
         let Value::Scalar(rhs) = rhs.cast(ValueTy::Scalar(SIZEOF_DIM_TY))? else {
             unreachable!("sizeof dimension is always scalar after cast")
         };
-        let dim = scalar_as_usize(rhs).ok_or_else(|| {
-            Error::unsupported_binop(Self::NAME, lhs_ty, rhs_ty, Self::IS_FUNC)
-        })?;
+        let dim = scalar_as_usize(rhs)
+            .ok_or_else(|| Error::unsupported_binop(Self::NAME, lhs_ty, rhs_ty, Self::IS_FUNC))?;
         sizeof_result(lhs_ty, dim, rhs_ty)
     }
 
@@ -114,7 +114,12 @@ impl BinOp for SizeofDim {
 
     fn return_ty(lhs: ValueTy, rhs: ValueTy) -> Result<ValueTy> {
         if lhs.size(0).is_none() {
-            return Err(Error::unsupported_binop(Self::NAME, lhs, rhs, Self::IS_FUNC));
+            return Err(Error::unsupported_binop(
+                Self::NAME,
+                lhs,
+                rhs,
+                Self::IS_FUNC,
+            ));
         }
         rhs.cast(ValueTy::Scalar(SIZEOF_DIM_TY))?;
         Ok(ValueTy::Scalar(SIZEOF_OUT_TY))

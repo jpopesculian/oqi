@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use oqi_lex::Span;
 
-use crate::classical::float_value;
+use crate::classical::{Value, ValueTy};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{CallTarget, Intrinsic};
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
@@ -54,10 +54,10 @@ impl Resolver {
         let tau_id = symbols.insert(
             "tau".into(),
             SymbolKind::Const,
-            Type::float(FloatWidth::F64),
+            Type::Classical(ValueTy::float(FloatWidth::F64)),
             Default::default(),
         );
-        symbols.set_const_value(tau_id, float_value(consts::TAU, FloatWidth::F64));
+        symbols.set_const_value(tau_id, Value::float(consts::TAU, FloatWidth::F64));
         global.insert("tau".into(), tau_id);
         global.insert("τ".into(), tau_id);
 
@@ -65,10 +65,10 @@ impl Resolver {
         let pi_id = symbols.insert(
             "pi".into(),
             SymbolKind::Const,
-            Type::float(FloatWidth::F64),
+            Type::Classical(ValueTy::float(FloatWidth::F64)),
             Default::default(),
         );
-        symbols.set_const_value(pi_id, float_value(consts::PI, FloatWidth::F64));
+        symbols.set_const_value(pi_id, Value::float(consts::PI, FloatWidth::F64));
         global.insert("pi".into(), pi_id);
         global.insert("π".into(), pi_id);
 
@@ -76,10 +76,10 @@ impl Resolver {
         let euler_id = symbols.insert(
             "euler".into(),
             SymbolKind::Const,
-            Type::float(FloatWidth::F64),
+            Type::Classical(ValueTy::float(FloatWidth::F64)),
             Default::default(),
         );
-        symbols.set_const_value(euler_id, float_value(consts::E, FloatWidth::F64));
+        symbols.set_const_value(euler_id, Value::float(consts::E, FloatWidth::F64));
         global.insert("euler".into(), euler_id);
         global.insert("ℇ".into(), euler_id);
 
@@ -255,6 +255,7 @@ pub(crate) fn lookup_intrinsic(name: &str) -> Option<Intrinsic> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::classical::bw;
     use crate::classical::{PrimitiveTy, Value};
     use std::path::Path;
 
@@ -292,7 +293,7 @@ mod tests {
         let pi_id = r.resolve("pi", Default::default()).unwrap();
         let pi_sym = r.symbols().get(pi_id);
         assert_eq!(pi_sym.kind, SymbolKind::Const);
-        assert_eq!(pi_sym.ty, Type::float(FloatWidth::F64));
+        assert_eq!(pi_sym.ty, Type::Classical(ValueTy::float(FloatWidth::F64)));
         match &pi_sym.const_value {
             Some(Value::Scalar(scalar)) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::Float(FloatWidth::F64));
@@ -305,7 +306,7 @@ mod tests {
         let tau_id = r.resolve("tau", Default::default()).unwrap();
         let tau_sym = r.symbols().get(tau_id);
         assert_eq!(tau_sym.kind, SymbolKind::Const);
-        assert_eq!(tau_sym.ty, Type::float(FloatWidth::F64));
+        assert_eq!(tau_sym.ty, Type::Classical(ValueTy::float(FloatWidth::F64)));
         match &tau_sym.const_value {
             Some(Value::Scalar(scalar)) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::Float(FloatWidth::F64));
@@ -319,7 +320,12 @@ mod tests {
     fn declare_and_resolve() {
         let mut r = default_resolver();
         let id = r
-            .declare("x", SymbolKind::Variable, Type::bool(), span(0, 1))
+            .declare(
+                "x",
+                SymbolKind::Variable,
+                Type::Classical(ValueTy::bool()),
+                span(0, 1),
+            )
             .unwrap();
         let resolved = r.resolve("x", span(0, 1)).unwrap();
         assert_eq!(id, resolved);
@@ -335,10 +341,20 @@ mod tests {
     #[test]
     fn duplicate_in_same_scope_errors() {
         let mut r = default_resolver();
-        r.declare("x", SymbolKind::Variable, Type::bool(), span(0, 1))
-            .unwrap();
+        r.declare(
+            "x",
+            SymbolKind::Variable,
+            Type::Classical(ValueTy::bool()),
+            span(0, 1),
+        )
+        .unwrap();
         let err = r
-            .declare("x", SymbolKind::Variable, Type::bool(), span(2, 3))
+            .declare(
+                "x",
+                SymbolKind::Variable,
+                Type::Classical(ValueTy::bool()),
+                span(2, 3),
+            )
             .unwrap_err();
         assert!(matches!(err.kind, ErrorKind::DuplicateDefinition(ref n) if n == "x"));
     }
@@ -347,12 +363,22 @@ mod tests {
     fn shadowing_across_scopes() {
         let mut r = default_resolver();
         let outer = r
-            .declare("x", SymbolKind::Variable, Type::bool(), span(0, 1))
+            .declare(
+                "x",
+                SymbolKind::Variable,
+                Type::Classical(ValueTy::bool()),
+                span(0, 1),
+            )
             .unwrap();
 
         r.push_scope();
         let inner = r
-            .declare("x", SymbolKind::Variable, Type::int(32, true), span(2, 3))
+            .declare(
+                "x",
+                SymbolKind::Variable,
+                Type::Classical(ValueTy::int(bw(32))),
+                span(2, 3),
+            )
             .unwrap();
         assert_eq!(r.resolve("x", Default::default()).unwrap(), inner);
 

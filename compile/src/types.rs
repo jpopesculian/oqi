@@ -1,13 +1,12 @@
-use oqi_parse::ast;
 use oqi_classical::ops::{
     BinOp as ClassicalBinOp, Sizeof as ClassicalSizeof, SizeofDim as ClassicalSizeofDim,
     UnOp as ClassicalUnOp,
 };
+use oqi_parse::ast;
 
 use crate::classical::{
-    ArrayRefShape, ArrayRefTy, ArrayShape, ArrayTy, Duration, DurationUnit, PrimitiveTy, RefAccess,
-    ScalarTy, Value, ValueTy, adim, bit_width, bitreg_value, bool_value, complex_value,
-    duration_value, float_value, int_value, uint_value, value_as_usize,
+    ArrayRefShape, ArrayRefTy, ArrayTy, BitWidth, Duration, DurationUnit, PrimitiveTy, RefAccess,
+    ScalarTy, Value, ValueTy, adim, ashape, bw, value_as_usize,
 };
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::resolve::lookup_intrinsic;
@@ -31,94 +30,6 @@ pub enum Type {
 }
 
 impl Type {
-    pub fn bool() -> Self {
-        PrimitiveTy::Bool.into()
-    }
-
-    pub fn bit() -> Self {
-        PrimitiveTy::Bit.into()
-    }
-
-    pub fn bitreg(width: usize) -> Self {
-        PrimitiveTy::BitReg(bit_width(width)).into()
-    }
-
-    pub fn int(width: usize, signed: bool) -> Self {
-        if signed {
-            PrimitiveTy::Int(bit_width(width)).into()
-        } else {
-            PrimitiveTy::Uint(bit_width(width)).into()
-        }
-    }
-
-    pub fn float(width: FloatWidth) -> Self {
-        PrimitiveTy::Float(width).into()
-    }
-
-    pub fn angle(width: usize) -> Self {
-        PrimitiveTy::Angle(bit_width(width)).into()
-    }
-
-    pub fn complex(width: FloatWidth) -> Self {
-        PrimitiveTy::Complex(width).into()
-    }
-
-    pub fn duration() -> Self {
-        PrimitiveTy::Duration.into()
-    }
-
-    pub fn array(element: ScalarTy, dims: Vec<usize>) -> Self {
-        ArrayTy::new(
-            element,
-            ArrayShape::new(dims).expect("compile-generated array shape should be valid"),
-        )
-        .into()
-    }
-
-    pub fn array_of(element: Type, dims: Vec<usize>) -> Self {
-        Self::array(
-            element
-                .scalar_ty()
-                .expect("compile-generated array element type should be scalar"),
-            dims,
-        )
-    }
-
-    pub fn array_ref_fixed(element: ScalarTy, dims: Vec<usize>, access: RefAccess) -> Self {
-        ArrayRefTy::new(
-            element,
-            ArrayRefShape::Fixed(
-                ArrayShape::new(dims).expect("compile-generated array-ref shape should be valid"),
-            ),
-            access,
-        )
-        .into()
-    }
-
-    pub fn array_ref_fixed_of(element: Type, dims: Vec<usize>, access: RefAccess) -> Self {
-        Self::array_ref_fixed(
-            element
-                .scalar_ty()
-                .expect("compile-generated array-ref element type should be scalar"),
-            dims,
-            access,
-        )
-    }
-
-    pub fn array_ref_rank(element: ScalarTy, rank: usize, access: RefAccess) -> Self {
-        ArrayRefTy::new(element, ArrayRefShape::Dim(adim(rank)), access).into()
-    }
-
-    pub fn array_ref_rank_of(element: Type, rank: usize, access: RefAccess) -> Self {
-        Self::array_ref_rank(
-            element
-                .scalar_ty()
-                .expect("compile-generated array-ref element type should be scalar"),
-            rank,
-            access,
-        )
-    }
-
     pub fn value_ty(&self) -> Option<ValueTy> {
         match self {
             Type::Classical(ty) => Some(*ty),
@@ -181,12 +92,44 @@ pub fn float_width_from_system_width(width: usize) -> FloatWidth {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SystemWidth {
+    B32,
+    B64,
+}
+
+impl SystemWidth {
+    pub fn bw(self) -> BitWidth {
+        match self {
+            SystemWidth::B32 => bw(32),
+            SystemWidth::B64 => bw(64),
+        }
+    }
+
+    pub fn fw(self) -> FloatWidth {
+        match self {
+            SystemWidth::B32 => FloatWidth::F32,
+            SystemWidth::B64 => FloatWidth::F64,
+        }
+    }
+}
+
+impl Default for SystemWidth {
+    fn default() -> Self {
+        match usize::BITS {
+            32 => SystemWidth::B32,
+            64 => SystemWidth::B64,
+            other => panic!("unsupported system width: {other} bits"),
+        }
+    }
+}
+
 /// Options affecting type resolution and lowering.
 pub struct CompileOptions {
     /// Source file path, used for include resolution and diagnostics.
     pub source_name: Option<std::path::PathBuf>,
     /// Default width for plain `int`, `uint`, `float`, `complex`, and `angle`.
-    pub system_angle_width: usize,
+    pub system_width: SystemWidth,
     /// The duration of a single `dt` (device time) unit.
     pub dt: Duration,
 }
@@ -195,7 +138,7 @@ impl Default for CompileOptions {
     fn default() -> Self {
         Self {
             source_name: None,
-            system_angle_width: usize::BITS as usize,
+            system_width: SystemWidth::default(),
             dt: Duration::new(1.0, DurationUnit::Us),
         }
     }
@@ -219,23 +162,24 @@ pub fn eval_const_expr(
     options: &CompileOptions,
 ) -> Result<Value> {
     match expr {
-        ast::Expr::IntLiteral(s, encoding, span) => {
-            Ok(int_value(parse_int_literal(s, *encoding).with_span(*span)?))
-        }
-        ast::Expr::FloatLiteral(s, span) => Ok(float_value(
+        ast::Expr::IntLiteral(s, encoding, span) => Ok(Value::int(
+            parse_int_literal(s, *encoding).with_span(*span)?,
+            bw(128),
+        )),
+        ast::Expr::FloatLiteral(s, span) => Ok(Value::float(
             parse_float_literal(s).with_span(*span)?,
             FloatWidth::F64,
         )),
         ast::Expr::ImagLiteral(s, span) => {
             let (re, im) = parse_imag_literal(s).with_span(*span)?;
-            Ok(complex_value(re, im, FloatWidth::F64))
+            Ok(Value::complex(re, im, FloatWidth::F64))
         }
-        ast::Expr::BoolLiteral(val, _) => Ok(bool_value(*val)),
+        ast::Expr::BoolLiteral(val, _) => Ok(Value::bit(*val)),
         ast::Expr::BitstringLiteral(s, span) => {
             let (bits, width) = parse_bitstring_literal(s).with_span(*span)?;
-            Ok(bitreg_value(bits, width))
+            Ok(Value::bitreg(bits, bw(width as u32)))
         }
-        ast::Expr::TimingLiteral(s, span) => Ok(duration_value(
+        ast::Expr::TimingLiteral(s, span) => Ok(Value::from(
             parse_timing_literal(s, &options.dt).with_span(*span)?,
         )),
         ast::Expr::Paren(inner, _) => eval_const_expr(inner, symbols, options),
@@ -390,11 +334,13 @@ fn const_sizeof(
 
     if let ast::Expr::Ident(ident) = value_expr {
         let sym_id = symbols.lookup(ident.name).ok_or_else(|| {
-            CompileError::new(ErrorKind::UndefinedName(ident.name.to_string())).with_span(ident.span)
+            CompileError::new(ErrorKind::UndefinedName(ident.name.to_string()))
+                .with_span(ident.span)
         })?;
-        let value_ty = symbols.get(sym_id).ty.value_ty().ok_or_else(|| {
-            CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
-        })?;
+        let value_ty =
+            symbols.get(sym_id).ty.value_ty().ok_or_else(|| {
+                CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
+            })?;
         return const_sizeof_ty(value_ty, dim_value.as_ref(), span);
     }
 
@@ -414,21 +360,22 @@ fn const_sizeof_ty(value_ty: ValueTy, dim: Option<&Value>, span: oqi_lex::Span) 
         Some(dim) => {
             ClassicalSizeofDim::return_ty(value_ty, dim.ty())
                 .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?;
-            let dim = value_as_usize(dim)
-                .ok_or_else(|| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?;
-            value_ty
-                .size(dim)
-                .ok_or_else(|| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?
+            let dim = value_as_usize(dim).ok_or_else(|| {
+                CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
+            })?;
+            value_ty.size(dim).ok_or_else(|| {
+                CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
+            })?
         }
         None => {
             ClassicalSizeof::return_ty(value_ty)
                 .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?;
-            value_ty
-                .size(0)
-                .ok_or_else(|| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?
+            value_ty.size(0).ok_or_else(|| {
+                CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
+            })?
         }
     };
-    Ok(uint_value(size as u128, 64))
+    Ok(Value::uint(size as u128, bw(64)))
 }
 
 #[inline]
@@ -518,49 +465,57 @@ pub fn resolve_scalar_type(
     options: &CompileOptions,
 ) -> Result<Type> {
     match ty {
-        ast::ScalarType::Bool(_) => Ok(Type::bool()),
-        ast::ScalarType::Duration(_) => Ok(Type::duration()),
+        ast::ScalarType::Bool(_) => Ok(Type::Classical(ValueTy::bool())),
+        ast::ScalarType::Duration(_) => Ok(Type::Classical(ValueTy::duration())),
         ast::ScalarType::Stretch(_) => Ok(Type::Stretch),
 
-        ast::ScalarType::Bit(None, _) => Ok(Type::bit()),
+        ast::ScalarType::Bit(None, _) => Ok(Type::Classical(ValueTy::bit())),
         ast::ScalarType::Bit(Some(expr), _) => {
             let n = eval_designator(expr, symbols, options)?;
-            Ok(Type::bitreg(n))
+            Ok(Type::Classical(ValueTy::bitreg(bw(n as u32))))
         }
 
-        ast::ScalarType::Int(None, _) => Ok(Type::int(options.system_angle_width, true)),
+        ast::ScalarType::Int(None, _) => {
+            Ok(Type::Classical(ValueTy::int(options.system_width.bw())))
+        }
         ast::ScalarType::Int(Some(expr), _) => {
             let width = eval_designator(expr, symbols, options)?;
-            Ok(Type::int(width, true))
+            Ok(Type::Classical(ValueTy::int(bw(width as u32))))
         }
 
-        ast::ScalarType::Uint(None, _) => Ok(Type::int(options.system_angle_width, false)),
+        ast::ScalarType::Uint(None, _) => {
+            Ok(Type::Classical(ValueTy::uint(options.system_width.bw())))
+        }
         ast::ScalarType::Uint(Some(expr), _) => {
             let width = eval_designator(expr, symbols, options)?;
-            Ok(Type::int(width, false))
+            Ok(Type::Classical(ValueTy::uint(bw(width as u32))))
         }
 
-        ast::ScalarType::Float(None, _) => Ok(Type::float(float_width_from_system_width(
-            options.system_angle_width,
-        ))),
+        ast::ScalarType::Float(None, _) => {
+            Ok(Type::Classical(ValueTy::float(options.system_width.fw())))
+        }
         ast::ScalarType::Float(Some(expr), _) => {
             let width = eval_designator(expr, symbols, options)?;
-            Ok(Type::float(float_width_from_system_width(width)))
+            Ok(Type::Classical(ValueTy::float(
+                float_width_from_system_width(width),
+            )))
         }
 
-        ast::ScalarType::Angle(None, _) => Ok(Type::angle(options.system_angle_width)),
+        ast::ScalarType::Angle(None, _) => {
+            Ok(Type::Classical(ValueTy::angle(options.system_width.bw())))
+        }
         ast::ScalarType::Angle(Some(expr), _) => {
             let width = eval_designator(expr, symbols, options)?;
-            Ok(Type::angle(width))
+            Ok(Type::Classical(ValueTy::angle(bw(width as u32))))
         }
 
-        ast::ScalarType::Complex(None, _) => Ok(Type::complex(float_width_from_system_width(
-            options.system_angle_width,
-        ))),
+        ast::ScalarType::Complex(None, _) => {
+            Ok(Type::Classical(ValueTy::complex(options.system_width.fw())))
+        }
         ast::ScalarType::Complex(Some(inner), _) => {
             let inner_ty = resolve_scalar_type(inner, symbols, options)?;
             match inner_ty.scalar_ty() {
-                Some(PrimitiveTy::Float(fw)) => Ok(Type::complex(fw)),
+                Some(PrimitiveTy::Float(fw)) => Ok(Type::Classical(ValueTy::complex(fw))),
                 _ => Err(CompileError::new(ErrorKind::Unsupported(
                     "complex designator must be a float type".to_string(),
                 ))
@@ -586,7 +541,7 @@ pub fn resolve_type(
             for dim_expr in &arr.dimensions {
                 dims.push(eval_designator(dim_expr, symbols, options)?);
             }
-            Ok(Type::array(element, dims))
+            Ok(Type::Classical(ValueTy::array(element, ashape(dims))))
         }
     }
 }
@@ -617,9 +572,9 @@ pub fn resolve_old_style_type(
         ast::OldStyleKind::Creg => match designator {
             Some(expr) => {
                 let n = eval_designator(expr, symbols, options)?;
-                Ok(Type::bitreg(n))
+                Ok(Type::Classical(ValueTy::bitreg(bw(n as u32))))
             }
-            None => Ok(Type::bit()),
+            None => Ok(Type::Classical(ValueTy::bit())),
         },
         ast::OldStyleKind::Qreg => match designator {
             Some(expr) => {
@@ -650,11 +605,19 @@ pub fn resolve_array_ref_type(
             for e in exprs {
                 fixed.push(eval_designator(e, symbols, options)?);
             }
-            Ok(Type::array_ref_fixed(element, fixed, access))
+            Ok(Type::Classical(ValueTy::array_ref(
+                element,
+                ArrayRefShape::Fixed(ashape(fixed)),
+                access,
+            )))
         }
         ast::ArrayRefDims::Dim(expr) => {
             let rank = eval_designator(expr, symbols, options)?;
-            Ok(Type::array_ref_rank(element, rank, access))
+            Ok(Type::Classical(ValueTy::array_ref(
+                element,
+                ArrayRefShape::Dim(adim(rank)),
+                access,
+            )))
         }
     }
 }
@@ -662,7 +625,7 @@ pub fn resolve_array_ref_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classical::{PrimitiveTy, bit_width};
+    use crate::classical::{PrimitiveTy, bw};
 
     fn span(start: usize, end: usize) -> oqi_lex::Span {
         oqi_lex::span(start, end)
@@ -675,7 +638,7 @@ mod tests {
     fn default_options() -> CompileOptions {
         CompileOptions {
             source_name: None,
-            system_angle_width: 64,
+            system_width: SystemWidth::B64,
             ..Default::default()
         }
     }
@@ -715,7 +678,10 @@ mod tests {
         let sym = empty_symbols();
         let opts = default_options();
         let ty = ast::ScalarType::Bool(span(0, 4));
-        assert_eq!(resolve_scalar_type(&ty, &sym, &opts).unwrap(), Type::bool());
+        assert_eq!(
+            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            Type::Classical(ValueTy::bool())
+        );
     }
 
     #[test]
@@ -723,7 +689,10 @@ mod tests {
         let sym = empty_symbols();
         let opts = default_options();
         let ty = ast::ScalarType::Bit(None, span(0, 3));
-        assert_eq!(resolve_scalar_type(&ty, &sym, &opts).unwrap(), Type::bit());
+        assert_eq!(
+            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            Type::Classical(ValueTy::bit())
+        );
     }
 
     #[test]
@@ -734,7 +703,7 @@ mod tests {
         let ty = ast::ScalarType::Bit(Some(Box::new(expr)), span(0, 6));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::bitreg(4)
+            Type::Classical(ValueTy::bitreg(bw(4)))
         );
     }
 
@@ -745,7 +714,7 @@ mod tests {
         let ty = ast::ScalarType::Int(None, span(0, 3));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::int(64, true)
+            Type::Classical(ValueTy::int(bw(64)))
         );
     }
 
@@ -757,7 +726,7 @@ mod tests {
         let ty = ast::ScalarType::Int(Some(Box::new(expr)), span(0, 6));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::int(8, true)
+            Type::Classical(ValueTy::int(bw(8)))
         );
     }
 
@@ -769,7 +738,7 @@ mod tests {
         let ty = ast::ScalarType::Uint(Some(Box::new(expr)), span(0, 8));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::int(16, false)
+            Type::Classical(ValueTy::uint(bw(16)))
         );
     }
 
@@ -780,7 +749,7 @@ mod tests {
         let ty = ast::ScalarType::Float(None, span(0, 5));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::float(FloatWidth::F64)
+            Type::Classical(ValueTy::float(FloatWidth::F64))
         );
     }
 
@@ -792,7 +761,7 @@ mod tests {
         let ty = ast::ScalarType::Float(Some(Box::new(expr)), span(0, 9));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::float(FloatWidth::F32)
+            Type::Classical(ValueTy::float(FloatWidth::F32))
         );
     }
 
@@ -801,13 +770,13 @@ mod tests {
         let sym = empty_symbols();
         let opts = CompileOptions {
             source_name: None,
-            system_angle_width: 32,
+            system_width: SystemWidth::B32,
             ..Default::default()
         };
         let ty = ast::ScalarType::Angle(None, span(0, 5));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::angle(32)
+            Type::Classical(ValueTy::angle(bw(32)))
         );
     }
 
@@ -818,7 +787,7 @@ mod tests {
         let ty = ast::ScalarType::Complex(None, span(0, 7));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::complex(FloatWidth::F64)
+            Type::Classical(ValueTy::complex(FloatWidth::F64))
         );
     }
 
@@ -831,7 +800,7 @@ mod tests {
         let ty = ast::ScalarType::Complex(Some(Box::new(inner)), span(0, 18));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::complex(FloatWidth::F32)
+            Type::Classical(ValueTy::complex(FloatWidth::F32))
         );
     }
 
@@ -842,7 +811,7 @@ mod tests {
         let ty = ast::ScalarType::Duration(span(0, 8));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::duration()
+            Type::Classical(ValueTy::duration())
         );
     }
 
@@ -879,7 +848,10 @@ mod tests {
         let ty = ast::TypeExpr::Array(arr);
         assert_eq!(
             resolve_type(&ty, &sym, &opts).unwrap(),
-            Type::array(PrimitiveTy::Float(FloatWidth::F64), vec![3, 4])
+            Type::Classical(ValueTy::array(
+                PrimitiveTy::Float(FloatWidth::F64),
+                ashape(vec![3, 4])
+            ))
         );
     }
 
@@ -916,7 +888,7 @@ mod tests {
         let expr = ast::Expr::IntLiteral("4", ast::IntEncoding::Decimal, span(5, 6));
         assert_eq!(
             resolve_old_style_type(&ast::OldStyleKind::Creg, Some(&expr), &sym, &opts).unwrap(),
-            Type::bitreg(4)
+            Type::Classical(ValueTy::bitreg(bw(4)))
         );
     }
 
@@ -939,12 +911,15 @@ mod tests {
         let id = sym.insert(
             "N".to_string(),
             SymbolKind::Const,
-            Type::int(32, false),
+            Type::Classical(ValueTy::uint(bw(32))),
             span(0, 5),
         );
         sym.set_const_value(
             id,
-            int_value(parse_int_literal("8", ast::IntEncoding::Decimal).unwrap()),
+            Value::int(
+                parse_int_literal("8", ast::IntEncoding::Decimal).unwrap(),
+                bw(128),
+            ),
         );
 
         let expr = ast::Expr::Ident(ast::Ident {
@@ -979,8 +954,8 @@ mod tests {
         let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
         match val {
             Value::Scalar(scalar) => {
-                assert_eq!(scalar.ty(), PrimitiveTy::BitReg(bit_width(4)));
-                assert_eq!(scalar.value().as_bitreg(bit_width(4)), Some(0b0110));
+                assert_eq!(scalar.ty(), PrimitiveTy::BitReg(bw(4)));
+                assert_eq!(scalar.value().as_bitreg(bw(4)), Some(0b0110));
             }
             other => panic!("expected bitstring literal, got {other:?}"),
         }
@@ -1042,8 +1017,8 @@ mod tests {
         let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
         match val {
             Value::Scalar(scalar) => {
-                assert_eq!(scalar.ty(), PrimitiveTy::Uint(bit_width(4)));
-                assert_eq!(scalar.value().as_uint(bit_width(4)), Some(3));
+                assert_eq!(scalar.ty(), PrimitiveTy::Uint(bw(4)));
+                assert_eq!(scalar.value().as_uint(bw(4)), Some(3));
             }
             other => panic!("expected uint result, got {other:?}"),
         }
@@ -1066,8 +1041,8 @@ mod tests {
         let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
         match val {
             Value::Scalar(scalar) => {
-                assert_eq!(scalar.ty(), PrimitiveTy::BitReg(bit_width(4)));
-                assert_eq!(scalar.value().as_bitreg(bit_width(4)), Some(0b0011));
+                assert_eq!(scalar.ty(), PrimitiveTy::BitReg(bw(4)));
+                assert_eq!(scalar.value().as_bitreg(bw(4)), Some(0b0011));
             }
             other => panic!("expected bitreg result, got {other:?}"),
         }
@@ -1081,7 +1056,10 @@ mod tests {
         sym.insert(
             "my_array".to_string(),
             SymbolKind::Variable,
-            Type::array(PrimitiveTy::Uint(bit_width(8)), vec![2, 3, 4]),
+            Type::Classical(ValueTy::array(
+                PrimitiveTy::Uint(bw(8)),
+                ashape(vec![2, 3, 4]),
+            )),
             span(0, 8),
         );
 
@@ -1159,12 +1137,5 @@ mod tests {
             }
             other => panic!("expected float result, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_float_width_from_system_width() {
-        assert_eq!(float_width_from_system_width(32), FloatWidth::F32);
-        assert_eq!(float_width_from_system_width(64), FloatWidth::F64);
-        assert_eq!(float_width_from_system_width(16), FloatWidth::F32);
     }
 }

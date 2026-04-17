@@ -428,7 +428,7 @@ pub enum ArrayLiteralItem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classical::{float_value, uint_value};
+    use crate::classical::{Value, ValueTy, bw};
     use crate::symbol::SymbolKind;
     use crate::types::FloatWidth;
 
@@ -442,8 +442,8 @@ mod tests {
 
     fn float_expr(val: f64, span: Span) -> Expr {
         Expr {
-            kind: ExprKind::Literal(float_value(val, FloatWidth::F64)),
-            ty: Type::float(FloatWidth::F64),
+            kind: ExprKind::Literal(Value::float(val, FloatWidth::F64)),
+            ty: Type::Classical(ValueTy::float(FloatWidth::F64)),
             span,
         }
     }
@@ -458,8 +458,8 @@ mod tests {
 
     fn uint_expr(val: u128, span: Span) -> Expr {
         Expr {
-            kind: ExprKind::Literal(uint_value(val, 64)),
-            ty: Type::int(64, false),
+            kind: ExprKind::Literal(Value::uint(val, bw(64))),
+            ty: Type::Classical(ValueTy::uint(bw(64))),
             span,
         }
     }
@@ -536,19 +536,19 @@ mod tests {
         let c0 = symbols.insert(
             "c0".into(),
             SymbolKind::Variable,
-            Type::bit(),
+            Type::Classical(ValueTy::bit()),
             Default::default(),
         );
         let c1 = symbols.insert(
             "c1".into(),
             SymbolKind::Variable,
-            Type::bit(),
+            Type::Classical(ValueTy::bit()),
             Default::default(),
         );
         let c2 = symbols.insert(
             "c2".into(),
             SymbolKind::Variable,
-            Type::bit(),
+            Type::Classical(ValueTy::bit()),
             Default::default(),
         );
         // gate post q { }
@@ -643,10 +643,10 @@ mod tests {
                     condition: Expr {
                         kind: ExprKind::Binary {
                             op: BinOp::Eq,
-                            left: Box::new(var_expr(c0, Type::bit(), s)),
+                            left: Box::new(var_expr(c0, Type::Classical(ValueTy::bit()), s)),
                             right: Box::new(uint_expr(1, s)),
                         },
-                        ty: Type::bool(),
+                        ty: Type::Classical(ValueTy::bool()),
                         span: s,
                     },
                     then_body: vec![gate_call(z_gate, vec![], vec![indexed_qubit(q, 2, s)], s)],
@@ -660,10 +660,10 @@ mod tests {
                     condition: Expr {
                         kind: ExprKind::Binary {
                             op: BinOp::Eq,
-                            left: Box::new(var_expr(c1, Type::bit(), s)),
+                            left: Box::new(var_expr(c1, Type::Classical(ValueTy::bit()), s)),
                             right: Box::new(uint_expr(1, s)),
                         },
-                        ty: Type::bool(),
+                        ty: Type::Classical(ValueTy::bool()),
                         span: s,
                     },
                     then_body: vec![gate_call(x_gate, vec![], vec![indexed_qubit(q, 2, s)], s)],

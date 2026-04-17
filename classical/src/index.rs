@@ -1051,7 +1051,7 @@ mod tests {
 
     #[test]
     fn scalar_get_direct_reads_bits() {
-        let scalar = Scalar::new_unchecked(Primitive::uint(0b1010u32), ScalarTy::Uint(bw(4)));
+        let scalar = Scalar::new_unchecked(Primitive::uint(0b1010), ScalarTy::Uint(bw(4)));
         let result = scalar.get(&[Index::Item(1)]).unwrap();
 
         assert!(matches!(result.value(), Primitive::Bit(true)));
@@ -1147,7 +1147,7 @@ mod tests {
     fn get_bit_from_uint() {
         // 0b1010 = 10
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1010u32),
+            Primitive::uint(0b1010),
             ScalarTy::Uint(bw(8)),
         ));
         assert!(matches!(
@@ -1199,7 +1199,7 @@ mod tests {
     fn get_bit_negative_index() {
         // 0b1000 in 4 bits: bit -1 (= bit 3) is 1
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1000u32),
+            Primitive::uint(0b1000),
             ScalarTy::Uint(bw(4)),
         ));
         assert!(matches!(
@@ -1215,7 +1215,7 @@ mod tests {
     #[test]
     fn get_bit_out_of_bounds() {
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0xFFu32),
+            Primitive::uint(0xFF),
             ScalarTy::Uint(bw(8)),
         ));
         assert!(v.get(&[Index::Item(8)]).is_err());
@@ -1226,7 +1226,7 @@ mod tests {
     fn get_bit_slice_uint() {
         // 0b1010_0110, bits 1..5 = bits 1,2,3,4 = 1,1,0,0 → 0b0011
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1010_0110u32),
+            Primitive::uint(0b1010_0110),
             ScalarTy::Uint(bw(8)),
         ));
         let r = v
@@ -1283,7 +1283,7 @@ mod tests {
     #[test]
     fn get_bit_slice_full() {
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1010u32),
+            Primitive::uint(0b1010),
             ScalarTy::Uint(bw(4)),
         ));
         let r = v
@@ -1313,7 +1313,7 @@ mod tests {
         // 0b1010 in 4 bits, bits 3 down to 0 (step -1) = bits 3,2,1,0 = 1,0,1,0
         // result bit 0=1, bit 1=0, bit 2=1, bit 3=0 → 0b0101
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1010u32),
+            Primitive::uint(0b1010),
             ScalarTy::Uint(bw(4)),
         ));
         let r = v
@@ -1343,7 +1343,7 @@ mod tests {
     fn get_bit_select_uint() {
         // 0b1010, select bits [3, 0] → bit 3=1, bit 0=0 → result bit 0=1, bit 1=0 → 0b01
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1010u32),
+            Primitive::uint(0b1010),
             ScalarTy::Uint(bw(4)),
         ));
         let r = v.get(&[Index::Select(vec![3, 0])]).unwrap();
@@ -1388,7 +1388,7 @@ mod tests {
     #[test]
     fn get_bit_select_empty_returns_none() {
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0xFFu32),
+            Primitive::uint(0xFF),
             ScalarTy::Uint(bw(8)),
         ));
         assert!(v.get(&[Index::Select(vec![])]).is_err());
@@ -1397,7 +1397,7 @@ mod tests {
     #[test]
     fn get_bit_select_out_of_bounds() {
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0xFFu32),
+            Primitive::uint(0xFF),
             ScalarTy::Uint(bw(8)),
         ));
         assert!(v.get(&[Index::Select(vec![0, 8])]).is_err());
@@ -1406,7 +1406,7 @@ mod tests {
     #[test]
     fn set_bit_on_uint() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0u32),
+            Primitive::uint(0),
             ScalarTy::Uint(bw(4)),
         ));
         assert!(v.set(&[Index::Item(1)], bit_val(true)).is_ok());
@@ -1424,7 +1424,7 @@ mod tests {
     #[test]
     fn set_bit_clear_on_uint() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1111u32),
+            Primitive::uint(0b1111),
             ScalarTy::Uint(bw(4)),
         ));
         assert!(v.set(&[Index::Item(2)], bit_val(false)).is_ok());
@@ -1498,7 +1498,7 @@ mod tests {
     #[test]
     fn set_bit_with_non_bit_value_returns_false() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0u32),
+            Primitive::uint(0),
             ScalarTy::Uint(bw(8)),
         ));
         assert!(v.set(&[Index::Item(0)], sc(1)).is_err());
@@ -1507,7 +1507,7 @@ mod tests {
     #[test]
     fn set_bit_out_of_bounds_returns_false() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0u32),
+            Primitive::uint(0),
             ScalarTy::Uint(bw(8)),
         ));
         assert!(v.set(&[Index::Item(8)], bit_val(true)).is_err());
@@ -1516,7 +1516,7 @@ mod tests {
     #[test]
     fn get_set_bit_roundtrip() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1010u32),
+            Primitive::uint(0b1010),
             ScalarTy::Uint(bw(4)),
         ));
         let bit = v.get(&[Index::Item(1)]).unwrap();
@@ -1542,7 +1542,7 @@ mod tests {
     fn set_bit_slice_uint() {
         // 0b0000_0000, set bits 2..6 to 0b1010 (4-bit BitReg)
         let mut v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0u32),
+            Primitive::uint(0),
             ScalarTy::Uint(bw(8)),
         ));
         let src = Value::Scalar(Scalar::new_unchecked(
@@ -1576,7 +1576,7 @@ mod tests {
     fn set_bit_select_uint() {
         // 0b0000, set bits [0, 3] to 0b11 (2-bit BitReg)
         let mut v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0u32),
+            Primitive::uint(0),
             ScalarTy::Uint(bw(4)),
         ));
         let src = Value::Scalar(Scalar::new_unchecked(
@@ -1630,7 +1630,7 @@ mod tests {
     #[test]
     fn set_bit_slice_wrong_width_returns_false() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0u32),
+            Primitive::uint(0),
             ScalarTy::Uint(bw(8)),
         ));
         // Slice selects 4 bits but value is 3-bit
@@ -1654,7 +1654,7 @@ mod tests {
     #[test]
     fn get_set_slice_roundtrip() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1010_0110u32),
+            Primitive::uint(0b1010_0110),
             ScalarTy::Uint(bw(8)),
         ));
         let slice = v
@@ -1827,7 +1827,7 @@ mod tests {
     #[test]
     fn value_get_ty_scalar_item_returns_bit() {
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1010u32),
+            Primitive::uint(0b1010),
             ScalarTy::Uint(bw(4)),
         ));
 
@@ -1844,7 +1844,7 @@ mod tests {
     #[test]
     fn value_get_ty_scalar_slice_returns_bitreg_width() {
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1010u32),
+            Primitive::uint(0b1010),
             ScalarTy::Uint(bw(4)),
         ));
         let indices = [Index::Slice {
@@ -1867,12 +1867,12 @@ mod tests {
     fn value_get_ty_array_item_returns_subarray() {
         let v = Value::Array(Array::new_unchecked(
             vec![
-                Primitive::uint(1u32),
-                Primitive::uint(2u32),
-                Primitive::uint(3u32),
-                Primitive::uint(4u32),
-                Primitive::uint(5u32),
-                Primitive::uint(6u32),
+                Primitive::uint(1),
+                Primitive::uint(2),
+                Primitive::uint(3),
+                Primitive::uint(4),
+                Primitive::uint(5),
+                Primitive::uint(6),
             ],
             ArrayTy::new(ScalarTy::Uint(bw(8)), shape![2, 3]),
         ));
@@ -1898,7 +1898,7 @@ mod tests {
     #[test]
     fn value_get_ty_array_then_bit_returns_scalar_bit() {
         let v = Value::Array(Array::new_unchecked(
-            vec![Primitive::uint(0b1010u32), Primitive::uint(0b0101u32)],
+            vec![Primitive::uint(0b1010), Primitive::uint(0b0101)],
             ArrayTy::new(ScalarTy::Uint(bw(4)), shape![2]),
         ));
         let indices = [Index::Item(0), Index::Item(1)];
@@ -1916,7 +1916,7 @@ mod tests {
     #[test]
     fn value_get_ty_matches_get_errors() {
         let v = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b1010u32),
+            Primitive::uint(0b1010),
             ScalarTy::Uint(bw(4)),
         ));
 

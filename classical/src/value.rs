@@ -1,11 +1,15 @@
+use std::fmt;
+
+use num_complex::{Complex32, Complex64};
+
 use crate::{
-    Primitive,
-    array::{Array, ArrayTy},
-    array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy},
+    BitWidth, FloatWidth, Primitive,
+    array::{Array, ArrayShape, ArrayTy},
+    array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess},
+    duration::{Duration, DurationUnit},
     error::{Error, Result},
     scalar::{Scalar, ScalarTy},
 };
-use std::fmt;
 
 #[derive(Clone, Debug)]
 pub enum Value {
@@ -39,6 +43,39 @@ impl Value {
             (value, ty) => Err(Error::unsupported_cast(value.ty(), ty)),
         }
     }
+
+    #[inline]
+    pub const fn bit(v: bool) -> Self {
+        Self::Scalar(Scalar::bit(v))
+    }
+    #[inline]
+    pub const fn int(v: i128, bw: BitWidth) -> Self {
+        Self::Scalar(Scalar::int(v, bw))
+    }
+    #[inline]
+    pub const fn uint(v: u128, bw: BitWidth) -> Self {
+        Self::Scalar(Scalar::uint(v, bw))
+    }
+    #[inline]
+    pub const fn float(v: f64, fw: FloatWidth) -> Self {
+        Self::Scalar(Scalar::float(v, fw))
+    }
+    #[inline]
+    pub const fn complex(re: f64, im: f64, fw: FloatWidth) -> Self {
+        Self::Scalar(Scalar::complex(re, im, fw))
+    }
+    #[inline]
+    pub const fn duration(v: f64, unit: DurationUnit) -> Self {
+        Self::Scalar(Scalar::duration(v, unit))
+    }
+    #[inline]
+    pub const fn bitreg(bits: u128, bw: BitWidth) -> Self {
+        Self::Scalar(Scalar::bitreg(bits, bw))
+    }
+    #[inline]
+    pub fn angle(radians: f64) -> Self {
+        Value::Scalar(Scalar::angle(radians))
+    }
 }
 
 impl From<Scalar> for Value {
@@ -65,6 +102,23 @@ impl From<Primitive> for Value {
         Value::Scalar(Scalar::from(primitive))
     }
 }
+
+macro_rules! impl_from_primitive {
+    ($($ty:ty),* $(,)?) => {
+        $(
+        impl From<$ty> for Value {
+            fn from(value: $ty) -> Self {
+                Self::Scalar(Scalar::from(value))
+            }
+        }
+        )*
+    };
+}
+
+impl_from_primitive!(
+    bool, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64, Complex32, Complex64,
+    Duration
+);
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -129,6 +183,61 @@ impl ValueTy {
             },
             _ => None,
         }
+    }
+
+    #[inline]
+    pub const fn bit() -> Self {
+        Self::Scalar(ScalarTy::Bit)
+    }
+
+    #[inline]
+    pub const fn bool() -> Self {
+        Self::Scalar(ScalarTy::Bool)
+    }
+
+    #[inline]
+    pub const fn int(bw: BitWidth) -> Self {
+        Self::Scalar(ScalarTy::Int(bw))
+    }
+
+    #[inline]
+    pub const fn uint(bw: BitWidth) -> Self {
+        Self::Scalar(ScalarTy::Uint(bw))
+    }
+
+    #[inline]
+    pub const fn float(fw: FloatWidth) -> Self {
+        Self::Scalar(ScalarTy::Float(fw))
+    }
+
+    #[inline]
+    pub const fn complex(fw: FloatWidth) -> Self {
+        Self::Scalar(ScalarTy::Complex(fw))
+    }
+
+    #[inline]
+    pub const fn angle(bw: BitWidth) -> Self {
+        Self::Scalar(ScalarTy::Angle(bw))
+    }
+
+    #[inline]
+    pub const fn duration() -> Self {
+        Self::Scalar(ScalarTy::Duration)
+    }
+
+    #[inline]
+    pub const fn bitreg(bw: BitWidth) -> Self {
+        Self::Scalar(ScalarTy::BitReg(bw))
+    }
+
+    #[inline]
+    pub const fn array(ty: ScalarTy, shape: ArrayShape) -> Self {
+        Self::Array(ArrayTy::new(ty, shape))
+    }
+
+    #[inline]
+    pub const fn array_ref(ty: ScalarTy, shape: ArrayRefShape, access: RefAccess) -> Self {
+        Self::ArrayRef(ArrayRefTy::new(ty, shape, access))
     }
 }
 
@@ -303,7 +412,9 @@ mod tests {
             ArrayRefShape::Dim(adim(1)),
             RefAccess::Readonly,
         ));
-        let cast = ValueTy::Array(aty(Uint(bw(8)), vec![2])).cast(target).unwrap();
+        let cast = ValueTy::Array(aty(Uint(bw(8)), vec![2]))
+            .cast(target)
+            .unwrap();
 
         assert_eq!(cast, target);
     }

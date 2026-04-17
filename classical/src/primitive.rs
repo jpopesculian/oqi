@@ -6,7 +6,7 @@ use crate::{
     error::{Error, Result},
     value::ValueTy,
 };
-use num_complex::{Complex64, c64};
+use num_complex::{Complex32, Complex64, c64};
 
 #[derive(Clone, Copy)]
 pub enum Primitive {
@@ -25,36 +25,44 @@ impl Primitive {
     pub const TAU: Self = Self::Float(core::f64::consts::TAU);
     pub const E: Self = Self::Float(core::f64::consts::E);
 
-    pub fn bit(v: bool) -> Self {
+    #[inline]
+    pub const fn bit(v: bool) -> Self {
         Self::Bit(v)
     }
 
-    pub fn int(v: impl Into<i128>) -> Self {
-        Self::Int(v.into())
+    #[inline]
+    pub const fn int(v: i128) -> Self {
+        Self::Int(v)
     }
 
-    pub fn uint(v: impl Into<u128>) -> Self {
-        Self::Uint(v.into())
+    #[inline]
+    pub const fn uint(v: u128) -> Self {
+        Self::Uint(v)
     }
 
-    pub fn float(v: impl Into<f64>) -> Self {
-        Self::Float(v.into())
+    #[inline]
+    pub const fn float(v: f64) -> Self {
+        Self::Float(v)
     }
 
-    pub fn complex(re: impl Into<f64>, im: impl Into<f64>) -> Self {
-        Self::Complex(c64(re.into(), im.into()))
+    #[inline]
+    pub const fn complex(re: f64, im: f64) -> Self {
+        Self::Complex(Complex64 { re, im })
     }
 
-    pub fn duration(v: impl Into<f64>, unit: DurationUnit) -> Self {
-        Self::Duration(Duration::new(v.into(), unit))
+    #[inline]
+    pub const fn duration(v: f64, unit: DurationUnit) -> Self {
+        Self::Duration(Duration::new(v, unit))
     }
 
-    pub fn angle(radians: impl Into<f64>) -> Self {
-        Self::Angle(radians_to_angle(radians.into()))
+    #[inline]
+    pub fn angle(radians: f64) -> Self {
+        Self::Angle(radians_to_angle(radians))
     }
 
-    pub fn bitreg(bits: impl Into<u128>) -> Self {
-        Self::BitReg(bits.into())
+    #[inline]
+    pub const fn bitreg(bits: u128) -> Self {
+        Self::BitReg(bits)
     }
 
     #[inline]
@@ -256,6 +264,53 @@ impl Primitive {
     pub fn cast(self, from: PrimitiveTy, to: PrimitiveTy) -> Result<Self> {
         from.cast(to)?;
         self.as_ty(from)?.as_ty(to)
+    }
+}
+
+macro_rules! impl_from_primitive {
+    ($($from:ty$( as $as:ty)?: $using:ident ),* $(,)?) => {
+        $(
+            impl From<$from> for Primitive {
+                #[inline]
+                fn from(v: $from) -> Self {
+                    Primitive::$using(v $(as $as)?)
+                }
+            }
+        )*
+    }
+}
+
+impl_from_primitive! {
+    bool: bit,
+    u8 as u128: uint,
+    u16 as u128: uint,
+    u32 as u128: uint,
+    u64 as u128: uint,
+    u128: uint,
+    i8 as i128: int,
+    i16 as i128: int,
+    i32 as i128: int,
+    i64 as i128: int,
+    i128: int,
+    f32 as f64: float,
+    f64: float,
+}
+
+impl From<Complex64> for Primitive {
+    fn from(value: Complex64) -> Self {
+        Primitive::Complex(value)
+    }
+}
+
+impl From<Complex32> for Primitive {
+    fn from(value: Complex32) -> Self {
+        Primitive::complex(value.re as f64, value.im as f64)
+    }
+}
+
+impl From<Duration> for Primitive {
+    fn from(value: Duration) -> Self {
+        Primitive::Duration(value)
     }
 }
 
@@ -750,7 +805,7 @@ mod tests {
 
     #[test]
     fn f32_to_f64() {
-        let s = Primitive::float(1.23_f32);
+        let s = Primitive::float(1.23);
         let r = s.cast(Float(F32), Float(F64)).unwrap();
         assert!((r.as_float(F64).unwrap() - 1.23f32 as f64).abs() < 1e-10);
     }

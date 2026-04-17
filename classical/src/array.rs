@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::array_ref::{ArrayRef, ArrayRefTy, RefAccess};
+use crate::array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
 use crate::primitive::{Primitive, PrimitiveTy};
 use crate::scalar::{Scalar, ScalarTy};
 use crate::shared::Shared;
@@ -129,7 +129,7 @@ pub struct ArrayDim(usize);
 impl ArrayDim {
     const MAX: usize = 16;
     #[inline]
-    pub fn new(dim: usize) -> Result<Self> {
+    pub const fn new(dim: usize) -> Result<Self> {
         if dim == 0 || dim > 16 {
             return Err(Error::BadDimensions {
                 received: dim,
@@ -261,35 +261,46 @@ pub struct ArrayTy {
 }
 
 impl ArrayTy {
-    pub fn new(ty: PrimitiveTy, shape: ArrayShape) -> Self {
+    #[inline]
+    pub const fn new(ty: PrimitiveTy, shape: ArrayShape) -> Self {
         Self { ty, shape }
     }
 
-    pub fn with_ty(&self, ty: PrimitiveTy) -> Self {
+    #[inline]
+    pub const fn with_ty(&self, ty: PrimitiveTy) -> Self {
         Self { ty, ..*self }
     }
 
-    pub fn with_shape(&self, shape: ArrayShape) -> Self {
+    #[inline]
+    pub const fn with_shape(&self, shape: ArrayShape) -> Self {
         Self::new(self.ty, shape)
     }
 
     #[inline]
-    pub fn as_ref(&self) -> ArrayRefTy {
-        ArrayRefTy::new(self.ty(), self.shape.into(), RefAccess::Readonly)
+    pub const fn as_ref(&self) -> ArrayRefTy {
+        ArrayRefTy::new(
+            self.ty(),
+            ArrayRefShape::Fixed(self.shape),
+            RefAccess::Readonly,
+        )
     }
 
     #[inline]
-    pub fn as_ref_mut(&self) -> ArrayRefTy {
-        ArrayRefTy::new(self.ty(), self.shape.into(), RefAccess::Mutable)
+    pub const fn as_ref_mut(&self) -> ArrayRefTy {
+        ArrayRefTy::new(
+            self.ty(),
+            ArrayRefShape::Fixed(self.shape),
+            RefAccess::Mutable,
+        )
     }
 
     #[inline]
-    pub fn shape(&self) -> ArrayShape {
+    pub const fn shape(&self) -> ArrayShape {
         self.shape
     }
 
     #[inline]
-    pub fn ty(&self) -> PrimitiveTy {
+    pub const fn ty(&self) -> PrimitiveTy {
         self.ty
     }
 

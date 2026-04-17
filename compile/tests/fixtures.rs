@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use oqi_compile::classical::{ValueTy, bw};
 use oqi_compile::lower::compile_source;
 use oqi_compile::resolve::StdFileResolver;
 
@@ -266,14 +267,29 @@ fn classical_scalar_types() {
     let p = compile_inline(src).expect("scalar types should compile");
     let sym = |name: &str| p.symbols.iter().find(|s| s.name == name).unwrap();
 
-    assert_eq!(sym("my_bit").ty, oqi_compile::types::Type::bit());
-    assert_eq!(sym("my_bitreg").ty, oqi_compile::types::Type::bitreg(8));
-    assert_eq!(sym("my_bool").ty, oqi_compile::types::Type::bool());
-    assert_eq!(sym("my_int").ty, oqi_compile::types::Type::int(32, true));
-    assert_eq!(sym("my_uint").ty, oqi_compile::types::Type::int(16, false));
+    assert_eq!(
+        sym("my_bit").ty,
+        oqi_compile::types::Type::Classical(ValueTy::bit())
+    );
+    assert_eq!(
+        sym("my_bitreg").ty,
+        oqi_compile::types::Type::Classical(ValueTy::bitreg(bw(8)))
+    );
+    assert_eq!(
+        sym("my_bool").ty,
+        oqi_compile::types::Type::Classical(ValueTy::bool())
+    );
+    assert_eq!(
+        sym("my_int").ty,
+        oqi_compile::types::Type::Classical(ValueTy::int(bw(32)))
+    );
+    assert_eq!(
+        sym("my_uint").ty,
+        oqi_compile::types::Type::Classical(ValueTy::uint(bw(16)))
+    );
     assert_eq!(
         sym("my_float").ty,
-        oqi_compile::types::Type::float(oqi_compile::types::FloatWidth::F64)
+        oqi_compile::types::Type::Classical(ValueTy::float(oqi_compile::types::FloatWidth::F64))
     );
 }
 
@@ -302,7 +318,7 @@ fn complex_type_declaration() {
     let sym = p.symbols.iter().find(|s| s.name == "c").unwrap();
     assert_eq!(
         sym.ty,
-        oqi_compile::types::Type::complex(oqi_compile::types::FloatWidth::F64)
+        oqi_compile::types::Type::Classical(ValueTy::complex(oqi_compile::types::FloatWidth::F64))
     );
 }
 
@@ -316,10 +332,13 @@ fn duration_and_stretch_types() {
     let p = compile_inline(src).expect("duration/stretch should compile");
     let sym = |name: &str| p.symbols.iter().find(|s| s.name == name).unwrap();
 
-    assert_eq!(sym("one_second").ty, oqi_compile::types::Type::duration());
+    assert_eq!(
+        sym("one_second").ty,
+        oqi_compile::types::Type::Classical(ValueTy::duration())
+    );
     assert_eq!(
         sym("thousand_cycles").ty,
-        oqi_compile::types::Type::duration()
+        oqi_compile::types::Type::Classical(ValueTy::duration())
     );
     assert_eq!(sym("g").ty, oqi_compile::types::Type::Stretch);
 }
@@ -333,7 +352,10 @@ fn array_1d_declaration() {
     let sym = p.symbols.iter().find(|s| s.name == "a").unwrap();
     assert_eq!(
         sym.ty,
-        oqi_compile::types::Type::array_of(oqi_compile::types::Type::int(32, true), vec![5])
+        oqi_compile::types::Type::Classical(ValueTy::array(
+            oqi_compile::classical::PrimitiveTy::Int(oqi_compile::classical::bw(32)),
+            oqi_compile::classical::ashape(vec![5]),
+        ))
     );
 }
 
@@ -346,10 +368,10 @@ fn array_multidim_declaration() {
     let sym = p.symbols.iter().find(|s| s.name == "md").unwrap();
     assert_eq!(
         sym.ty,
-        oqi_compile::types::Type::array_of(
-            oqi_compile::types::Type::float(oqi_compile::types::FloatWidth::F32),
-            vec![3, 2],
-        )
+        oqi_compile::types::Type::Classical(ValueTy::array(
+            oqi_compile::classical::PrimitiveTy::Float(oqi_compile::classical::FloatWidth::F32),
+            oqi_compile::classical::ashape(vec![3, 2]),
+        ))
     );
 }
 
@@ -367,7 +389,10 @@ fn const_declarations_and_builtin_constants() {
 
     assert_eq!(sym("SIZE").kind, oqi_compile::symbol::SymbolKind::Const);
     assert_eq!(sym("q").ty, oqi_compile::types::Type::QubitReg(32));
-    assert_eq!(sym("i").ty, oqi_compile::types::Type::int(32, true));
+    assert_eq!(
+        sym("i").ty,
+        oqi_compile::types::Type::Classical(ValueTy::int(bw(32)))
+    );
 }
 
 #[test]
@@ -399,7 +424,10 @@ fn bitstring_literal() {
     "#;
     let p = compile_inline(src).expect("bitstring literal should compile");
     let sym = p.symbols.iter().find(|s| s.name == "b").unwrap();
-    assert_eq!(sym.ty, oqi_compile::types::Type::bitreg(8));
+    assert_eq!(
+        sym.ty,
+        oqi_compile::types::Type::Classical(ValueTy::bitreg(bw(8)))
+    );
 }
 
 // ── Classical instructions (from classical.rst) ──────────────────────

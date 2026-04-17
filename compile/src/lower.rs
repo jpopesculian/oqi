@@ -20,19 +20,19 @@ use oqi_classical::{
 };
 use oqi_parse::ast;
 
-use crate::classical::{
-    ValueTy, bitreg_value, bool_value, complex_value, duration_value, float_value, int_value,
-    value_as_usize,
-};
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::resolve::{FileResolver, IncludeSource, Resolver, StdFileResolver};
 use crate::sir;
 use crate::symbol::SymbolKind;
 use crate::types::{
-    CompileOptions, Type, eval_const_expr, eval_designator, float_width_from_system_width,
-    parse_bitstring_literal, parse_float_literal, parse_imag_literal, parse_int_literal,
-    parse_timing_literal, resolve_array_ref_type, resolve_old_style_type, resolve_qubit_type,
-    resolve_scalar_type, resolve_type,
+    CompileOptions, Type, eval_const_expr, eval_designator, parse_bitstring_literal,
+    parse_float_literal, parse_imag_literal, parse_int_literal, parse_timing_literal,
+    resolve_array_ref_type, resolve_old_style_type, resolve_qubit_type, resolve_scalar_type,
+    resolve_type,
+};
+use crate::{
+    classical::{Value, ValueTy, bw, value_as_usize},
+    types::SystemWidth,
 };
 
 // ── Public API ──────────────────────────────────────────────────────────
@@ -313,14 +313,14 @@ impl Lowerer {
                     self.resolver
                         .declare(name.name, SymbolKind::Gate, Type::Void, name.span)?;
                 let (param_ids, qubit_ids, gate_body) = self.with_scope(|this| {
-                    let angle_width = this.resolver.options().system_angle_width;
+                    let angle_bw = this.resolver.options().system_width.bw();
                     let param_ids: Vec<_> = params
                         .iter()
                         .map(|p| {
                             this.resolver.declare(
                                 p.name,
                                 SymbolKind::GateParam,
-                                Type::angle(angle_width),
+                                Type::Classical(ValueTy::angle(angle_bw)),
                                 p.span,
                             )
                         })
@@ -867,47 +867,47 @@ impl Lowerer {
 
             ast::Expr::IntLiteral(s, enc, _) => {
                 let int = parse_int_literal(s, *enc).with_span(span)?;
-                let ty = Type::int(self.system_width(), true);
+                let ty = Type::Classical(ValueTy::int(self.resolver.options().system_width.bw()));
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Literal(int_value(int)),
+                    kind: sir::ExprKind::Literal(Value::int(int, bw(128))),
                     ty,
                     span,
                 })
             }
 
             ast::Expr::FloatLiteral(s, _) => {
-                let fw = float_width_from_system_width(self.system_width());
+                let fw = self.resolver.options().system_width.fw();
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Literal(float_value(
+                    kind: sir::ExprKind::Literal(Value::float(
                         parse_float_literal(s).with_span(span)?,
                         fw,
                     )),
-                    ty: Type::float(fw),
+                    ty: Type::Classical(ValueTy::float(fw)),
                     span,
                 })
             }
 
             ast::Expr::ImagLiteral(s, _) => {
-                let fw = float_width_from_system_width(self.system_width());
+                let fw = self.resolver.options().system_width.fw();
                 let (re, im) = parse_imag_literal(s)?;
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Literal(complex_value(re, im, fw)),
-                    ty: Type::complex(fw),
+                    kind: sir::ExprKind::Literal(Value::complex(re, im, fw)),
+                    ty: Type::Classical(ValueTy::complex(fw)),
                     span,
                 })
             }
 
             ast::Expr::BoolLiteral(b, _) => Ok(sir::Expr {
-                kind: sir::ExprKind::Literal(bool_value(*b)),
-                ty: Type::bool(),
+                kind: sir::ExprKind::Literal(Value::bit(*b)),
+                ty: Type::Classical(ValueTy::bool()),
                 span,
             }),
 
             ast::Expr::BitstringLiteral(s, _) => {
                 let (bits, len) = parse_bitstring_literal(s)?;
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Literal(bitreg_value(bits, len)),
-                    ty: Type::bitreg(len),
+                    kind: sir::ExprKind::Literal(Value::bitreg(bits, bw(len as u32))),
+                    ty: Type::Classical(ValueTy::bitreg(bw(len as u32))),
                     span,
                 })
             }
@@ -915,8 +915,8 @@ impl Lowerer {
             ast::Expr::TimingLiteral(s, _) => {
                 let tv = parse_timing_literal(s, &self.resolver.options().dt)?;
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Literal(duration_value(tv)),
-                    ty: Type::duration(),
+                    kind: sir::ExprKind::Literal(Value::from(tv)),
+                    ty: Type::Classical(ValueTy::duration()),
                     span,
                 })
             }
@@ -1011,7 +1011,7 @@ impl Lowerer {
                 })?;
                 Ok(sir::Expr {
                     kind: sir::ExprKind::DurationOf(stmts),
-                    ty: Type::duration(),
+                    ty: Type::Classical(ValueTy::duration()),
                     span,
                 })
             }
@@ -1388,13 +1388,11 @@ impl Lowerer {
             .collect()
     }
 
-    fn system_width(&self) -> usize {
-        self.resolver.options().system_angle_width
-    }
-
     fn call_result_type(&self, callee: &sir::CallTarget, args: &[sir::Expr]) -> Result<Type> {
         match callee {
-            sir::CallTarget::Intrinsic(i) => intrinsic_result_type(i, args, self.system_width()),
+            sir::CallTarget::Intrinsic(i) => {
+                intrinsic_result_type(i, args, self.resolver.options().system_width)
+            }
             sir::CallTarget::Symbol(sym) => Ok(self.resolver.symbols().get(*sym).ty.clone()),
         }
     }
@@ -1573,7 +1571,7 @@ fn unary_result_type(op: &sir::UnOp, operand: &Type) -> Type {
         .and_then(|value_ty| classical_unary_return_ty(op, value_ty).ok())
         .map(Type::from)
         .unwrap_or_else(|| match op {
-            sir::UnOp::LogNot => Type::bool(),
+            sir::UnOp::LogNot => Type::Classical(ValueTy::bool()),
             sir::UnOp::Neg | sir::UnOp::BitNot => operand.clone(),
         })
 }
@@ -1596,7 +1594,7 @@ fn index_result_type(base_ty: &Type, index: &sir::IndexOp) -> Type {
 fn intrinsic_result_type(
     intrinsic: &sir::Intrinsic,
     args: &[sir::Expr],
-    system_width: usize,
+    system_width: SystemWidth,
 ) -> Result<Type> {
     use sir::Intrinsic::*;
     match intrinsic {
@@ -1634,7 +1632,8 @@ fn intrinsic_result_type(
             let value_ty = intrinsic_arg_type(intrinsic, &value.ty)?;
             if let Some(dim) = dim {
                 let dim_ty = intrinsic_arg_type(intrinsic, &dim.ty)?;
-                ClassicalSizeofDim::return_ty(value_ty, dim_ty).map_err(classical_intrinsic_error)?;
+                ClassicalSizeofDim::return_ty(value_ty, dim_ty)
+                    .map_err(classical_intrinsic_error)?;
                 if let sir::ExprKind::Literal(value) = &dim.kind {
                     let Some(dim) = value_as_usize(value) else {
                         return Err(CompileError::new(ErrorKind::Unsupported(format!(
@@ -1652,7 +1651,7 @@ fn intrinsic_result_type(
             } else {
                 ClassicalSizeof::return_ty(value_ty).map_err(classical_intrinsic_error)?;
             }
-            Ok(Type::int(system_width, false))
+            Ok(Type::Classical(ValueTy::uint(system_width.bw())))
         }
     }
 }
@@ -1776,7 +1775,7 @@ mod tests {
 
     fn typed_expr(ty: Type) -> sir::Expr {
         sir::Expr {
-            kind: sir::ExprKind::Literal(bool_value(false)),
+            kind: sir::ExprKind::Literal(Value::bit(false)),
             ty,
             span: oqi_lex::span(0, 0),
         }
@@ -1968,7 +1967,10 @@ mod tests {
         let q_sym = program.symbols.lookup("q").expect("q should exist");
         assert_eq!(program.symbols.get(c_sym).kind, SymbolKind::Variable);
         assert_eq!(program.symbols.get(q_sym).kind, SymbolKind::Qubit);
-        assert_eq!(program.symbols.get(c_sym).ty, Type::bitreg(4));
+        assert_eq!(
+            program.symbols.get(c_sym).ty,
+            Type::Classical(ValueTy::bitreg(bw(4)))
+        );
         assert_eq!(program.symbols.get(q_sym).ty, Type::QubitReg(2));
     }
 
@@ -2021,10 +2023,14 @@ mod tests {
         let source = "1 + 2.0;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        let sw = usize::BITS as usize;
+        let fw = match usize::BITS {
+            32 => FloatWidth::F32,
+            64 => FloatWidth::F64,
+            _ => unreachable!(),
+        };
         assert_eq!(
             e.ty,
-            Type::float(float_width_from_system_width(sw)),
+            Type::Classical(ValueTy::float(fw)),
             "1 + 2.0 should be Float"
         );
     }
@@ -2034,7 +2040,11 @@ mod tests {
         let source = "true && false;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::bool(), "true && false should be Bool");
+        assert_eq!(
+            e.ty,
+            Type::Classical(ValueTy::bool()),
+            "true && false should be Bool"
+        );
     }
 
     #[test]
@@ -2042,7 +2052,11 @@ mod tests {
         let source = "int[32] x = 1; x == 2;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::bool(), "x == 2 should be Bool");
+        assert_eq!(
+            e.ty,
+            Type::Classical(ValueTy::bool()),
+            "x == 2 should be Bool"
+        );
     }
 
     #[test]
@@ -2053,7 +2067,7 @@ mod tests {
         let sw = usize::BITS as usize;
         assert_eq!(
             e.ty,
-            Type::int(sw, true),
+            Type::Classical(ValueTy::int(bw(sw as u32))),
             "42 should be Int(system_width, signed)"
         );
     }
@@ -2063,10 +2077,14 @@ mod tests {
         let source = "3.14;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        let sw = usize::BITS as usize;
+        let fw = match usize::BITS {
+            32 => FloatWidth::F32,
+            64 => FloatWidth::F64,
+            _ => unreachable!(),
+        };
         assert_eq!(
             e.ty,
-            Type::float(float_width_from_system_width(sw)),
+            Type::Classical(ValueTy::float(fw)),
             "3.14 should be Float"
         );
     }
@@ -2076,7 +2094,7 @@ mod tests {
         let source = "true;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::bool());
+        assert_eq!(e.ty, Type::Classical(ValueTy::bool()));
     }
 
     #[test]
@@ -2084,7 +2102,7 @@ mod tests {
         let source = r#""0110";"#;
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::bitreg(4));
+        assert_eq!(e.ty, Type::Classical(ValueTy::bitreg(bw(4))));
     }
 
     #[test]
@@ -2092,7 +2110,7 @@ mod tests {
         let source = "float[64] x = 1.0; x;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::float(FloatWidth::F64));
+        assert_eq!(e.ty, Type::Classical(ValueTy::float(FloatWidth::F64)));
     }
 
     #[test]
@@ -2100,7 +2118,7 @@ mod tests {
         let source = "float[64] x = 1.0; -x;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::float(FloatWidth::F64));
+        assert_eq!(e.ty, Type::Classical(ValueTy::float(FloatWidth::F64)));
     }
 
     #[test]
@@ -2108,7 +2126,7 @@ mod tests {
         let source = "bool x = true; !x;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::bool());
+        assert_eq!(e.ty, Type::Classical(ValueTy::bool()));
     }
 
     #[test]
@@ -2116,7 +2134,7 @@ mod tests {
         let source = "int[32] x = 5; float[64](x);";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::float(FloatWidth::F64));
+        assert_eq!(e.ty, Type::Classical(ValueTy::float(FloatWidth::F64)));
     }
 
     #[test]
@@ -2124,7 +2142,7 @@ mod tests {
         let source = "angle[32] a; float[64](a);";
         let program = compile_inline(source).expect("angle -> float should be valid");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::float(FloatWidth::F64));
+        assert_eq!(e.ty, Type::Classical(ValueTy::float(FloatWidth::F64)));
     }
 
     #[test]
@@ -2132,7 +2150,7 @@ mod tests {
         let source = "float[64] f = 1.0; angle[32](f);";
         let program = compile_inline(source).expect("float → angle should be valid");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::angle(32));
+        assert_eq!(e.ty, Type::Classical(ValueTy::angle(bw(32))));
     }
 
     #[test]
@@ -2148,7 +2166,7 @@ mod tests {
         let source = "uint[4] x = 5; x[0];";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::bit());
+        assert_eq!(e.ty, Type::Classical(ValueTy::bit()));
     }
 
     #[test]
@@ -2157,7 +2175,7 @@ mod tests {
         let source = "angle[32] a; angle[32] b; a + b;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::angle(32));
+        assert_eq!(e.ty, Type::Classical(ValueTy::angle(bw(32))));
     }
 
     #[test]
@@ -2166,7 +2184,7 @@ mod tests {
         let source = "angle[32] a; angle[32] b; a / b;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::int(32, false));
+        assert_eq!(e.ty, Type::Classical(ValueTy::uint(bw(32))));
     }
 
     #[test]
@@ -2175,39 +2193,39 @@ mod tests {
         let source = "angle[32] a; uint[32] n = 2; a * n;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::angle(32));
+        assert_eq!(e.ty, Type::Classical(ValueTy::angle(bw(32))));
     }
 
     #[test]
     fn type_add_signed_unsigned_same_width_uses_classical_promotion() {
         let result = binary_result_type(
             &sir::BinOp::Add,
-            &Type::int(32, true),
-            &Type::int(32, false),
+            &Type::Classical(ValueTy::int(bw(32))),
+            &Type::Classical(ValueTy::uint(bw(32))),
             oqi_lex::span(0, 0),
         )
         .unwrap();
-        assert_eq!(result, Type::int(32, false));
+        assert_eq!(result, Type::Classical(ValueTy::uint(bw(32))));
     }
 
     #[test]
     fn type_add_float_complex_uses_classical_promotion() {
         let result = binary_result_type(
             &sir::BinOp::Add,
-            &Type::float(FloatWidth::F64),
-            &Type::complex(FloatWidth::F32),
+            &Type::Classical(ValueTy::float(FloatWidth::F64)),
+            &Type::Classical(ValueTy::complex(FloatWidth::F32)),
             oqi_lex::span(0, 0),
         )
         .unwrap();
-        assert_eq!(result, Type::complex(FloatWidth::F64));
+        assert_eq!(result, Type::Classical(ValueTy::complex(FloatWidth::F64)));
     }
 
     #[test]
     fn type_add_bool_int_is_rejected() {
         let result = binary_result_type(
             &sir::BinOp::Add,
-            &Type::bool(),
-            &Type::int(32, true),
+            &Type::Classical(ValueTy::bool()),
+            &Type::Classical(ValueTy::int(bw(32))),
             oqi_lex::span(0, 0),
         );
         assert!(result.is_err());
@@ -2217,22 +2235,22 @@ mod tests {
     fn type_intrinsic_ceiling_uses_classical_return_ty() {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Ceiling,
-            &[typed_expr(Type::float(FloatWidth::F32))],
-            usize::BITS as usize,
+            &[typed_expr(Type::Classical(ValueTy::float(FloatWidth::F32)))],
+            Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::float(FloatWidth::F32));
+        assert_eq!(result, Type::Classical(ValueTy::float(FloatWidth::F32)));
     }
 
     #[test]
     fn type_intrinsic_sin_angle_uses_classical_return_ty() {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Sin,
-            &[typed_expr(Type::angle(32))],
-            usize::BITS as usize,
+            &[typed_expr(Type::Classical(ValueTy::angle(bw(32))))],
+            Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::float(FloatWidth::F64));
+        assert_eq!(result, Type::Classical(ValueTy::float(FloatWidth::F64)));
     }
 
     #[test]
@@ -2240,60 +2258,62 @@ mod tests {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Mod,
             &[
-                typed_expr(Type::int(8, false)),
-                typed_expr(Type::int(16, false)),
+                typed_expr(Type::Classical(ValueTy::uint(bw(8)))),
+                typed_expr(Type::Classical(ValueTy::uint(bw(16)))),
             ],
-            usize::BITS as usize,
+            Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::int(16, false));
+        assert_eq!(result, Type::Classical(ValueTy::uint(bw(16))));
     }
 
     #[test]
     fn type_intrinsic_popcount_uses_input_width() {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Popcount,
-            &[typed_expr(Type::bitreg(8))],
-            usize::BITS as usize,
+            &[typed_expr(Type::Classical(ValueTy::bitreg(bw(8))))],
+            Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::int(8, false));
+        assert_eq!(result, Type::Classical(ValueTy::uint(bw(8))));
     }
 
     #[test]
     fn type_intrinsic_real_uses_classical_return_ty() {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Real,
-            &[typed_expr(Type::complex(FloatWidth::F32))],
-            usize::BITS as usize,
+            &[typed_expr(Type::Classical(ValueTy::complex(
+                FloatWidth::F32,
+            )))],
+            Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::float(FloatWidth::F32));
+        assert_eq!(result, Type::Classical(ValueTy::float(FloatWidth::F32)));
     }
 
     #[test]
     fn type_intrinsic_imag_uses_classical_promotion() {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Imag,
-            &[typed_expr(Type::int(8, true))],
-            usize::BITS as usize,
+            &[typed_expr(Type::Classical(ValueTy::int(bw(8))))],
+            Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::float(FloatWidth::F64));
+        assert_eq!(result, Type::Classical(ValueTy::float(FloatWidth::F64)));
     }
 
     #[test]
     fn type_intrinsic_sizeof_uses_classical_return_ty() {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Sizeof,
-            &[typed_expr(Type::array(
-                crate::classical::PrimitiveTy::Uint(crate::classical::bit_width(8)),
-                vec![2, 3],
-            ))],
-            usize::BITS as usize,
+            &[typed_expr(Type::Classical(ValueTy::array(
+                crate::classical::PrimitiveTy::Uint(crate::classical::bw(8)),
+                crate::classical::ashape(vec![2, 3]),
+            )))],
+            Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::int(usize::BITS as usize, false));
+        assert_eq!(result, Type::Classical(ValueTy::uint(bw(usize::BITS))));
     }
 
     #[test]
@@ -2301,17 +2321,17 @@ mod tests {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Sizeof,
             &[
-                typed_expr(Type::array(
-                    crate::classical::PrimitiveTy::Uint(crate::classical::bit_width(8)),
-                    vec![2, 3],
-                )),
+                typed_expr(Type::Classical(ValueTy::array(
+                    crate::classical::PrimitiveTy::Uint(crate::classical::bw(8)),
+                    crate::classical::ashape(vec![2, 3]),
+                ))),
                 sir::Expr {
-                    kind: sir::ExprKind::Literal(int_value(3)),
-                    ty: Type::int(64, true),
+                    kind: sir::ExprKind::Literal(Value::int(3, crate::classical::bw(128))),
+                    ty: Type::Classical(ValueTy::int(bw(64))),
                     span: oqi_lex::span(0, 0),
                 },
             ],
-            usize::BITS as usize,
+            Default::default(),
         );
         assert!(result.is_err());
     }
@@ -2321,13 +2341,13 @@ mod tests {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Sizeof,
             &[
-                typed_expr(Type::array(
-                    crate::classical::PrimitiveTy::Uint(crate::classical::bit_width(8)),
-                    vec![2, 3],
-                )),
-                typed_expr(Type::angle(8)),
+                typed_expr(Type::Classical(ValueTy::array(
+                    crate::classical::PrimitiveTy::Uint(crate::classical::bw(8)),
+                    crate::classical::ashape(vec![2, 3]),
+                ))),
+                typed_expr(Type::Classical(ValueTy::angle(bw(8)))),
             ],
-            usize::BITS as usize,
+            Default::default(),
         );
         assert!(result.is_err());
     }
@@ -2345,26 +2365,26 @@ mod tests {
     fn type_index_into_array_returns_array_ref() {
         let index = sir::IndexOp {
             kind: sir::IndexKind::Items(vec![sir::IndexItem::Single(Box::new(sir::Expr {
-                kind: sir::ExprKind::Literal(int_value(0)),
-                ty: Type::int(64, true),
+                kind: sir::ExprKind::Literal(Value::int(0, crate::classical::bw(128))),
+                ty: Type::Classical(ValueTy::int(bw(64))),
                 span: oqi_lex::span(0, 0),
             }))]),
             span: oqi_lex::span(0, 0),
         };
         let result = index_result_type(
-            &Type::array(
-                crate::classical::PrimitiveTy::Uint(crate::classical::bit_width(8)),
-                vec![2, 3],
-            ),
+            &Type::Classical(ValueTy::array(
+                crate::classical::PrimitiveTy::Uint(crate::classical::bw(8)),
+                crate::classical::ashape(vec![2, 3]),
+            )),
             &index,
         );
         assert_eq!(
             result,
-            Type::array_ref_fixed(
-                crate::classical::PrimitiveTy::Uint(crate::classical::bit_width(8)),
-                vec![3],
+            Type::Classical(ValueTy::array_ref(
+                crate::classical::PrimitiveTy::Uint(crate::classical::bw(8)),
+                crate::classical::ArrayRefShape::Fixed(crate::classical::ashape(vec![3])),
                 crate::classical::RefAccess::Mutable,
-            )
+            ))
         );
     }
 
@@ -2379,7 +2399,11 @@ mod tests {
             .find(|s| matches!(s.kind, sir::StmtKind::If { .. }));
         assert!(if_stmt.is_some());
         if let sir::StmtKind::If { condition, .. } = &if_stmt.unwrap().kind {
-            assert_eq!(condition.ty, Type::bool(), "if condition should be Bool");
+            assert_eq!(
+                condition.ty,
+                Type::Classical(ValueTy::bool()),
+                "if condition should be Bool"
+            );
         }
     }
 
@@ -2400,7 +2424,11 @@ mod tests {
                 .find(|s| matches!(s.kind, sir::StmtKind::If { .. }));
             assert!(if_stmt.is_some());
             if let sir::StmtKind::If { condition, .. } = &if_stmt.unwrap().kind {
-                assert_eq!(condition.ty, Type::bool(), "bool() cast should yield Bool");
+                assert_eq!(
+                    condition.ty,
+                    Type::Classical(ValueTy::bool()),
+                    "bool() cast should yield Bool"
+                );
             }
         }
     }

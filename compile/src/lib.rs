@@ -3,6 +3,7 @@ pub mod cfg;
 pub mod classical;
 pub mod diagnostic;
 pub mod display;
+pub mod duration;
 pub mod error;
 pub mod lower;
 pub mod openpulse;

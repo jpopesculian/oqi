@@ -73,9 +73,12 @@ mod tests {
     #[test]
     fn tan_angle() {
         // 8-bit angle 0 = 0 radians, tan(0) = 0
-        let r = Value::Scalar(Scalar::new_unchecked(Primitive::Angle(0), Angle(bw(8))))
-            .tan_()
-            .unwrap();
+        let r = Value::Scalar(Scalar::new_unchecked(
+            Primitive::Angle(turns::Angle(0)),
+            Angle(bw(8)),
+        ))
+        .tan_()
+        .unwrap();
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Float(F64)));

@@ -24,7 +24,7 @@ impl BinOp for Lt {
             (Primitive::Int(a), Primitive::Int(b)) => a < b,
             (Primitive::Float(a), Primitive::Float(b)) => a < b,
             (Primitive::Duration(a), Primitive::Duration(b)) => a < b,
-            (Primitive::Angle(a), Primitive::Angle(b)) => a < b,
+            (Primitive::Angle(a), Primitive::Angle(b)) => a.0 < b.0,
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
         Ok(Scalar::new_unchecked(Primitive::bit(result), out))

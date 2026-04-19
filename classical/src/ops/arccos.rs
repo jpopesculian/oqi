@@ -87,9 +87,12 @@ mod tests {
     #[test]
     fn arccos_angle_returns_none() {
         assert!(
-            Value::Scalar(Scalar::new_unchecked(Primitive::Angle(0), Angle(bw(8))))
-                .arccos_()
-                .is_err()
+            Value::Scalar(Scalar::new_unchecked(
+                Primitive::Angle(turns::Angle(0)),
+                Angle(bw(8))
+            ))
+            .arccos_()
+            .is_err()
         );
     }
 }

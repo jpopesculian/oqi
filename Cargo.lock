@@ -328,6 +328,7 @@ dependencies = [
  "num-complex",
  "num-traits",
  "paste",
+ "turns",
 ]
 
 [[package]]
@@ -518,6 +519,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a99051ec05383f70bcab71884d39083a455257795e71cb780048a4bc890f3b8"
 dependencies = [
  "recasting",
+]
+
+[[package]]
+name = "turns"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9197d78913ec27083e9ee28e447522c9baf56e658303e0e21397e3bf2e70e8ec"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]

@@ -148,14 +148,25 @@ impl From<Duration> for Scalar {
     }
 }
 
-fn angle_numden(angle: u128) -> (u128, u128) {
-    if angle == 0 {
-        return (0, 1);
-    }
-
-    let common_twos = angle.trailing_zeros().min(127);
-    (angle >> common_twos, 1u128 << (127 - common_twos))
+macro_rules! impl_from_angle {
+    ($($ty:ty: $bw:literal),* $(,)?) => {
+        $(
+        impl From<$ty> for Scalar {
+            fn from(value: $ty) -> Self {
+                Self::new_unchecked(Primitive::from(value), PrimitiveTy::Angle(bw($bw)))
+            }
+        }
+        )*
+    };
 }
+
+impl_from_angle!(
+    turns::Angle8: 8,
+    turns::Angle16: 16,
+    turns::Angle32: 32,
+    turns::Angle64: 64,
+    turns::Angle128: 128,
+);
 
 impl fmt::Display for Scalar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -172,7 +183,7 @@ impl fmt::Display for Scalar {
             Primitive::Float(v) => write!(f, "{}", v),
             Primitive::Duration(v) => write!(f, "{}", v),
             Primitive::Angle(v) => {
-                let (num, den) = angle_numden(v);
+                let (num, den) = v.to_frac();
                 if num == 0 {
                     write!(f, "0")
                 } else if den == 1 && num == 1 {
@@ -205,18 +216,12 @@ mod tests {
     use crate::bw;
 
     #[test]
-    fn angle_numden_reduces_dyadic_pi_fraction() {
-        assert_eq!(angle_numden(0), (0, 1));
-        assert_eq!(angle_numden(1_u128 << 127), (1, 1));
-        assert_eq!(angle_numden(1_u128 << 126), (1, 2));
-        assert_eq!(angle_numden(3_u128 << 126), (3, 2));
-        assert_eq!(angle_numden(7_u128 << 124), (7, 8));
-    }
-
-    #[test]
     fn angle_display_uses_reduced_pi_fraction() {
         let angle4 = |bits: u128| {
-            Scalar::new_unchecked(Primitive::Angle(bits << 124), PrimitiveTy::Angle(bw(4)))
+            Scalar::new_unchecked(
+                Primitive::Angle(turns::Angle(bits << 124)),
+                PrimitiveTy::Angle(bw(4)),
+            )
         };
 
         assert_eq!(angle4(0b0000).to_string(), "0");

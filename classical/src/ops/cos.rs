@@ -72,9 +72,12 @@ mod tests {
 
     #[test]
     fn cos_angle_zero() {
-        let r = Value::Scalar(Scalar::new_unchecked(Primitive::Angle(0), Angle(bw(8))))
-            .cos_()
-            .unwrap();
+        let r = Value::Scalar(Scalar::new_unchecked(
+            Primitive::Angle(turns::Angle(0)),
+            Angle(bw(8)),
+        ))
+        .cos_()
+        .unwrap();
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Float(F64)));

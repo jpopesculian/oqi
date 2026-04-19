@@ -25,7 +25,7 @@ impl BinOp for Sub {
             (Float(lhs), Float(rhs)) => Float(lhs - rhs),
             (Complex(lhs), Complex(rhs)) => Complex(lhs - rhs),
             (Duration(lhs), Duration(rhs)) => Duration(lhs - rhs),
-            (Angle(lhs), Angle(rhs)) => Angle(lhs.wrapping_sub(rhs)),
+            (Angle(lhs), Angle(rhs)) => Angle(lhs - rhs),
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
         Ok(Scalar::new_unchecked(result.assert_fits(out)?, out))

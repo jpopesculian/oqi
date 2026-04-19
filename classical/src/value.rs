@@ -116,8 +116,27 @@ macro_rules! impl_from_primitive {
 }
 
 impl_from_primitive!(
-    bool, u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64, Complex32, Complex64,
-    Duration
+    bool,
+    u8,
+    u16,
+    u32,
+    u64,
+    u128,
+    i8,
+    i16,
+    i32,
+    i64,
+    i128,
+    f32,
+    f64,
+    Complex32,
+    Complex64,
+    Duration,
+    turns::Angle8,
+    turns::Angle16,
+    turns::Angle32,
+    turns::Angle64,
+    turns::Angle128,
 );
 
 impl fmt::Display for Value {

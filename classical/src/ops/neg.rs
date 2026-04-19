@@ -28,7 +28,7 @@ impl UnOp for Neg {
             Primitive::Float(v) => Primitive::Float(-v),
             Primitive::Complex(v) => Primitive::Complex(-v),
             Primitive::Duration(v) => Primitive::Duration(-v),
-            Primitive::Angle(v) => Primitive::Angle(v.wrapping_neg()),
+            Primitive::Angle(v) => Primitive::Angle(-v),
             _ => return Err(unsupported_scalar_unop::<Self>(arg.ty())),
         };
         Scalar::new(result.resize(out), out)
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn angle_neg_wraps() {
         let r = Value::Scalar(Scalar::new_unchecked(
-            Primitive::Angle(0b0010 << 124),
+            Primitive::Angle(turns::Angle(0b0010 << 124)),
             Angle(bw(4)),
         ))
         .neg_()

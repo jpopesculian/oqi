@@ -7,6 +7,7 @@ use crate::{
     value::ValueTy,
 };
 use num_complex::{Complex32, Complex64, c64};
+use turns::{Angle8, Angle16, Angle32, Angle64, Angle128};
 
 #[derive(Clone, Copy)]
 pub enum Primitive {
@@ -17,7 +18,7 @@ pub enum Primitive {
     Float(f64),
     Complex(Complex64),
     Duration(Duration),
-    Angle(u128),
+    Angle(Angle128),
 }
 
 impl Primitive {
@@ -57,7 +58,7 @@ impl Primitive {
 
     #[inline]
     pub fn angle(radians: f64) -> Self {
-        Self::Angle(radians_to_angle(radians))
+        Self::Angle(Angle128::from_radians(radians))
     }
 
     #[inline]
@@ -69,11 +70,12 @@ impl Primitive {
     pub const fn as_bit(self) -> bool {
         match self {
             Self::Bit(b) => b,
-            Self::Uint(v) | Self::Angle(v) | Self::BitReg(v) => v != 0, // truthiness: nonzero -> true
-            Self::Int(v) => v != 0,     // truthiness: nonzero -> true
-            Self::Float(v) => v != 0.0, // truthiness: nonzero -> true
+            Self::Uint(v) | Self::BitReg(v) => v != 0, // truthiness: nonzero -> true
+            Self::Angle(a) => a.0 != 0,                // truthiness: nonzero -> true
+            Self::Int(v) => v != 0,                    // truthiness: nonzero -> true
+            Self::Float(v) => v != 0.0,                // truthiness: nonzero -> true
             Self::Complex(c) => c.re != 0.0 || c.im != 0.0, // truthiness: nonzero -> true
-            Self::Duration(d) => d.value != 0.0, // truthiness: nonzero -> true
+            Self::Duration(d) => d.value != 0.0,       // truthiness: nonzero -> true
         }
     }
 
@@ -133,7 +135,7 @@ impl Primitive {
             Self::Uint(v) => v as f64,
             Self::Complex(c) => c.re, // only take real part for float conversion
             Self::Duration(d) => d.value,
-            Self::Angle(v) => angle_to_radians(v),
+            Self::Angle(v) => v.to_radians(),
             _ => return None,
         };
         Some(match width {
@@ -151,7 +153,7 @@ impl Primitive {
             Self::Uint(v) => c64(v as f64, 0.0),
             Self::Float(v) => c64(v, 0.0),
             Self::Duration(d) => c64(d.value, 0.0),
-            Self::Angle(v) => c64(angle_to_radians(v), 0.0),
+            Self::Angle(v) => c64(v.to_radians(), 0.0),
             _ => return None,
         };
         Some(match width {
@@ -179,7 +181,7 @@ impl Primitive {
                     0
                 }
             }
-            Self::Angle(v) => resize_angle(v, bw),
+            Self::Angle(v) => resize_angle(v.0, bw),
             Self::Float(f) => radians_to_angle_bw(f, bw),
             Self::Complex(Complex64 { re: f, .. }) => radians_to_angle_bw(f, bw),
             _ => return None,
@@ -227,7 +229,7 @@ impl Primitive {
             Self::Uint(v) => Self::Uint(resize_uint(v, bw)),
             Self::Int(v) => Self::Int(resize_int(v, bw)),
             Self::BitReg(v) => Self::Uint(resize_uint(v, bw)),
-            Self::Angle(v) => Self::Angle(resize_angle(v, bw)),
+            Self::Angle(v) => Self::Angle(turns::Angle(resize_angle(v.0, bw))),
             other => other,
         }
     }
@@ -256,7 +258,7 @@ impl Primitive {
             Float(fw) => self.as_float(fw).map(Self::Float),
             Complex(fw) => self.as_complex(fw).map(Self::Complex),
             Duration => self.as_duration().map(Self::Duration),
-            Angle(bw) => self.as_angle(bw).map(Self::Angle),
+            Angle(bw) => self.as_angle(bw).map(|v| Self::Angle(turns::Angle(v))),
         }
         .ok_or(Error::TypeMismatch { value: self, ty })
     }
@@ -314,6 +316,21 @@ impl From<Duration> for Primitive {
     }
 }
 
+macro_rules! impl_from_angle {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            impl From<$ty> for Primitive {
+                #[inline]
+                fn from(value: $ty) -> Self {
+                    Primitive::Angle(value.cast())
+                }
+            }
+        )*
+    };
+}
+
+impl_from_angle!(Angle8, Angle16, Angle32, Angle64, Angle128);
+
 impl fmt::Debug for Primitive {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use Primitive::*;
@@ -326,7 +343,7 @@ impl fmt::Debug for Primitive {
             Duration(d) => fmt::Debug::fmt(d, f),
             Angle(a) => f
                 .debug_tuple("Angle")
-                .field(&format_args!("{:0128b}", a))
+                .field(&format_args!("{:0128b}", a.0))
                 .finish(),
             BitReg(r) => f
                 .debug_tuple("BitReg")
@@ -607,11 +624,6 @@ const fn resize_angle(v: u128, bw: BitWidth) -> u128 {
 }
 
 #[inline]
-fn radians_to_angle(radians: f64) -> u128 {
-    radians_to_angle_bw(radians, BitWidth::B128)
-}
-
-#[inline]
 fn radians_to_angle_bw(radians: f64, bw: BitWidth) -> u128 {
     use std::f64::consts::TAU;
 
@@ -633,16 +645,6 @@ fn radians_to_angle_bw(radians: f64, bw: BitWidth) -> u128 {
 
     // Store in the high bits, zeroing the low bits
     wrapped << (128 - bw.get())
-}
-
-#[inline]
-fn angle_to_radians(angle: u128) -> f64 {
-    angle_to_radians_bw(angle, BitWidth::B128)
-}
-
-#[inline]
-fn angle_to_radians_bw(angle: u128, bw: BitWidth) -> f64 {
-    angle as f64 * core::f64::consts::TAU / f64::exp2(bw.get() as f64)
 }
 
 #[cfg(test)]
@@ -892,7 +894,7 @@ mod tests {
     #[test]
     fn angle_widen() {
         // 0b1010 in 4-bit angle, widened to 8-bit, preserves the value
-        let s = Primitive::Angle(0b1010_u128 << 124);
+        let s = Primitive::Angle(turns::Angle(0b1010_u128 << 124));
         let r = s.cast(Angle(bw(4)), Angle(bw(8))).unwrap();
         assert_eq!(r.as_angle(bw(8)).unwrap(), 0b1010u128 << 124);
     }
@@ -900,7 +902,7 @@ mod tests {
     #[test]
     fn angle_narrow() {
         // 0b10100011 in 8-bit angle, narrowed to 4-bit, truncates to lower 4 bits
-        let s = Primitive::Angle(0b10100011_u128 << 120);
+        let s = Primitive::Angle(turns::Angle(0b10100011_u128 << 120));
         let r = s.cast(Angle(bw(8)), Angle(bw(4))).unwrap();
         assert_eq!(r.as_angle(bw(4)).unwrap(), 0b1010u128 << 124);
     }
@@ -924,13 +926,13 @@ mod tests {
 
     #[test]
     fn angle_to_float_returns_some() {
-        let s = Primitive::Angle(42_u128);
+        let s = Primitive::Angle(turns::Angle(42_u128));
         assert!(s.cast(Angle(bw(8)), Float(F64)).is_ok());
     }
 
     #[test]
     fn angle_to_float_uses_angle_width() {
-        let s = Primitive::Angle(0b0100_0000_u128 << 120);
+        let s = Primitive::Angle(turns::Angle(0b0100_0000_u128 << 120));
         let r = s.cast(Angle(bw(8)), Float(F64)).unwrap();
         assert!((r.as_float(F64).unwrap() - core::f64::consts::FRAC_PI_2).abs() < 1e-12);
     }
@@ -939,15 +941,5 @@ mod tests {
     fn uint_to_duration_returns_none() {
         let s = Primitive::uint(100_u128);
         assert!(s.cast(Uint(bw(32)), Duration).is_err());
-    }
-
-    #[test]
-    fn radians_to_angle_conversion() {
-        let angle = radians_to_angle(core::f64::consts::TAU);
-        assert_eq!(angle, 0);
-        let angle = radians_to_angle(core::f64::consts::PI);
-        assert_eq!(angle, 1u128 << 127); // 0.5 of the full circle, so 2^128 / 2 = 2^127
-        let angle = radians_to_angle(core::f64::consts::FRAC_PI_2);
-        assert_eq!(angle, 1u128 << 126); // 0.25 of the full circle, so 2^128 / 4 = 2^126
     }
 }

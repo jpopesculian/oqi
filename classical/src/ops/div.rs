@@ -54,7 +54,7 @@ impl BinOp for Div {
             (Complex(lhs), Complex(rhs)) => Complex(lhs / rhs),
             (Duration(lhs), Duration(rhs)) => Float(lhs / rhs),
             (Duration(lhs), Float(rhs)) => Duration(lhs / rhs),
-            (Angle(lhs), Angle(rhs)) => Uint(lhs / rhs),
+            (Angle(lhs), Angle(rhs)) => Uint(lhs.0 / rhs.0),
             (Angle(lhs), Uint(rhs)) => Angle(lhs / rhs),
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
@@ -202,11 +202,11 @@ mod tests {
     #[test]
     fn angle_div_returns_uint() {
         let a = Value::Scalar(Scalar::new_unchecked(
-            Primitive::Angle(0b1000_u128 << 124),
+            Primitive::Angle(turns::Angle(0b1000_u128 << 124)),
             Angle(bw(8)),
         ));
         let b = Value::Scalar(Scalar::new_unchecked(
-            Primitive::Angle(0b0010_u128 << 124),
+            Primitive::Angle(turns::Angle(0b0010_u128 << 124)),
             Angle(bw(8)),
         ));
         let r = a.div_(b).unwrap();

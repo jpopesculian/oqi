@@ -1,35 +1,46 @@
 defcalgrammar "openpulse";
 
+cal {
+  extern port d0;
+  extern port d1;
+  frame drive0 = newframe(d0, 5.0e9, 0.0);
+  frame drive1 = newframe(d1, 5.1e9, 0.0);
+  frame cr1 = newframe(d0, 5.2e9, 0.0);
+  frame meas0 = newframe(d0, 6.0e9, 0.0);
+}
+
 defcal x $0 {
-   play drive($0), gaussian(...);
+   waveform wf = gaussian(0.1, 160dt, 40dt);
+   play(drive0, wf);
 }
 
 defcal x $1 {
-  play drive($1), gaussian(...);
+  waveform wf = gaussian(0.1, 160dt, 40dt);
+  play(drive1, wf);
 }
 
 defcal rz(angle[20] theta) q {
-  shift_phase drive(q), -theta;
+  shift_phase(drive0, -theta);
 }
 
 defcal measure $0 -> bit {
-  complex[int[24]] iq;
+  complex[float] iq;
   bit state;
-  complex[int[12]] k0[1024] = [i0 + q0*j, i1 + q1*j, i2 + q2*j, ...];
-  play measure($0), flat_top_gaussian(...);
-  iq = capture acquire($0), 2048, extern(k0);
+  waveform wf = gaussian(0.1, 160dt, 40dt);
+  play(meas0, wf);
+  iq = capture(meas0, 2048);
   return threshold(iq, 1234);
 }
 
 defcal zx90_ix $0, $1 {
-  play drive($0, "cr1"), flat_top_gaussian(...);  // uses a non-default
-                                                  // frame labeled "cr1"
+  waveform wf = gaussian(0.1, 160dt, 40dt);
+  play(cr1, wf);
 }
 
 defcal cx $0, $1 {
   zx90_ix $0, $1;
   x $0;
-  shift_phase drive($0, "cr1");
+  shift_phase(cr1, 0.5);
   zx90_ix $0, $1;
   x $0;
   x $1;

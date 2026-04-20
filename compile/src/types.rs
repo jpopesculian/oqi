@@ -522,6 +522,14 @@ pub fn resolve_scalar_type(
                 .with_span(ty.span())),
             }
         }
+
+        ast::ScalarType::Waveform(_) | ast::ScalarType::Port(_) | ast::ScalarType::Frame(_) => {
+            Err(CompileError::new(ErrorKind::Unsupported(
+                "OpenPulse types (waveform/port/frame) are not yet supported by the compiler"
+                    .to_string(),
+            ))
+            .with_span(ty.span()))
+        }
     }
 }
 

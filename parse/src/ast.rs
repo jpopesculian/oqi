@@ -152,14 +152,30 @@ pub enum StmtKind<'a> {
         value: ExprOrMeasure<'a>,
     },
     Expr(Expr<'a>),
-    Cal(Option<&'a str>),
+    Cal(CalBody<'a>),
     Defcal {
         target: DefcalTarget<'a>,
         args: Vec<DefcalArgDef<'a>>,
         operands: Vec<DefcalOperand<'a>>,
         return_ty: Option<ScalarType<'a>>,
-        body: Option<&'a str>,
+        body: CalBody<'a>,
     },
+    /// `extern frame Identifier ;` — OpenPulse-only.
+    ExternFrame { name: Ident<'a> },
+    /// `extern port Identifier ;` — OpenPulse-only.
+    ExternPort { name: Ident<'a> },
+}
+
+/// Body of a `cal` or `defcal` block.
+///
+/// `Raw` is the default — the body is captured verbatim because we don't know
+/// the calibration grammar. `OpenPulse` is populated only when the program has
+/// declared `defcalgrammar "openpulse";`, in which case the body is re-parsed
+/// against the OpenPulse grammar and stored as structured statements.
+#[derive(Debug)]
+pub enum CalBody<'a> {
+    Raw(Option<&'a str>),
+    OpenPulse(Vec<StmtOrScope<'a>>),
 }
 
 // ---- Expressions ----
@@ -461,6 +477,9 @@ pub enum ScalarType<'a> {
     Duration(Span),
     Stretch(Span),
     Complex(Option<Box<ScalarType<'a>>>, Span),
+    Waveform(Span),
+    Port(Span),
+    Frame(Span),
 }
 
 impl<'a> ScalarType<'a> {
@@ -474,7 +493,10 @@ impl<'a> ScalarType<'a> {
             | ScalarType::Bool(s)
             | ScalarType::Duration(s)
             | ScalarType::Stretch(s)
-            | ScalarType::Complex(_, s) => *s,
+            | ScalarType::Complex(_, s)
+            | ScalarType::Waveform(s)
+            | ScalarType::Port(s)
+            | ScalarType::Frame(s) => *s,
         }
     }
 }

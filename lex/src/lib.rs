@@ -116,6 +116,14 @@ enum RawToken {
     #[token("stretch")]
     Stretch,
 
+    // ---- OpenPulse-only type keywords (default mode lexes these as identifiers) ----
+    #[token("waveform")]
+    Waveform,
+    #[token("port")]
+    Port,
+    #[token("frame")]
+    Frame,
+
     // ---- Builtin identifiers ----
     #[token("gphase")]
     Gphase,
@@ -318,6 +326,7 @@ pub struct Lexer<'a> {
     source: &'a str,
     pos: usize,
     mode_stack: Vec<Mode>,
+    openpulse: bool,
 }
 
 impl<'a> Lexer<'a> {
@@ -326,6 +335,22 @@ impl<'a> Lexer<'a> {
             source,
             pos: 0,
             mode_stack: vec![Mode::Default],
+            openpulse: false,
+        }
+    }
+
+    /// Construct a lexer for an OpenPulse calibration body.
+    ///
+    /// In this mode `waveform`/`port`/`frame` are emitted as keyword tokens
+    /// (rather than identifiers), and `cal`/`defcal` are demoted to identifiers
+    /// (per the openpulse grammar's "turn off mode switching" comment) so the
+    /// lexer never re-enters the `CalPrelude`/`DefcalPrelude`/`CalBlock` modes.
+    pub fn new_openpulse(source: &'a str) -> Self {
+        Self {
+            source,
+            pos: 0,
+            mode_stack: vec![Mode::Default],
+            openpulse: true,
         }
     }
 
@@ -394,12 +419,20 @@ impl<'a> Lexer<'a> {
                 Token::DefCalGrammar
             }
             RawToken::Cal => {
-                self.set_mode(Mode::CalPrelude);
-                Token::Cal
+                if self.openpulse {
+                    Token::Identifier(slice)
+                } else {
+                    self.set_mode(Mode::CalPrelude);
+                    Token::Cal
+                }
             }
             RawToken::DefCal => {
-                self.set_mode(Mode::DefcalPrelude);
-                Token::DefCal
+                if self.openpulse {
+                    Token::Identifier(slice)
+                } else {
+                    self.set_mode(Mode::DefcalPrelude);
+                    Token::DefCal
+                }
             }
             RawToken::Pragma => {
                 self.push_mode(Mode::EatToLineEnd);
@@ -456,6 +489,31 @@ impl<'a> Lexer<'a> {
             RawToken::Void => Token::Void,
             RawToken::Duration => Token::Duration,
             RawToken::Stretch => Token::Stretch,
+
+            // OpenPulse-only keywords: only emit as keywords in openpulse mode,
+            // otherwise treat as plain identifiers so OpenQASM 3 lexing is
+            // unchanged.
+            RawToken::Waveform => {
+                if self.openpulse {
+                    Token::Waveform
+                } else {
+                    Token::Identifier(slice)
+                }
+            }
+            RawToken::Port => {
+                if self.openpulse {
+                    Token::Port
+                } else {
+                    Token::Identifier(slice)
+                }
+            }
+            RawToken::Frame => {
+                if self.openpulse {
+                    Token::Frame
+                } else {
+                    Token::Identifier(slice)
+                }
+            }
 
             // Builtins
             RawToken::Gphase => Token::Gphase,

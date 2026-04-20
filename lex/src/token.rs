@@ -48,6 +48,11 @@ pub enum Token<'a> {
     Duration,
     Stretch,
 
+    // OpenPulse-only type keywords (only emitted by openpulse-mode lexer)
+    Waveform,
+    Port,
+    Frame,
+
     // Builtin identifiers and operations
     Gphase,
     Inv,

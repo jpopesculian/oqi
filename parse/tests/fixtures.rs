@@ -529,6 +529,8 @@ fn ast_stmt(stmt: &Stmt) -> S {
 
         StmtKind::Cal(_) => S::leaf("Cal"),
         StmtKind::Defcal { .. } => S::leaf("Defcal"),
+        StmtKind::ExternFrame { .. } => S::leaf("Extern"),
+        StmtKind::ExternPort { .. } => S::leaf("Extern"),
     }
 }
 

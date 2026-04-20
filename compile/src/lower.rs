@@ -465,7 +465,7 @@ impl Lowerer {
                     )?),
                     None => None,
                 };
-                let sir_body = sir::CalibrationBody::Opaque(body.unwrap_or("").to_string());
+                let sir_body = lower_cal_body(body);
                 self.calibrations.push(sir::CalibrationDecl {
                     target: sir_target,
                     args: sir_args,
@@ -480,7 +480,7 @@ impl Lowerer {
             ast::StmtKind::Cal(body) => {
                 vec![sir::Stmt {
                     kind: sir::StmtKind::Cal {
-                        body: sir::CalibrationBody::Opaque(body.unwrap_or("").to_string()),
+                        body: lower_cal_body(body),
                     },
                     annotations,
                     span,
@@ -491,6 +491,8 @@ impl Lowerer {
                 self.calibration_grammar = Some(grammar.to_string());
                 vec![]
             }
+
+            ast::StmtKind::ExternFrame { .. } | ast::StmtKind::ExternPort { .. } => vec![],
 
             ast::StmtKind::GateCall {
                 modifiers,
@@ -1441,6 +1443,13 @@ fn parse_hardware_qubit(s: &str) -> usize {
     s.strip_prefix('$')
         .and_then(|n| n.parse().ok())
         .unwrap_or(0)
+}
+
+fn lower_cal_body(body: &ast::CalBody<'_>) -> sir::CalibrationBody {
+    match body {
+        ast::CalBody::Raw(text) => sir::CalibrationBody::Opaque(text.unwrap_or("").to_string()),
+        ast::CalBody::OpenPulse(_) => sir::CalibrationBody::Opaque(String::new()),
+    }
 }
 
 fn map_bin_op(op: &ast::BinOp) -> sir::BinOp {

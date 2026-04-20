@@ -17,9 +17,15 @@ bit c1;
 
 defcalgrammar "openpulse";
 
+cal {
+  extern port d0;
+  frame drive0 = newframe(d0, 5.0e9, 0.0);
+}
+
 // define a gate calibration for an X gate on any qubit
 defcal x q {
-   play drive(q), gaussian(100, 30, 5);
+   waveform wf = gaussian(0.1, 100dt, 30dt);
+   play(drive0, wf);
 }
 
 for int[32] p in [0 : points-1] {

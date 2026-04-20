@@ -13,6 +13,57 @@ pub fn parse(source: &str) -> Result<Program<'_>> {
 }
 
 // ---------------------------------------------------------------------------
+// OpenPulse sub-parser
+// ---------------------------------------------------------------------------
+
+/// Re-lex `body` (a calibration block's contents) using the OpenPulse lexer
+/// mode and parse it as a sequence of openpulse statements. `offset` is the
+/// absolute byte position of `body` inside the original source, used so that
+/// emitted spans (and any error spans) refer back to the original document.
+fn parse_openpulse_block(body: &str, offset: usize) -> Result<Vec<StmtOrScope<'_>>> {
+    let tokens: Vec<(Token<'_>, Span)> = Lexer::new_openpulse(body)
+        .map(|r| match r {
+            Ok((t, s)) => Ok((t, s.offset(offset))),
+            Err(e) => Err(Error {
+                span: e.span.offset(offset),
+                message: e.message,
+            }),
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let mut sub = Parser::new(tokens);
+    sub.openpulse = true;
+    let mut body_stmts = Vec::new();
+    while !sub.at_end() {
+        // Inside a calibrationBlock, only the openpulseStatement subset is
+        // allowed. The lexer has already demoted `cal` and `defcal` to
+        // identifiers, so we only need to reject `gate` and `nop` here (the
+        // rest of the openpulse exclusions — `calStatement`, `defcalStatement`
+        // — can no longer appear).
+        match sub.peek() {
+            Some(Token::Gate) => {
+                return Err(sub.error(
+                    "`gate` declarations are not allowed inside an OpenPulse calibration block",
+                ));
+            }
+            Some(Token::Nop) => {
+                return Err(sub.error(
+                    "`nop` is not allowed inside an OpenPulse calibration block",
+                ));
+            }
+            Some(Token::DefCalGrammar) => {
+                return Err(sub.error(
+                    "`defcalgrammar` is not allowed inside an OpenPulse calibration block",
+                ));
+            }
+            _ => {}
+        }
+        body_stmts.push(sub.parse_stmt_or_scope()?);
+    }
+    Ok(body_stmts)
+}
+
+// ---------------------------------------------------------------------------
 // Type Utilities
 // ---------------------------------------------------------------------------
 type DecomposedGateHead<'a> = (Ident<'a>, Option<Vec<Expr<'a>>>, Option<Box<Expr<'a>>>);
@@ -25,6 +76,10 @@ pub struct Parser<'a> {
     tokens: Vec<(Token<'a>, Span)>,
     max_pos: usize,
     pos: usize,
+    /// Set when the program has declared `defcalgrammar "openpulse";`.
+    /// Causes `cal`/`defcal` bodies to be re-lexed and re-parsed against the
+    /// OpenPulse grammar instead of being kept as raw `&str` slices.
+    openpulse: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -38,6 +93,7 @@ impl<'a> Parser<'a> {
             tokens,
             max_pos,
             pos: 0,
+            openpulse: false,
         }
     }
 
@@ -345,7 +401,10 @@ impl<'a> Parser<'a> {
             | Token::Duration
             | Token::Stretch
             | Token::Complex
-            | Token::Array => self.parse_classical_decl(),
+            | Token::Array
+            | Token::Waveform
+            | Token::Port
+            | Token::Frame => self.parse_classical_decl(),
             // Gate modifiers → gate call
             Token::Inv | Token::Pow | Token::Ctrl | Token::Negctrl => {
                 self.parse_modified_gate_call()
@@ -396,6 +455,16 @@ impl<'a> Parser<'a> {
                 unreachable!()
             };
             self.expect_semi()?;
+            // The string literal includes the surrounding quotes; strip them
+            // before comparing.
+            let inner = path
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+                .or_else(|| path.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                .unwrap_or(path);
+            if inner == "openpulse" {
+                self.openpulse = true;
+            }
             Ok(StmtKind::CalibrationGrammar(path))
         } else {
             Err(self.error("expected string literal"))
@@ -922,6 +991,23 @@ impl<'a> Parser<'a> {
 
     fn parse_extern(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat extern
+
+        // OpenPulse-only forms: `extern frame Identifier ;` and
+        // `extern port Identifier ;`. The Frame/Port tokens are only emitted
+        // by the openpulse-mode lexer, so checking unconditionally is safe.
+        if matches!(self.peek(), Some(Token::Frame)) {
+            self.advance();
+            let name = self.expect_ident()?;
+            self.expect_semi()?;
+            return Ok(StmtKind::ExternFrame { name });
+        }
+        if matches!(self.peek(), Some(Token::Port)) {
+            self.advance();
+            let name = self.expect_ident()?;
+            self.expect_semi()?;
+            return Ok(StmtKind::ExternPort { name });
+        }
+
         let name = self.expect_ident()?;
         self.expect_lparen()?;
         let params = if matches!(self.peek(), Some(Token::RParen)) {
@@ -976,17 +1062,27 @@ impl<'a> Parser<'a> {
     fn parse_cal(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat cal
         self.expect_lbrace()?;
-        let body = if matches!(self.peek(), Some(Token::CalibrationBlock(_))) {
-            let (tok, _) = self.advance();
-            let Token::CalibrationBlock(s) = tok else {
-                unreachable!()
-            };
-            Some(s)
-        } else {
-            None
-        };
+        let body = self.take_cal_body()?;
         self.expect_rbrace()?;
         Ok(StmtKind::Cal(body))
+    }
+
+    /// After consuming the opening `{`, take the `Token::CalibrationBlock`
+    /// (if present) and either parse it as an OpenPulse block or wrap it raw,
+    /// per the program's `defcalgrammar` selection.
+    fn take_cal_body(&mut self) -> Result<CalBody<'a>> {
+        if !matches!(self.peek(), Some(Token::CalibrationBlock(_))) {
+            return Ok(CalBody::Raw(None));
+        }
+        let (tok, span) = self.advance();
+        let Token::CalibrationBlock(body) = tok else {
+            unreachable!()
+        };
+        if self.openpulse {
+            parse_openpulse_block(body, span.start).map(CalBody::OpenPulse)
+        } else {
+            Ok(CalBody::Raw(Some(body)))
+        }
     }
 
     fn parse_defcal(&mut self) -> Result<StmtKind<'a>> {
@@ -1036,15 +1132,7 @@ impl<'a> Parser<'a> {
 
         // Body
         self.expect_lbrace()?;
-        let body = if matches!(self.peek(), Some(Token::CalibrationBlock(_))) {
-            let (tok, _) = self.advance();
-            let Token::CalibrationBlock(s) = tok else {
-                unreachable!()
-            };
-            Some(s)
-        } else {
-            None
-        };
+        let body = self.take_cal_body()?;
         self.expect_rbrace()?;
 
         Ok(StmtKind::Defcal {
@@ -1573,6 +1661,18 @@ impl<'a> Parser<'a> {
                 } else {
                     Ok(ScalarType::Complex(None, start))
                 }
+            }
+            Some(Token::Waveform) => {
+                self.advance();
+                Ok(ScalarType::Waveform(start))
+            }
+            Some(Token::Port) => {
+                self.advance();
+                Ok(ScalarType::Port(start))
+            }
+            Some(Token::Frame) => {
+                self.advance();
+                Ok(ScalarType::Frame(start))
             }
             _ => Err(self.error("expected scalar type")),
         }
@@ -2201,9 +2301,139 @@ mod tests {
     fn cal_block() {
         let stmt = parse_stmt("cal { some opaque stuff }");
         match stmt.kind {
-            StmtKind::Cal(body) => assert!(body.is_some()),
+            StmtKind::Cal(ast::CalBody::Raw(body)) => assert!(body.is_some()),
             _ => panic!("expected cal"),
         }
+    }
+
+    #[test]
+    fn openpulse_cal_block_is_parsed() {
+        let src = r#"defcalgrammar "openpulse";
+            cal {
+                extern port p0;
+                frame d0 = newframe(p0, 5.0e9, 0.0);
+            }"#;
+        let prog = parse_ok(src);
+        let cal = prog
+            .body
+            .iter()
+            .find_map(|item| match item {
+                ast::StmtOrScope::Stmt(s) => match &s.kind {
+                    StmtKind::Cal(body) => Some(body),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("cal statement");
+        let stmts = match cal {
+            ast::CalBody::OpenPulse(stmts) => stmts,
+            ast::CalBody::Raw(_) => panic!("expected parsed openpulse body"),
+        };
+        assert_eq!(stmts.len(), 2);
+        assert!(matches!(
+            &stmts[0],
+            ast::StmtOrScope::Stmt(s) if matches!(s.kind, StmtKind::ExternPort { .. })
+        ));
+    }
+
+    #[test]
+    fn openpulse_defcal_body_is_parsed() {
+        let src = r#"defcalgrammar "openpulse";
+            defcal x $0 {
+                waveform wf = gaussian(0.1, 160dt, 40dt);
+            }"#;
+        let prog = parse_ok(src);
+        let body = prog
+            .body
+            .iter()
+            .find_map(|item| match item {
+                ast::StmtOrScope::Stmt(s) => match &s.kind {
+                    StmtKind::Defcal { body, .. } => Some(body),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("defcal statement");
+        let stmts = match body {
+            ast::CalBody::OpenPulse(stmts) => stmts,
+            ast::CalBody::Raw(_) => panic!("expected parsed openpulse body"),
+        };
+        assert_eq!(stmts.len(), 1);
+        let decl = match &stmts[0] {
+            ast::StmtOrScope::Stmt(s) => &s.kind,
+            _ => panic!("expected stmt"),
+        };
+        match decl {
+            StmtKind::ClassicalDecl { ty, .. } => {
+                assert!(matches!(
+                    ty,
+                    ast::TypeExpr::Scalar(ast::ScalarType::Waveform(_))
+                ));
+            }
+            _ => panic!("expected classical decl"),
+        }
+    }
+
+    #[test]
+    fn openpulse_rejects_nested_gate() {
+        let src = r#"defcalgrammar "openpulse";
+            cal {
+                gate g q { }
+            }"#;
+        let err = parse(src).err().expect("parse should fail");
+        assert!(err.message.contains("gate"), "got: {}", err.message);
+    }
+
+    #[test]
+    fn openpulse_extern_frame_port() {
+        let src = r#"defcalgrammar "openpulse";
+            cal {
+                extern frame f;
+                extern port p;
+            }"#;
+        let prog = parse_ok(src);
+        let cal_body = prog
+            .body
+            .iter()
+            .find_map(|item| match item {
+                ast::StmtOrScope::Stmt(s) => match &s.kind {
+                    StmtKind::Cal(body) => Some(body),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("cal");
+        let stmts = match cal_body {
+            ast::CalBody::OpenPulse(stmts) => stmts,
+            _ => panic!("expected openpulse body"),
+        };
+        assert!(matches!(
+            &stmts[0],
+            ast::StmtOrScope::Stmt(s) if matches!(s.kind, StmtKind::ExternFrame { .. })
+        ));
+        assert!(matches!(
+            &stmts[1],
+            ast::StmtOrScope::Stmt(s) if matches!(s.kind, StmtKind::ExternPort { .. })
+        ));
+    }
+
+    #[test]
+    fn non_openpulse_cal_body_stays_raw() {
+        let src = r#"defcalgrammar "other";
+            cal { anything goes here }"#;
+        let prog = parse_ok(src);
+        let cal = prog
+            .body
+            .iter()
+            .find_map(|item| match item {
+                ast::StmtOrScope::Stmt(s) => match &s.kind {
+                    StmtKind::Cal(body) => Some(body),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .expect("cal");
+        assert!(matches!(cal, ast::CalBody::Raw(Some(_))));
     }
 
     #[test]

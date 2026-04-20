@@ -793,6 +793,16 @@ impl<'a> Format for ast::StmtKind<'a> {
                 }
                 ctx.write_str(fmt, ";")
             }
+            ast::StmtKind::ExternFrame { name } => {
+                ctx.write_str(fmt, "extern frame ")?;
+                name.format(fmt, ctx, config)?;
+                ctx.write_str(fmt, ";")
+            }
+            ast::StmtKind::ExternPort { name } => {
+                ctx.write_str(fmt, "extern port ")?;
+                name.format(fmt, ctx, config)?;
+                ctx.write_str(fmt, ";")
+            }
             ast::StmtKind::Gate {
                 name,
                 params,
@@ -825,9 +835,7 @@ impl<'a> Format for ast::StmtKind<'a> {
             }
             ast::StmtKind::Cal(body) => {
                 ctx.write_str(fmt, "cal {")?;
-                if let Some(body) = body {
-                    ctx.write_str(fmt, body)?;
-                }
+                format_cal_body(body, fmt, ctx, config)?;
                 ctx.write_str(fmt, "}")
             }
             ast::StmtKind::Defcal {
@@ -853,11 +861,56 @@ impl<'a> Format for ast::StmtKind<'a> {
                     return_ty.format(fmt, ctx, config)?;
                 }
                 ctx.write_str(fmt, " {")?;
-                if let Some(body) = body {
-                    ctx.write_str(fmt, body)?;
-                }
+                format_cal_body(body, fmt, ctx, config)?;
                 ctx.write_str(fmt, "}")
             }
+        }
+    }
+}
+
+fn format_cal_body<'a>(
+    body: &ast::CalBody<'a>,
+    fmt: &mut fmt::Formatter<'_>,
+    ctx: &mut Context<'_>,
+    config: &Config,
+) -> fmt::Result {
+    match body {
+        ast::CalBody::Raw(Some(raw)) => ctx.write_str(fmt, raw),
+        ast::CalBody::Raw(None) => Ok(()),
+        ast::CalBody::OpenPulse(stmts) => {
+            if stmts.is_empty() {
+                return Ok(());
+            }
+            if config.compact {
+                let mut previous: Option<&ast::StmtOrScope<'_>> = None;
+                for item in stmts {
+                    if previous.is_none() {
+                        ctx.space(fmt)?;
+                    }
+                    ctx.scope_separator(fmt, previous, item, config)?;
+                    item.format(fmt, ctx, config)?;
+                    ctx.emit_trailing_comments(fmt, span_of_stmt_or_scope(item).end, config)?;
+                    previous = Some(item);
+                }
+                if ctx.column > 2 {
+                    ctx.space(fmt)?;
+                }
+                return Ok(());
+            }
+            ctx.push_indent();
+            ctx.newline(fmt)?;
+            let mut previous: Option<&ast::StmtOrScope<'_>> = None;
+            for item in stmts {
+                ctx.scope_separator(fmt, previous, item, config)?;
+                item.format(fmt, ctx, config)?;
+                ctx.emit_trailing_comments(fmt, span_of_stmt_or_scope(item).end, config)?;
+                previous = Some(item);
+            }
+            ctx.pop_indent();
+            if ctx.column > 1 {
+                ctx.newline(fmt)?;
+            }
+            Ok(())
         }
     }
 }
@@ -1420,6 +1473,9 @@ impl<'a> Format for ast::ScalarType<'a> {
                 inner.format(fmt, ctx, config)?;
                 ctx.write_str(fmt, "]")
             }
+            ast::ScalarType::Waveform(_) => ctx.write_str(fmt, "waveform"),
+            ast::ScalarType::Port(_) => ctx.write_str(fmt, "port"),
+            ast::ScalarType::Frame(_) => ctx.write_str(fmt, "frame"),
         }
     }
 }

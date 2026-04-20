@@ -132,6 +132,9 @@ fn antlr_type_name<'a>(token: &Token<'a>) -> &'static str {
         Token::CalibrationBlock(_) => "CalibrationBlock",
         Token::LineComment(_) => "LineComment",
         Token::BlockComment(_) => "BlockComment",
+        Token::Waveform => "WAVEFORM",
+        Token::Port => "PORT",
+        Token::Frame => "FRAME",
     }
 }
 

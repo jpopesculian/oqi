@@ -1,7 +1,7 @@
 {
   "rule": "program",
   "start": 110,
-  "stop": 1307,
+  "stop": 1403,
   "children": [
     {
       "rule": "statementOrScope",
@@ -886,75 +886,42 @@
     },
     {
       "rule": "statementOrScope",
-      "start": 565,
-      "stop": 618,
+      "start": 509,
+      "stop": 576,
       "children": [
         {
           "rule": "statement",
-          "start": 565,
-          "stop": 618,
+          "start": 509,
+          "stop": 576,
           "children": [
             {
-              "rule": "defcalStatement",
-              "start": 565,
-              "stop": 618,
+              "rule": "calStatement",
+              "start": 509,
+              "stop": 576,
               "children": [
                 {
-                  "token": "DEFCAL",
-                  "text": "defcal",
-                  "start": 565,
-                  "stop": 570
-                },
-                {
-                  "rule": "defcalTarget",
-                  "start": 572,
-                  "stop": 572,
-                  "children": [
-                    {
-                      "token": "Identifier",
-                      "text": "x",
-                      "start": 572,
-                      "stop": 572
-                    }
-                  ]
-                },
-                {
-                  "rule": "defcalOperandList",
-                  "start": 574,
-                  "stop": 574,
-                  "children": [
-                    {
-                      "rule": "defcalOperand",
-                      "start": 574,
-                      "stop": 574,
-                      "children": [
-                        {
-                          "token": "Identifier",
-                          "text": "q",
-                          "start": 574,
-                          "stop": 574
-                        }
-                      ]
-                    }
-                  ]
+                  "token": "CAL",
+                  "text": "cal",
+                  "start": 509,
+                  "stop": 511
                 },
                 {
                   "token": "LBRACE",
                   "text": "{",
-                  "start": 576,
-                  "stop": 576
+                  "start": 513,
+                  "stop": 513
                 },
                 {
                   "token": "CalibrationBlock",
-                  "text": "\n   play drive(q), gaussian(100, 30, 5);\n",
-                  "start": 577,
-                  "stop": 617
+                  "text": "\n  extern port d0;\n  frame drive0 = newframe(d0, 5.0e9, 0.0);\n",
+                  "start": 514,
+                  "stop": 575
                 },
                 {
                   "token": "RBRACE",
                   "text": "}",
-                  "start": 618,
-                  "stop": 618
+                  "start": 576,
+                  "stop": 576
                 }
               ]
             }
@@ -964,66 +931,144 @@
     },
     {
       "rule": "statementOrScope",
-      "start": 621,
-      "stop": 1307,
+      "start": 635,
+      "stop": 714,
       "children": [
         {
           "rule": "statement",
-          "start": 621,
-          "stop": 1307,
+          "start": 635,
+          "stop": 714,
+          "children": [
+            {
+              "rule": "defcalStatement",
+              "start": 635,
+              "stop": 714,
+              "children": [
+                {
+                  "token": "DEFCAL",
+                  "text": "defcal",
+                  "start": 635,
+                  "stop": 640
+                },
+                {
+                  "rule": "defcalTarget",
+                  "start": 642,
+                  "stop": 642,
+                  "children": [
+                    {
+                      "token": "Identifier",
+                      "text": "x",
+                      "start": 642,
+                      "stop": 642
+                    }
+                  ]
+                },
+                {
+                  "rule": "defcalOperandList",
+                  "start": 644,
+                  "stop": 644,
+                  "children": [
+                    {
+                      "rule": "defcalOperand",
+                      "start": 644,
+                      "stop": 644,
+                      "children": [
+                        {
+                          "token": "Identifier",
+                          "text": "q",
+                          "start": 644,
+                          "stop": 644
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "LBRACE",
+                  "text": "{",
+                  "start": 646,
+                  "stop": 646
+                },
+                {
+                  "token": "CalibrationBlock",
+                  "text": "\n   waveform wf = gaussian(0.1, 100dt, 30dt);\n   play(drive0, wf);\n",
+                  "start": 647,
+                  "stop": 713
+                },
+                {
+                  "token": "RBRACE",
+                  "text": "}",
+                  "start": 714,
+                  "stop": 714
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 717,
+      "stop": 1403,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 717,
+          "stop": 1403,
           "children": [
             {
               "rule": "forStatement",
-              "start": 621,
-              "stop": 1307,
+              "start": 717,
+              "stop": 1403,
               "children": [
                 {
                   "token": "FOR",
                   "text": "for",
-                  "start": 621,
-                  "stop": 623
+                  "start": 717,
+                  "stop": 719
                 },
                 {
                   "rule": "scalarType",
-                  "start": 625,
-                  "stop": 631,
+                  "start": 721,
+                  "stop": 727,
                   "children": [
                     {
                       "token": "INT",
                       "text": "int",
-                      "start": 625,
-                      "stop": 627
+                      "start": 721,
+                      "stop": 723
                     },
                     {
                       "rule": "designator",
-                      "start": 628,
-                      "stop": 631,
+                      "start": 724,
+                      "stop": 727,
                       "children": [
                         {
                           "token": "LBRACKET",
                           "text": "[",
-                          "start": 628,
-                          "stop": 628
+                          "start": 724,
+                          "stop": 724
                         },
                         {
                           "rule": "expression",
                           "label": "LiteralExpression",
-                          "start": 629,
-                          "stop": 630,
+                          "start": 725,
+                          "stop": 726,
                           "children": [
                             {
                               "token": "DecimalIntegerLiteral",
                               "text": "32",
-                              "start": 629,
-                              "stop": 630
+                              "start": 725,
+                              "stop": 726
                             }
                           ]
                         },
                         {
                           "token": "RBRACKET",
                           "text": "]",
-                          "start": 631,
-                          "stop": 631
+                          "start": 727,
+                          "stop": 727
                         }
                       ]
                     }
@@ -1032,83 +1077,83 @@
                 {
                   "token": "Identifier",
                   "text": "p",
-                  "start": 633,
-                  "stop": 633
+                  "start": 729,
+                  "stop": 729
                 },
                 {
                   "token": "IN",
                   "text": "in",
-                  "start": 635,
-                  "stop": 636
+                  "start": 731,
+                  "stop": 732
                 },
                 {
                   "token": "LBRACKET",
                   "text": "[",
-                  "start": 638,
-                  "stop": 638
+                  "start": 734,
+                  "stop": 734
                 },
                 {
                   "rule": "rangeExpression",
-                  "start": 639,
-                  "stop": 650,
+                  "start": 735,
+                  "stop": 746,
                   "children": [
                     {
                       "rule": "expression",
                       "label": "LiteralExpression",
-                      "start": 639,
-                      "stop": 639,
+                      "start": 735,
+                      "stop": 735,
                       "children": [
                         {
                           "token": "DecimalIntegerLiteral",
                           "text": "0",
-                          "start": 639,
-                          "stop": 639
+                          "start": 735,
+                          "stop": 735
                         }
                       ]
                     },
                     {
                       "token": "COLON",
                       "text": ":",
-                      "start": 641,
-                      "stop": 641
+                      "start": 737,
+                      "stop": 737
                     },
                     {
                       "rule": "expression",
                       "label": "AdditiveExpression",
-                      "start": 643,
-                      "stop": 650,
+                      "start": 739,
+                      "stop": 746,
                       "children": [
                         {
                           "rule": "expression",
                           "label": "LiteralExpression",
-                          "start": 643,
-                          "stop": 648,
+                          "start": 739,
+                          "stop": 744,
                           "children": [
                             {
                               "token": "Identifier",
                               "text": "points",
-                              "start": 643,
-                              "stop": 648
+                              "start": 739,
+                              "stop": 744
                             }
                           ]
                         },
                         {
                           "token": "MINUS",
                           "text": "-",
-                          "start": 649,
-                          "stop": 649
+                          "start": 745,
+                          "stop": 745
                         },
                         {
                           "rule": "expression",
                           "label": "LiteralExpression",
-                          "start": 650,
-                          "stop": 650,
+                          "start": 746,
+                          "stop": 746,
                           "children": [
                             {
                               "token": "DecimalIntegerLiteral",
                               "text": "1",
-                              "start": 650,
-                              "stop": 650
+                              "start": 746,
+                              "stop": 746
                             }
                           ]
                         }
@@ -1119,113 +1164,113 @@
                 {
                   "token": "RBRACKET",
                   "text": "]",
-                  "start": 651,
-                  "stop": 651
+                  "start": 747,
+                  "stop": 747
                 },
                 {
                   "rule": "statementOrScope",
-                  "start": 653,
-                  "stop": 1307,
+                  "start": 749,
+                  "stop": 1403,
                   "children": [
                     {
                       "rule": "scope",
-                      "start": 653,
-                      "stop": 1307,
+                      "start": 749,
+                      "stop": 1403,
                       "children": [
                         {
                           "token": "LBRACE",
                           "text": "{",
-                          "start": 653,
-                          "stop": 653
+                          "start": 749,
+                          "stop": 749
                         },
                         {
                           "rule": "statementOrScope",
-                          "start": 659,
-                          "stop": 1201,
+                          "start": 755,
+                          "stop": 1297,
                           "children": [
                             {
                               "rule": "statement",
-                              "start": 659,
-                              "stop": 1201,
+                              "start": 755,
+                              "stop": 1297,
                               "children": [
                                 {
                                   "rule": "forStatement",
-                                  "start": 659,
-                                  "stop": 1201,
+                                  "start": 755,
+                                  "stop": 1297,
                                   "children": [
                                     {
                                       "token": "FOR",
                                       "text": "for",
-                                      "start": 659,
-                                      "stop": 661
+                                      "start": 755,
+                                      "stop": 757
                                     },
                                     {
                                       "rule": "scalarType",
-                                      "start": 663,
-                                      "stop": 666,
+                                      "start": 759,
+                                      "stop": 762,
                                       "children": [
                                         {
                                           "token": "UINT",
                                           "text": "uint",
-                                          "start": 663,
-                                          "stop": 666
+                                          "start": 759,
+                                          "stop": 762
                                         }
                                       ]
                                     },
                                     {
                                       "token": "Identifier",
                                       "text": "i",
-                                      "start": 668,
-                                      "stop": 668
+                                      "start": 764,
+                                      "stop": 764
                                     },
                                     {
                                       "token": "IN",
                                       "text": "in",
-                                      "start": 670,
-                                      "stop": 671
+                                      "start": 766,
+                                      "stop": 767
                                     },
                                     {
                                       "token": "LBRACKET",
                                       "text": "[",
-                                      "start": 673,
-                                      "stop": 673
+                                      "start": 769,
+                                      "stop": 769
                                     },
                                     {
                                       "rule": "rangeExpression",
-                                      "start": 674,
-                                      "stop": 682,
+                                      "start": 770,
+                                      "stop": 778,
                                       "children": [
                                         {
                                           "rule": "expression",
                                           "label": "LiteralExpression",
-                                          "start": 674,
-                                          "stop": 674,
+                                          "start": 770,
+                                          "stop": 770,
                                           "children": [
                                             {
                                               "token": "DecimalIntegerLiteral",
                                               "text": "1",
-                                              "start": 674,
-                                              "stop": 674
+                                              "start": 770,
+                                              "stop": 770
                                             }
                                           ]
                                         },
                                         {
                                           "token": "COLON",
                                           "text": ":",
-                                          "start": 676,
-                                          "stop": 676
+                                          "start": 772,
+                                          "stop": 772
                                         },
                                         {
                                           "rule": "expression",
                                           "label": "LiteralExpression",
-                                          "start": 678,
-                                          "stop": 682,
+                                          "start": 774,
+                                          "stop": 778,
                                           "children": [
                                             {
                                               "token": "Identifier",
                                               "text": "shots",
-                                              "start": 678,
-                                              "stop": 682
+                                              "start": 774,
+                                              "stop": 778
                                             }
                                           ]
                                         }
@@ -1234,64 +1279,64 @@
                                     {
                                       "token": "RBRACKET",
                                       "text": "]",
-                                      "start": 683,
-                                      "stop": 683
+                                      "start": 779,
+                                      "stop": 779
                                     },
                                     {
                                       "rule": "statementOrScope",
-                                      "start": 685,
-                                      "stop": 1201,
+                                      "start": 781,
+                                      "stop": 1297,
                                       "children": [
                                         {
                                           "rule": "scope",
-                                          "start": 685,
-                                          "stop": 1201,
+                                          "start": 781,
+                                          "stop": 1297,
                                           "children": [
                                             {
                                               "token": "LBRACE",
                                               "text": "{",
-                                              "start": 685,
-                                              "stop": 685
+                                              "start": 781,
+                                              "stop": 781
                                             },
                                             {
                                               "rule": "statementOrScope",
-                                              "start": 729,
-                                              "stop": 737,
+                                              "start": 825,
+                                              "stop": 833,
                                               "children": [
                                                 {
                                                   "rule": "statement",
-                                                  "start": 729,
-                                                  "stop": 737,
+                                                  "start": 825,
+                                                  "stop": 833,
                                                   "children": [
                                                     {
                                                       "rule": "resetStatement",
-                                                      "start": 729,
-                                                      "stop": 737,
+                                                      "start": 825,
+                                                      "stop": 833,
                                                       "children": [
                                                         {
                                                           "token": "RESET",
                                                           "text": "reset",
-                                                          "start": 729,
-                                                          "stop": 733
+                                                          "start": 825,
+                                                          "stop": 829
                                                         },
                                                         {
                                                           "rule": "gateOperand",
-                                                          "start": 735,
-                                                          "stop": 736,
+                                                          "start": 831,
+                                                          "stop": 832,
                                                           "children": [
                                                             {
                                                               "token": "HardwareQubit",
                                                               "text": "$0",
-                                                              "start": 735,
-                                                              "stop": 736
+                                                              "start": 831,
+                                                              "stop": 832
                                                             }
                                                           ]
                                                         },
                                                         {
                                                           "token": "SEMICOLON",
                                                           "text": ";",
-                                                          "start": 737,
-                                                          "stop": 737
+                                                          "start": 833,
+                                                          "stop": 833
                                                         }
                                                       ]
                                                     }
@@ -1301,43 +1346,43 @@
                                             },
                                             {
                                               "rule": "statementOrScope",
-                                              "start": 747,
-                                              "stop": 755,
+                                              "start": 843,
+                                              "stop": 851,
                                               "children": [
                                                 {
                                                   "rule": "statement",
-                                                  "start": 747,
-                                                  "stop": 755,
+                                                  "start": 843,
+                                                  "stop": 851,
                                                   "children": [
                                                     {
                                                       "rule": "resetStatement",
-                                                      "start": 747,
-                                                      "stop": 755,
+                                                      "start": 843,
+                                                      "stop": 851,
                                                       "children": [
                                                         {
                                                           "token": "RESET",
                                                           "text": "reset",
-                                                          "start": 747,
-                                                          "stop": 751
+                                                          "start": 843,
+                                                          "stop": 847
                                                         },
                                                         {
                                                           "rule": "gateOperand",
-                                                          "start": 753,
-                                                          "stop": 754,
+                                                          "start": 849,
+                                                          "stop": 850,
                                                           "children": [
                                                             {
                                                               "token": "HardwareQubit",
                                                               "text": "$1",
-                                                              "start": 753,
-                                                              "stop": 754
+                                                              "start": 849,
+                                                              "stop": 850
                                                             }
                                                           ]
                                                         },
                                                         {
                                                           "token": "SEMICOLON",
                                                           "text": ";",
-                                                          "start": 755,
-                                                          "stop": 755
+                                                          "start": 851,
+                                                          "stop": 851
                                                         }
                                                       ]
                                                     }
@@ -1347,40 +1392,40 @@
                                             },
                                             {
                                               "rule": "statementOrScope",
-                                              "start": 790,
-                                              "stop": 794,
+                                              "start": 886,
+                                              "stop": 890,
                                               "children": [
                                                 {
                                                   "rule": "statement",
-                                                  "start": 790,
-                                                  "stop": 794,
+                                                  "start": 886,
+                                                  "stop": 890,
                                                   "children": [
                                                     {
                                                       "rule": "gateCallStatement",
-                                                      "start": 790,
-                                                      "stop": 794,
+                                                      "start": 886,
+                                                      "stop": 890,
                                                       "children": [
                                                         {
                                                           "token": "Identifier",
                                                           "text": "x",
-                                                          "start": 790,
-                                                          "stop": 790
+                                                          "start": 886,
+                                                          "stop": 886
                                                         },
                                                         {
                                                           "rule": "gateOperandList",
-                                                          "start": 792,
-                                                          "stop": 793,
+                                                          "start": 888,
+                                                          "stop": 889,
                                                           "children": [
                                                             {
                                                               "rule": "gateOperand",
-                                                              "start": 792,
-                                                              "stop": 793,
+                                                              "start": 888,
+                                                              "stop": 889,
                                                               "children": [
                                                                 {
                                                                   "token": "HardwareQubit",
                                                                   "text": "$0",
-                                                                  "start": 792,
-                                                                  "stop": 793
+                                                                  "start": 888,
+                                                                  "stop": 889
                                                                 }
                                                               ]
                                                             }
@@ -1389,8 +1434,8 @@
                                                         {
                                                           "token": "SEMICOLON",
                                                           "text": ";",
-                                                          "start": 794,
-                                                          "stop": 794
+                                                          "start": 890,
+                                                          "stop": 890
                                                         }
                                                       ]
                                                     }
@@ -1400,40 +1445,40 @@
                                             },
                                             {
                                               "rule": "statementOrScope",
-                                              "start": 804,
-                                              "stop": 808,
+                                              "start": 900,
+                                              "stop": 904,
                                               "children": [
                                                 {
                                                   "rule": "statement",
-                                                  "start": 804,
-                                                  "stop": 808,
+                                                  "start": 900,
+                                                  "stop": 904,
                                                   "children": [
                                                     {
                                                       "rule": "gateCallStatement",
-                                                      "start": 804,
-                                                      "stop": 808,
+                                                      "start": 900,
+                                                      "stop": 904,
                                                       "children": [
                                                         {
                                                           "token": "Identifier",
                                                           "text": "x",
-                                                          "start": 804,
-                                                          "stop": 804
+                                                          "start": 900,
+                                                          "stop": 900
                                                         },
                                                         {
                                                           "rule": "gateOperandList",
-                                                          "start": 806,
-                                                          "stop": 807,
+                                                          "start": 902,
+                                                          "stop": 903,
                                                           "children": [
                                                             {
                                                               "rule": "gateOperand",
-                                                              "start": 806,
-                                                              "stop": 807,
+                                                              "start": 902,
+                                                              "stop": 903,
                                                               "children": [
                                                                 {
                                                                   "token": "HardwareQubit",
                                                                   "text": "$1",
-                                                                  "start": 806,
-                                                                  "stop": 807
+                                                                  "start": 902,
+                                                                  "stop": 903
                                                                 }
                                                               ]
                                                             }
@@ -1442,8 +1487,8 @@
                                                         {
                                                           "token": "SEMICOLON",
                                                           "text": ";",
-                                                          "start": 808,
-                                                          "stop": 808
+                                                          "start": 904,
+                                                          "stop": 904
                                                         }
                                                       ]
                                                     }
@@ -1453,73 +1498,73 @@
                                             },
                                             {
                                               "rule": "statementOrScope",
-                                              "start": 877,
-                                              "stop": 897,
+                                              "start": 973,
+                                              "stop": 993,
                                               "children": [
                                                 {
                                                   "rule": "statement",
-                                                  "start": 877,
-                                                  "stop": 897,
+                                                  "start": 973,
+                                                  "stop": 993,
                                                   "children": [
                                                     {
                                                       "rule": "delayStatement",
-                                                      "start": 877,
-                                                      "stop": 897,
+                                                      "start": 973,
+                                                      "stop": 993,
                                                       "children": [
                                                         {
                                                           "token": "DELAY",
                                                           "text": "delay",
-                                                          "start": 877,
-                                                          "stop": 881
+                                                          "start": 973,
+                                                          "stop": 977
                                                         },
                                                         {
                                                           "rule": "designator",
-                                                          "start": 882,
-                                                          "stop": 893,
+                                                          "start": 978,
+                                                          "stop": 989,
                                                           "children": [
                                                             {
                                                               "token": "LBRACKET",
                                                               "text": "[",
-                                                              "start": 882,
-                                                              "stop": 882
+                                                              "start": 978,
+                                                              "stop": 978
                                                             },
                                                             {
                                                               "rule": "expression",
                                                               "label": "MultiplicativeExpression",
-                                                              "start": 883,
-                                                              "stop": 892,
+                                                              "start": 979,
+                                                              "stop": 988,
                                                               "children": [
                                                                 {
                                                                   "rule": "expression",
                                                                   "label": "LiteralExpression",
-                                                                  "start": 883,
-                                                                  "stop": 883,
+                                                                  "start": 979,
+                                                                  "stop": 979,
                                                                   "children": [
                                                                     {
                                                                       "token": "Identifier",
                                                                       "text": "p",
-                                                                      "start": 883,
-                                                                      "stop": 883
+                                                                      "start": 979,
+                                                                      "stop": 979
                                                                     }
                                                                   ]
                                                                 },
                                                                 {
                                                                   "token": "ASTERISK",
                                                                   "text": "*",
-                                                                  "start": 885,
-                                                                  "stop": 885
+                                                                  "start": 981,
+                                                                  "stop": 981
                                                                 },
                                                                 {
                                                                   "rule": "expression",
                                                                   "label": "LiteralExpression",
-                                                                  "start": 887,
-                                                                  "stop": 892,
+                                                                  "start": 983,
+                                                                  "stop": 988,
                                                                   "children": [
                                                                     {
                                                                       "token": "Identifier",
                                                                       "text": "stride",
-                                                                      "start": 887,
-                                                                      "stop": 892
+                                                                      "start": 983,
+                                                                      "stop": 988
                                                                     }
                                                                   ]
                                                                 }
@@ -1528,26 +1573,26 @@
                                                             {
                                                               "token": "RBRACKET",
                                                               "text": "]",
-                                                              "start": 893,
-                                                              "stop": 893
+                                                              "start": 989,
+                                                              "stop": 989
                                                             }
                                                           ]
                                                         },
                                                         {
                                                           "rule": "gateOperandList",
-                                                          "start": 895,
-                                                          "stop": 896,
+                                                          "start": 991,
+                                                          "stop": 992,
                                                           "children": [
                                                             {
                                                               "rule": "gateOperand",
-                                                              "start": 895,
-                                                              "stop": 896,
+                                                              "start": 991,
+                                                              "stop": 992,
                                                               "children": [
                                                                 {
                                                                   "token": "HardwareQubit",
                                                                   "text": "$0",
-                                                                  "start": 895,
-                                                                  "stop": 896
+                                                                  "start": 991,
+                                                                  "stop": 992
                                                                 }
                                                               ]
                                                             }
@@ -1556,8 +1601,8 @@
                                                         {
                                                           "token": "SEMICOLON",
                                                           "text": ";",
-                                                          "start": 897,
-                                                          "stop": 897
+                                                          "start": 993,
+                                                          "stop": 993
                                                         }
                                                       ]
                                                     }
@@ -1567,127 +1612,127 @@
                                             },
                                             {
                                               "rule": "statementOrScope",
-                                              "start": 967,
-                                              "stop": 997,
+                                              "start": 1063,
+                                              "stop": 1093,
                                               "children": [
                                                 {
                                                   "rule": "statement",
-                                                  "start": 967,
-                                                  "stop": 997,
+                                                  "start": 1063,
+                                                  "stop": 1093,
                                                   "children": [
                                                     {
                                                       "rule": "delayStatement",
-                                                      "start": 967,
-                                                      "stop": 997,
+                                                      "start": 1063,
+                                                      "stop": 1093,
                                                       "children": [
                                                         {
                                                           "token": "DELAY",
                                                           "text": "delay",
-                                                          "start": 967,
-                                                          "stop": 971
+                                                          "start": 1063,
+                                                          "stop": 1067
                                                         },
                                                         {
                                                           "rule": "designator",
-                                                          "start": 972,
-                                                          "stop": 996,
+                                                          "start": 1068,
+                                                          "stop": 1092,
                                                           "children": [
                                                             {
                                                               "token": "LBRACKET",
                                                               "text": "[",
-                                                              "start": 972,
-                                                              "stop": 972
+                                                              "start": 1068,
+                                                              "stop": 1068
                                                             },
                                                             {
                                                               "rule": "expression",
                                                               "label": "MultiplicativeExpression",
-                                                              "start": 973,
-                                                              "stop": 995,
+                                                              "start": 1069,
+                                                              "stop": 1091,
                                                               "children": [
                                                                 {
                                                                   "rule": "expression",
                                                                   "label": "LiteralExpression",
-                                                                  "start": 973,
-                                                                  "stop": 973,
+                                                                  "start": 1069,
+                                                                  "stop": 1069,
                                                                   "children": [
                                                                     {
                                                                       "token": "Identifier",
                                                                       "text": "p",
-                                                                      "start": 973,
-                                                                      "stop": 973
+                                                                      "start": 1069,
+                                                                      "stop": 1069
                                                                     }
                                                                   ]
                                                                 },
                                                                 {
                                                                   "token": "ASTERISK",
                                                                   "text": "*",
-                                                                  "start": 975,
-                                                                  "stop": 975
+                                                                  "start": 1071,
+                                                                  "stop": 1071
                                                                 },
                                                                 {
                                                                   "rule": "expression",
                                                                   "label": "DurationofExpression",
-                                                                  "start": 977,
-                                                                  "stop": 995,
+                                                                  "start": 1073,
+                                                                  "stop": 1091,
                                                                   "children": [
                                                                     {
                                                                       "token": "DURATIONOF",
                                                                       "text": "durationof",
-                                                                      "start": 977,
-                                                                      "stop": 986
+                                                                      "start": 1073,
+                                                                      "stop": 1082
                                                                     },
                                                                     {
                                                                       "token": "LPAREN",
                                                                       "text": "(",
-                                                                      "start": 987,
-                                                                      "stop": 987
+                                                                      "start": 1083,
+                                                                      "stop": 1083
                                                                     },
                                                                     {
                                                                       "rule": "scope",
-                                                                      "start": 988,
-                                                                      "stop": 994,
+                                                                      "start": 1084,
+                                                                      "stop": 1090,
                                                                       "children": [
                                                                         {
                                                                           "token": "LBRACE",
                                                                           "text": "{",
-                                                                          "start": 988,
-                                                                          "stop": 988
+                                                                          "start": 1084,
+                                                                          "stop": 1084
                                                                         },
                                                                         {
                                                                           "rule": "statementOrScope",
-                                                                          "start": 989,
-                                                                          "stop": 993,
+                                                                          "start": 1085,
+                                                                          "stop": 1089,
                                                                           "children": [
                                                                             {
                                                                               "rule": "statement",
-                                                                              "start": 989,
-                                                                              "stop": 993,
+                                                                              "start": 1085,
+                                                                              "stop": 1089,
                                                                               "children": [
                                                                                 {
                                                                                   "rule": "gateCallStatement",
-                                                                                  "start": 989,
-                                                                                  "stop": 993,
+                                                                                  "start": 1085,
+                                                                                  "stop": 1089,
                                                                                   "children": [
                                                                                     {
                                                                                       "token": "Identifier",
                                                                                       "text": "x",
-                                                                                      "start": 989,
-                                                                                      "stop": 989
+                                                                                      "start": 1085,
+                                                                                      "stop": 1085
                                                                                     },
                                                                                     {
                                                                                       "rule": "gateOperandList",
-                                                                                      "start": 991,
-                                                                                      "stop": 992,
+                                                                                      "start": 1087,
+                                                                                      "stop": 1088,
                                                                                       "children": [
                                                                                         {
                                                                                           "rule": "gateOperand",
-                                                                                          "start": 991,
-                                                                                          "stop": 992,
+                                                                                          "start": 1087,
+                                                                                          "stop": 1088,
                                                                                           "children": [
                                                                                             {
                                                                                               "token": "HardwareQubit",
                                                                                               "text": "$1",
-                                                                                              "start": 991,
-                                                                                              "stop": 992
+                                                                                              "start": 1087,
+                                                                                              "stop": 1088
                                                                                             }
                                                                                           ]
                                                                                         }
@@ -1696,8 +1741,8 @@
                                                                                     {
                                                                                       "token": "SEMICOLON",
                                                                                       "text": ";",
-                                                                                      "start": 993,
-                                                                                      "stop": 993
+                                                                                      "start": 1089,
+                                                                                      "stop": 1089
                                                                                     }
                                                                                   ]
                                                                                 }
@@ -1708,16 +1753,16 @@
                                                                         {
                                                                           "token": "RBRACE",
                                                                           "text": "}",
-                                                                          "start": 994,
-                                                                          "stop": 994
+                                                                          "start": 1090,
+                                                                          "stop": 1090
                                                                         }
                                                                       ]
                                                                     },
                                                                     {
                                                                       "token": "RPAREN",
                                                                       "text": ")",
-                                                                      "start": 995,
-                                                                      "stop": 995
+                                                                      "start": 1091,
+                                                                      "stop": 1091
                                                                     }
                                                                   ]
                                                                 }
@@ -1726,16 +1771,16 @@
                                                             {
                                                               "token": "RBRACKET",
                                                               "text": "]",
-                                                              "start": 996,
-                                                              "stop": 996
+                                                              "start": 1092,
+                                                              "stop": 1092
                                                             }
                                                           ]
                                                         },
                                                         {
                                                           "token": "SEMICOLON",
                                                           "text": ";",
-                                                          "start": 997,
-                                                          "stop": 997
+                                                          "start": 1093,
+                                                          "stop": 1093
                                                         }
                                                       ]
                                                     }
@@ -1745,59 +1790,59 @@
                                             },
                                             {
                                               "rule": "statementOrScope",
-                                              "start": 1040,
-                                              "stop": 1055,
+                                              "start": 1136,
+                                              "stop": 1151,
                                               "children": [
                                                 {
                                                   "rule": "statement",
-                                                  "start": 1040,
-                                                  "stop": 1055,
+                                                  "start": 1136,
+                                                  "stop": 1151,
                                                   "children": [
                                                     {
                                                       "rule": "assignmentStatement",
-                                                      "start": 1040,
-                                                      "stop": 1055,
+                                                      "start": 1136,
+                                                      "stop": 1151,
                                                       "children": [
                                                         {
                                                           "rule": "indexedIdentifier",
-                                                          "start": 1040,
-                                                          "stop": 1041,
+                                                          "start": 1136,
+                                                          "stop": 1137,
                                                           "children": [
                                                             {
                                                               "token": "Identifier",
                                                               "text": "c0",
-                                                              "start": 1040,
-                                                              "stop": 1041
+                                                              "start": 1136,
+                                                              "stop": 1137
                                                             }
                                                           ]
                                                         },
                                                         {
                                                           "token": "EQUALS",
                                                           "text": "=",
-                                                          "start": 1043,
-                                                          "stop": 1043
+                                                          "start": 1139,
+                                                          "stop": 1139
                                                         },
                                                         {
                                                           "rule": "measureExpression",
-                                                          "start": 1045,
-                                                          "stop": 1054,
+                                                          "start": 1141,
+                                                          "stop": 1150,
                                                           "children": [
                                                             {
                                                               "token": "MEASURE",
                                                               "text": "measure",
-                                                              "start": 1045,
-                                                              "stop": 1051
+                                                              "start": 1141,
+                                                              "stop": 1147
                                                             },
                                                             {
                                                               "rule": "gateOperand",
-                                                              "start": 1053,
-                                                              "stop": 1054,
+                                                              "start": 1149,
+                                                              "stop": 1150,
                                                               "children": [
                                                                 {
                                                                   "token": "HardwareQubit",
                                                                   "text": "$0",
-                                                                  "start": 1053,
-                                                                  "stop": 1054
+                                                                  "start": 1149,
+                                                                  "stop": 1150
                                                                 }
                                                               ]
                                                             }
@@ -1806,8 +1851,8 @@
                                                         {
                                                           "token": "SEMICOLON",
                                                           "text": ";",
-                                                          "start": 1055,
-                                                          "stop": 1055
+                                                          "start": 1151,
+                                                          "stop": 1151
                                                         }
                                                       ]
                                                     }
@@ -1817,59 +1862,59 @@
                                             },
                                             {
                                               "rule": "statementOrScope",
-                                              "start": 1065,
-                                              "stop": 1080,
+                                              "start": 1161,
+                                              "stop": 1176,
                                               "children": [
                                                 {
                                                   "rule": "statement",
-                                                  "start": 1065,
-                                                  "stop": 1080,
+                                                  "start": 1161,
+                                                  "stop": 1176,
                                                   "children": [
                                                     {
                                                       "rule": "assignmentStatement",
-                                                      "start": 1065,
-                                                      "stop": 1080,
+                                                      "start": 1161,
+                                                      "stop": 1176,
                                                       "children": [
                                                         {
                                                           "rule": "indexedIdentifier",
-                                                          "start": 1065,
-                                                          "stop": 1066,
+                                                          "start": 1161,
+                                                          "stop": 1162,
                                                           "children": [
                                                             {
                                                               "token": "Identifier",
                                                               "text": "c1",
-                                                              "start": 1065,
-                                                              "stop": 1066
+                                                              "start": 1161,
+                                                              "stop": 1162
                                                             }
                                                           ]
                                                         },
                                                         {
                                                           "token": "EQUALS",
                                                           "text": "=",
-                                                          "start": 1068,
-                                                          "stop": 1068
+                                                          "start": 1164,
+                                                          "stop": 1164
                                                         },
                                                         {
                                                           "rule": "measureExpression",
-                                                          "start": 1070,
-                                                          "stop": 1079,
+                                                          "start": 1166,
+                                                          "stop": 1175,
                                                           "children": [
                                                             {
                                                               "token": "MEASURE",
                                                               "text": "measure",
-                                                              "start": 1070,
-                                                              "stop": 1076
+                                                              "start": 1166,
+                                                              "stop": 1172
                                                             },
                                                             {
                                                               "rule": "gateOperand",
-                                                              "start": 1078,
-                                                              "stop": 1079,
+                                                              "start": 1174,
+                                                              "stop": 1175,
                                                               "children": [
                                                                 {
                                                                   "token": "HardwareQubit",
                                                                   "text": "$1",
-                                                                  "start": 1078,
-                                                                  "stop": 1079
+                                                                  "start": 1174,
+                                                                  "stop": 1175
                                                                 }
                                                               ]
                                                             }
@@ -1878,8 +1923,8 @@
                                                         {
                                                           "token": "SEMICOLON",
                                                           "text": ";",
-                                                          "start": 1080,
-                                                          "stop": 1080
+                                                          "start": 1176,
+                                                          "stop": 1176
                                                         }
                                                       ]
                                                     }
@@ -1889,85 +1934,85 @@
                                             },
                                             {
                                               "rule": "statementOrScope",
-                                              "start": 1143,
-                                              "stop": 1164,
+                                              "start": 1239,
+                                              "stop": 1260,
                                               "children": [
                                                 {
                                                   "rule": "statement",
-                                                  "start": 1143,
-                                                  "stop": 1164,
+                                                  "start": 1239,
+                                                  "stop": 1260,
                                                   "children": [
                                                     {
                                                       "rule": "assignmentStatement",
-                                                      "start": 1143,
-                                                      "stop": 1164,
+                                                      "start": 1239,
+                                                      "stop": 1260,
                                                       "children": [
                                                         {
                                                           "rule": "indexedIdentifier",
-                                                          "start": 1143,
-                                                          "stop": 1149,
+                                                          "start": 1239,
+                                                          "stop": 1245,
                                                           "children": [
                                                             {
                                                               "token": "Identifier",
                                                               "text": "counts0",
-                                                              "start": 1143,
-                                                              "stop": 1149
+                                                              "start": 1239,
+                                                              "stop": 1245
                                                             }
                                                           ]
                                                         },
                                                         {
                                                           "token": "CompoundAssignmentOperator",
                                                           "text": "+=",
-                                                          "start": 1151,
-                                                          "stop": 1152
+                                                          "start": 1247,
+                                                          "stop": 1248
                                                         },
                                                         {
                                                           "rule": "expression",
                                                           "label": "CastExpression",
-                                                          "start": 1154,
-                                                          "stop": 1163,
+                                                          "start": 1250,
+                                                          "stop": 1259,
                                                           "children": [
                                                             {
                                                               "rule": "scalarType",
-                                                              "start": 1154,
-                                                              "stop": 1159,
+                                                              "start": 1250,
+                                                              "stop": 1255,
                                                               "children": [
                                                                 {
                                                                   "token": "INT",
                                                                   "text": "int",
-                                                                  "start": 1154,
-                                                                  "stop": 1156
+                                                                  "start": 1250,
+                                                                  "stop": 1252
                                                                 },
                                                                 {
                                                                   "rule": "designator",
-                                                                  "start": 1157,
-                                                                  "stop": 1159,
+                                                                  "start": 1253,
+                                                                  "stop": 1255,
                                                                   "children": [
                                                                     {
                                                                       "token": "LBRACKET",
                                                                       "text": "[",
-                                                                      "start": 1157,
-                                                                      "stop": 1157
+                                                                      "start": 1253,
+                                                                      "stop": 1253
                                                                     },
                                                                     {
                                                                       "rule": "expression",
                                                                       "label": "LiteralExpression",
-                                                                      "start": 1158,
-                                                                      "stop": 1158,
+                                                                      "start": 1254,
+                                                                      "stop": 1254,
                                                                       "children": [
                                                                         {
                                                                           "token": "DecimalIntegerLiteral",
                                                                           "text": "1",
-                                                                          "start": 1158,
-                                                                          "stop": 1158
+                                                                          "start": 1254,
+                                                                          "stop": 1254
                                                                         }
                                                                       ]
                                                                     },
                                                                     {
                                                                       "token": "RBRACKET",
                                                                       "text": "]",
-                                                                      "start": 1159,
-                                                                      "stop": 1159
+                                                                      "start": 1255,
+                                                                      "stop": 1255
                                                                     }
                                                                   ]
                                                                 }
@@ -1976,36 +2021,36 @@
                                                             {
                                                               "token": "LPAREN",
                                                               "text": "(",
-                                                              "start": 1160,
-                                                              "stop": 1160
+                                                              "start": 1256,
+                                                              "stop": 1256
                                                             },
                                                             {
                                                               "rule": "expression",
                                                               "label": "LiteralExpression",
-                                                              "start": 1161,
-                                                              "stop": 1162,
+                                                              "start": 1257,
+                                                              "stop": 1258,
                                                               "children": [
                                                                 {
                                                                   "token": "Identifier",
                                                                   "text": "c0",
-                                                                  "start": 1161,
-                                                                  "stop": 1162
+                                                                  "start": 1257,
+                                                                  "stop": 1258
                                                                 }
                                                               ]
                                                             },
                                                             {
                                                               "token": "RPAREN",
                                                               "text": ")",
-                                                              "start": 1163,
-                                                              "stop": 1163
+                                                              "start": 1259,
+                                                              "stop": 1259
                                                             }
                                                           ]
                                                         },
                                                         {
                                                           "token": "SEMICOLON",
                                                           "text": ";",
-                                                          "start": 1164,
-                                                          "stop": 1164
+                                                          "start": 1260,
+                                                          "stop": 1260
                                                         }
                                                       ]
                                                     }
@@ -2015,85 +2060,85 @@
                                             },
                                             {
                                               "rule": "statementOrScope",
-                                              "start": 1174,
-                                              "stop": 1195,
+                                              "start": 1270,
+                                              "stop": 1291,
                                               "children": [
                                                 {
                                                   "rule": "statement",
-                                                  "start": 1174,
-                                                  "stop": 1195,
+                                                  "start": 1270,
+                                                  "stop": 1291,
                                                   "children": [
                                                     {
                                                       "rule": "assignmentStatement",
-                                                      "start": 1174,
-                                                      "stop": 1195,
+                                                      "start": 1270,
+                                                      "stop": 1291,
                                                       "children": [
                                                         {
                                                           "rule": "indexedIdentifier",
-                                                          "start": 1174,
-                                                          "stop": 1180,
+                                                          "start": 1270,
+                                                          "stop": 1276,
                                                           "children": [
                                                             {
                                                               "token": "Identifier",
                                                               "text": "counts1",
-                                                              "start": 1174,
-                                                              "stop": 1180
+                                                              "start": 1270,
+                                                              "stop": 1276
                                                             }
                                                           ]
                                                         },
                                                         {
                                                           "token": "CompoundAssignmentOperator",
                                                           "text": "+=",
-                                                          "start": 1182,
-                                                          "stop": 1183
+                                                          "start": 1278,
+                                                          "stop": 1279
                                                         },
                                                         {
                                                           "rule": "expression",
                                                           "label": "CastExpression",
-                                                          "start": 1185,
-                                                          "stop": 1194,
+                                                          "start": 1281,
+                                                          "stop": 1290,
                                                           "children": [
                                                             {
                                                               "rule": "scalarType",
-                                                              "start": 1185,
-                                                              "stop": 1190,
+                                                              "start": 1281,
+                                                              "stop": 1286,
                                                               "children": [
                                                                 {
                                                                   "token": "INT",
                                                                   "text": "int",
-                                                                  "start": 1185,
-                                                                  "stop": 1187
+                                                                  "start": 1281,
+                                                                  "stop": 1283
                                                                 },
                                                                 {
                                                                   "rule": "designator",
-                                                                  "start": 1188,
-                                                                  "stop": 1190,
+                                                                  "start": 1284,
+                                                                  "stop": 1286,
                                                                   "children": [
                                                                     {
                                                                       "token": "LBRACKET",
                                                                       "text": "[",
-                                                                      "start": 1188,
-                                                                      "stop": 1188
+                                                                      "start": 1284,
+                                                                      "stop": 1284
                                                                     },
                                                                     {
                                                                       "rule": "expression",
                                                                       "label": "LiteralExpression",
-                                                                      "start": 1189,
-                                                                      "stop": 1189,
+                                                                      "start": 1285,
+                                                                      "stop": 1285,
                                                                       "children": [
                                                                         {
                                                                           "token": "DecimalIntegerLiteral",
                                                                           "text": "1",
-                                                                          "start": 1189,
-                                                                          "stop": 1189
+                                                                          "start": 1285,
+                                                                          "stop": 1285
                                                                         }
                                                                       ]
                                                                     },
                                                                     {
                                                                       "token": "RBRACKET",
                                                                       "text": "]",
-                                                                      "start": 1190,
-                                                                      "stop": 1190
+                                                                      "start": 1286,
+                                                                      "stop": 1286
                                                                     }
                                                                   ]
                                                                 }
@@ -2102,36 +2147,36 @@
                                                             {
                                                               "token": "LPAREN",
                                                               "text": "(",
-                                                              "start": 1191,
-                                                              "stop": 1191
+                                                              "start": 1287,
+                                                              "stop": 1287
                                                             },
                                                             {
                                                               "rule": "expression",
                                                               "label": "LiteralExpression",
-                                                              "start": 1192,
-                                                              "stop": 1193,
+                                                              "start": 1288,
+                                                              "stop": 1289,
                                                               "children": [
                                                                 {
                                                                   "token": "Identifier",
                                                                   "text": "c1",
-                                                                  "start": 1192,
-                                                                  "stop": 1193
+                                                                  "start": 1288,
+                                                                  "stop": 1289
                                                                 }
                                                               ]
                                                             },
                                                             {
                                                               "token": "RPAREN",
                                                               "text": ")",
-                                                              "start": 1194,
-                                                              "stop": 1194
+                                                              "start": 1290,
+                                                              "stop": 1290
                                                             }
                                                           ]
                                                         },
                                                         {
                                                           "token": "SEMICOLON",
                                                           "text": ";",
-                                                          "start": 1195,
-                                                          "stop": 1195
+                                                          "start": 1291,
+                                                          "stop": 1291
                                                         }
                                                       ]
                                                     }
@@ -2142,8 +2187,8 @@
                                             {
                                               "token": "RBRACE",
                                               "text": "}",
-                                              "start": 1201,
-                                              "stop": 1201
+                                              "start": 1297,
+                                              "stop": 1297
                                             }
                                           ]
                                         }
@@ -2157,93 +2202,93 @@
                         },
                         {
                           "rule": "statementOrScope",
-                          "start": 1245,
-                          "stop": 1272,
+                          "start": 1341,
+                          "stop": 1368,
                           "children": [
                             {
                               "rule": "statement",
-                              "start": 1245,
-                              "stop": 1272,
+                              "start": 1341,
+                              "stop": 1368,
                               "children": [
                                 {
                                   "rule": "expressionStatement",
-                                  "start": 1245,
-                                  "stop": 1272,
+                                  "start": 1341,
+                                  "stop": 1368,
                                   "children": [
                                     {
                                       "rule": "expression",
                                       "label": "CallExpression",
-                                      "start": 1245,
-                                      "stop": 1271,
+                                      "start": 1341,
+                                      "stop": 1367,
                                       "children": [
                                         {
                                           "token": "Identifier",
                                           "text": "tabulate",
-                                          "start": 1245,
-                                          "stop": 1252
+                                          "start": 1341,
+                                          "stop": 1348
                                         },
                                         {
                                           "token": "LPAREN",
                                           "text": "(",
-                                          "start": 1253,
-                                          "stop": 1253
+                                          "start": 1349,
+                                          "stop": 1349
                                         },
                                         {
                                           "rule": "expressionList",
-                                          "start": 1254,
-                                          "stop": 1270,
+                                          "start": 1350,
+                                          "stop": 1366,
                                           "children": [
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 1254,
-                                              "stop": 1260,
+                                              "start": 1350,
+                                              "stop": 1356,
                                               "children": [
                                                 {
                                                   "token": "Identifier",
                                                   "text": "counts0",
-                                                  "start": 1254,
-                                                  "stop": 1260
+                                                  "start": 1350,
+                                                  "stop": 1356
                                                 }
                                               ]
                                             },
                                             {
                                               "token": "COMMA",
                                               "text": ",",
-                                              "start": 1261,
-                                              "stop": 1261
+                                              "start": 1357,
+                                              "stop": 1357
                                             },
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 1263,
-                                              "stop": 1267,
+                                              "start": 1359,
+                                              "stop": 1363,
                                               "children": [
                                                 {
                                                   "token": "Identifier",
                                                   "text": "shots",
-                                                  "start": 1263,
-                                                  "stop": 1267
+                                                  "start": 1359,
+                                                  "stop": 1363
                                                 }
                                               ]
                                             },
                                             {
                                               "token": "COMMA",
                                               "text": ",",
-                                              "start": 1268,
-                                              "stop": 1268
+                                              "start": 1364,
+                                              "stop": 1364
                                             },
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 1270,
-                                              "stop": 1270,
+                                              "start": 1366,
+                                              "stop": 1366,
                                               "children": [
                                                 {
                                                   "token": "Identifier",
                                                   "text": "p",
-                                                  "start": 1270,
-                                                  "stop": 1270
+                                                  "start": 1366,
+                                                  "stop": 1366
                                                 }
                                               ]
                                             }
@@ -2252,16 +2297,16 @@
                                         {
                                           "token": "RPAREN",
                                           "text": ")",
-                                          "start": 1271,
-                                          "stop": 1271
+                                          "start": 1367,
+                                          "stop": 1367
                                         }
                                       ]
                                     },
                                     {
                                       "token": "SEMICOLON",
                                       "text": ";",
-                                      "start": 1272,
-                                      "stop": 1272
+                                      "start": 1368,
+                                      "stop": 1368
                                     }
                                   ]
                                 }
@@ -2271,93 +2316,93 @@
                         },
                         {
                           "rule": "statementOrScope",
-                          "start": 1278,
-                          "stop": 1305,
+                          "start": 1374,
+                          "stop": 1401,
                           "children": [
                             {
                               "rule": "statement",
-                              "start": 1278,
-                              "stop": 1305,
+                              "start": 1374,
+                              "stop": 1401,
                               "children": [
                                 {
                                   "rule": "expressionStatement",
-                                  "start": 1278,
-                                  "stop": 1305,
+                                  "start": 1374,
+                                  "stop": 1401,
                                   "children": [
                                     {
                                       "rule": "expression",
                                       "label": "CallExpression",
-                                      "start": 1278,
-                                      "stop": 1304,
+                                      "start": 1374,
+                                      "stop": 1400,
                                       "children": [
                                         {
                                           "token": "Identifier",
                                           "text": "tabulate",
-                                          "start": 1278,
-                                          "stop": 1285
+                                          "start": 1374,
+                                          "stop": 1381
                                         },
                                         {
                                           "token": "LPAREN",
                                           "text": "(",
-                                          "start": 1286,
-                                          "stop": 1286
+                                          "start": 1382,
+                                          "stop": 1382
                                         },
                                         {
                                           "rule": "expressionList",
-                                          "start": 1287,
-                                          "stop": 1303,
+                                          "start": 1383,
+                                          "stop": 1399,
                                           "children": [
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 1287,
-                                              "stop": 1293,
+                                              "start": 1383,
+                                              "stop": 1389,
                                               "children": [
                                                 {
                                                   "token": "Identifier",
                                                   "text": "counts1",
-                                                  "start": 1287,
-                                                  "stop": 1293
+                                                  "start": 1383,
+                                                  "stop": 1389
                                                 }
                                               ]
                                             },
                                             {
                                               "token": "COMMA",
                                               "text": ",",
-                                              "start": 1294,
-                                              "stop": 1294
+                                              "start": 1390,
+                                              "stop": 1390
                                             },
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 1296,
-                                              "stop": 1300,
+                                              "start": 1392,
+                                              "stop": 1396,
                                               "children": [
                                                 {
                                                   "token": "Identifier",
                                                   "text": "shots",
-                                                  "start": 1296,
-                                                  "stop": 1300
+                                                  "start": 1392,
+                                                  "stop": 1396
                                                 }
                                               ]
                                             },
                                             {
                                               "token": "COMMA",
                                               "text": ",",
-                                              "start": 1301,
-                                              "stop": 1301
+                                              "start": 1397,
+                                              "stop": 1397
                                             },
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 1303,
-                                              "stop": 1303,
+                                              "start": 1399,
+                                              "stop": 1399,
                                               "children": [
                                                 {
                                                   "token": "Identifier",
                                                   "text": "p",
-                                                  "start": 1303,
-                                                  "stop": 1303
+                                                  "start": 1399,
+                                                  "stop": 1399
                                                 }
                                               ]
                                             }
@@ -2366,16 +2411,16 @@
                                         {
                                           "token": "RPAREN",
                                           "text": ")",
-                                          "start": 1304,
-                                          "stop": 1304
+                                          "start": 1400,
+                                          "stop": 1400
                                         }
                                       ]
                                     },
                                     {
                                       "token": "SEMICOLON",
                                       "text": ";",
-                                      "start": 1305,
-                                      "stop": 1305
+                                      "start": 1401,
+                                      "stop": 1401
                                     }
                                   ]
                                 }
@@ -2386,8 +2431,8 @@
                         {
                           "token": "RBRACE",
                           "text": "}",
-                          "start": 1307,
-                          "stop": 1307
+                          "start": 1403,
+                          "stop": 1403
                         }
                       ]
                     }
@@ -2402,8 +2447,8 @@
     {
       "token": "EOF",
       "text": "<EOF>",
-      "start": 1309,
-      "stop": 1308
+      "start": 1405,
+      "stop": 1404
     }
   ]
 }

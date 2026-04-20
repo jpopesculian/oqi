@@ -1,18 +1,39 @@
 use std::fmt;
 
-use crate::array::{Array, ArrayDim, ArrayShape, ArrayTy};
+use crate::array::{Array, ArrayDim, ArrayShape, ArrayTy, BaseArray, BaseArrayTy};
 use crate::error::{Error, Result};
 use crate::index::Index;
-use crate::scalar::ScalarTy;
+use crate::primitive::{Primitive, PrimitiveTy};
 use crate::shared::Shared;
 use crate::value::Value;
 
 #[derive(Debug, Clone)]
-pub struct ArrayRef {
-    array: Shared<Array>,
+pub struct BaseArrayRef<V, T> {
+    array: Shared<BaseArray<V, T>>,
     indices: Vec<Index>,
-    ty: ArrayRefTy,
+    ty: BaseArrayRefTy<T>,
 }
+
+impl<V, T> BaseArrayRef<V, T> {
+    #[inline]
+    pub fn array(&self) -> &Shared<BaseArray<V, T>> {
+        &self.array
+    }
+
+    #[inline]
+    pub fn indices(&self) -> &[Index] {
+        &self.indices
+    }
+}
+
+impl<V, T: Copy> BaseArrayRef<V, T> {
+    #[inline]
+    pub fn ty(&self) -> BaseArrayRefTy<T> {
+        self.ty
+    }
+}
+
+pub type ArrayRef = BaseArrayRef<Primitive, PrimitiveTy>;
 
 impl ArrayRef {
     pub fn new(array: Shared<Array>, indices: Vec<Index>, access: RefAccess) -> Result<Self> {
@@ -34,21 +55,6 @@ impl ArrayRef {
             array,
             indices,
         })
-    }
-
-    #[inline]
-    pub fn ty(&self) -> ArrayRefTy {
-        self.ty
-    }
-
-    #[inline]
-    pub fn array(&self) -> &Shared<Array> {
-        &self.array
-    }
-
-    #[inline]
-    pub fn indices(&self) -> &[Index] {
-        &self.indices
     }
 
     pub fn to_owned(&self) -> Result<Array> {
@@ -172,20 +178,32 @@ impl fmt::Display for ArrayRefShape {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct ArrayRefTy {
-    ty: ScalarTy,
+pub struct BaseArrayRefTy<T> {
+    ty: T,
     shape: ArrayRefShape,
     access: RefAccess,
 }
 
-impl ArrayRefTy {
+impl<T> BaseArrayRefTy<T> {
     #[inline]
-    pub const fn new(ty: ScalarTy, shape: ArrayRefShape, access: RefAccess) -> Self {
+    pub const fn new(ty: T, shape: ArrayRefShape, access: RefAccess) -> Self {
         Self { ty, shape, access }
     }
 
     #[inline]
-    pub fn readonly(array: ArrayTy) -> Self {
+    pub fn shape(&self) -> ArrayRefShape {
+        self.shape
+    }
+
+    #[inline]
+    pub fn access(&self) -> RefAccess {
+        self.access
+    }
+}
+
+impl<T: Copy> BaseArrayRefTy<T> {
+    #[inline]
+    pub fn readonly(array: BaseArrayTy<T>) -> Self {
         Self::new(
             array.ty(),
             ArrayRefShape::Fixed(array.shape()),
@@ -194,7 +212,7 @@ impl ArrayRefTy {
     }
 
     #[inline]
-    pub fn mutable(array: ArrayTy) -> Self {
+    pub fn mutable(array: BaseArrayTy<T>) -> Self {
         Self::new(
             array.ty(),
             ArrayRefShape::Fixed(array.shape()),
@@ -202,6 +220,25 @@ impl ArrayRefTy {
         )
     }
 
+    #[inline]
+    pub fn ty(&self) -> T {
+        self.ty
+    }
+
+    #[inline]
+    pub fn with_ty(&self, ty: T) -> Self {
+        Self { ty, ..*self }
+    }
+
+    #[inline]
+    pub fn with_shape(&self, shape: ArrayRefShape) -> Self {
+        Self { shape, ..*self }
+    }
+}
+
+pub type ArrayRefTy = BaseArrayRefTy<PrimitiveTy>;
+
+impl ArrayRefTy {
     pub fn to_owned(self) -> Result<ArrayTy> {
         let shape = match self.shape {
             ArrayRefShape::Fixed(shape) => shape,
@@ -215,31 +252,6 @@ impl ArrayRefTy {
             }
         };
         Ok(ArrayTy::new(self.ty, shape))
-    }
-
-    #[inline]
-    pub fn ty(&self) -> ScalarTy {
-        self.ty
-    }
-
-    #[inline]
-    pub fn with_ty(&self, ty: ScalarTy) -> Self {
-        Self { ty, ..*self }
-    }
-
-    #[inline]
-    pub fn with_shape(&self, shape: ArrayRefShape) -> Self {
-        Self { shape, ..*self }
-    }
-
-    #[inline]
-    pub fn shape(&self) -> ArrayRefShape {
-        self.shape
-    }
-
-    #[inline]
-    pub fn access(&self) -> RefAccess {
-        self.access
     }
 
     pub fn cast(self, ty: ArrayRefTy) -> Result<ArrayRefTy> {
@@ -267,7 +279,7 @@ impl From<ArrayTy> for ArrayRefTy {
     }
 }
 
-impl fmt::Display for ArrayRefTy {
+impl<T: fmt::Display> fmt::Display for BaseArrayRefTy<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} array[{}, {}]", self.access, self.ty, self.shape)
     }

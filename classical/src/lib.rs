@@ -10,12 +10,12 @@ mod shared;
 mod ty;
 mod value;
 
-pub use array::{Array, ArrayDim, ArrayShape, ArrayTy, ScalarIter, adim, ashape};
-pub use array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
+pub use array::{Array, ArrayDim, ArrayShape, ArrayTy, BaseArray, BaseArrayTy, ScalarIter, adim, ashape};
+pub use array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, BaseArrayRef, BaseArrayRefTy, RefAccess};
 pub use duration::{Duration, DurationUnit};
 pub use error::{Error, Result};
 pub use index::Index;
 pub use primitive::{BitWidth, FloatWidth, Primitive, PrimitiveTy, bw};
-pub use scalar::{Scalar, ScalarTy};
+pub use scalar::{BaseScalar, Scalar};
 pub use shared::Shared;
-pub use value::{Value, ValueTy};
+pub use value::{BaseValue, BaseValueTy, Value, ValueTy};

@@ -6,7 +6,7 @@ use oqi_parse::ast;
 
 use crate::classical::{
     ArrayRefShape, ArrayRefTy, ArrayTy, BitWidth, Duration, DurationUnit, PrimitiveTy, RefAccess,
-    ScalarTy, Value, ValueTy, adim, ashape, bw, value_as_usize,
+    Value, ValueTy, adim, ashape, bw, value_as_usize,
 };
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::resolve::lookup_intrinsic;
@@ -38,7 +38,7 @@ impl Type {
         }
     }
 
-    pub fn scalar_ty(&self) -> Option<ScalarTy> {
+    pub fn scalar_ty(&self) -> Option<PrimitiveTy> {
         match self.value_ty()? {
             ValueTy::Scalar(ty) => Some(ty),
             _ => None,

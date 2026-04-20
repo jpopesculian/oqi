@@ -3,13 +3,13 @@ use crate::array::{ArrayTy, ashape};
 use crate::array_ref::ArrayRefTy;
 use crate::error::{Error, Result};
 use crate::primitive::{BitWidth, Primitive, PrimitiveTy};
-use crate::scalar::{Scalar, ScalarTy};
+use crate::scalar::Scalar;
 use crate::value::{Value, ValueTy};
 
 pub struct SizeofDim;
 
-const SIZEOF_DIM_TY: ScalarTy = PrimitiveTy::Int(BitWidth::B64);
-const SIZEOF_OUT_TY: ScalarTy = PrimitiveTy::Uint(BitWidth::B64);
+const SIZEOF_DIM_TY: PrimitiveTy = PrimitiveTy::Int(BitWidth::B64);
+const SIZEOF_OUT_TY: PrimitiveTy = PrimitiveTy::Uint(BitWidth::B64);
 
 fn sizeof_result(lhs: ValueTy, dim: usize, rhs: ValueTy) -> Result<Value> {
     let size = lhs
@@ -30,7 +30,7 @@ impl BinOp for SizeofDim {
     const NAME: &'static str = "sizeof";
     const IS_FUNC: bool = true;
 
-    fn scalar_check(lhs: ScalarTy, rhs: ScalarTy) -> Result<(ScalarTy, ScalarTy, ScalarTy)> {
+    fn scalar_check(lhs: PrimitiveTy, rhs: PrimitiveTy) -> Result<(PrimitiveTy, PrimitiveTy, PrimitiveTy)> {
         if ValueTy::Scalar(lhs).size(0).is_none() {
             return Err(Error::unsupported_binop(
                 Self::NAME,
@@ -43,7 +43,7 @@ impl BinOp for SizeofDim {
         Ok((lhs, SIZEOF_DIM_TY, SIZEOF_OUT_TY))
     }
 
-    fn scalar_op(lhs: Scalar, rhs: Scalar, _out: ScalarTy) -> Result<Scalar> {
+    fn scalar_op(lhs: Scalar, rhs: Scalar, _out: PrimitiveTy) -> Result<Scalar> {
         let rhs_ty = rhs.ty();
         let dim = scalar_as_usize(rhs).ok_or_else(|| {
             Error::unsupported_binop(
@@ -61,7 +61,7 @@ impl BinOp for SizeofDim {
         Ok(value)
     }
 
-    fn arr_scalar_check(lhs: ArrayTy, rhs: ScalarTy) -> Result<(ArrayTy, ScalarTy, ArrayTy)> {
+    fn arr_scalar_check(lhs: ArrayTy, rhs: PrimitiveTy) -> Result<(ArrayTy, PrimitiveTy, ArrayTy)> {
         rhs.cast(SIZEOF_DIM_TY)?;
         if ValueTy::Array(lhs).size(0).is_none() {
             return Err(Error::unsupported_binop(
@@ -80,8 +80,8 @@ impl BinOp for SizeofDim {
 
     fn arr_ref_scalar_check(
         lhs: ArrayRefTy,
-        rhs: ScalarTy,
-    ) -> Result<(ArrayRefTy, ScalarTy, ArrayRefTy)> {
+        rhs: PrimitiveTy,
+    ) -> Result<(ArrayRefTy, PrimitiveTy, ArrayRefTy)> {
         rhs.cast(SIZEOF_DIM_TY)?;
         if ValueTy::ArrayRef(lhs).size(0).is_none() {
             return Err(Error::unsupported_binop(

@@ -4,32 +4,37 @@ use num_complex::{Complex32, Complex64};
 
 use crate::{
     BitWidth, FloatWidth, Primitive,
-    array::{Array, ArrayShape, ArrayTy},
-    array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess},
+    array::{Array, ArrayShape, ArrayTy, BaseArray, BaseArrayTy},
+    array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, BaseArrayRef, BaseArrayRefTy, RefAccess},
     duration::{Duration, DurationUnit},
     error::{Error, Result},
-    scalar::{Scalar, ScalarTy},
+    primitive::PrimitiveTy,
+    scalar::{BaseScalar, Scalar},
 };
 
 #[derive(Clone, Debug)]
-pub enum Value {
-    Scalar(Scalar),
-    Array(Array),
-    ArrayRef(ArrayRef),
+pub enum BaseValue<V, T> {
+    Scalar(BaseScalar<V, T>),
+    Array(BaseArray<V, T>),
+    ArrayRef(BaseArrayRef<V, T>),
 }
+
+impl<V: Copy, T: Copy> BaseValue<V, T> {
+    pub fn ty(&self) -> BaseValueTy<T> {
+        match self {
+            BaseValue::Scalar(s) => BaseValueTy::Scalar(s.ty()),
+            BaseValue::Array(a) => BaseValueTy::Array(a.ty()),
+            BaseValue::ArrayRef(ar) => BaseValueTy::ArrayRef(ar.ty()),
+        }
+    }
+}
+
+pub type Value = BaseValue<Primitive, PrimitiveTy>;
 
 impl Value {
     pub const PI: Self = Value::Scalar(Scalar::PI);
     pub const TAU: Self = Value::Scalar(Scalar::TAU);
     pub const E: Self = Value::Scalar(Scalar::E);
-
-    pub fn ty(&self) -> ValueTy {
-        match self {
-            Value::Scalar(s) => ValueTy::Scalar(s.ty()),
-            Value::Array(a) => ValueTy::Array(a.ty()),
-            Value::ArrayRef(ar) => ValueTy::ArrayRef(ar.ty()),
-        }
-    }
 
     pub fn cast(self, ty: ValueTy) -> Result<Self> {
         match (self, ty) {
@@ -150,11 +155,13 @@ impl fmt::Display for Value {
 }
 
 #[derive(Clone, Debug, Copy, PartialEq)]
-pub enum ValueTy {
-    Scalar(ScalarTy),
-    Array(ArrayTy),
-    ArrayRef(ArrayRefTy),
+pub enum BaseValueTy<T> {
+    Scalar(T),
+    Array(BaseArrayTy<T>),
+    ArrayRef(BaseArrayRefTy<T>),
 }
+
+pub type ValueTy = BaseValueTy<PrimitiveTy>;
 
 impl ValueTy {
     pub fn cast(self, ty: ValueTy) -> Result<Self> {
@@ -206,63 +213,63 @@ impl ValueTy {
 
     #[inline]
     pub const fn bit() -> Self {
-        Self::Scalar(ScalarTy::Bit)
+        Self::Scalar(PrimitiveTy::Bit)
     }
 
     #[inline]
     pub const fn bool() -> Self {
-        Self::Scalar(ScalarTy::Bool)
+        Self::Scalar(PrimitiveTy::Bool)
     }
 
     #[inline]
     pub const fn int(bw: BitWidth) -> Self {
-        Self::Scalar(ScalarTy::Int(bw))
+        Self::Scalar(PrimitiveTy::Int(bw))
     }
 
     #[inline]
     pub const fn uint(bw: BitWidth) -> Self {
-        Self::Scalar(ScalarTy::Uint(bw))
+        Self::Scalar(PrimitiveTy::Uint(bw))
     }
 
     #[inline]
     pub const fn float(fw: FloatWidth) -> Self {
-        Self::Scalar(ScalarTy::Float(fw))
+        Self::Scalar(PrimitiveTy::Float(fw))
     }
 
     #[inline]
     pub const fn complex(fw: FloatWidth) -> Self {
-        Self::Scalar(ScalarTy::Complex(fw))
+        Self::Scalar(PrimitiveTy::Complex(fw))
     }
 
     #[inline]
     pub const fn angle(bw: BitWidth) -> Self {
-        Self::Scalar(ScalarTy::Angle(bw))
+        Self::Scalar(PrimitiveTy::Angle(bw))
     }
 
     #[inline]
     pub const fn duration() -> Self {
-        Self::Scalar(ScalarTy::Duration)
+        Self::Scalar(PrimitiveTy::Duration)
     }
 
     #[inline]
     pub const fn bitreg(bw: BitWidth) -> Self {
-        Self::Scalar(ScalarTy::BitReg(bw))
+        Self::Scalar(PrimitiveTy::BitReg(bw))
     }
 
     #[inline]
-    pub const fn array(ty: ScalarTy, shape: ArrayShape) -> Self {
+    pub const fn array(ty: PrimitiveTy, shape: ArrayShape) -> Self {
         Self::Array(ArrayTy::new(ty, shape))
     }
 
     #[inline]
-    pub const fn array_ref(ty: ScalarTy, shape: ArrayRefShape, access: RefAccess) -> Self {
+    pub const fn array_ref(ty: PrimitiveTy, shape: ArrayRefShape, access: RefAccess) -> Self {
         Self::ArrayRef(ArrayRefTy::new(ty, shape, access))
     }
 }
 
-impl From<ScalarTy> for ValueTy {
+impl From<PrimitiveTy> for ValueTy {
     #[inline]
-    fn from(scalar_ty: ScalarTy) -> Self {
+    fn from(scalar_ty: PrimitiveTy) -> Self {
         ValueTy::Scalar(scalar_ty)
     }
 }

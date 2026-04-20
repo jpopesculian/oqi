@@ -86,7 +86,8 @@ use crate::{
     Error, Result,
     array::{Array, ArrayTy},
     array_ref::{ArrayRef, ArrayRefTy},
-    scalar::{Scalar, ScalarTy},
+    primitive::PrimitiveTy,
+    scalar::Scalar,
     value::{Value, ValueTy},
 };
 
@@ -95,7 +96,7 @@ pub trait BinOp {
     const IS_FUNC: bool = false;
 
     // given the inputs, get lhs cast, rhs cast and ouput type
-    fn scalar_check(lht: ScalarTy, rht: ScalarTy) -> Result<(ScalarTy, ScalarTy, ScalarTy)> {
+    fn scalar_check(lht: PrimitiveTy, rht: PrimitiveTy) -> Result<(PrimitiveTy, PrimitiveTy, PrimitiveTy)> {
         Err(Error::unsupported_scalar_binop(
             Self::NAME,
             lht,
@@ -104,7 +105,7 @@ pub trait BinOp {
         ))
     }
 
-    fn scalar_op(lhs: Scalar, rhs: Scalar, _out: ScalarTy) -> Result<Scalar> {
+    fn scalar_op(lhs: Scalar, rhs: Scalar, _out: PrimitiveTy) -> Result<Scalar> {
         Err(Error::unsupported_scalar_binop(
             Self::NAME,
             lhs.ty(),
@@ -129,14 +130,14 @@ pub trait BinOp {
         Ok((lhc, rhc, out))
     }
 
-    fn arr_scalar_check(lhs: ArrayTy, rhs: ScalarTy) -> Result<(ArrayTy, ScalarTy, ArrayTy)> {
+    fn arr_scalar_check(lhs: ArrayTy, rhs: PrimitiveTy) -> Result<(ArrayTy, PrimitiveTy, ArrayTy)> {
         let (lhc, rhc, out) = Self::scalar_check(lhs.ty(), rhs)?;
         let lhc = lhs.with_ty(lhc);
         let out = lhs.with_ty(out);
         Ok((lhc, rhc, out))
     }
 
-    fn scalar_arr_check(lhs: ScalarTy, rhs: ArrayTy) -> Result<(ScalarTy, ArrayTy, ArrayTy)> {
+    fn scalar_arr_check(lhs: PrimitiveTy, rhs: ArrayTy) -> Result<(PrimitiveTy, ArrayTy, ArrayTy)> {
         let (lhc, rhc, out) = Self::scalar_check(lhs, rhs.ty())?;
         let rhc = rhs.with_ty(rhc);
         let out = rhs.with_ty(out);
@@ -230,8 +231,8 @@ pub trait BinOp {
 
     fn arr_ref_scalar_check(
         lhs: ArrayRefTy,
-        rhs: ScalarTy,
-    ) -> Result<(ArrayRefTy, ScalarTy, ArrayRefTy)> {
+        rhs: PrimitiveTy,
+    ) -> Result<(ArrayRefTy, PrimitiveTy, ArrayRefTy)> {
         let (lhc, rhc, out) = Self::scalar_check(lhs.ty(), rhs)?;
         let lhc = lhs.with_ty(lhc);
         let out = lhs.with_ty(out);
@@ -239,9 +240,9 @@ pub trait BinOp {
     }
 
     fn scalar_arr_ref_check(
-        lhs: ScalarTy,
+        lhs: PrimitiveTy,
         rhs: ArrayRefTy,
-    ) -> Result<(ScalarTy, ArrayRefTy, ArrayRefTy)> {
+    ) -> Result<(PrimitiveTy, ArrayRefTy, ArrayRefTy)> {
         let (lhc, rhc, out) = Self::scalar_check(lhs, rhs.ty())?;
         let rhc = rhs.with_ty(rhc);
         let out = rhs.with_ty(out);
@@ -280,7 +281,7 @@ pub trait BinOp {
     }
 
     fn check(lhs: ValueTy, rhs: ValueTy) -> Result<(ValueTy, ValueTy, ValueTy)> {
-        use ValueTy::*;
+        use crate::value::BaseValueTy::*;
         match (lhs, rhs) {
             (Scalar(lht), Scalar(rht)) => Self::scalar_check(lht, rht)
                 .map(|(lht, rht, out)| (Scalar(lht), Scalar(rht), Scalar(out))),
@@ -365,8 +366,8 @@ pub trait UnOp {
     const IS_FUNC: bool = false;
 
     // given the input, get cast and ouput type
-    fn scalar_check(arg: ScalarTy) -> Result<(ScalarTy, ScalarTy)>;
-    fn scalar_op(arg: Scalar, out: ScalarTy) -> Result<Scalar>;
+    fn scalar_check(arg: PrimitiveTy) -> Result<(PrimitiveTy, PrimitiveTy)>;
+    fn scalar_op(arg: Scalar, out: PrimitiveTy) -> Result<Scalar>;
     fn arr_check(arg: ArrayTy) -> Result<(ArrayTy, ArrayTy)> {
         // as of right now, we don't support any array unops
         Err(Error::unsupported_unop(
@@ -403,7 +404,7 @@ pub trait UnOp {
     }
 
     fn check(arg: ValueTy) -> Result<(ValueTy, ValueTy)> {
-        use ValueTy::*;
+        use crate::value::BaseValueTy::*;
         match arg {
             Scalar(ty) => {
                 Self::scalar_check(ty).map(|(arg_ty, out_ty)| (Scalar(arg_ty), Scalar(out_ty)))
@@ -441,10 +442,10 @@ pub trait UnOp {
     }
 }
 
-pub(crate) fn unsupported_scalar_binop<O: BinOp>(lhs: ScalarTy, rhs: ScalarTy) -> Error {
+pub(crate) fn unsupported_scalar_binop<O: BinOp>(lhs: PrimitiveTy, rhs: PrimitiveTy) -> Error {
     Error::unsupported_scalar_binop(O::NAME, lhs, rhs, O::IS_FUNC)
 }
 
-pub(crate) fn unsupported_scalar_unop<O: UnOp>(arg: ScalarTy) -> Error {
+pub(crate) fn unsupported_scalar_unop<O: UnOp>(arg: PrimitiveTy) -> Error {
     Error::unsupported_scalar_unop(O::NAME, arg, O::IS_FUNC)
 }

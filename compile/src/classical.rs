@@ -1,7 +1,8 @@
 pub use oqi_classical::{
-    ArrayDim, ArrayRefShape, ArrayRefTy, ArrayShape, ArrayTy, BitWidth, Duration, DurationUnit,
-    FloatWidth, Primitive, PrimitiveTy, RefAccess, Scalar, ScalarTy, Value, ValueTy, adim, ashape,
-    bw,
+    ArrayDim, ArrayRefShape, ArrayRefTy, ArrayShape, ArrayTy, BaseArray, BaseArrayRef,
+    BaseArrayRefTy, BaseArrayTy, BaseScalar, BaseValue, BaseValueTy, BitWidth, Duration,
+    DurationUnit, FloatWidth, Primitive, PrimitiveTy, RefAccess, Scalar, Value, ValueTy, adim,
+    ashape, bw,
 };
 
 #[inline]

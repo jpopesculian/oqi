@@ -6,40 +6,44 @@ use crate::duration::{Duration, DurationUnit};
 use crate::error::Result;
 use crate::primitive::{BitWidth, FloatWidth, Primitive, PrimitiveTy, bw};
 
-pub type ScalarTy = PrimitiveTy;
-
 #[derive(Clone, Copy, Debug)]
-pub struct Scalar {
-    value: Primitive,
-    ty: ScalarTy,
+pub struct BaseScalar<V, T> {
+    value: V,
+    ty: T,
 }
+
+impl<V, T> BaseScalar<V, T> {
+    #[inline]
+    pub const fn new_unchecked(value: V, ty: T) -> Self {
+        BaseScalar { value, ty }
+    }
+}
+
+impl<V: Copy, T: Copy> BaseScalar<V, T> {
+    #[inline]
+    pub const fn value(&self) -> V {
+        self.value
+    }
+
+    #[inline]
+    pub const fn ty(&self) -> T {
+        self.ty
+    }
+}
+
+pub type Scalar = BaseScalar<Primitive, PrimitiveTy>;
 
 impl Scalar {
     pub const PI: Self = Self::new_unchecked(Primitive::PI, PrimitiveTy::Float(FloatWidth::F64));
     pub const TAU: Self = Self::new_unchecked(Primitive::TAU, PrimitiveTy::Float(FloatWidth::F64));
     pub const E: Self = Self::new_unchecked(Primitive::E, PrimitiveTy::Float(FloatWidth::F64));
 
-    pub fn new(value: Primitive, ty: ScalarTy) -> Result<Self> {
+    pub fn new(value: Primitive, ty: PrimitiveTy) -> Result<Self> {
         Ok(Scalar::new_unchecked(value.as_ty(ty)?, ty))
     }
 
     #[inline]
-    pub const fn new_unchecked(value: Primitive, ty: ScalarTy) -> Self {
-        Scalar { value, ty }
-    }
-
-    #[inline]
-    pub const fn value(&self) -> Primitive {
-        self.value
-    }
-
-    #[inline]
-    pub const fn ty(&self) -> ScalarTy {
-        self.ty
-    }
-
-    #[inline]
-    pub fn cast(self, to: ScalarTy) -> Result<Self> {
+    pub fn cast(self, to: PrimitiveTy) -> Result<Self> {
         self.ty.cast(to)?;
         Self::new(self.value, to)
     }

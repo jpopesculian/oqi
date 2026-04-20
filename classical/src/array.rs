@@ -1,16 +1,39 @@
 use std::fmt;
 
-use crate::array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
+use crate::array_ref::{ArrayRef, ArrayRefShape, BaseArrayRefTy, RefAccess};
 use crate::primitive::{Primitive, PrimitiveTy};
-use crate::scalar::{Scalar, ScalarTy};
+use crate::scalar::Scalar;
 use crate::shared::Shared;
 use crate::{Error, Result};
 
 #[derive(Clone, Debug)]
-pub struct Array {
-    values: Vec<Primitive>,
-    ty: ArrayTy,
+pub struct BaseArray<V, T> {
+    values: Vec<V>,
+    ty: BaseArrayTy<T>,
 }
+
+impl<V, T> BaseArray<V, T> {
+    #[inline]
+    pub fn new_unchecked(values: Vec<V>, ty: BaseArrayTy<T>) -> Self {
+        BaseArray { values, ty }
+    }
+
+    pub fn values(&self) -> &[V] {
+        &self.values
+    }
+
+    pub fn values_mut(&mut self) -> &mut [V] {
+        &mut self.values
+    }
+}
+
+impl<V, T: Copy> BaseArray<V, T> {
+    pub fn ty(&self) -> BaseArrayTy<T> {
+        self.ty
+    }
+}
+
+pub type Array = BaseArray<Primitive, PrimitiveTy>;
 
 impl Array {
     pub fn new(mut values: Vec<Primitive>, ty: ArrayTy) -> Result<Self> {
@@ -27,11 +50,6 @@ impl Array {
     }
 
     #[inline]
-    pub fn new_unchecked(values: Vec<Primitive>, ty: ArrayTy) -> Self {
-        Array { values, ty }
-    }
-
-    #[inline]
     pub fn into_ref(self) -> ArrayRef {
         ArrayRef::new(Shared::new(self), vec![], RefAccess::Readonly).unwrap()
     }
@@ -41,24 +59,12 @@ impl Array {
         ArrayRef::new(Shared::new(self), vec![], RefAccess::Mutable).unwrap()
     }
 
-    pub fn values(&self) -> &[Primitive] {
-        &self.values
-    }
-
-    pub fn values_mut(&mut self) -> &mut [Primitive] {
-        &mut self.values
-    }
-
     pub fn scalars(&self) -> ScalarIter<'_> {
         ScalarIter {
             slice: self.values(),
             ty: self.ty.ty(),
             index: 0,
         }
-    }
-
-    pub fn ty(&self) -> ArrayTy {
-        self.ty
     }
 
     #[inline]
@@ -70,7 +76,7 @@ impl Array {
 
 pub struct ScalarIter<'a> {
     slice: &'a [Primitive],
-    ty: ScalarTy,
+    ty: PrimitiveTy,
     index: usize,
 }
 
@@ -255,19 +261,26 @@ macro_rules! shape {
 pub(crate) use shape;
 
 #[derive(Clone, Copy, PartialEq)]
-pub struct ArrayTy {
-    ty: PrimitiveTy,
+pub struct BaseArrayTy<T> {
+    ty: T,
     shape: ArrayShape,
 }
 
-impl ArrayTy {
+impl<T> BaseArrayTy<T> {
     #[inline]
-    pub const fn new(ty: PrimitiveTy, shape: ArrayShape) -> Self {
+    pub const fn new(ty: T, shape: ArrayShape) -> Self {
         Self { ty, shape }
     }
 
     #[inline]
-    pub const fn with_ty(&self, ty: PrimitiveTy) -> Self {
+    pub const fn shape(&self) -> ArrayShape {
+        self.shape
+    }
+}
+
+impl<T: Copy> BaseArrayTy<T> {
+    #[inline]
+    pub const fn with_ty(&self, ty: T) -> Self {
         Self { ty, ..*self }
     }
 
@@ -277,33 +290,32 @@ impl ArrayTy {
     }
 
     #[inline]
-    pub const fn as_ref(&self) -> ArrayRefTy {
-        ArrayRefTy::new(
-            self.ty(),
+    pub const fn ty(&self) -> T {
+        self.ty
+    }
+
+    #[inline]
+    pub const fn as_ref(&self) -> BaseArrayRefTy<T> {
+        BaseArrayRefTy::new(
+            self.ty,
             ArrayRefShape::Fixed(self.shape),
             RefAccess::Readonly,
         )
     }
 
     #[inline]
-    pub const fn as_ref_mut(&self) -> ArrayRefTy {
-        ArrayRefTy::new(
-            self.ty(),
+    pub const fn as_ref_mut(&self) -> BaseArrayRefTy<T> {
+        BaseArrayRefTy::new(
+            self.ty,
             ArrayRefShape::Fixed(self.shape),
             RefAccess::Mutable,
         )
     }
+}
 
-    #[inline]
-    pub const fn shape(&self) -> ArrayShape {
-        self.shape
-    }
+pub type ArrayTy = BaseArrayTy<PrimitiveTy>;
 
-    #[inline]
-    pub const fn ty(&self) -> PrimitiveTy {
-        self.ty
-    }
-
+impl ArrayTy {
     #[inline]
     pub fn cast(self, to: ArrayTy) -> Result<Self> {
         if self.shape.total() != to.shape.total() {
@@ -317,7 +329,7 @@ impl ArrayTy {
     }
 }
 
-impl fmt::Debug for ArrayTy {
+impl<T: fmt::Debug> fmt::Debug for BaseArrayTy<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ArrayTy")
             .field("ty", &self.ty)
@@ -326,7 +338,7 @@ impl fmt::Debug for ArrayTy {
     }
 }
 
-impl fmt::Display for ArrayTy {
+impl<T: fmt::Display> fmt::Display for BaseArrayTy<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "array[{}, {}]", self.ty, self.shape)
     }

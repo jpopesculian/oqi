@@ -1,10 +1,10 @@
 use crate::array::{Array, ArrayDim, ArrayShape, ArrayTy};
 use crate::array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
-use crate::scalar::{Scalar, ScalarTy};
+use crate::scalar::Scalar;
 use crate::value::{Value, ValueTy};
 use crate::{
     Error, Result,
-    primitive::{BitWidth, Primitive, resize_int},
+    primitive::{BitWidth, Primitive, PrimitiveTy, resize_int},
 };
 
 #[derive(Debug, Clone)]
@@ -288,8 +288,8 @@ fn set_bits(bits: u128, ops: impl IntoIterator<Item = (usize, bool)>) -> u128 {
     out
 }
 
-impl ScalarTy {
-    fn get(&self, indices: &[Index]) -> Result<ScalarTy> {
+impl PrimitiveTy {
+    fn get(&self, indices: &[Index]) -> Result<PrimitiveTy> {
         if indices.is_empty() {
             return Ok(*self);
         }
@@ -305,12 +305,12 @@ impl ScalarTy {
         match &indices[0] {
             Index::Item(i) => {
                 resolve_index(*i, dim, false).ok_or_else(error)?;
-                Ok(ScalarTy::Bit)
+                Ok(PrimitiveTy::Bit)
             }
             other => {
                 let iter = other.iter(dim).ok_or_else(error)?;
                 let new_bw = BitWidth::new(iter.len() as u32)?;
-                Ok(ScalarTy::BitReg(new_bw))
+                Ok(PrimitiveTy::BitReg(new_bw))
             }
         }
     }
@@ -438,7 +438,7 @@ impl Scalar {
                 let position = resolve_index(*i, dim, false).ok_or_else(error)?;
                 Ok(Scalar::new_unchecked(
                     Primitive::Bit(get_bit(bits, position) != 0),
-                    ScalarTy::Bit,
+                    PrimitiveTy::Bit,
                 ))
             }
             other => {
@@ -447,7 +447,7 @@ impl Scalar {
                 let new_bits = get_bits(bits, iter);
                 Ok(Scalar::new_unchecked(
                     Primitive::BitReg(new_bits),
-                    ScalarTy::BitReg(new_bw),
+                    PrimitiveTy::BitReg(new_bw),
                 ))
             }
         }
@@ -487,7 +487,7 @@ impl Scalar {
                     Primitive::Bit(b) => b,
                     _ => {
                         return Err(Error::UnexpectedTy {
-                            expected: Box::new(ScalarTy::Bit.into()),
+                            expected: Box::new(PrimitiveTy::Bit.into()),
                             received: Box::new(value.ty().into()),
                         });
                     }
@@ -500,9 +500,9 @@ impl Scalar {
             other => {
                 let iter = other.iter(dim).ok_or_else(error)?;
                 let (new_bits, bw) = match (value.value(), value.ty()) {
-                    (Primitive::BitReg(b), ScalarTy::BitReg(bw)) => (b, bw),
-                    (Primitive::Uint(b), ScalarTy::Uint(bw)) => (b, bw),
-                    (Primitive::Int(b), ScalarTy::Int(bw)) => (b as u128, bw),
+                    (Primitive::BitReg(b), PrimitiveTy::BitReg(bw)) => (b, bw),
+                    (Primitive::Uint(b), PrimitiveTy::Uint(bw)) => (b, bw),
+                    (Primitive::Int(b), PrimitiveTy::Int(bw)) => (b as u128, bw),
                     _ => {
                         return Err(Error::UnexpectedTy {
                             expected: Box::new(self.ty().into()),
@@ -952,14 +952,14 @@ mod tests {
     fn arr(values: &[u8], shape: ArrayShape) -> Value {
         Value::Array(Array::new_unchecked(
             values.iter().map(|&v| Primitive::uint(v as u128)).collect(),
-            ArrayTy::new(ScalarTy::Uint(bw(8)), shape),
+            ArrayTy::new(PrimitiveTy::Uint(bw(8)), shape),
         ))
     }
 
     fn sc(v: u8) -> Value {
         Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(v as u128),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ))
     }
 
@@ -1032,7 +1032,7 @@ mod tests {
     fn get_on_float_scalar_returns_none() {
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::float(1.0),
-            ScalarTy::Float(crate::primitive::FloatWidth::F64),
+            PrimitiveTy::Float(crate::primitive::FloatWidth::F64),
         ));
         assert!(v.get(&[Index::Item(0)]).is_err());
     }
@@ -1051,7 +1051,7 @@ mod tests {
 
     #[test]
     fn scalar_get_direct_reads_bits() {
-        let scalar = Scalar::new_unchecked(Primitive::uint(0b1010), ScalarTy::Uint(bw(4)));
+        let scalar = Scalar::new_unchecked(Primitive::uint(0b1010), PrimitiveTy::Uint(bw(4)));
         let result = scalar.get(&[Index::Item(1)]).unwrap();
 
         assert!(matches!(result.value(), Primitive::Bit(true)));
@@ -1114,7 +1114,7 @@ mod tests {
                 Primitive::uint(1_u128),
                 Primitive::uint(2_u128),
             ],
-            ArrayTy::new(ScalarTy::Uint(bw(8)), shape![3]),
+            ArrayTy::new(PrimitiveTy::Uint(bw(8)), shape![3]),
         );
 
         assert!(array.set(&[Index::Item(1)], sc(99)).is_ok());
@@ -1140,7 +1140,7 @@ mod tests {
     // --- bit indexing ---
 
     fn bit_val(b: bool) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::Bit(b), ScalarTy::Bit))
+        Value::Scalar(Scalar::new_unchecked(Primitive::Bit(b), PrimitiveTy::Bit))
     }
 
     #[test]
@@ -1148,7 +1148,7 @@ mod tests {
         // 0b1010 = 10
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ));
         assert!(matches!(
             v.get(&[Index::Item(0)]),
@@ -1168,7 +1168,7 @@ mod tests {
     fn get_bit_from_bitreg() {
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::BitReg(0b0101),
-            ScalarTy::BitReg(bw(4)),
+            PrimitiveTy::BitReg(bw(4)),
         ));
         assert!(matches!(
             v.get(&[Index::Item(0)]),
@@ -1185,7 +1185,7 @@ mod tests {
         // -1 as Int(8) = 0xFF, all bits set
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::int(-1),
-            ScalarTy::Int(bw(8)),
+            PrimitiveTy::Int(bw(8)),
         ));
         for i in 0..8 {
             assert!(matches!(
@@ -1200,7 +1200,7 @@ mod tests {
         // 0b1000 in 4 bits: bit -1 (= bit 3) is 1
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1000),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
         assert!(matches!(
             v.get(&[Index::Item(-1)]),
@@ -1216,7 +1216,7 @@ mod tests {
     fn get_bit_out_of_bounds() {
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0xFF),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ));
         assert!(v.get(&[Index::Item(8)]).is_err());
         assert!(v.get(&[Index::Item(-9)]).is_err());
@@ -1227,7 +1227,7 @@ mod tests {
         // 0b1010_0110, bits 1..5 = bits 1,2,3,4 = 1,1,0,0 → 0b0011
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010_0110),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ));
         let r = v
             .get(&[Index::Slice {
@@ -1241,7 +1241,7 @@ mod tests {
                 let Primitive::BitReg(val) = s.value() else {
                     panic!("expected BitReg")
                 };
-                let ScalarTy::BitReg(w) = s.ty() else {
+                let PrimitiveTy::BitReg(w) = s.ty() else {
                     panic!("expected BitReg")
                 };
                 assert_eq!(w.get(), 4);
@@ -1256,7 +1256,7 @@ mod tests {
         // 0b1100 in 4 bits, bits 0..4 step 2 = bits 0,2 = 0,1 → 0b10
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::BitReg(0b1100),
-            ScalarTy::BitReg(bw(4)),
+            PrimitiveTy::BitReg(bw(4)),
         ));
         let r = v
             .get(&[Index::Slice {
@@ -1270,7 +1270,7 @@ mod tests {
                 let Primitive::BitReg(val) = s.value() else {
                     panic!("expected BitReg")
                 };
-                let ScalarTy::BitReg(w) = s.ty() else {
+                let PrimitiveTy::BitReg(w) = s.ty() else {
                     panic!("expected BitReg")
                 };
                 assert_eq!(w.get(), 2);
@@ -1284,7 +1284,7 @@ mod tests {
     fn get_bit_slice_full() {
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
         let r = v
             .get(&[Index::Slice {
@@ -1298,7 +1298,7 @@ mod tests {
                 let Primitive::BitReg(val) = s.value() else {
                     panic!("expected BitReg")
                 };
-                let ScalarTy::BitReg(w) = s.ty() else {
+                let PrimitiveTy::BitReg(w) = s.ty() else {
                     panic!("expected BitReg")
                 };
                 assert_eq!(w.get(), 4);
@@ -1314,7 +1314,7 @@ mod tests {
         // result bit 0=1, bit 1=0, bit 2=1, bit 3=0 → 0b0101
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
         let r = v
             .get(&[Index::Slice {
@@ -1328,7 +1328,7 @@ mod tests {
                 let Primitive::BitReg(val) = s.value() else {
                     panic!("expected BitReg")
                 };
-                let ScalarTy::BitReg(w) = s.ty() else {
+                let PrimitiveTy::BitReg(w) = s.ty() else {
                     panic!("expected BitReg")
                 };
                 // bits at positions 3,2,1 → values 1,0,1 → result 0b101
@@ -1344,7 +1344,7 @@ mod tests {
         // 0b1010, select bits [3, 0] → bit 3=1, bit 0=0 → result bit 0=1, bit 1=0 → 0b01
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
         let r = v.get(&[Index::Select(vec![3, 0])]).unwrap();
         match r {
@@ -1352,7 +1352,7 @@ mod tests {
                 let Primitive::BitReg(val) = s.value() else {
                     panic!("expected BitReg")
                 };
-                let ScalarTy::BitReg(w) = s.ty() else {
+                let PrimitiveTy::BitReg(w) = s.ty() else {
                     panic!("expected BitReg")
                 };
                 assert_eq!(w.get(), 2);
@@ -1367,7 +1367,7 @@ mod tests {
         // 0b1111, select bits [0, 2] → both 1 → 0b11
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::BitReg(0b1111),
-            ScalarTy::BitReg(bw(4)),
+            PrimitiveTy::BitReg(bw(4)),
         ));
         let r = v.get(&[Index::Select(vec![0, 2])]).unwrap();
         match r {
@@ -1375,7 +1375,7 @@ mod tests {
                 let Primitive::BitReg(val) = s.value() else {
                     panic!("expected BitReg")
                 };
-                let ScalarTy::BitReg(w) = s.ty() else {
+                let PrimitiveTy::BitReg(w) = s.ty() else {
                     panic!("expected BitReg")
                 };
                 assert_eq!(w.get(), 2);
@@ -1389,7 +1389,7 @@ mod tests {
     fn get_bit_select_empty_returns_none() {
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0xFF),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ));
         assert!(v.get(&[Index::Select(vec![])]).is_err());
     }
@@ -1398,7 +1398,7 @@ mod tests {
     fn get_bit_select_out_of_bounds() {
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0xFF),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ));
         assert!(v.get(&[Index::Select(vec![0, 8])]).is_err());
     }
@@ -1407,7 +1407,7 @@ mod tests {
     fn set_bit_on_uint() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
         assert!(v.set(&[Index::Item(1)], bit_val(true)).is_ok());
         match &v {
@@ -1425,7 +1425,7 @@ mod tests {
     fn set_bit_clear_on_uint() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1111),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
         assert!(v.set(&[Index::Item(2)], bit_val(false)).is_ok());
         match &v {
@@ -1443,7 +1443,7 @@ mod tests {
     fn set_bit_on_bitreg() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::BitReg(0b0000),
-            ScalarTy::BitReg(bw(4)),
+            PrimitiveTy::BitReg(bw(4)),
         ));
         assert!(v.set(&[Index::Item(3)], bit_val(true)).is_ok());
         match &v {
@@ -1462,7 +1462,7 @@ mod tests {
         // Int(8) = 0, set bit 7 (sign bit) → should become -128
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::int(0),
-            ScalarTy::Int(bw(8)),
+            PrimitiveTy::Int(bw(8)),
         ));
         assert!(v.set(&[Index::Item(7)], bit_val(true)).is_ok());
         match &v {
@@ -1481,7 +1481,7 @@ mod tests {
         // Int(8) = -1 (0xFF), clear bit 7 → 0x7F = 127
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::int(-1),
-            ScalarTy::Int(bw(8)),
+            PrimitiveTy::Int(bw(8)),
         ));
         assert!(v.set(&[Index::Item(7)], bit_val(false)).is_ok());
         match &v {
@@ -1499,7 +1499,7 @@ mod tests {
     fn set_bit_with_non_bit_value_returns_false() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ));
         assert!(v.set(&[Index::Item(0)], sc(1)).is_err());
     }
@@ -1508,7 +1508,7 @@ mod tests {
     fn set_bit_out_of_bounds_returns_false() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ));
         assert!(v.set(&[Index::Item(8)], bit_val(true)).is_err());
     }
@@ -1517,7 +1517,7 @@ mod tests {
     fn get_set_bit_roundtrip() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
         let bit = v.get(&[Index::Item(1)]).unwrap();
         // bit 1 of 0b1010 is true
@@ -1543,11 +1543,11 @@ mod tests {
         // 0b0000_0000, set bits 2..6 to 0b1010 (4-bit BitReg)
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ));
         let src = Value::Scalar(Scalar::new_unchecked(
             Primitive::BitReg(0b1010),
-            ScalarTy::BitReg(bw(4)),
+            PrimitiveTy::BitReg(bw(4)),
         ));
         assert!(
             v.set(
@@ -1577,11 +1577,11 @@ mod tests {
         // 0b0000, set bits [0, 3] to 0b11 (2-bit BitReg)
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
         let src = Value::Scalar(Scalar::new_unchecked(
             Primitive::BitReg(0b11),
-            ScalarTy::BitReg(bw(2)),
+            PrimitiveTy::BitReg(bw(2)),
         ));
         assert!(v.set(&[Index::Select(vec![0, 3])], src).is_ok());
         match &v {
@@ -1599,11 +1599,11 @@ mod tests {
     fn set_bit_slice_bitreg() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::BitReg(0b1111),
-            ScalarTy::BitReg(bw(4)),
+            PrimitiveTy::BitReg(bw(4)),
         ));
         let src = Value::Scalar(Scalar::new_unchecked(
             Primitive::BitReg(0b00),
-            ScalarTy::BitReg(bw(2)),
+            PrimitiveTy::BitReg(bw(2)),
         ));
         assert!(
             v.set(
@@ -1631,12 +1631,12 @@ mod tests {
     fn set_bit_slice_wrong_width_returns_false() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ));
         // Slice selects 4 bits but value is 3-bit
         let src = Value::Scalar(Scalar::new_unchecked(
             Primitive::BitReg(0b111),
-            ScalarTy::BitReg(bw(3)),
+            PrimitiveTy::BitReg(bw(3)),
         ));
         assert!(
             v.set(
@@ -1655,7 +1655,7 @@ mod tests {
     fn get_set_slice_roundtrip() {
         let mut v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010_0110),
-            ScalarTy::Uint(bw(8)),
+            PrimitiveTy::Uint(bw(8)),
         ));
         let slice = v
             .get(&[Index::Slice {
@@ -1670,7 +1670,7 @@ mod tests {
                 let Primitive::BitReg(val) = s.value() else {
                     panic!("expected BitReg")
                 };
-                let ScalarTy::BitReg(w) = s.ty() else {
+                let PrimitiveTy::BitReg(w) = s.ty() else {
                     panic!("expected BitReg")
                 };
                 assert_eq!(w.get(), 4);
@@ -1706,7 +1706,7 @@ mod tests {
     fn bitreg_arr(values: &[u128], bits: u32) -> Value {
         Value::Array(Array::new_unchecked(
             values.iter().map(|&v| Primitive::BitReg(v)).collect(),
-            ArrayTy::new(ScalarTy::BitReg(bw(bits)), shape![values.len()]),
+            ArrayTy::new(PrimitiveTy::BitReg(bw(bits)), shape![values.len()]),
         ))
     }
 
@@ -1718,13 +1718,13 @@ mod tests {
         let r = v.get(&[Index::Item(1), Index::Item(2)]).unwrap();
         assert!(matches!(
             r,
-            Value::Scalar(s) if matches!(s.value(), Primitive::Bit(true)) && matches!(s.ty(), ScalarTy::Bit)
+            Value::Scalar(s) if matches!(s.value(), Primitive::Bit(true)) && matches!(s.ty(), PrimitiveTy::Bit)
         ));
         // array[0][0] = bit 0 of 0b1010 = 0
         let r = v.get(&[Index::Item(0), Index::Item(0)]).unwrap();
         assert!(matches!(
             r,
-            Value::Scalar(s) if matches!(s.value(), Primitive::Bit(false)) && matches!(s.ty(), ScalarTy::Bit)
+            Value::Scalar(s) if matches!(s.value(), Primitive::Bit(false)) && matches!(s.ty(), PrimitiveTy::Bit)
         ));
     }
 
@@ -1747,7 +1747,7 @@ mod tests {
                 let Primitive::BitReg(val) = s.value() else {
                     panic!("expected BitReg")
                 };
-                let ScalarTy::BitReg(w) = s.ty() else {
+                let PrimitiveTy::BitReg(w) = s.ty() else {
                     panic!("expected BitReg")
                 };
                 assert_eq!(w.get(), 2);
@@ -1779,7 +1779,7 @@ mod tests {
         let mut v = bitreg_arr(&[0b0000, 0b0000], 4);
         let src = Value::Scalar(Scalar::new_unchecked(
             Primitive::BitReg(0b11),
-            ScalarTy::BitReg(bw(2)),
+            PrimitiveTy::BitReg(bw(2)),
         ));
         // set array[0][1:3] = 0b11 → first element bits 1,2 set → 0b0110
         assert!(
@@ -1828,16 +1828,16 @@ mod tests {
     fn value_get_ty_scalar_item_returns_bit() {
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
 
         assert!(matches!(
             v.ty().get(&[Index::Item(1)]),
-            Ok(ValueTy::Scalar(ScalarTy::Bit))
+            Ok(ValueTy::Scalar(PrimitiveTy::Bit))
         ));
         assert!(matches!(
             v.get(&[Index::Item(1)]).unwrap().ty(),
-            ValueTy::Scalar(ScalarTy::Bit)
+            ValueTy::Scalar(PrimitiveTy::Bit)
         ));
     }
 
@@ -1845,7 +1845,7 @@ mod tests {
     fn value_get_ty_scalar_slice_returns_bitreg_width() {
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
         let indices = [Index::Slice {
             start: Some(0),
@@ -1854,11 +1854,11 @@ mod tests {
         }];
 
         match v.ty().get(&indices).unwrap() {
-            ValueTy::Scalar(ScalarTy::BitReg(width)) => assert_eq!(width.get(), 2),
+            ValueTy::Scalar(PrimitiveTy::BitReg(width)) => assert_eq!(width.get(), 2),
             other => panic!("expected BitReg type, got {other:?}"),
         }
         match v.get(&indices).unwrap().ty() {
-            ValueTy::Scalar(ScalarTy::BitReg(width)) => assert_eq!(width.get(), 2),
+            ValueTy::Scalar(PrimitiveTy::BitReg(width)) => assert_eq!(width.get(), 2),
             other => panic!("expected BitReg value type, got {other:?}"),
         }
     }
@@ -1874,14 +1874,14 @@ mod tests {
                 Primitive::uint(5),
                 Primitive::uint(6),
             ],
-            ArrayTy::new(ScalarTy::Uint(bw(8)), shape![2, 3]),
+            ArrayTy::new(PrimitiveTy::Uint(bw(8)), shape![2, 3]),
         ));
 
         match v.ty().get(&[Index::Item(1)]).unwrap() {
             ValueTy::ArrayRef(ty) => {
                 assert_eq!(ty.shape(), shape![3]);
                 assert_eq!(ty.access(), RefAccess::Mutable);
-                assert!(matches!(ty.ty(), ScalarTy::Uint(width) if width.get() == 8));
+                assert!(matches!(ty.ty(), PrimitiveTy::Uint(width) if width.get() == 8));
             }
             other => panic!("expected array ref type, got {other:?}"),
         }
@@ -1889,7 +1889,7 @@ mod tests {
             ValueTy::ArrayRef(ty) => {
                 assert_eq!(ty.shape(), shape![3]);
                 assert_eq!(ty.access(), RefAccess::Mutable);
-                assert!(matches!(ty.ty(), ScalarTy::Uint(width) if width.get() == 8));
+                assert!(matches!(ty.ty(), PrimitiveTy::Uint(width) if width.get() == 8));
             }
             other => panic!("expected array ref value type, got {other:?}"),
         }
@@ -1899,17 +1899,17 @@ mod tests {
     fn value_get_ty_array_then_bit_returns_scalar_bit() {
         let v = Value::Array(Array::new_unchecked(
             vec![Primitive::uint(0b1010), Primitive::uint(0b0101)],
-            ArrayTy::new(ScalarTy::Uint(bw(4)), shape![2]),
+            ArrayTy::new(PrimitiveTy::Uint(bw(4)), shape![2]),
         ));
         let indices = [Index::Item(0), Index::Item(1)];
 
         assert!(matches!(
             v.ty().get(&indices),
-            Ok(ValueTy::Scalar(ScalarTy::Bit))
+            Ok(ValueTy::Scalar(PrimitiveTy::Bit))
         ));
         assert!(matches!(
             v.get(&indices).unwrap().ty(),
-            ValueTy::Scalar(ScalarTy::Bit)
+            ValueTy::Scalar(PrimitiveTy::Bit)
         ));
     }
 
@@ -1917,7 +1917,7 @@ mod tests {
     fn value_get_ty_matches_get_errors() {
         let v = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010),
-            ScalarTy::Uint(bw(4)),
+            PrimitiveTy::Uint(bw(4)),
         ));
 
         assert!(v.ty().get(&[Index::Select(vec![])]).is_err());

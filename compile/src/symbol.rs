@@ -49,6 +49,10 @@ pub enum SymbolKind {
     Subroutine,
     /// Extern function name: `extern get_param(...) -> ...`
     Extern,
+    /// OpenPulse external port: `extern port d0;`
+    ExternPort,
+    /// OpenPulse external frame: `extern frame f0;`
+    ExternFrame,
 }
 
 impl SymbolTable {

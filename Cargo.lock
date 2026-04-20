@@ -350,6 +350,7 @@ dependencies = [
  "num-traits",
  "oqi-classical",
  "oqi-lex",
+ "oqi-openpulse",
  "oqi-parse",
 ]
 
@@ -368,6 +369,15 @@ dependencies = [
  "logos",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "oqi-openpulse"
+version = "0.1.0"
+dependencies = [
+ "num-complex",
+ "oqi-classical",
+ "turns",
 ]
 
 [[package]]

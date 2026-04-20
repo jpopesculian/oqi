@@ -6,5 +6,6 @@ members = [
   "compile",
   "cli",
   "classical",
+  "openpulse",
 ]
 resolver = "2"

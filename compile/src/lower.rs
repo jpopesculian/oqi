@@ -21,6 +21,7 @@ use oqi_classical::{
 use oqi_parse::ast;
 
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
+use crate::openpulse;
 use crate::resolve::{FileResolver, IncludeSource, Resolver, StdFileResolver};
 use crate::sir;
 use crate::symbol::SymbolKind;
@@ -431,41 +432,58 @@ impl Lowerer {
                     ast::DefcalTarget::Reset(_) => sir::CalibrationTarget::Reset,
                     ast::DefcalTarget::Delay(_) => sir::CalibrationTarget::Delay,
                     ast::DefcalTarget::Ident(id) => {
+                        if self.resolver.symbols().lookup(id.name).is_none() {
+                            self.resolver.declare(
+                                id.name,
+                                SymbolKind::Gate,
+                                Type::Void,
+                                id.span,
+                            )?;
+                        }
                         sir::CalibrationTarget::Named(id.name.to_string())
                     }
                 };
-                let sir_args = args
-                    .iter()
-                    .map(|a| match a {
-                        ast::DefcalArgDef::Expr(e) => {
-                            Ok(sir::CalibrationArg::Expr(Box::new(self.lower_expr(e)?)))
-                        }
-                        ast::DefcalArgDef::ArgDef(ad) => {
-                            let (sym, _) = self.lower_single_arg_def(ad)?;
-                            Ok(sir::CalibrationArg::Param(sym))
-                        }
-                    })
-                    .collect::<Result<_>>()?;
-                let sir_operands = operands
-                    .iter()
-                    .map(|o| match o {
-                        ast::DefcalOperand::HardwareQubit(s, _) => {
-                            Ok(sir::CalibrationOperand::Hardware(parse_hardware_qubit(s)))
-                        }
-                        ast::DefcalOperand::Ident(id) => {
-                            Ok(sir::CalibrationOperand::Ident(id.name.to_string()))
-                        }
-                    })
-                    .collect::<Result<_>>()?;
-                let ret_ty = match return_ty {
-                    Some(s) => Some(resolve_scalar_type(
-                        s,
-                        self.resolver.symbols(),
-                        self.resolver.options(),
-                    )?),
-                    None => None,
-                };
-                let sir_body = lower_cal_body(body);
+                let (sir_args, sir_operands, ret_ty, sir_body) = self.with_scope(|this| {
+                    let sir_args: Vec<_> = args
+                        .iter()
+                        .map(|a| match a {
+                            ast::DefcalArgDef::Expr(e) => {
+                                Ok(sir::CalibrationArg::Expr(Box::new(this.lower_expr(e)?)))
+                            }
+                            ast::DefcalArgDef::ArgDef(ad) => {
+                                let (sym, _) = this.lower_single_arg_def(ad)?;
+                                Ok(sir::CalibrationArg::Param(sym))
+                            }
+                        })
+                        .collect::<Result<_>>()?;
+                    let sir_operands: Vec<_> = operands
+                        .iter()
+                        .map(|o| match o {
+                            ast::DefcalOperand::HardwareQubit(s, _) => {
+                                Ok(sir::CalibrationOperand::Hardware(parse_hardware_qubit(s)))
+                            }
+                            ast::DefcalOperand::Ident(id) => {
+                                this.resolver.declare(
+                                    id.name,
+                                    SymbolKind::GateQubit,
+                                    Type::Qubit,
+                                    id.span,
+                                )?;
+                                Ok(sir::CalibrationOperand::Ident(id.name.to_string()))
+                            }
+                        })
+                        .collect::<Result<_>>()?;
+                    let ret_ty = match return_ty {
+                        Some(s) => Some(resolve_scalar_type(
+                            s,
+                            this.resolver.symbols(),
+                            this.resolver.options(),
+                        )?),
+                        None => None,
+                    };
+                    let sir_body = this.lower_cal_body(body)?;
+                    Ok((sir_args, sir_operands, ret_ty, sir_body))
+                })?;
                 self.calibrations.push(sir::CalibrationDecl {
                     target: sir_target,
                     args: sir_args,
@@ -478,10 +496,9 @@ impl Lowerer {
             }
 
             ast::StmtKind::Cal(body) => {
+                let body = self.lower_cal_body(body)?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Cal {
-                        body: lower_cal_body(body),
-                    },
+                    kind: sir::StmtKind::Cal { body },
                     annotations,
                     span,
                 }]
@@ -489,10 +506,33 @@ impl Lowerer {
 
             ast::StmtKind::CalibrationGrammar(grammar) => {
                 self.calibration_grammar = Some(grammar.to_string());
+                let inner = grammar
+                    .strip_prefix('"')
+                    .and_then(|s| s.strip_suffix('"'))
+                    .or_else(|| grammar.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                    .unwrap_or(grammar);
+                if inner == "openpulse" {
+                    self.seed_openpulse_intrinsics()?;
+                }
                 vec![]
             }
 
-            ast::StmtKind::ExternFrame { .. } | ast::StmtKind::ExternPort { .. } => vec![],
+            ast::StmtKind::ExternFrame { name } => {
+                let ty = self.frame_type();
+                self.resolver
+                    .declare(name.name, SymbolKind::ExternFrame, ty, name.span)?;
+                vec![]
+            }
+
+            ast::StmtKind::ExternPort { name } => {
+                self.resolver.declare(
+                    name.name,
+                    SymbolKind::ExternPort,
+                    Self::port_type(),
+                    name.span,
+                )?;
+                vec![]
+            }
 
             ast::StmtKind::GateCall {
                 modifiers,
@@ -1445,10 +1485,94 @@ fn parse_hardware_qubit(s: &str) -> usize {
         .unwrap_or(0)
 }
 
-fn lower_cal_body(body: &ast::CalBody<'_>) -> sir::CalibrationBody {
-    match body {
-        ast::CalBody::Raw(text) => sir::CalibrationBody::Opaque(text.unwrap_or("").to_string()),
-        ast::CalBody::OpenPulse(_) => sir::CalibrationBody::Opaque(String::new()),
+impl Lowerer {
+    fn lower_cal_body(&mut self, body: &ast::CalBody<'_>) -> Result<sir::CalibrationBody> {
+        match body {
+            ast::CalBody::Raw(text) => Ok(sir::CalibrationBody::Opaque(
+                text.unwrap_or("").to_string(),
+            )),
+            ast::CalBody::OpenPulse(items) => {
+                let mut stmts = Vec::new();
+                for item in items {
+                    stmts.extend(self.lower_stmt_or_scope(item)?);
+                }
+                Ok(sir::CalibrationBody::OpenPulse(stmts))
+            }
+        }
+    }
+
+    fn port_type() -> Type {
+        Type::Openpulse(openpulse::ValueTy::Scalar(openpulse::PrimitiveTy::port()))
+    }
+
+    fn frame_type(&self) -> Type {
+        Type::Openpulse(openpulse::ValueTy::Scalar(openpulse::PrimitiveTy::frame(
+            self.resolver.options().system_width.fw(),
+            self.resolver.options().system_width.bw(),
+        )))
+    }
+
+    fn waveform_type(&self) -> Type {
+        Type::Openpulse(openpulse::ValueTy::Scalar(
+            openpulse::PrimitiveTy::waveform(self.resolver.options().system_width.fw()),
+        ))
+    }
+
+    fn seed_openpulse_intrinsics(&mut self) -> Result<()> {
+        use crate::classical::ValueTy;
+        let angle_bw = self.resolver.options().system_width.bw();
+        let uint_bw = self.resolver.options().system_width.bw();
+        let float_fw = self.resolver.options().system_width.fw();
+        let complex_ty = Type::Classical(ValueTy::complex(float_fw));
+        let angle_ty = Type::Classical(ValueTy::angle(angle_bw));
+        let uint_ty = Type::Classical(ValueTy::uint(uint_bw));
+        let float_ty = Type::Classical(ValueTy::float(float_fw));
+        let duration_ty = Type::Classical(ValueTy::duration());
+        let bit_ty = Type::Classical(ValueTy::bit());
+        let port_ty = Self::port_type();
+        let frame_ty = self.frame_type();
+        let waveform_ty = self.waveform_type();
+        let span = oqi_lex::Span::default();
+
+        let intrinsics: [(&str, Vec<Type>, Option<Type>); 6] = [
+            (
+                "newframe",
+                vec![port_ty, float_ty.clone(), angle_ty.clone()],
+                Some(frame_ty.clone()),
+            ),
+            (
+                "gaussian",
+                vec![float_ty.clone(), duration_ty.clone(), duration_ty.clone()],
+                Some(waveform_ty.clone()),
+            ),
+            ("play", vec![frame_ty.clone(), waveform_ty], None),
+            (
+                "capture",
+                vec![frame_ty.clone(), uint_ty.clone()],
+                Some(complex_ty.clone()),
+            ),
+            ("shift_phase", vec![frame_ty, angle_ty.clone()], None),
+            ("threshold", vec![complex_ty, uint_ty], Some(bit_ty)),
+        ];
+
+        for (name, params, ret_ty) in intrinsics {
+            if self.resolver.symbols().lookup(name).is_some() {
+                continue;
+            }
+            let sym =
+                self.resolver
+                    .declare(name, SymbolKind::Extern, Type::Void, span)?;
+            if let Some(ref ty) = ret_ty {
+                self.resolver.symbols_mut().get_mut(sym).ty = ty.clone();
+            }
+            self.externs.push(sir::ExternDecl {
+                symbol: sym,
+                param_types: params,
+                return_ty: ret_ty,
+                span,
+            });
+        }
+        Ok(())
     }
 }
 

@@ -55,8 +55,33 @@ fn qft() {
 
 #[test]
 fn defcal() {
+    use oqi_compile::sir::CalibrationBody;
+
     let p = compile_fixture("defcal.qasm").expect("should compile");
-    assert!(!p.calibrations.is_empty());
+    assert_eq!(p.calibrations.len(), 6);
+    for cal in &p.calibrations {
+        match &cal.body {
+            CalibrationBody::OpenPulse(stmts) => assert!(!stmts.is_empty()),
+            CalibrationBody::Opaque(_) => panic!("expected structured OpenPulse body"),
+        }
+    }
+    // OpenPulse intrinsics are seeded as externs.
+    let extern_names: Vec<&str> = p
+        .externs
+        .iter()
+        .map(|e| p.symbols.get(e.symbol).name.as_str())
+        .collect();
+    for name in ["newframe", "gaussian", "play", "capture", "shift_phase", "threshold"] {
+        assert!(
+            extern_names.contains(&name),
+            "missing OpenPulse intrinsic {name} in externs: {extern_names:?}",
+        );
+    }
+    // Rendered dump should include key OpenPulse constructs.
+    let rendered = format!("{p}");
+    assert!(rendered.contains("defcal x $0"));
+    assert!(rendered.contains("defcal measure $0 -> bit"));
+    assert!(rendered.contains("cal {"));
 }
 
 #[test]

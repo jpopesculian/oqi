@@ -16,6 +16,7 @@ impl fmt::Display for Type {
             Type::Qubit => write!(f, "qubit"),
             Type::QubitReg(n) => write!(f, "qubit[{n}]"),
             Type::PhysicalQubit => write!(f, "physical_qubit"),
+            Type::Openpulse(ty) => write!(f, "{ty}"),
         }
     }
 }
@@ -42,6 +43,8 @@ impl fmt::Display for SymbolKind {
             SymbolKind::Gate => write!(f, "gate"),
             SymbolKind::Subroutine => write!(f, "def"),
             SymbolKind::Extern => write!(f, "extern"),
+            SymbolKind::ExternPort => write!(f, "extern_port"),
+            SymbolKind::ExternFrame => write!(f, "extern_frame"),
         }
     }
 }
@@ -268,6 +271,45 @@ impl fmt::Display for Program {
             writeln!(f)?;
         }
 
+        // Calibration declarations
+        for cal in &self.calibrations {
+            write!(f, "  defcal ")?;
+            match &cal.target {
+                CalibrationTarget::Measure => write!(f, "measure")?,
+                CalibrationTarget::Reset => write!(f, "reset")?,
+                CalibrationTarget::Delay => write!(f, "delay")?,
+                CalibrationTarget::Named(name) => write!(f, "{name}")?,
+            }
+            if !cal.args.is_empty() {
+                write!(f, "(")?;
+                for (i, a) in cal.args.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    match a {
+                        CalibrationArg::Expr(e) => fmt_expr(f, e, &self.symbols)?,
+                        CalibrationArg::Param(sym) => {
+                            let s = self.symbols.get(*sym);
+                            write!(f, "{} : {}", s.name, s.ty)?;
+                        }
+                    }
+                }
+                write!(f, ")")?;
+            }
+            for (i, op) in cal.operands.iter().enumerate() {
+                write!(f, "{}", if i == 0 { " " } else { ", " })?;
+                match op {
+                    CalibrationOperand::Hardware(n) => write!(f, "${n}")?,
+                    CalibrationOperand::Ident(name) => write!(f, "{name}")?,
+                }
+            }
+            if let Some(ref ty) = cal.return_ty {
+                write!(f, " -> {ty}")?;
+            }
+            write!(f, " ")?;
+            fmt_cal_body(f, &cal.body, &self.symbols, 2, "")?;
+        }
+
         // Body
         if !self.body.is_empty() {
             writeln!(f, "  body:")?;
@@ -277,6 +319,36 @@ impl fmt::Display for Program {
         }
 
         Ok(())
+    }
+}
+
+fn fmt_cal_body(
+    f: &mut fmt::Formatter<'_>,
+    body: &CalibrationBody,
+    symbols: &SymbolTable,
+    indent: usize,
+    prefix: &str,
+) -> fmt::Result {
+    match body {
+        CalibrationBody::Opaque(s) => {
+            if prefix.is_empty() {
+                writeln!(f, "{{{s}}}")
+            } else {
+                writeln!(f, "{prefix} {{{s}}}")
+            }
+        }
+        CalibrationBody::OpenPulse(stmts) => {
+            if prefix.is_empty() {
+                writeln!(f, "{{")?;
+            } else {
+                writeln!(f, "{prefix} {{")?;
+            }
+            for stmt in stmts {
+                fmt_stmt(f, stmt, symbols, indent + 2)?;
+            }
+            pad(f, indent)?;
+            writeln!(f, "}}")
+        }
     }
 }
 
@@ -511,9 +583,7 @@ fn fmt_stmt(
         }
         StmtKind::End => writeln!(f, "end"),
         StmtKind::Pragma(content) => writeln!(f, "pragma {content}"),
-        StmtKind::Cal { body } => match body {
-            CalibrationBody::Opaque(s) => writeln!(f, "cal {{{s}}}"),
-        },
+        StmtKind::Cal { body } => fmt_cal_body(f, body, symbols, indent, "cal"),
         StmtKind::ExprStmt(expr) => {
             fmt_expr(f, expr, symbols)?;
             writeln!(f)

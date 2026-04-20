@@ -288,12 +288,12 @@ impl From<ArrayRefTy> for ValueTy {
     }
 }
 
-impl fmt::Display for ValueTy {
+impl<T: fmt::Display + Copy> fmt::Display for BaseValueTy<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ValueTy::Scalar(s) => write!(f, "{}", s),
-            ValueTy::Array(a) => write!(f, "{}", a),
-            ValueTy::ArrayRef(ar) => write!(f, "{}", ar),
+            BaseValueTy::Scalar(s) => write!(f, "{}", s),
+            BaseValueTy::Array(a) => write!(f, "{}", a),
+            BaseValueTy::ArrayRef(ar) => write!(f, "{}", ar),
         }
     }
 }

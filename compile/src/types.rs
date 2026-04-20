@@ -8,6 +8,7 @@ use crate::classical::{
     ArrayRefShape, ArrayRefTy, ArrayTy, BitWidth, Duration, DurationUnit, PrimitiveTy, RefAccess,
     Value, ValueTy, adim, ashape, bw, value_as_usize,
 };
+use crate::openpulse;
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::resolve::lookup_intrinsic;
 use crate::sir::Intrinsic;
@@ -27,6 +28,8 @@ pub enum Type {
     QubitReg(usize),
     /// Physical qubit reference: `$0`, `$1`.
     PhysicalQubit,
+    /// OpenPulse primitive (`port`, `frame`, `waveform`).
+    Openpulse(openpulse::ValueTy),
 }
 
 impl Type {
@@ -523,13 +526,15 @@ pub fn resolve_scalar_type(
             }
         }
 
-        ast::ScalarType::Waveform(_) | ast::ScalarType::Port(_) | ast::ScalarType::Frame(_) => {
-            Err(CompileError::new(ErrorKind::Unsupported(
-                "OpenPulse types (waveform/port/frame) are not yet supported by the compiler"
-                    .to_string(),
-            ))
-            .with_span(ty.span()))
-        }
+        ast::ScalarType::Waveform(_) => Ok(Type::Openpulse(openpulse::ValueTy::Scalar(
+            openpulse::PrimitiveTy::waveform(options.system_width.fw()),
+        ))),
+        ast::ScalarType::Port(_) => Ok(Type::Openpulse(openpulse::ValueTy::Scalar(
+            openpulse::PrimitiveTy::port(),
+        ))),
+        ast::ScalarType::Frame(_) => Ok(Type::Openpulse(openpulse::ValueTy::Scalar(
+            openpulse::PrimitiveTy::frame(options.system_width.fw(), options.system_width.bw()),
+        ))),
     }
 }
 

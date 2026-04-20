@@ -7,5 +7,6 @@ edition = "2024"
 oqi-lex = { path = "../lex" }
 oqi-parse = { path = "../parse" }
 oqi-classical = { path = "../classical" }
+oqi-openpulse = { path = "../openpulse" }
 awint = "0.18"
 num-traits = "0.2.19"

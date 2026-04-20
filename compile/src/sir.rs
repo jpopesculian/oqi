@@ -86,6 +86,7 @@ pub enum CalibrationOperand {
 
 pub enum CalibrationBody {
     Opaque(String),
+    OpenPulse(Vec<Stmt>),
 }
 
 // ── Statements (2.3) ─────────────────────────────────────────────────

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use oqi_compile::classical::{ValueTy, bw};
 use oqi_compile::lower::compile_source;
-use oqi_compile::resolve::StdFileResolver;
+use oqi_compile::resolve::DefaultIncludeResolver;
 
 fn compile_fixture(
     name: &str,
@@ -10,13 +10,13 @@ fn compile_fixture(
     let path_str = format!("../fixtures/qasm/{name}");
     let path = Path::new(&path_str);
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path_str}: {e}"));
-    compile_source(&source, StdFileResolver, Some(path))
+    compile_source(&source, DefaultIncludeResolver, Some(path))
 }
 
 fn compile_inline(
     source: &str,
 ) -> Result<oqi_compile::sir::Program, oqi_compile::error::CompileError> {
-    compile_source(source, StdFileResolver, None)
+    compile_source(source, DefaultIncludeResolver, None)
 }
 
 // ── Fixtures that must compile successfully ──────────────────────────

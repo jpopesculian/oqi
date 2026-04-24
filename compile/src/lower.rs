@@ -22,7 +22,7 @@ use oqi_parse::ast;
 
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::openpulse;
-use crate::resolve::{FileResolver, IncludeSource, Resolver, StdFileResolver};
+use crate::resolve::{DefaultIncludeResolver, IncludeResolver, IncludeSource, Resolver};
 use crate::sir;
 use crate::symbol::SymbolKind;
 use crate::types::{
@@ -40,17 +40,17 @@ use crate::{
 
 pub fn compile_ast(
     program: &ast::Program<'_>,
-    file_resolver: impl FileResolver + 'static,
+    include_resolver: impl IncludeResolver + 'static,
     options: CompileOptions,
 ) -> Result<sir::Program> {
-    let mut lowerer = Lowerer::new(file_resolver, options);
+    let mut lowerer = Lowerer::new(include_resolver, options);
     lowerer.lower_program(program)?;
     Ok(lowerer.finish(program))
 }
 
 pub fn compile_source(
     source: &str,
-    file_resolver: impl FileResolver + 'static,
+    include_resolver: impl IncludeResolver + 'static,
     source_name: Option<&Path>,
 ) -> Result<sir::Program> {
     let ast = oqi_parse::parse(source).map_err(|e| {
@@ -61,13 +61,19 @@ pub fn compile_source(
         source_name: source_name.map(|p| p.to_path_buf()),
         ..Default::default()
     };
-    compile_ast(&ast, file_resolver, options)
+    compile_ast(&ast, include_resolver, options)
 }
 
 pub fn compile_file(path: &Path) -> Result<sir::Program> {
-    let file_resolver = StdFileResolver;
-    let source = file_resolver.resolve_source(path, Default::default())?;
-    compile_source(&source, file_resolver, Some(path))
+    let include_resolver = DefaultIncludeResolver;
+    let source = include_resolver.resolve_path(path).map_err(|e| {
+        CompileError::new(ErrorKind::IncludeNotFound(format!(
+            "{}: {e}",
+            path.display()
+        )))
+    })?;
+    let source = source.into_owned();
+    compile_source(&source, include_resolver, Some(path))
 }
 
 // ── Lowerer ─────────────────────────────────────────────────────────────
@@ -83,9 +89,9 @@ struct Lowerer {
 }
 
 impl Lowerer {
-    fn new(file_resolver: impl FileResolver + 'static, options: CompileOptions) -> Self {
+    fn new(include_resolver: impl IncludeResolver + 'static, options: CompileOptions) -> Self {
         Self {
-            resolver: Resolver::new(file_resolver, options),
+            resolver: Resolver::new(include_resolver, options),
             gates: Vec::new(),
             subroutines: Vec::new(),
             externs: Vec::new(),
@@ -852,11 +858,15 @@ impl Lowerer {
 
     fn lower_include(&mut self, path: &str, span: oqi_lex::Span) -> Result<Vec<sir::Stmt>> {
         let path = path.trim_matches('"');
-        let source = self.resolver.resolve_include_path(path, span)?;
+        let source = self.resolver.classify_include(path, span)?;
         match source {
-            IncludeSource::Embedded(content) => self.lower_include_source(content, path, span),
-            IncludeSource::File(file_path) => self.with_include(file_path, |this, file_path| {
-                let content = this.resolver.resolve_source(file_path, span)?;
+            IncludeSource::Lib(_) => {
+                let content = self.resolver.resolve_source(&source, span)?.into_owned();
+                self.lower_include_source(&content, path, span)
+            }
+            IncludeSource::Path(file_path) => self.with_include(file_path, |this, file_path| {
+                let src = IncludeSource::Path(file_path.to_path_buf());
+                let content = this.resolver.resolve_source(&src, span)?.into_owned();
                 this.lower_include_source(&content, path, span)
             }),
         }
@@ -1874,18 +1884,19 @@ fn validate_cast(from: &Type, to: &Type, span: oqi_lex::Span) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve::StdFileResolver;
+    use crate::resolve::DefaultIncludeResolver;
     use crate::symbol::SymbolKind;
     use crate::types::FloatWidth;
+    use std::borrow::Cow;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
     #[derive(Debug, Default)]
-    struct TestFileResolver {
+    struct TestIncludeResolver {
         files: HashMap<PathBuf, String>,
     }
 
-    impl TestFileResolver {
+    impl TestIncludeResolver {
         fn new(files: impl IntoIterator<Item = (PathBuf, String)>) -> Self {
             Self {
                 files: files.into_iter().collect(),
@@ -1893,17 +1904,20 @@ mod tests {
         }
     }
 
-    impl FileResolver for TestFileResolver {
-        fn resolve_source(&self, path: &Path, span: oqi_lex::Span) -> Result<String> {
-            self.files.get(path).cloned().ok_or_else(|| {
-                CompileError::new(ErrorKind::IncludeNotFound(path.display().to_string()))
-                    .with_span(span)
-            })
+    impl IncludeResolver for TestIncludeResolver {
+        fn resolve_path(
+            &self,
+            path: &Path,
+        ) -> std::result::Result<Cow<'_, str>, Box<dyn std::error::Error>> {
+            self.files
+                .get(path)
+                .map(|s| Cow::Borrowed(s.as_str()))
+                .ok_or_else(|| format!("not found: {}", path.display()).into())
         }
     }
 
     fn compile_inline(source: &str) -> Result<sir::Program> {
-        compile_source(source, StdFileResolver, None)
+        compile_source(source, DefaultIncludeResolver, None)
     }
 
     fn typed_expr(ty: Type) -> sir::Expr {
@@ -1917,7 +1931,7 @@ mod tests {
     #[test]
     fn compile_error_in_root_stmt_has_source_path() {
         let path = Path::new("/project/main.qasm");
-        let err = match compile_source("missing_symbol;", StdFileResolver, Some(path)) {
+        let err = match compile_source("missing_symbol;", DefaultIncludeResolver, Some(path)) {
             Ok(_) => panic!("expected lowering to fail"),
             Err(err) => err,
         };
@@ -1927,7 +1941,7 @@ mod tests {
     #[test]
     fn compile_error_in_nested_include_uses_included_path() {
         let path = Path::new("/project/main.qasm");
-        let file_resolver = TestFileResolver::new([
+        let include_resolver = TestIncludeResolver::new([
             (
                 PathBuf::from("/project/file/1/path"),
                 "include \"../2/path\";".to_string(),
@@ -1938,7 +1952,7 @@ mod tests {
             ),
         ]);
 
-        let err = match compile_source("include \"file/1/path\";", file_resolver, Some(path)) {
+        let err = match compile_source("include \"file/1/path\";", include_resolver, Some(path)) {
             Ok(_) => panic!("expected nested include lowering to fail"),
             Err(err) => err,
         };

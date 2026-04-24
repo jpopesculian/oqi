@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ariadne::{Label, Report, ReportKind, Source};
 use clap::{Parser, Subcommand};
-use oqi_compile::resolve::StdFileResolver;
+use oqi_compile::resolve::DefaultIncludeResolver;
 use oqi_format::Config;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
@@ -69,35 +69,38 @@ fn compile(path: &Path, dump: bool) -> ExitCode {
         }
     };
 
-    let program = match oqi_compile::lower::compile_source(&source, StdFileResolver, Some(path)) {
-        Ok(p) => p,
-        Err(e) => {
-            let diagnostic_path = e.path.as_deref().unwrap_or(path);
-            let diagnostic_source = match load_diagnostic_source(path, &source, e.path.as_deref()) {
-                Ok(source) => source,
-                Err(read_err) => {
-                    eprintln!(
-                        "{}: failed to read source for diagnostic: {read_err}",
-                        diagnostic_path.display()
-                    );
-                    eprintln!("{}: {}", diagnostic_path.display(), e);
-                    return ExitCode::FAILURE;
-                }
-            };
-            let (line, column) = e
-                .span
-                .doc_position(diagnostic_source.as_ref(), DIAGNOSTIC_TAB_SIZE);
-            let headline = format_diagnostic_message(diagnostic_path, line, column, &e.to_string());
-            emit_error_report(
-                diagnostic_path,
-                diagnostic_source.as_ref(),
-                Range::from(e.span),
-                &headline,
-                &e.to_string(),
-            );
-            return ExitCode::FAILURE;
-        }
-    };
+    let program =
+        match oqi_compile::lower::compile_source(&source, DefaultIncludeResolver, Some(path)) {
+            Ok(p) => p,
+            Err(e) => {
+                let diagnostic_path = e.path.as_deref().unwrap_or(path);
+                let diagnostic_source =
+                    match load_diagnostic_source(path, &source, e.path.as_deref()) {
+                        Ok(source) => source,
+                        Err(read_err) => {
+                            eprintln!(
+                                "{}: failed to read source for diagnostic: {read_err}",
+                                diagnostic_path.display()
+                            );
+                            eprintln!("{}: {}", diagnostic_path.display(), e);
+                            return ExitCode::FAILURE;
+                        }
+                    };
+                let (line, column) = e
+                    .span
+                    .doc_position(diagnostic_source.as_ref(), DIAGNOSTIC_TAB_SIZE);
+                let headline =
+                    format_diagnostic_message(diagnostic_path, line, column, &e.to_string());
+                emit_error_report(
+                    diagnostic_path,
+                    diagnostic_source.as_ref(),
+                    Range::from(e.span),
+                    &headline,
+                    &e.to_string(),
+                );
+                return ExitCode::FAILURE;
+            }
+        };
 
     if dump {
         print!("{program}");

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::f64::consts;
 use std::path::{Component, Path, PathBuf};
@@ -10,42 +11,46 @@ use crate::sir::{CallTarget, Intrinsic};
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::{CompileOptions, FloatWidth, Type};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum IncludeSource {
-    Embedded(&'static str),
-    File(PathBuf),
+    Lib(String),
+    Path(PathBuf),
 }
 
-pub trait FileResolver {
-    fn resolve_source(&self, path: &Path, span: Span) -> Result<String>;
+pub trait IncludeResolver {
+    fn resolve_path(
+        &self,
+        path: &Path,
+    ) -> std::result::Result<Cow<'_, str>, Box<dyn std::error::Error>> {
+        Ok(Cow::Owned(std::fs::read_to_string(path)?))
+    }
+
+    fn resolve_lib(
+        &self,
+        lib: &str,
+    ) -> std::result::Result<Cow<'_, str>, Box<dyn std::error::Error>> {
+        match lib {
+            "stdgates.inc" => Ok(Cow::Borrowed(include_str!("./stdgates.inc"))),
+            other => Err(format!("unknown library: {other}").into()),
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy)]
-pub struct StdFileResolver;
+pub struct DefaultIncludeResolver;
 
-impl FileResolver for StdFileResolver {
-    fn resolve_source(&self, path: &Path, span: Span) -> Result<String> {
-        std::fs::read_to_string(path).map_err(|e| {
-            CompileError::new(ErrorKind::IncludeNotFound(format!(
-                "{}: {}",
-                path.display(),
-                e
-            )))
-            .with_span(span)
-        })
-    }
-}
+impl IncludeResolver for DefaultIncludeResolver {}
 
 pub struct Resolver {
     symbols: SymbolTable,
     scopes: Vec<HashMap<String, SymbolId>>,
     include_stack: Vec<PathBuf>,
     options: CompileOptions,
-    file_resolver: Box<dyn FileResolver>,
+    include_resolver: Box<dyn IncludeResolver>,
 }
 
 impl Resolver {
-    pub fn new(file_resolver: impl FileResolver + 'static, options: CompileOptions) -> Self {
+    pub fn new(include_resolver: impl IncludeResolver + 'static, options: CompileOptions) -> Self {
         let mut symbols = SymbolTable::new();
         let mut global = HashMap::new();
 
@@ -92,7 +97,7 @@ impl Resolver {
             scopes: vec![global],
             include_stack: Vec::new(),
             options,
-            file_resolver: Box::new(file_resolver),
+            include_resolver: Box::new(include_resolver),
         }
     }
 
@@ -155,19 +160,31 @@ impl Resolver {
             .or(self.options.source_name.as_deref())
     }
 
-    pub fn resolve_include_path(&self, path: &str, span: Span) -> Result<IncludeSource> {
-        if path == "stdgates.inc" {
-            return Ok(IncludeSource::Embedded(include_str!("./stdgates.inc")));
+    pub fn classify_include(&self, path: &str, span: Span) -> Result<IncludeSource> {
+        if is_library_name(path) {
+            return Ok(IncludeSource::Lib(path.to_string()));
         }
         let base = self
             .current_source_path()
             .ok_or(CompileError::new(ErrorKind::MissingSourceContext).with_span(span))?;
         let dir = base.parent().unwrap_or(base);
-        Ok(IncludeSource::File(normalize_path(dir.join(path))))
+        Ok(IncludeSource::Path(normalize_path(dir.join(path))))
     }
 
-    pub fn resolve_source(&self, path: &Path, span: Span) -> Result<String> {
-        self.file_resolver.resolve_source(path, span)
+    pub fn resolve_source(&self, source: &IncludeSource, span: Span) -> Result<Cow<'_, str>> {
+        match source {
+            IncludeSource::Lib(name) => self.include_resolver.resolve_lib(name).map_err(|e| {
+                CompileError::new(ErrorKind::IncludeNotFound(format!("{name}: {e}")))
+                    .with_span(span)
+            }),
+            IncludeSource::Path(path) => self.include_resolver.resolve_path(path).map_err(|e| {
+                CompileError::new(ErrorKind::IncludeNotFound(format!(
+                    "{}: {e}",
+                    path.display()
+                )))
+                .with_span(span)
+            }),
+        }
     }
 
     pub fn push_include(&mut self, path: PathBuf) -> Result<()> {
@@ -205,6 +222,10 @@ impl Resolver {
     pub fn into_symbols(self) -> SymbolTable {
         self.symbols
     }
+}
+
+fn is_library_name(path: &str) -> bool {
+    !path.is_empty() && !path.contains('/') && !path.contains('\\')
 }
 
 fn normalize_path(path: PathBuf) -> PathBuf {
@@ -264,7 +285,7 @@ mod tests {
     }
 
     fn default_resolver() -> Resolver {
-        Resolver::new(StdFileResolver, CompileOptions::default())
+        Resolver::new(DefaultIncludeResolver, CompileOptions::default())
     }
 
     #[test]
@@ -445,56 +466,62 @@ mod tests {
     }
 
     #[test]
-    fn include_stdgates_embedded() {
+    fn classify_stdgates_as_lib() {
         let r = default_resolver();
         let source = r
-            .resolve_include_path("stdgates.inc", Default::default())
+            .classify_include("stdgates.inc", Default::default())
             .unwrap();
         match source {
-            IncludeSource::Embedded(content) => assert!(content.contains("gate h")),
-            IncludeSource::File(_) => panic!("expected Embedded"),
+            IncludeSource::Lib(name) => assert_eq!(name, "stdgates.inc"),
+            IncludeSource::Path(_) => panic!("expected Lib"),
         }
     }
 
     #[test]
-    fn include_relative_path() {
+    fn resolve_lib_stdgates_content() {
+        let r = default_resolver();
+        let src = IncludeSource::Lib("stdgates.inc".to_string());
+        let content = r.resolve_source(&src, Default::default()).unwrap();
+        assert!(content.contains("gate h"));
+    }
+
+    #[test]
+    fn classify_relative_path() {
         let opts = CompileOptions {
             source_name: Some(PathBuf::from("/project/src/main.qasm")),
             ..Default::default()
         };
-        let r = Resolver::new(StdFileResolver, opts);
+        let r = Resolver::new(DefaultIncludeResolver, opts);
         let source = r
-            .resolve_include_path("utils.qasm", Default::default())
+            .classify_include("./utils.qasm", Default::default())
             .unwrap();
         match source {
-            IncludeSource::File(p) => assert_eq!(p, Path::new("/project/src/utils.qasm")),
-            IncludeSource::Embedded(_) => panic!("expected File"),
+            IncludeSource::Path(p) => assert_eq!(p, Path::new("/project/src/utils.qasm")),
+            IncludeSource::Lib(_) => panic!("expected Path"),
         }
     }
 
     #[test]
-    fn include_relative_to_current_include_scope() {
+    fn classify_relative_to_current_include_scope() {
         let opts = CompileOptions {
             source_name: Some(PathBuf::from("/project/root/main.qasm")),
             ..Default::default()
         };
-        let mut r = Resolver::new(StdFileResolver, opts);
+        let mut r = Resolver::new(DefaultIncludeResolver, opts);
         r.push_include(PathBuf::from("/project/file/1/path"))
             .unwrap();
-        let source = r
-            .resolve_include_path("../2/path", Default::default())
-            .unwrap();
+        let source = r.classify_include("../2/path", Default::default()).unwrap();
         match source {
-            IncludeSource::File(p) => assert_eq!(p, Path::new("/project/file/2/path")),
-            IncludeSource::Embedded(_) => panic!("expected File"),
+            IncludeSource::Path(p) => assert_eq!(p, Path::new("/project/file/2/path")),
+            IncludeSource::Lib(_) => panic!("expected Path"),
         }
     }
 
     #[test]
-    fn include_missing_source_context() {
+    fn classify_missing_source_context() {
         let r = default_resolver();
         let span = span(7, 18);
-        let err = r.resolve_include_path("other.qasm", span).unwrap_err();
+        let err = r.classify_include("./other.qasm", span).unwrap_err();
         assert!(matches!(err.kind, ErrorKind::MissingSourceContext));
         assert_eq!(err.span, span);
     }

@@ -91,7 +91,7 @@ pub enum StmtKind<'a> {
     Nop(Vec<GateOperand<'a>>),
     GateCall {
         modifiers: Vec<GateModifier<'a>>,
-        name: GateCallName<'a>,
+        name: Ident<'a>,
         args: Option<Vec<Expr<'a>>>,
         designator: Option<Box<Expr<'a>>>,
         operands: Vec<GateOperand<'a>>,
@@ -108,12 +108,12 @@ pub enum StmtKind<'a> {
     ClassicalDecl {
         ty: TypeExpr<'a>,
         name: Ident<'a>,
-        init: Option<DeclExpr<'a>>,
+        init: Option<ExprOrMeasure<'a>>,
     },
     ConstDecl {
-        ty: ScalarType<'a>,
+        ty: TypeExpr<'a>,
         name: Ident<'a>,
-        init: DeclExpr<'a>,
+        init: ExprOrMeasure<'a>,
     },
     IoDecl {
         dir: IoDir,
@@ -259,6 +259,7 @@ pub enum Expr<'a> {
         scope: Scope<'a>,
         span: Span,
     },
+    ArrayLiteral(ArrayLiteral<'a>),
 }
 
 impl<'a> Expr<'a> {
@@ -279,6 +280,7 @@ impl<'a> Expr<'a> {
             | Expr::Call { span: s, .. }
             | Expr::Cast { span: s, .. }
             | Expr::DurationOf { span: s, .. } => *s,
+            Expr::ArrayLiteral(al) => al.span,
         }
     }
 }
@@ -361,12 +363,6 @@ pub enum AssignOp {
 }
 
 #[derive(Debug)]
-pub enum GateCallName<'a> {
-    Ident(Ident<'a>),
-    Gphase(Span),
-}
-
-#[derive(Debug)]
 pub enum GateModifier<'a> {
     Inv(Span),
     Pow(Expr<'a>, Span),
@@ -410,13 +406,6 @@ pub enum ExprOrMeasure<'a> {
 }
 
 #[derive(Debug)]
-pub enum DeclExpr<'a> {
-    Expr(Expr<'a>),
-    Measure(MeasureExpr<'a>),
-    ArrayLiteral(ArrayLiteral<'a>),
-}
-
-#[derive(Debug)]
 pub enum DefcalTarget<'a> {
     Measure(Span),
     Reset(Span),
@@ -454,14 +443,8 @@ pub enum ExternArg<'a> {
 
 #[derive(Debug)]
 pub struct ArrayLiteral<'a> {
-    pub items: Vec<ArrayLiteralItem<'a>>,
+    pub items: Vec<Expr<'a>>,
     pub span: Span,
-}
-
-#[derive(Debug)]
-pub enum ArrayLiteralItem<'a> {
-    Expr(Expr<'a>),
-    Nested(ArrayLiteral<'a>),
 }
 
 // ---- Type types ----

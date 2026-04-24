@@ -725,7 +725,7 @@ impl<'a> Parser<'a> {
                     self.expect_semi()?;
                     Ok(StmtKind::GateCall {
                         modifiers: vec![],
-                        name: GateCallName::Ident(name),
+                        name,
                         args,
                         designator,
                         operands,
@@ -756,7 +756,7 @@ impl<'a> Parser<'a> {
         self.expect_semi()?;
         Ok(StmtKind::GateCall {
             modifiers,
-            name: GateCallName::Ident(name),
+            name,
             args,
             designator,
             operands,
@@ -765,6 +765,10 @@ impl<'a> Parser<'a> {
 
     fn parse_gphase_call(&mut self, modifiers: Vec<GateModifier<'a>>) -> Result<StmtKind<'a>> {
         let (_, gspan) = self.advance(); // eat gphase
+        let name = Ident {
+            name: "gphase",
+            span: gspan,
+        };
         let args = if matches!(self.peek(), Some(Token::LParen)) {
             self.advance();
             let list = if matches!(self.peek(), Some(Token::RParen)) {
@@ -790,7 +794,7 @@ impl<'a> Parser<'a> {
         self.expect_semi()?;
         Ok(StmtKind::GateCall {
             modifiers,
-            name: GateCallName::Gphase(gspan),
+            name,
             args,
             designator,
             operands,
@@ -896,7 +900,7 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident()?;
         let init = if matches!(self.peek(), Some(Token::Equals)) {
             self.advance();
-            Some(self.parse_decl_expr()?)
+            Some(self.parse_expr_or_measure()?)
         } else {
             None
         };
@@ -906,13 +910,13 @@ impl<'a> Parser<'a> {
 
     fn parse_const_decl(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat const
-        let ty = self.parse_scalar_type()?;
+        let ty = self.parse_type_expr()?;
         let name = self.expect_ident()?;
         if !matches!(self.peek(), Some(Token::Equals)) {
             return Err(self.error("expected '='"));
         }
         self.advance();
-        let init = self.parse_decl_expr()?;
+        let init = self.parse_expr_or_measure()?;
         self.expect_semi()?;
         Ok(StmtKind::ConstDecl { ty, name, init })
     }
@@ -1189,47 +1193,12 @@ impl<'a> Parser<'a> {
         Ok(ExprOrMeasure::Expr(expr))
     }
 
-    fn parse_decl_expr(&mut self) -> Result<DeclExpr<'a>> {
-        if matches!(self.peek(), Some(Token::LBrace)) {
-            return Ok(DeclExpr::ArrayLiteral(self.parse_array_literal()?));
-        }
-        if matches!(self.peek(), Some(Token::Measure)) {
-            let start = self.peek_span();
-            self.advance();
-            let operand = self.parse_gate_operand()?;
-            let span = oqi_lex::span(start.start, operand.span().end);
-            return Ok(DeclExpr::Measure(MeasureExpr::Measure { operand, span }));
-        }
-
-        let expr = self.parse_expr(0)?;
-
-        if self.peek_is_gate_operand() {
-            let (name, args, _) = self.decompose_gate_head(expr)?;
-            let operands = self.parse_gate_operand_list()?;
-            let end = operands.last().unwrap().span().end;
-            let span = oqi_lex::span(name.span.start, end);
-            return Ok(DeclExpr::Measure(MeasureExpr::QuantumCall {
-                name,
-                args: args.unwrap_or_default(),
-                operands,
-                span,
-            }));
-        }
-
-        Ok(DeclExpr::Expr(expr))
-    }
-
     fn parse_array_literal(&mut self) -> Result<ArrayLiteral<'a>> {
         let start = self.expect_lbrace()?;
         let mut items = Vec::new();
         if !matches!(self.peek(), Some(Token::RBrace)) {
             loop {
-                let item = if matches!(self.peek(), Some(Token::LBrace)) {
-                    ArrayLiteralItem::Nested(self.parse_array_literal()?)
-                } else {
-                    ArrayLiteralItem::Expr(self.parse_expr(0)?)
-                };
-                items.push(item);
+                items.push(self.parse_expr(0)?);
                 if !matches!(self.peek(), Some(Token::Comma)) {
                     break;
                 }
@@ -1321,6 +1290,11 @@ impl<'a> Parser<'a> {
                 Box::new(inner),
                 oqi_lex::span(start.start, end.end),
             ));
+        }
+
+        // Array literal
+        if matches!(self.peek(), Some(Token::LBrace)) {
+            return Ok(Expr::ArrayLiteral(self.parse_array_literal()?));
         }
 
         // DurationOf
@@ -2141,7 +2115,7 @@ mod tests {
         let stmt = parse_stmt("cx q[0], q[1];");
         match stmt.kind {
             StmtKind::GateCall { name, operands, .. } => {
-                assert!(matches!(name, GateCallName::Ident(id) if id.name == "cx"));
+                assert_eq!(name.name, "cx");
                 assert_eq!(operands.len(), 2);
             }
             _ => panic!("expected gate call"),
@@ -2158,7 +2132,7 @@ mod tests {
                 operands,
                 ..
             } => {
-                assert!(matches!(name, GateCallName::Ident(id) if id.name == "U"));
+                assert_eq!(name.name, "U");
                 assert_eq!(args.unwrap().len(), 3);
                 assert_eq!(operands.len(), 1);
             }
@@ -2482,7 +2456,7 @@ cphase(π / 2) q[0], q[1];
                 operands,
                 ..
             } => {
-                assert!(matches!(name, GateCallName::Gphase(_)));
+                assert_eq!(name.name, "gphase");
                 assert_eq!(args.unwrap().len(), 1);
                 assert!(operands.is_empty());
             }

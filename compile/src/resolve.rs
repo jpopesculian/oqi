@@ -92,6 +92,15 @@ impl Resolver {
         let u_id = symbols.insert("U".into(), SymbolKind::Gate, Type::Void, Default::default());
         global.insert("U".into(), u_id);
 
+        // Seed built-in gate gphase
+        let gphase_id = symbols.insert(
+            "gphase".into(),
+            SymbolKind::Gate,
+            Type::Void,
+            Default::default(),
+        );
+        global.insert("gphase".into(), gphase_id);
+
         Self {
             symbols,
             scopes: vec![global],

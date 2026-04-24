@@ -593,6 +593,10 @@ fn ast_expr(expr: &Expr) -> S {
         Expr::Cast { operand, .. } => S::node("Cast", vec![ast_expr(operand)]),
 
         Expr::DurationOf { scope, .. } => S::node("DurationOf", vec![ast_scope(scope)]),
+
+        Expr::ArrayLiteral(array) => {
+            S::node("ArrayLiteral", array.items.iter().map(ast_expr).collect())
+        }
     }
 }
 

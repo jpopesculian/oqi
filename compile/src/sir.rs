@@ -1,6 +1,6 @@
 use oqi_lex::Span;
 
-use crate::classical::Value;
+use crate::classical::Primitive;
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::Type;
 
@@ -104,22 +104,7 @@ pub struct Annotation {
 }
 
 pub enum StmtKind {
-    // --- Declarations (inline, have runtime effects) ---
-    ClassicalDecl {
-        symbol: SymbolId,
-        init: Option<DeclInit>,
-    },
-    ConstDecl {
-        symbol: SymbolId,
-        init: Expr,
-    },
-    QubitDecl {
-        symbol: SymbolId,
-    },
-    IoDecl {
-        symbol: SymbolId,
-        dir: IoDir,
-    },
+    // --- Aliases ---
     Alias {
         symbol: SymbolId,
         value: Vec<Expr>,
@@ -127,7 +112,7 @@ pub enum StmtKind {
 
     // --- Quantum operations ---
     GateCall {
-        gate: GateCallTarget,
+        gate: SymbolId,
         modifiers: Vec<GateModifier>,
         args: Vec<Expr>,
         qubits: Vec<QubitOperand>,
@@ -154,8 +139,7 @@ pub enum StmtKind {
     // --- Classical operations ---
     Assignment {
         target: LValue,
-        op: AssignOp,
-        value: AssignValue,
+        value: RValue,
     },
 
     // --- Control flow ---
@@ -179,7 +163,7 @@ pub enum StmtKind {
     },
     Break,
     Continue,
-    Return(Option<ReturnValue>),
+    Return(Option<RValue>),
     End,
 
     // --- Misc ---
@@ -203,7 +187,7 @@ pub struct Expr {
 
 pub enum ExprKind {
     // --- Literals ---
-    Literal(Value),
+    Literal(Primitive),
 
     // --- References ---
     Var(SymbolId),
@@ -232,6 +216,7 @@ pub enum ExprKind {
         args: Vec<Expr>,
     },
     DurationOf(Vec<Stmt>),
+    ArrayLiteral(ArrayLiteral),
 }
 
 // ── Supporting types (2.5) ───────────────────────────────────────────
@@ -266,32 +251,11 @@ pub enum UnOp {
     LogNot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AssignOp {
-    Assign,
-    AddAssign,
-    SubAssign,
-    MulAssign,
-    DivAssign,
-    ModAssign,
-    PowAssign,
-    BitAndAssign,
-    BitOrAssign,
-    BitXorAssign,
-    ShlAssign,
-    ShrAssign,
-}
-
 pub enum GateModifier {
     Inv,
     Pow(Box<Expr>),
     Ctrl(usize),
     NegCtrl(usize),
-}
-
-pub enum GateCallTarget {
-    Symbol(SymbolId),
-    GPhase,
 }
 
 pub enum QubitOperand {
@@ -353,6 +317,7 @@ pub enum SwitchLabels {
 
 pub struct MeasureExpr {
     pub kind: MeasureExprKind,
+    pub ty: Type,
     pub span: Span,
 }
 
@@ -365,11 +330,6 @@ pub enum MeasureExprKind {
         args: Vec<Expr>,
         qubits: Vec<QubitOperand>,
     },
-}
-
-pub enum IoDir {
-    Input,
-    Output,
 }
 
 #[derive(Debug)]
@@ -400,36 +360,20 @@ pub enum Intrinsic {
     Sizeof,
 }
 
-pub enum AssignValue {
+pub enum RValue {
     Expr(Box<Expr>),
     Measure(MeasureExpr),
-}
-
-pub enum ReturnValue {
-    Expr(Box<Expr>),
-    Measure(MeasureExpr),
-}
-
-pub enum DeclInit {
-    Expr(Box<Expr>),
-    Measure(MeasureExpr),
-    ArrayLiteral(ArrayLiteral),
 }
 
 pub struct ArrayLiteral {
-    pub items: Vec<ArrayLiteralItem>,
+    pub items: Vec<Expr>,
     pub span: Span,
-}
-
-pub enum ArrayLiteralItem {
-    Expr(Box<Expr>),
-    Nested(ArrayLiteral),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classical::{Value, ValueTy, bw};
+    use crate::classical::{Primitive, ValueTy, bw};
     use crate::symbol::SymbolKind;
     use crate::types::FloatWidth;
 
@@ -443,7 +387,7 @@ mod tests {
 
     fn float_expr(val: f64, span: Span) -> Expr {
         Expr {
-            kind: ExprKind::Literal(Value::float(val, FloatWidth::F64)),
+            kind: ExprKind::Literal(Primitive::float(val)),
             ty: Type::Classical(ValueTy::float(FloatWidth::F64)),
             span,
         }
@@ -459,7 +403,7 @@ mod tests {
 
     fn uint_expr(val: u128, span: Span) -> Expr {
         Expr {
-            kind: ExprKind::Literal(Value::uint(val, bw(64))),
+            kind: ExprKind::Literal(Primitive::uint(val)),
             ty: Type::Classical(ValueTy::uint(bw(64))),
             span,
         }
@@ -485,7 +429,7 @@ mod tests {
     fn gate_call(gate: SymbolId, args: Vec<Expr>, qubits: Vec<QubitOperand>, span: Span) -> Stmt {
         stmt(
             StmtKind::GateCall {
-                gate: GateCallTarget::Symbol(gate),
+                gate,
                 modifiers: vec![],
                 args,
                 qubits,
@@ -496,13 +440,13 @@ mod tests {
 
     fn measure_assign(target: SymbolId, qubit: QubitOperand, span: Span) -> Stmt {
         stmt(
-            StmtKind::Assignment {
-                target: LValue::Var(target),
-                op: AssignOp::Assign,
-                value: AssignValue::Measure(MeasureExpr {
+            StmtKind::Measure {
+                measure: MeasureExpr {
                     kind: MeasureExprKind::Measure { operand: qubit },
+                    ty: Type::Classical(ValueTy::bit()),
                     span,
-                }),
+                },
+                target: Some(LValue::Var(target)),
             },
             span,
         )
@@ -568,33 +512,9 @@ mod tests {
 
         let s: Span = Default::default(); // placeholder span
 
+        // Declarations (q, c0, c1, c2) carry no runtime effect — symbol table only.
+        let _ = (c0, c1, c2);
         let body = vec![
-            // qubit[3] q;
-            stmt(StmtKind::QubitDecl { symbol: q }, s),
-            // bit c0;
-            stmt(
-                StmtKind::ClassicalDecl {
-                    symbol: c0,
-                    init: None,
-                },
-                s,
-            ),
-            // bit c1;
-            stmt(
-                StmtKind::ClassicalDecl {
-                    symbol: c1,
-                    init: None,
-                },
-                s,
-            ),
-            // bit c2;
-            stmt(
-                StmtKind::ClassicalDecl {
-                    symbol: c2,
-                    init: None,
-                },
-                s,
-            ),
             // reset q;
             stmt(
                 StmtKind::Reset {
@@ -700,28 +620,25 @@ mod tests {
         // Verify structure
         assert_eq!(program.version.as_deref(), Some("3"));
         assert_eq!(program.gates.len(), 1);
-        assert_eq!(program.body.len(), 17);
+        assert_eq!(program.body.len(), 13);
         assert_eq!(program.symbols.len(), 11); // 5 stdgates + q + c0 + c1 + c2 + post + post_q
 
         // Verify gate decl
         assert_eq!(program.symbols.get(program.gates[0].symbol).name, "post");
         assert!(program.gates[0].body.body.is_empty());
 
-        // Verify first body stmt is qubit decl
-        assert!(matches!(program.body[0].kind, StmtKind::QubitDecl { .. }));
+        // Verify first body stmt is reset (declarations are symbol-table only)
+        assert!(matches!(program.body[0].kind, StmtKind::Reset { .. }));
 
-        // Verify last stmt is measure-assign
+        // Verify last stmt is a measure into c2
         assert!(matches!(
-            program.body[16].kind,
-            StmtKind::Assignment {
-                value: AssignValue::Measure(_),
-                ..
-            }
+            program.body[12].kind,
+            StmtKind::Measure { target: Some(_), .. }
         ));
 
         // Verify an if-statement is present
         assert!(matches!(
-            program.body[13].kind,
+            program.body[9].kind,
             StmtKind::If {
                 else_body: None,
                 ..

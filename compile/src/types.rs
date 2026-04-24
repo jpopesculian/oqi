@@ -216,6 +216,15 @@ pub fn eval_const_expr(
         ast::Expr::Call { name, args, span } => {
             const_intrinsic_call(name.name, args, symbols, options, *span)
         }
+        ast::Expr::Cast { ty, operand, span } => {
+            let target = resolve_type(ty, symbols, options)?;
+            let target_vty = target.value_ty().ok_or_else(|| {
+                CompileError::new(ErrorKind::NonConstantExpression).with_span(*span)
+            })?;
+            let v = eval_const_expr(operand, symbols, options)?;
+            v.cast(target_vty)
+                .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(*span))
+        }
         other => Err(CompileError::new(ErrorKind::NonConstantExpression).with_span(other.span())),
     }
 }

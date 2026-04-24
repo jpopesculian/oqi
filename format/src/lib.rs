@@ -1150,23 +1150,6 @@ impl Format for ast::AssignOp {
     }
 }
 
-impl<'a> Format for ast::GateCallName<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        match self {
-            ast::GateCallName::Ident(ident) => ident.format(fmt, ctx, config),
-            ast::GateCallName::Gphase(span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "gphase")
-            }
-        }
-    }
-}
-
 impl<'a> Format for ast::GateModifier<'a> {
     fn format(
         &self,
@@ -1269,21 +1252,6 @@ impl<'a> Format for ast::ExprOrMeasure<'a> {
         match self {
             ast::ExprOrMeasure::Expr(expr) => expr.format(fmt, ctx, config),
             ast::ExprOrMeasure::Measure(measure) => measure.format(fmt, ctx, config),
-        }
-    }
-}
-
-impl<'a> Format for ast::DeclExpr<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        match self {
-            ast::DeclExpr::Expr(expr) => expr.format(fmt, ctx, config),
-            ast::DeclExpr::Measure(measure) => measure.format(fmt, ctx, config),
-            ast::DeclExpr::ArrayLiteral(array) => array.format(fmt, ctx, config),
         }
     }
 }
@@ -1417,20 +1385,6 @@ impl<'a> Format for ast::ArrayLiteral<'a> {
         ctx.write_str(fmt, "{")?;
         format_slice(&self.items, fmt, ctx, config, ", ")?;
         ctx.write_str(fmt, "}")
-    }
-}
-
-impl<'a> Format for ast::ArrayLiteralItem<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        match self {
-            ast::ArrayLiteralItem::Expr(expr) => expr.format(fmt, ctx, config),
-            ast::ArrayLiteralItem::Nested(array) => array.format(fmt, ctx, config),
-        }
     }
 }
 
@@ -1669,6 +1623,7 @@ fn format_expr(
             scope.format(fmt, ctx, config)?;
             ctx.write_str(fmt, ")")?;
         }
+        ast::Expr::ArrayLiteral(array) => array.format(fmt, ctx, config)?,
     }
 
     if needs_parens {
@@ -1740,7 +1695,8 @@ fn expr_precedence(expr: &ast::Expr<'_>) -> u8 {
         | ast::Expr::ImagLiteral(..)
         | ast::Expr::BoolLiteral(..)
         | ast::Expr::BitstringLiteral(..)
-        | ast::Expr::TimingLiteral(..) => 27,
+        | ast::Expr::TimingLiteral(..)
+        | ast::Expr::ArrayLiteral(..) => 27,
     }
 }
 

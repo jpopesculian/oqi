@@ -45,6 +45,7 @@ impl fmt::Display for SymbolKind {
             SymbolKind::Extern => write!(f, "extern"),
             SymbolKind::ExternPort => write!(f, "extern_port"),
             SymbolKind::ExternFrame => write!(f, "extern_frame"),
+            SymbolKind::Temp => write!(f, "temp"),
         }
     }
 }
@@ -81,34 +82,6 @@ impl fmt::Display for UnOp {
             UnOp::Neg => write!(f, "-"),
             UnOp::BitNot => write!(f, "~"),
             UnOp::LogNot => write!(f, "!"),
-        }
-    }
-}
-
-impl fmt::Display for AssignOp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AssignOp::Assign => write!(f, "="),
-            AssignOp::AddAssign => write!(f, "+="),
-            AssignOp::SubAssign => write!(f, "-="),
-            AssignOp::MulAssign => write!(f, "*="),
-            AssignOp::DivAssign => write!(f, "/="),
-            AssignOp::ModAssign => write!(f, "%="),
-            AssignOp::PowAssign => write!(f, "**="),
-            AssignOp::BitAndAssign => write!(f, "&="),
-            AssignOp::BitOrAssign => write!(f, "|="),
-            AssignOp::BitXorAssign => write!(f, "^="),
-            AssignOp::ShlAssign => write!(f, "<<="),
-            AssignOp::ShrAssign => write!(f, ">>="),
-        }
-    }
-}
-
-impl fmt::Display for IoDir {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            IoDir::Input => write!(f, "input"),
-            IoDir::Output => write!(f, "output"),
         }
     }
 }
@@ -378,21 +351,6 @@ fn fmt_stmt(
 
     pad(f, indent)?;
     match &stmt.kind {
-        StmtKind::ClassicalDecl { symbol, init } => {
-            write!(f, "classical_decl {symbol}")?;
-            if let Some(init) = init {
-                write!(f, " = ")?;
-                fmt_decl_init(f, init, symbols)?;
-            }
-            writeln!(f)
-        }
-        StmtKind::ConstDecl { symbol, init } => {
-            write!(f, "const_decl {symbol} = ")?;
-            fmt_expr(f, init, symbols)?;
-            writeln!(f)
-        }
-        StmtKind::QubitDecl { symbol } => writeln!(f, "qubit_decl {symbol}"),
-        StmtKind::IoDecl { symbol, dir } => writeln!(f, "io_decl {dir} {symbol}"),
         StmtKind::Alias { symbol, value } => {
             write!(f, "alias {symbol} = ")?;
             for (i, v) in value.iter().enumerate() {
@@ -414,10 +372,7 @@ fn fmt_stmt(
                 fmt_gate_modifier(f, m, symbols)?;
                 write!(f, " ")?;
             }
-            match gate {
-                GateCallTarget::Symbol(id) => write!(f, "{id}")?,
-                GateCallTarget::GPhase => write!(f, "gphase")?,
-            }
+            write!(f, "{gate}")?;
             write!(f, " (")?;
             for (i, arg) in args.iter().enumerate() {
                 if i > 0 {
@@ -483,13 +438,13 @@ fn fmt_stmt(
             pad(f, indent)?;
             writeln!(f, "}}")
         }
-        StmtKind::Assignment { target, op, value } => {
+        StmtKind::Assignment { target, value } => {
             write!(f, "assign ")?;
             fmt_lvalue(f, target, symbols)?;
-            write!(f, " {op} ")?;
+            write!(f, " = ")?;
             match value {
-                AssignValue::Expr(e) => fmt_expr(f, e, symbols)?,
-                AssignValue::Measure(m) => fmt_measure(f, m, symbols)?,
+                RValue::Expr(e) => fmt_expr(f, e, symbols)?,
+                RValue::Measure(m) => fmt_measure(f, m, symbols)?,
             }
             writeln!(f)
         }
@@ -575,8 +530,8 @@ fn fmt_stmt(
             if let Some(rv) = val {
                 write!(f, " ")?;
                 match rv {
-                    ReturnValue::Expr(e) => fmt_expr(f, e, symbols)?,
-                    ReturnValue::Measure(m) => fmt_measure(f, m, symbols)?,
+                    RValue::Expr(e) => fmt_expr(f, e, symbols)?,
+                    RValue::Measure(m) => fmt_measure(f, m, symbols)?,
                 }
             }
             writeln!(f)
@@ -655,6 +610,7 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, symbols: &SymbolTable) -> f
                 write!(f, "durationof {{ ... }}")
             }
         }
+        ExprKind::ArrayLiteral(arr) => fmt_array_literal(f, arr, symbols),
     }
 }
 
@@ -818,18 +774,6 @@ fn fmt_for_iterable(
     }
 }
 
-fn fmt_decl_init(
-    f: &mut fmt::Formatter<'_>,
-    init: &DeclInit,
-    symbols: &SymbolTable,
-) -> fmt::Result {
-    match init {
-        DeclInit::Expr(e) => fmt_expr(f, e, symbols),
-        DeclInit::Measure(m) => fmt_measure(f, m, symbols),
-        DeclInit::ArrayLiteral(arr) => fmt_array_literal(f, arr, symbols),
-    }
-}
-
 fn fmt_array_literal(
     f: &mut fmt::Formatter<'_>,
     arr: &ArrayLiteral,
@@ -840,10 +784,7 @@ fn fmt_array_literal(
         if i > 0 {
             write!(f, ", ")?;
         }
-        match item {
-            ArrayLiteralItem::Expr(e) => fmt_expr(f, e, symbols)?,
-            ArrayLiteralItem::Nested(inner) => fmt_array_literal(f, inner, symbols)?,
-        }
+        fmt_expr(f, item, symbols)?;
     }
     write!(f, "}}")
 }

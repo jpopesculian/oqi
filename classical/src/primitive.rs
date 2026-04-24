@@ -426,6 +426,34 @@ pub fn bw(bits: u32) -> BitWidth {
     BitWidth::new(bits).unwrap()
 }
 
+impl fmt::Display for Primitive {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bit(v) => write!(f, "{}", if *v { 1 } else { 0 }),
+            Self::BitReg(v) => write!(f, "\"{:b}\"", v),
+            Self::Uint(v) => write!(f, "{}", v),
+            Self::Int(v) => write!(f, "{}", v),
+            Self::Float(v) => write!(f, "{}", v),
+            Self::Complex(v) => write!(f, "({}+{}im)", v.re, v.im),
+            Self::Duration(v) => write!(f, "{}", v),
+            Self::Angle(v) => {
+                let (num, den) = v.to_frac();
+                if num == 0 {
+                    write!(f, "0")
+                } else if num == 1 && den == 1 {
+                    write!(f, "π")
+                } else if num == 1 {
+                    write!(f, "(π/{})", den)
+                } else if den == 1 {
+                    write!(f, "({}*π)", num)
+                } else {
+                    write!(f, "({}*π/{})", num, den)
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum PrimitiveTy {
     Bool,

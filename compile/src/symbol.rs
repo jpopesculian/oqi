@@ -10,6 +10,7 @@ pub struct SymbolId(pub usize);
 /// Central symbol table holding all declared names.
 pub struct SymbolTable {
     symbols: Vec<Symbol>,
+    temp_counter: usize,
 }
 
 pub struct Symbol {
@@ -53,12 +54,17 @@ pub enum SymbolKind {
     ExternPort,
     /// OpenPulse external frame: `extern frame f0;`
     ExternFrame,
+    /// Compiler-generated temporary, named `$N` where N is a fresh counter.
+    /// The `$` prefix is not a valid source identifier, so temp names cannot
+    /// collide with user-declared symbols.
+    Temp,
 }
 
 impl SymbolTable {
     pub fn new() -> Self {
         Self {
             symbols: Vec::new(),
+            temp_counter: 0,
         }
     }
 
@@ -74,6 +80,15 @@ impl SymbolTable {
             const_value: None,
         });
         id
+    }
+
+    /// Insert a new compiler-generated temporary symbol of the given type.
+    /// The name is `$N` where N is a fresh counter — `$` is not a valid
+    /// identifier character, so temps never collide with user names.
+    pub fn new_temp(&mut self, ty: Type, span: Span) -> SymbolId {
+        let name = format!("${}", self.temp_counter);
+        self.temp_counter += 1;
+        self.insert(name, SymbolKind::Temp, ty, span)
     }
 
     /// Set the constant value for a symbol.

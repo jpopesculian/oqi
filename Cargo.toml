@@ -7,5 +7,6 @@ members = [
   "cli",
   "classical",
   "openpulse",
+  "quantum",
 ]
 resolver = "2"

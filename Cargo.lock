@@ -390,6 +390,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oqi-quantum"
+version = "0.1.0"
+dependencies = [
+ "num-complex",
+ "num-traits",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

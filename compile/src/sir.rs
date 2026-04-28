@@ -1,6 +1,7 @@
 use oqi_lex::Span;
 
 use crate::classical::Primitive;
+use crate::scope::ScopeTable;
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::Type;
 
@@ -10,6 +11,7 @@ pub struct Program {
     pub version: Option<String>,
     pub calibration_grammar: Option<String>,
     pub symbols: SymbolTable,
+    pub scopes: ScopeTable,
     pub gates: Vec<GateDecl>,
     pub subroutines: Vec<SubroutineDecl>,
     pub externs: Vec<ExternDecl>,
@@ -457,18 +459,44 @@ mod tests {
     #[test]
     fn test_teleport_manual_construction() {
         let mut symbols = SymbolTable::new();
+        let mut scopes = ScopeTable::new();
 
         // stdgates symbols (include "stdgates.inc")
-        let h_gate = symbols.insert("h".into(), SymbolKind::Gate, Type::Void, Default::default());
+        let h_gate = symbols.insert(
+            "h".into(),
+            SymbolKind::Gate,
+            Type::Void,
+            Default::default(),
+            None,
+        );
         let cx_gate = symbols.insert(
             "cx".into(),
             SymbolKind::Gate,
             Type::Void,
             Default::default(),
+            None,
         );
-        let u_gate = symbols.insert("U".into(), SymbolKind::Gate, Type::Void, Default::default());
-        let z_gate = symbols.insert("z".into(), SymbolKind::Gate, Type::Void, Default::default());
-        let x_gate = symbols.insert("x".into(), SymbolKind::Gate, Type::Void, Default::default());
+        let u_gate = symbols.insert(
+            "U".into(),
+            SymbolKind::Gate,
+            Type::Void,
+            Default::default(),
+            None,
+        );
+        let z_gate = symbols.insert(
+            "z".into(),
+            SymbolKind::Gate,
+            Type::Void,
+            Default::default(),
+            None,
+        );
+        let x_gate = symbols.insert(
+            "x".into(),
+            SymbolKind::Gate,
+            Type::Void,
+            Default::default(),
+            None,
+        );
 
         // qubit[3] q;
         let q = symbols.insert(
@@ -476,6 +504,7 @@ mod tests {
             SymbolKind::Qubit,
             Type::QubitReg(3),
             Default::default(),
+            None,
         );
         // bit c0; bit c1; bit c2;
         let c0 = symbols.insert(
@@ -483,18 +512,21 @@ mod tests {
             SymbolKind::Variable,
             Type::Classical(ValueTy::bit()),
             Default::default(),
+            None,
         );
         let c1 = symbols.insert(
             "c1".into(),
             SymbolKind::Variable,
             Type::Classical(ValueTy::bit()),
             Default::default(),
+            None,
         );
         let c2 = symbols.insert(
             "c2".into(),
             SymbolKind::Variable,
             Type::Classical(ValueTy::bit()),
             Default::default(),
+            None,
         );
         // gate post q { }
         let post_gate = symbols.insert(
@@ -502,12 +534,15 @@ mod tests {
             SymbolKind::Gate,
             Type::Void,
             Default::default(),
+            None,
         );
+        let gate_scope = scopes.create(crate::scope::ScopeKind::Gate, None, Default::default());
         let post_q = symbols.insert(
             "q".into(),
             SymbolKind::GateQubit,
             Type::Qubit,
             Default::default(),
+            Some(gate_scope),
         );
 
         let s: Span = Default::default(); // placeholder span
@@ -610,6 +645,7 @@ mod tests {
             version: Some("3".into()),
             calibration_grammar: None,
             symbols,
+            scopes,
             gates,
             subroutines: vec![],
             externs: vec![],

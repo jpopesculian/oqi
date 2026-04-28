@@ -935,6 +935,7 @@ mod tests {
             SymbolKind::Const,
             Type::Classical(ValueTy::uint(iw(32))),
             span(0, 5),
+            None,
         );
         sym.set_const_value(
             id,
@@ -1083,6 +1084,7 @@ mod tests {
                 ashape(vec![2, 3, 4]),
             )),
             span(0, 8),
+            None,
         );
 
         let expr = ast::Expr::Call {

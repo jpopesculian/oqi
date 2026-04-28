@@ -1,6 +1,7 @@
 use oqi_lex::Span;
 
 use crate::classical::Value;
+use crate::scope::ScopeId;
 use crate::types::Type;
 
 /// Unique identifier for a symbol in the symbol table.
@@ -20,6 +21,9 @@ pub struct Symbol {
     pub ty: Type,
     pub span: Span,
     pub const_value: Option<Value>,
+    /// Scope in which this symbol was declared. `None` for globals (including
+    /// built-ins like `pi`, `tau`, `U`, `gphase`).
+    pub scope: Option<ScopeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,8 +72,15 @@ impl SymbolTable {
         }
     }
 
-    /// Insert a new symbol and return its ID.
-    pub fn insert(&mut self, name: String, kind: SymbolKind, ty: Type, span: Span) -> SymbolId {
+    /// Insert a new symbol and return its ID. Pass `scope = None` for globals.
+    pub fn insert(
+        &mut self,
+        name: String,
+        kind: SymbolKind,
+        ty: Type,
+        span: Span,
+        scope: Option<ScopeId>,
+    ) -> SymbolId {
         let id = SymbolId(self.symbols.len());
         self.symbols.push(Symbol {
             id,
@@ -78,6 +89,7 @@ impl SymbolTable {
             ty,
             span,
             const_value: None,
+            scope,
         });
         id
     }
@@ -85,10 +97,10 @@ impl SymbolTable {
     /// Insert a new compiler-generated temporary symbol of the given type.
     /// The name is `$N` where N is a fresh counter — `$` is not a valid
     /// identifier character, so temps never collide with user names.
-    pub fn new_temp(&mut self, ty: Type, span: Span) -> SymbolId {
+    pub fn new_temp(&mut self, ty: Type, span: Span, scope: Option<ScopeId>) -> SymbolId {
         let name = format!("${}", self.temp_counter);
         self.temp_counter += 1;
-        self.insert(name, SymbolKind::Temp, ty, span)
+        self.insert(name, SymbolKind::Temp, ty, span, scope)
     }
 
     /// Set the constant value for a symbol.
@@ -155,6 +167,7 @@ mod tests {
             SymbolKind::Variable,
             Type::Classical(ValueTy::bool()),
             span(0, 1),
+            None,
         );
 
         let sym = table.get(id);
@@ -164,6 +177,21 @@ mod tests {
         assert_eq!(sym.ty, Type::Classical(ValueTy::bool()));
         assert_eq!(sym.span, span(0, 1));
         assert!(sym.const_value.is_none());
+        assert_eq!(sym.scope, None);
+    }
+
+    #[test]
+    fn test_insert_with_scope_roundtrips() {
+        let mut table = SymbolTable::new();
+        let scope = ScopeId(7);
+        let id = table.insert(
+            "y".to_string(),
+            SymbolKind::Variable,
+            Type::Classical(ValueTy::bool()),
+            span(0, 1),
+            Some(scope),
+        );
+        assert_eq!(table.get(id).scope, Some(scope));
     }
 
     #[test]
@@ -174,6 +202,7 @@ mod tests {
             SymbolKind::Const,
             Type::Classical(ValueTy::uint(iw(32))),
             span(0, 5),
+            None,
         );
 
         let val = Value::bit(true);
@@ -191,18 +220,21 @@ mod tests {
             SymbolKind::Variable,
             Type::Classical(ValueTy::bool()),
             span(0, 1),
+            None,
         );
         let id1 = table.insert(
             "b".to_string(),
             SymbolKind::Const,
             Type::Classical(ValueTy::duration()),
             span(2, 3),
+            None,
         );
         let id2 = table.insert(
             "q".to_string(),
             SymbolKind::Qubit,
             Type::QubitReg(4),
             span(4, 10),
+            None,
         );
 
         assert_eq!(id0, SymbolId(0));
@@ -223,6 +255,7 @@ mod tests {
             SymbolKind::Input,
             Type::Classical(ValueTy::float(crate::types::FloatWidth::F64)),
             span(0, 5),
+            None,
         );
 
         assert_eq!(table.lookup("theta"), Some(id));
@@ -237,12 +270,14 @@ mod tests {
             SymbolKind::Variable,
             Type::Classical(ValueTy::bool()),
             span(0, 1),
+            None,
         );
         let id1 = table.insert(
             "x".to_string(),
             SymbolKind::Variable,
             Type::Classical(ValueTy::int(iw(32))),
             span(2, 3),
+            None,
         );
 
         // lookup returns the latest entry (shadowing)
@@ -257,6 +292,7 @@ mod tests {
             SymbolKind::Variable,
             Type::Classical(ValueTy::bit()),
             span(0, 1),
+            None,
         );
 
         let sym = table.get_mut(id);
@@ -273,12 +309,14 @@ mod tests {
             SymbolKind::Variable,
             Type::Classical(ValueTy::bool()),
             span(0, 1),
+            None,
         );
         table.insert(
             "b".to_string(),
             SymbolKind::Const,
             Type::Classical(ValueTy::duration()),
             span(2, 3),
+            None,
         );
 
         let names: Vec<&str> = table.iter().map(|s| s.name.as_str()).collect();

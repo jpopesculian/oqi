@@ -4,6 +4,7 @@ pub mod error;
 pub mod lower;
 pub mod openpulse;
 pub mod resolve;
+pub mod scope;
 pub mod sir;
 pub mod symbol;
 pub mod types;

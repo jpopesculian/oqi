@@ -23,6 +23,7 @@ use oqi_parse::ast;
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::openpulse;
 use crate::resolve::{DefaultIncludeResolver, IncludeResolver, IncludeSource, Resolver};
+use crate::scope::ScopeKind;
 use crate::sir;
 use crate::symbol::{SymbolId, SymbolKind};
 use crate::types::{
@@ -102,10 +103,12 @@ impl Lowerer {
     }
 
     fn finish(self, program: &ast::Program<'_>) -> sir::Program {
+        let (symbols, scopes) = self.resolver.into_parts();
         sir::Program {
             version: program.version.as_ref().map(|v| v.specifier.to_string()),
             calibration_grammar: self.calibration_grammar,
-            symbols: self.resolver.into_symbols(),
+            symbols,
+            scopes,
             gates: self.gates,
             subroutines: self.subroutines,
             externs: self.externs,
@@ -122,8 +125,13 @@ impl Lowerer {
         Ok(())
     }
 
-    fn with_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
-        self.resolver.push_scope();
+    fn with_scope<T>(
+        &mut self,
+        kind: ScopeKind,
+        span: oqi_lex::Span,
+        f: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
+        self.resolver.push_scope(kind, span);
         let result = f(self);
         self.resolver.pop_scope();
         result
@@ -147,20 +155,30 @@ impl Lowerer {
 
         let result = match item {
             ast::StmtOrScope::Stmt(stmt) => self.lower_stmt(stmt),
-            ast::StmtOrScope::Scope(scope) => self.with_scope(|this| {
-                let mut stmts = Vec::new();
-                for item in &scope.body {
-                    stmts.extend(this.lower_stmt_or_scope(item)?);
-                }
-                Ok(stmts)
-            }),
+            ast::StmtOrScope::Scope(scope) => {
+                self.with_scope(ScopeKind::Anonymous, scope.span, |this| {
+                    let mut stmts = Vec::new();
+                    for item in &scope.body {
+                        stmts.extend(this.lower_stmt_or_scope(item)?);
+                    }
+                    Ok(stmts)
+                })
+            }
         };
 
         result.with_path(current_path)
     }
 
-    fn lower_body(&mut self, item: &ast::StmtOrScope<'_>) -> Result<Vec<sir::Stmt>> {
-        self.with_scope(|this| match item {
+    fn lower_body(
+        &mut self,
+        item: &ast::StmtOrScope<'_>,
+        kind: ScopeKind,
+    ) -> Result<Vec<sir::Stmt>> {
+        let span = match item {
+            ast::StmtOrScope::Stmt(s) => s.span,
+            ast::StmtOrScope::Scope(sc) => sc.span,
+        };
+        self.with_scope(kind, span, |this| match item {
             ast::StmtOrScope::Stmt(stmt) => this.lower_stmt(stmt),
             ast::StmtOrScope::Scope(scope) => {
                 let mut stmts = Vec::new();
@@ -268,7 +286,7 @@ impl Lowerer {
                 let gate_sym =
                     self.resolver
                         .declare(name.name, SymbolKind::Gate, Type::Void, name.span)?;
-                let (param_ids, qubit_ids, gate_body) = self.with_scope(|this| {
+                let (param_ids, qubit_ids, gate_body) = self.with_scope(ScopeKind::Gate, body.span, |this| {
                     let angle_bw = this.resolver.options().system_width.iw();
                     let param_ids: Vec<_> = params
                         .iter()
@@ -317,7 +335,7 @@ impl Lowerer {
                     Type::Void,
                     name.span,
                 )?;
-                let (sir_params, ret_ty, body_stmts) = self.with_scope(|this| {
+                let (sir_params, ret_ty, body_stmts) = self.with_scope(ScopeKind::Subroutine, body.span, |this| {
                     let sir_params = this.lower_arg_defs(params)?;
                     let ret_ty = match return_ty {
                         Some(s) => Some(resolve_scalar_type(
@@ -398,7 +416,7 @@ impl Lowerer {
                         sir::CalibrationTarget::Named(id.name.to_string())
                     }
                 };
-                let (sir_args, sir_operands, ret_ty, sir_body) = self.with_scope(|this| {
+                let (sir_args, sir_operands, ret_ty, sir_body) = self.with_scope(ScopeKind::Defcal, span, |this| {
                     let sir_args: Vec<_> = args
                         .iter()
                         .map(|a| match a {
@@ -584,10 +602,11 @@ impl Lowerer {
                     );
                     let measure = self.lower_measure_expr(m)?;
                     let temp_ty = measure.ty.clone();
+                    let scope = self.resolver.current_scope();
                     let temp_sym = self
                         .resolver
                         .symbols_mut()
-                        .new_temp(temp_ty.clone(), span);
+                        .new_temp(temp_ty.clone(), span, scope);
                     let measure_stmt = sir::Stmt {
                         kind: sir::StmtKind::Measure {
                             measure,
@@ -661,9 +680,9 @@ impl Lowerer {
                 else_body,
             } => {
                 let cond = self.lower_expr(condition)?;
-                let then_stmts = self.lower_body(then_body)?;
+                let then_stmts = self.lower_body(then_body, ScopeKind::IfThen)?;
                 let else_stmts = match else_body {
-                    Some(b) => Some(self.lower_body(b)?),
+                    Some(b) => Some(self.lower_body(b, ScopeKind::IfElse)?),
                     None => None,
                 };
                 vec![sir::Stmt {
@@ -685,7 +704,11 @@ impl Lowerer {
             } => {
                 let var_ty =
                     resolve_scalar_type(ty, self.resolver.symbols(), self.resolver.options())?;
-                let (var_sym, sir_iterable, body_stmts) = self.with_scope(|this| {
+                let for_body_span = match body.as_ref() {
+                    ast::StmtOrScope::Stmt(s) => s.span,
+                    ast::StmtOrScope::Scope(sc) => sc.span,
+                };
+                let (var_sym, sir_iterable, body_stmts) = self.with_scope(ScopeKind::For, for_body_span, |this| {
                     let var_sym =
                         this.resolver
                             .declare(var.name, SymbolKind::LoopVar, var_ty, var.span)?;
@@ -715,7 +738,7 @@ impl Lowerer {
 
             ast::StmtKind::While { condition, body } => {
                 let cond = self.lower_expr(condition)?;
-                let body_stmts = self.lower_body(body)?;
+                let body_stmts = self.lower_body(body, ScopeKind::While)?;
                 vec![sir::Stmt {
                     kind: sir::StmtKind::While {
                         condition: cond,
@@ -819,7 +842,7 @@ impl Lowerer {
                     Some(e) => Some(self.lower_expr(e)?),
                     None => None,
                 };
-                let body_stmts = self.with_scope(|this| {
+                let body_stmts = self.with_scope(ScopeKind::Box, body.span, |this| {
                     let mut body_stmts = Vec::new();
                     for item in &body.body {
                         body_stmts.extend(this.lower_stmt_or_scope(item)?);
@@ -1099,7 +1122,7 @@ impl Lowerer {
             }
 
             ast::Expr::DurationOf { scope, .. } => {
-                let stmts = self.with_scope(|this| {
+                let stmts = self.with_scope(ScopeKind::DurationOf, scope.span, |this| {
                     let mut stmts = Vec::new();
                     for item in &scope.body {
                         stmts.extend(this.lower_stmt_or_scope(item)?);
@@ -1453,7 +1476,7 @@ impl Lowerer {
                     .iter()
                     .map(|e| self.lower_expr(e))
                     .collect::<Result<_>>()?;
-                let body = self.with_scope(|this| {
+                let body = self.with_scope(ScopeKind::SwitchCase, scope.span, |this| {
                     let mut body = Vec::new();
                     for item in &scope.body {
                         body.extend(this.lower_stmt_or_scope(item)?);
@@ -1466,7 +1489,7 @@ impl Lowerer {
                 })
             }
             ast::SwitchCase::Default(scope) => {
-                let body = self.with_scope(|this| {
+                let body = self.with_scope(ScopeKind::SwitchCase, scope.span, |this| {
                     let mut body = Vec::new();
                     for item in &scope.body {
                         body.extend(this.lower_stmt_or_scope(item)?);
@@ -2319,6 +2342,75 @@ mod tests {
         let program = compile_inline(source).expect("scope should compile");
         // Both decls should appear in the flattened body
         assert_eq!(program.body.len(), 2);
+    }
+
+    #[test]
+    fn scopes_are_attached_to_symbols() {
+        use crate::scope::ScopeKind;
+        let source = r#"
+            OPENQASM 3;
+            int[32] g = 1;
+            def f(int[32] p) -> int[32] {
+                int[32] s = 2;
+                for uint i in [0:3] {
+                    if (p > 0) {
+                        int[32] t = 3;
+                    }
+                }
+                return s;
+            }
+        "#;
+        let program = compile_inline(source).expect("source should compile");
+
+        // Globals (`g`, `f`) carry no scope
+        let g = program.symbols.lookup("g").unwrap();
+        let f = program.symbols.lookup("f").unwrap();
+        assert_eq!(program.symbols.get(g).scope, None);
+        assert_eq!(program.symbols.get(f).scope, None);
+
+        // Subroutine param `p` lives in a Subroutine scope
+        let p = program
+            .symbols
+            .iter()
+            .find(|s| s.name == "p" && s.kind == SymbolKind::SubroutineParam)
+            .unwrap();
+        let p_scope = p.scope.expect("p must be scoped");
+        assert_eq!(program.scopes.get(p_scope).kind, ScopeKind::Subroutine);
+        // Subroutine sits directly under the global (implicit) scope.
+        assert_eq!(program.scopes.get(p_scope).parent, None);
+        assert_eq!(program.scopes.get(p_scope).depth, 0);
+
+        // `s` is also in the Subroutine scope (same one as `p`)
+        let s = program
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "s")
+            .unwrap();
+        assert_eq!(s.scope, Some(p_scope));
+
+        // Loop variable `i` is in a For scope nested inside the Subroutine
+        let i = program
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "i" && sym.kind == SymbolKind::LoopVar)
+            .unwrap();
+        let for_scope = i.scope.expect("i must be scoped");
+        let for_node = program.scopes.get(for_scope);
+        assert_eq!(for_node.kind, ScopeKind::For);
+        assert_eq!(for_node.parent, Some(p_scope));
+
+        // `t` is in an IfThen scope nested inside the For
+        let t = program
+            .symbols
+            .iter()
+            .find(|sym| sym.name == "t")
+            .unwrap();
+        let if_scope = t.scope.expect("t must be scoped");
+        let if_node = program.scopes.get(if_scope);
+        assert_eq!(if_node.kind, ScopeKind::IfThen);
+        assert_eq!(if_node.parent, Some(for_scope));
+        // Depth counts non-global nesting: subroutine=0, for=1, ifthen=2.
+        assert_eq!(if_node.depth, 2);
     }
 
     #[test]

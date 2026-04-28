@@ -44,18 +44,18 @@ impl BinOp for Div {
     fn scalar_op(lhs: Scalar, rhs: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         use Primitive::*;
         let result = match (lhs.value(), rhs.value()) {
-            (Uint(lhs), Uint(rhs)) => Uint(lhs.checked_div(rhs).ok_or(Error::DivideByZero)?),
-            (Int(lhs), Int(rhs)) => Int(lhs.checked_div(rhs).ok_or(if rhs == 0 {
+            (Uint(a), Uint(b)) => Uint(a.checked_div(*b).ok_or(Error::DivideByZero)?),
+            (Int(a), Int(b)) => Int(a.checked_div(*b).ok_or(if *b == 0 {
                 Error::DivideByZero
             } else {
                 Error::Overflow
             })?),
-            (Float(lhs), Float(rhs)) => Float(lhs / rhs),
-            (Complex(lhs), Complex(rhs)) => Complex(lhs / rhs),
-            (Duration(lhs), Duration(rhs)) => Float(lhs / rhs),
-            (Duration(lhs), Float(rhs)) => Duration(lhs / rhs),
-            (Angle(lhs), Angle(rhs)) => Uint(lhs.0 / rhs.0),
-            (Angle(lhs), Uint(rhs)) => Angle(lhs / rhs),
+            (Float(a), Float(b)) => Float(*a / *b),
+            (Complex(a), Complex(b)) => Complex(*a / *b),
+            (Duration(a), Duration(b)) => Float(*a / *b),
+            (Duration(a), Float(b)) => Duration(*a / *b),
+            (Angle(a), Angle(b)) => Uint(a.0 / b.0),
+            (Angle(a), Uint(b)) => Angle(*a / *b),
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
         Ok(Scalar::new_unchecked(result.assert_fits(out)?, out))
@@ -74,15 +74,15 @@ mod tests {
     use crate::array::{Array, ArrayTy, ashape};
     use crate::duration::DurationUnit;
     use crate::index::Index;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     fn f64_scalar(v: f64) -> Value {
@@ -92,7 +92,7 @@ mod tests {
     fn u_array(values: &[u128], bits: u32, shape: Vec<usize>) -> Value {
         Value::Array(Array::new_unchecked(
             values.iter().map(|&v| Primitive::uint(v)).collect(),
-            ArrayTy::new(Uint(bw(bits)), ashape(shape)),
+            ArrayTy::new(Uint(iw(bits)), ashape(shape)),
         ))
     }
 
@@ -102,7 +102,7 @@ mod tests {
     fn uint_div() {
         let r = u_scalar(10, 8).div_(u_scalar(3, 8)).unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_uint(bw(8)).unwrap(), 3),
+            Value::Scalar(s) => assert_eq!(s.value().as_uint(iw(8)).unwrap(), 3),
             _ => panic!("expected scalar"),
         }
     }
@@ -116,7 +116,7 @@ mod tests {
     fn int_div() {
         let r = i_scalar(-12, 8).div_(i_scalar(4, 8)).unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_int(bw(8)).unwrap(), -3),
+            Value::Scalar(s) => assert_eq!(s.value().as_int(iw(8)).unwrap(), -3),
             _ => panic!("expected scalar"),
         }
     }
@@ -203,17 +203,17 @@ mod tests {
     fn angle_div_returns_uint() {
         let a = Value::Scalar(Scalar::new_unchecked(
             Primitive::Angle(turns::Angle(0b1000_u128 << 124)),
-            Angle(bw(8)),
+            Angle(iw(8)),
         ));
         let b = Value::Scalar(Scalar::new_unchecked(
             Primitive::Angle(turns::Angle(0b0010_u128 << 124)),
-            Angle(bw(8)),
+            Angle(iw(8)),
         ));
         let r = a.div_(b).unwrap();
         match r {
             Value::Scalar(s) => {
-                assert_eq!(s.ty(), Uint(bw(8)));
-                assert_eq!(s.value().as_uint(bw(8)).unwrap(), 4);
+                assert_eq!(s.ty(), Uint(iw(8)));
+                assert_eq!(s.value().as_uint(iw(8)).unwrap(), 4);
             }
             _ => panic!("expected scalar"),
         }
@@ -227,7 +227,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(n) if n.get() == 16));
-                assert_eq!(s.value().as_uint(bw(16)).unwrap(), 100);
+                assert_eq!(s.value().as_uint(iw(16)).unwrap(), 100);
             }
             _ => panic!("expected scalar"),
         }
@@ -257,7 +257,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![2, 4, 6]);
             }
@@ -296,7 +296,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![5, 4, 3]);
             }
@@ -314,7 +314,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![50, 20, 10]);
             }
@@ -334,7 +334,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![25, 20]);
             }
@@ -353,7 +353,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![16, 32]);
             }

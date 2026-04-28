@@ -81,7 +81,7 @@ mod tests {
         assert!(
             Value::Scalar(Scalar::new_unchecked(
                 Primitive::uint(5_u128),
-                Uint(crate::primitive::bw(8)),
+                Uint(crate::primitive::iw(8)),
             ))
             .floor_()
             .is_err()

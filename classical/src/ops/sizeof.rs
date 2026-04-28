@@ -2,13 +2,13 @@ use super::UnOp;
 use crate::array::{ArrayTy, ashape};
 use crate::array_ref::ArrayRefTy;
 use crate::error::{Error, Result};
-use crate::primitive::{BitWidth, Primitive, PrimitiveTy};
+use crate::primitive::{IntWidth, Primitive, PrimitiveTy};
 use crate::scalar::Scalar;
 use crate::value::{Value, ValueTy};
 
 pub struct Sizeof;
 
-const SIZEOF_OUT_TY: PrimitiveTy = PrimitiveTy::Uint(BitWidth::B64);
+const SIZEOF_OUT_TY: PrimitiveTy = PrimitiveTy::Uint(IntWidth::B64);
 
 fn sizeof_result(arg: ValueTy, dim: usize) -> Result<Value> {
     let size = arg
@@ -101,25 +101,25 @@ mod tests {
     use crate::array::Array;
     use crate::array_ref::RefAccess;
     use crate::index::Index;
-    use crate::primitive::{PrimitiveTy::*, bw};
+    use crate::primitive::{PrimitiveTy::*, iw};
 
     fn u_array(values: &[u128], bits: u32, shape: Vec<usize>) -> Value {
         Value::Array(Array::new_unchecked(
             values.iter().map(|&value| Primitive::uint(value)).collect(),
-            ArrayTy::new(Uint(bw(bits)), ashape(shape)),
+            ArrayTy::new(Uint(iw(bits)), ashape(shape)),
         ))
     }
 
     #[test]
     fn sizeof_scalar_returns_bitwidth() {
-        let result = Value::Scalar(Scalar::new_unchecked(Primitive::uint(5_u128), Uint(bw(16))))
+        let result = Value::Scalar(Scalar::new_unchecked(Primitive::uint(5_u128), Uint(iw(16))))
             .sizeof_()
             .unwrap();
 
         match result {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), SIZEOF_OUT_TY);
-                assert_eq!(scalar.value().as_uint(BitWidth::B64), Some(16));
+                assert_eq!(scalar.value().as_uint(IntWidth::B64), Some(16));
             }
             other => panic!("expected scalar, got {other:?}"),
         }
@@ -133,7 +133,7 @@ mod tests {
 
         match result {
             Value::Scalar(scalar) => {
-                assert_eq!(scalar.value().as_uint(BitWidth::B64), Some(2));
+                assert_eq!(scalar.value().as_uint(IntWidth::B64), Some(2));
             }
             other => panic!("expected scalar, got {other:?}"),
         }
@@ -149,7 +149,7 @@ mod tests {
 
         match result {
             Value::Scalar(scalar) => {
-                assert_eq!(scalar.value().as_uint(BitWidth::B64), Some(2));
+                assert_eq!(scalar.value().as_uint(IntWidth::B64), Some(2));
             }
             other => panic!("expected scalar, got {other:?}"),
         }
@@ -158,7 +158,7 @@ mod tests {
     #[test]
     fn sizeof_rank_only_array_ref_is_rejected() {
         let array_ref_ty = ArrayRefTy::new(
-            Uint(bw(8)),
+            Uint(iw(8)),
             crate::ArrayRefShape::Dim(crate::adim(2)),
             RefAccess::Readonly,
         );

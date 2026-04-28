@@ -38,7 +38,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     #[test]
@@ -74,7 +74,7 @@ mod tests {
     fn cos_angle_zero() {
         let r = Value::Scalar(Scalar::new_unchecked(
             Primitive::Angle(turns::Angle(0)),
-            Angle(bw(8)),
+            Angle(iw(8)),
         ))
         .cos_()
         .unwrap();
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn cos_uint_promoted() {
-        let r = Value::Scalar(Scalar::new_unchecked(Primitive::uint(0_u128), Uint(bw(8))))
+        let r = Value::Scalar(Scalar::new_unchecked(Primitive::uint(0_u128), Uint(iw(8))))
             .cos_()
             .unwrap();
         match r {

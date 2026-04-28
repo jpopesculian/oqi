@@ -27,23 +27,26 @@ impl BinOp for Rotr {
 
     fn scalar_op(lhs: Scalar, rhs: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         let width = out
-            .bw()
-            .ok_or_else(|| unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty()))?
-            .get();
-        let distance = match rhs.value() {
-            Primitive::Int(v) => v,
-            Primitive::Uint(v) => v as i128,
+            .bit_count()
+            .ok_or_else(|| unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty()))?;
+        let distance: i128 = match rhs.value() {
+            Primitive::Int(v) => *v,
+            Primitive::Uint(v) => *v as i128,
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
-        let value = match lhs.value() {
-            Primitive::BitReg(v) | Primitive::Uint(v) => v,
-            _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
-        };
-        // rotr(a, n) == rotl(a, -n)
-        let result = rotate_left(value, width, -distance);
-        match out {
-            PrimitiveTy::BitReg(_) => Ok(Scalar::new_unchecked(Primitive::BitReg(result), out)),
-            PrimitiveTy::Uint(_) => Ok(Scalar::new_unchecked(Primitive::Uint(result), out)),
+        match (lhs.value(), out) {
+            (Primitive::BitReg(reg), PrimitiveTy::BitReg(_)) => {
+                let mut new_reg = reg.clone();
+                if width != 0 {
+                    let amount = distance.rem_euclid(width as i128) as usize;
+                    new_reg.rotr(0..width, amount);
+                }
+                Ok(Scalar::new_unchecked(Primitive::BitReg(new_reg), out))
+            }
+            (Primitive::Uint(v), PrimitiveTy::Uint(_)) => {
+                let result = rotate_left(*v, width, -distance);
+                Ok(Scalar::new_unchecked(Primitive::Uint(result), out))
+            }
             _ => Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         }
     }
@@ -58,22 +61,22 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitive::{PrimitiveTy::*, bw};
+    use crate::primitive::{PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn bitreg(v: u128, bits: u32) -> Value {
         Value::Scalar(Scalar::new_unchecked(
-            Primitive::BitReg(v),
-            BitReg(bw(bits)),
+            Primitive::bitreg_u128(v),
+            BitReg(bits),
         ))
     }
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     #[test]
@@ -82,7 +85,7 @@ mod tests {
         let r = bitreg(0b0001, 4).rotr_(i_scalar(1, 8)).unwrap();
         match r {
             Value::Scalar(s) => {
-                assert_eq!(s.value().as_bitreg(bw(4)).unwrap(), 0b1000);
+                assert_eq!(s.value().as_bitreg(4).unwrap().as_u128(), 0b1000);
             }
             _ => panic!("expected scalar"),
         }
@@ -95,7 +98,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(w) if w.get() == 8));
-                assert_eq!(s.value().as_uint(bw(8)).unwrap(), 0b1100_0000);
+                assert_eq!(s.value().as_uint(iw(8)).unwrap(), 0b1100_0000);
             }
             _ => panic!("expected scalar"),
         }
@@ -108,7 +111,7 @@ mod tests {
         let r = a.rotr_(i_scalar(-3, 8)).unwrap();
         match r {
             Value::Scalar(s) => {
-                assert_eq!(s.value().as_bitreg(bw(8)).unwrap(), 0b0101_0001);
+                assert_eq!(s.value().as_bitreg(8).unwrap().as_u128(), 0b0101_0001);
             }
             _ => panic!("expected scalar"),
         }
@@ -119,7 +122,7 @@ mod tests {
         let r = bitreg(0b1010, 4).rotr_(i_scalar(0, 8)).unwrap();
         match r {
             Value::Scalar(s) => {
-                assert_eq!(s.value().as_bitreg(bw(4)).unwrap(), 0b1010);
+                assert_eq!(s.value().as_bitreg(4).unwrap().as_u128(), 0b1010);
             }
             _ => panic!("expected scalar"),
         }
@@ -130,7 +133,7 @@ mod tests {
         let r = bitreg(0b1010, 4).rotr_(i_scalar(4, 8)).unwrap();
         match r {
             Value::Scalar(s) => {
-                assert_eq!(s.value().as_bitreg(bw(4)).unwrap(), 0b1010);
+                assert_eq!(s.value().as_bitreg(4).unwrap().as_u128(), 0b1010);
             }
             _ => panic!("expected scalar"),
         }

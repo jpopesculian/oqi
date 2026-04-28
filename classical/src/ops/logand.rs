@@ -20,7 +20,7 @@ impl BinOp for LogAnd {
 
     fn scalar_op(lhs: Scalar, rhs: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         let result = match (lhs.value(), rhs.value()) {
-            (Primitive::Bit(a), Primitive::Bit(b)) => Primitive::Bit(a && b),
+            (Primitive::Bit(a), Primitive::Bit(b)) => Primitive::Bit(*a && *b),
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
         Ok(Scalar::new_unchecked(result, out))
@@ -78,11 +78,11 @@ mod tests {
     fn bitreg_logand_returns_none() {
         let a = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b01_u128),
-            BitReg(crate::bw(2)),
+            BitReg(2),
         ));
         let b = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b11_u128),
-            BitReg(crate::bw(2)),
+            BitReg(2),
         ));
         assert!(a.land_(b).is_err());
     }

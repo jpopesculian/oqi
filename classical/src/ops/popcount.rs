@@ -12,15 +12,21 @@ impl UnOp for Popcount {
 
     fn scalar_check(arg: PrimitiveTy) -> Result<(PrimitiveTy, PrimitiveTy)> {
         match arg {
-            PrimitiveTy::BitReg(n) => Ok((PrimitiveTy::BitReg(n), PrimitiveTy::Uint(n))),
+            PrimitiveTy::BitReg(n) => Ok((
+                PrimitiveTy::BitReg(n),
+                PrimitiveTy::Uint(crate::primitive::IntWidth::new(n.max(1).min(128))?),
+            )),
             _ => Err(unsupported_scalar_unop::<Self>(arg)),
         }
     }
 
     fn scalar_op(arg: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         match arg.value() {
-            // BitReg-to-BitReg cast produces Scalar::Uint due to cast impl
-            Primitive::BitReg(v) | Primitive::Uint(v) => Scalar::new(
+            Primitive::BitReg(reg) => Scalar::new(
+                Primitive::Uint(reg.count_ones() as u128).assert_fits(out)?,
+                out,
+            ),
+            Primitive::Uint(v) => Scalar::new(
                 Primitive::Uint(v.count_ones() as u128).assert_fits(out)?,
                 out,
             ),
@@ -38,13 +44,13 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitive::{PrimitiveTy::*, bw};
+    use crate::primitive::{PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn bitreg(v: u128, bits: u32) -> Value {
         Value::Scalar(Scalar::new_unchecked(
-            Primitive::BitReg(v),
-            BitReg(bw(bits)),
+            Primitive::bitreg_u128(v),
+            BitReg(bits),
         ))
     }
 
@@ -54,7 +60,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(w) if w.get() == 8));
-                assert_eq!(s.value().as_uint(bw(8)).unwrap(), 0);
+                assert_eq!(s.value().as_uint(iw(8)).unwrap(), 0);
             }
             _ => panic!("expected scalar"),
         }
@@ -65,7 +71,7 @@ mod tests {
         let r = bitreg(0xFF, 8).popcount_().unwrap();
         match r {
             Value::Scalar(s) => {
-                assert_eq!(s.value().as_uint(bw(8)).unwrap(), 8);
+                assert_eq!(s.value().as_uint(iw(8)).unwrap(), 8);
             }
             _ => panic!("expected scalar"),
         }
@@ -76,7 +82,7 @@ mod tests {
         let r = bitreg(0b1010_1010, 8).popcount_().unwrap();
         match r {
             Value::Scalar(s) => {
-                assert_eq!(s.value().as_uint(bw(8)).unwrap(), 4);
+                assert_eq!(s.value().as_uint(iw(8)).unwrap(), 4);
             }
             _ => panic!("expected scalar"),
         }
@@ -88,7 +94,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(w) if w.get() == 4));
-                assert_eq!(s.value().as_uint(bw(4)).unwrap(), 1);
+                assert_eq!(s.value().as_uint(iw(4)).unwrap(), 1);
             }
             _ => panic!("expected scalar"),
         }
@@ -99,7 +105,7 @@ mod tests {
         assert!(
             Value::Scalar(Scalar::new_unchecked(
                 Primitive::uint(0xFF_u128),
-                Uint(bw(8)),
+                Uint(iw(8)),
             ))
             .popcount_()
             .is_err()

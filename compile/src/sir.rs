@@ -373,7 +373,7 @@ pub struct ArrayLiteral {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classical::{Primitive, ValueTy, bw};
+    use crate::classical::{Primitive, ValueTy, iw};
     use crate::symbol::SymbolKind;
     use crate::types::FloatWidth;
 
@@ -404,7 +404,7 @@ mod tests {
     fn uint_expr(val: u128, span: Span) -> Expr {
         Expr {
             kind: ExprKind::Literal(Primitive::uint(val)),
-            ty: Type::Classical(ValueTy::uint(bw(64))),
+            ty: Type::Classical(ValueTy::uint(iw(64))),
             span,
         }
     }

@@ -45,7 +45,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     #[test]
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn exp_int_promoted() {
         // exp(0) = 1
-        let r = Value::Scalar(Scalar::new_unchecked(Primitive::int(0), Int(bw(8))))
+        let r = Value::Scalar(Scalar::new_unchecked(Primitive::int(0), Int(iw(8))))
             .exp_()
             .unwrap();
         match r {

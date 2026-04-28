@@ -5,8 +5,8 @@ use oqi_classical::ops::{
 use oqi_parse::ast;
 
 use crate::classical::{
-    ArrayRefShape, ArrayRefTy, ArrayTy, BitWidth, Duration, DurationUnit, PrimitiveTy, RefAccess,
-    Value, ValueTy, adim, ashape, bw, value_as_usize,
+    ArrayRefShape, ArrayRefTy, ArrayTy, IntWidth, Duration, DurationUnit, PrimitiveTy, RefAccess,
+    Value, ValueTy, adim, ashape, iw, value_as_usize,
 };
 use crate::openpulse;
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
@@ -102,10 +102,10 @@ pub enum SystemWidth {
 }
 
 impl SystemWidth {
-    pub fn bw(self) -> BitWidth {
+    pub fn iw(self) -> IntWidth {
         match self {
-            SystemWidth::B32 => bw(32),
-            SystemWidth::B64 => bw(64),
+            SystemWidth::B32 => iw(32),
+            SystemWidth::B64 => iw(64),
         }
     }
 
@@ -167,7 +167,7 @@ pub fn eval_const_expr(
     match expr {
         ast::Expr::IntLiteral(s, encoding, span) => Ok(Value::int(
             parse_int_literal(s, *encoding).with_span(*span)?,
-            bw(128),
+            iw(128),
         )),
         ast::Expr::FloatLiteral(s, span) => Ok(Value::float(
             parse_float_literal(s).with_span(*span)?,
@@ -180,7 +180,7 @@ pub fn eval_const_expr(
         ast::Expr::BoolLiteral(val, _) => Ok(Value::bit(*val)),
         ast::Expr::BitstringLiteral(s, span) => {
             let (bits, width) = parse_bitstring_literal(s).with_span(*span)?;
-            Ok(Value::bitreg(bits, bw(width as u32)))
+            Ok(Value::bitreg_u128(bits, width as u32))
         }
         ast::Expr::TimingLiteral(s, span) => Ok(Value::from(
             parse_timing_literal(s, &options.dt).with_span(*span)?,
@@ -387,7 +387,7 @@ fn const_sizeof_ty(value_ty: ValueTy, dim: Option<&Value>, span: oqi_lex::Span) 
             })?
         }
     };
-    Ok(Value::uint(size as u128, bw(64)))
+    Ok(Value::uint(size as u128, iw(64)))
 }
 
 #[inline]
@@ -484,23 +484,23 @@ pub fn resolve_scalar_type(
         ast::ScalarType::Bit(None, _) => Ok(Type::Classical(ValueTy::bit())),
         ast::ScalarType::Bit(Some(expr), _) => {
             let n = eval_designator(expr, symbols, options)?;
-            Ok(Type::Classical(ValueTy::bitreg(bw(n as u32))))
+            Ok(Type::Classical(ValueTy::bitreg(n as u32)))
         }
 
         ast::ScalarType::Int(None, _) => {
-            Ok(Type::Classical(ValueTy::int(options.system_width.bw())))
+            Ok(Type::Classical(ValueTy::int(options.system_width.iw())))
         }
         ast::ScalarType::Int(Some(expr), _) => {
             let width = eval_designator(expr, symbols, options)?;
-            Ok(Type::Classical(ValueTy::int(bw(width as u32))))
+            Ok(Type::Classical(ValueTy::int(iw(width as u32))))
         }
 
         ast::ScalarType::Uint(None, _) => {
-            Ok(Type::Classical(ValueTy::uint(options.system_width.bw())))
+            Ok(Type::Classical(ValueTy::uint(options.system_width.iw())))
         }
         ast::ScalarType::Uint(Some(expr), _) => {
             let width = eval_designator(expr, symbols, options)?;
-            Ok(Type::Classical(ValueTy::uint(bw(width as u32))))
+            Ok(Type::Classical(ValueTy::uint(iw(width as u32))))
         }
 
         ast::ScalarType::Float(None, _) => {
@@ -514,11 +514,11 @@ pub fn resolve_scalar_type(
         }
 
         ast::ScalarType::Angle(None, _) => {
-            Ok(Type::Classical(ValueTy::angle(options.system_width.bw())))
+            Ok(Type::Classical(ValueTy::angle(options.system_width.iw())))
         }
         ast::ScalarType::Angle(Some(expr), _) => {
             let width = eval_designator(expr, symbols, options)?;
-            Ok(Type::Classical(ValueTy::angle(bw(width as u32))))
+            Ok(Type::Classical(ValueTy::angle(iw(width as u32))))
         }
 
         ast::ScalarType::Complex(None, _) => {
@@ -542,7 +542,7 @@ pub fn resolve_scalar_type(
             openpulse::PrimitiveTy::port(),
         ))),
         ast::ScalarType::Frame(_) => Ok(Type::Openpulse(openpulse::ValueTy::Scalar(
-            openpulse::PrimitiveTy::frame(options.system_width.fw(), options.system_width.bw()),
+            openpulse::PrimitiveTy::frame(options.system_width.fw(), options.system_width.iw()),
         ))),
     }
 }
@@ -594,7 +594,7 @@ pub fn resolve_old_style_type(
         ast::OldStyleKind::Creg => match designator {
             Some(expr) => {
                 let n = eval_designator(expr, symbols, options)?;
-                Ok(Type::Classical(ValueTy::bitreg(bw(n as u32))))
+                Ok(Type::Classical(ValueTy::bitreg(n as u32)))
             }
             None => Ok(Type::Classical(ValueTy::bit())),
         },
@@ -647,7 +647,7 @@ pub fn resolve_array_ref_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classical::{PrimitiveTy, bw};
+    use crate::classical::{PrimitiveTy, iw};
 
     fn span(start: usize, end: usize) -> oqi_lex::Span {
         oqi_lex::span(start, end)
@@ -725,7 +725,7 @@ mod tests {
         let ty = ast::ScalarType::Bit(Some(Box::new(expr)), span(0, 6));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::Classical(ValueTy::bitreg(bw(4)))
+            Type::Classical(ValueTy::bitreg(4))
         );
     }
 
@@ -736,7 +736,7 @@ mod tests {
         let ty = ast::ScalarType::Int(None, span(0, 3));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::Classical(ValueTy::int(bw(64)))
+            Type::Classical(ValueTy::int(iw(64)))
         );
     }
 
@@ -748,7 +748,7 @@ mod tests {
         let ty = ast::ScalarType::Int(Some(Box::new(expr)), span(0, 6));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::Classical(ValueTy::int(bw(8)))
+            Type::Classical(ValueTy::int(iw(8)))
         );
     }
 
@@ -760,7 +760,7 @@ mod tests {
         let ty = ast::ScalarType::Uint(Some(Box::new(expr)), span(0, 8));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::Classical(ValueTy::uint(bw(16)))
+            Type::Classical(ValueTy::uint(iw(16)))
         );
     }
 
@@ -798,7 +798,7 @@ mod tests {
         let ty = ast::ScalarType::Angle(None, span(0, 5));
         assert_eq!(
             resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::Classical(ValueTy::angle(bw(32)))
+            Type::Classical(ValueTy::angle(iw(32)))
         );
     }
 
@@ -910,7 +910,7 @@ mod tests {
         let expr = ast::Expr::IntLiteral("4", ast::IntEncoding::Decimal, span(5, 6));
         assert_eq!(
             resolve_old_style_type(&ast::OldStyleKind::Creg, Some(&expr), &sym, &opts).unwrap(),
-            Type::Classical(ValueTy::bitreg(bw(4)))
+            Type::Classical(ValueTy::bitreg(4))
         );
     }
 
@@ -933,14 +933,14 @@ mod tests {
         let id = sym.insert(
             "N".to_string(),
             SymbolKind::Const,
-            Type::Classical(ValueTy::uint(bw(32))),
+            Type::Classical(ValueTy::uint(iw(32))),
             span(0, 5),
         );
         sym.set_const_value(
             id,
             Value::int(
                 parse_int_literal("8", ast::IntEncoding::Decimal).unwrap(),
-                bw(128),
+                iw(128),
             ),
         );
 
@@ -976,8 +976,8 @@ mod tests {
         let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
         match val {
             Value::Scalar(scalar) => {
-                assert_eq!(scalar.ty(), PrimitiveTy::BitReg(bw(4)));
-                assert_eq!(scalar.value().as_bitreg(bw(4)), Some(0b0110));
+                assert_eq!(scalar.ty(), PrimitiveTy::BitReg(4));
+                assert_eq!(scalar.value().as_bitreg(4).map(|r| r.as_u128()), Some(0b0110_u128));
             }
             other => panic!("expected bitstring literal, got {other:?}"),
         }
@@ -1039,8 +1039,8 @@ mod tests {
         let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
         match val {
             Value::Scalar(scalar) => {
-                assert_eq!(scalar.ty(), PrimitiveTy::Uint(bw(4)));
-                assert_eq!(scalar.value().as_uint(bw(4)), Some(3));
+                assert_eq!(scalar.ty(), PrimitiveTy::Uint(iw(4)));
+                assert_eq!(scalar.value().as_uint(iw(4)), Some(3));
             }
             other => panic!("expected uint result, got {other:?}"),
         }
@@ -1063,8 +1063,8 @@ mod tests {
         let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
         match val {
             Value::Scalar(scalar) => {
-                assert_eq!(scalar.ty(), PrimitiveTy::BitReg(bw(4)));
-                assert_eq!(scalar.value().as_bitreg(bw(4)), Some(0b0011));
+                assert_eq!(scalar.ty(), PrimitiveTy::BitReg(4));
+                assert_eq!(scalar.value().as_bitreg(4).map(|r| r.as_u128()), Some(0b0011_u128));
             }
             other => panic!("expected bitreg result, got {other:?}"),
         }
@@ -1079,7 +1079,7 @@ mod tests {
             "my_array".to_string(),
             SymbolKind::Variable,
             Type::Classical(ValueTy::array(
-                PrimitiveTy::Uint(bw(8)),
+                PrimitiveTy::Uint(iw(8)),
                 ashape(vec![2, 3, 4]),
             )),
             span(0, 8),

@@ -41,7 +41,7 @@ impl Value {
 mod tests {
     use super::*;
     use crate::DurationUnit;
-    use crate::primitive::{FloatWidth, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn bool_scalar(v: bool) -> Value {
@@ -53,11 +53,11 @@ mod tests {
     }
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     #[test]
@@ -74,12 +74,12 @@ mod tests {
     fn bitreg_gt_same_width() {
         assert!(
             Value::Scalar(Scalar::new_unchecked(
-                Primitive::BitReg(0b0100),
-                BitReg(bw(4))
+                Primitive::bitreg_u128(0b0100),
+                BitReg(4)
             ))
             .gt_(Value::Scalar(Scalar::new_unchecked(
-                Primitive::BitReg(0b0011),
-                BitReg(bw(4)),
+                Primitive::bitreg_u128(0b0011),
+                BitReg(4),
             )))
             .is_err()
         )
@@ -138,12 +138,12 @@ mod tests {
     #[test]
     fn bitreg_gt_mismatched_width_returns_none() {
         let a = Value::Scalar(Scalar::new_unchecked(
-            Primitive::BitReg(0b0100),
-            BitReg(bw(4)),
+            Primitive::bitreg_u128(0b0100),
+            BitReg(4),
         ));
         let b = Value::Scalar(Scalar::new_unchecked(
-            Primitive::BitReg(0b0011),
-            BitReg(bw(8)),
+            Primitive::bitreg_u128(0b0011),
+            BitReg(8),
         ));
         assert!(a.gt_(b).is_err());
     }

@@ -38,7 +38,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     #[test]
@@ -86,7 +86,7 @@ mod tests {
     #[test]
     fn log_uint_promoted() {
         // log(1) = 0
-        let r = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Uint(bw(8))))
+        let r = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Uint(iw(8))))
             .log_()
             .unwrap();
         match r {

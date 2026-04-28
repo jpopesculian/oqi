@@ -20,12 +20,12 @@ impl BinOp for Sub {
     fn scalar_op(lhs: Scalar, rhs: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         use Primitive::*;
         let result = match (lhs.value(), rhs.value()) {
-            (Uint(lhs), Uint(rhs)) => Uint(lhs.checked_sub(rhs).ok_or(Error::Overflow)?),
-            (Int(lhs), Int(rhs)) => Int(lhs.checked_sub(rhs).ok_or(Error::Overflow)?),
-            (Float(lhs), Float(rhs)) => Float(lhs - rhs),
-            (Complex(lhs), Complex(rhs)) => Complex(lhs - rhs),
-            (Duration(lhs), Duration(rhs)) => Duration(lhs - rhs),
-            (Angle(lhs), Angle(rhs)) => Angle(lhs - rhs),
+            (Uint(a), Uint(b)) => Uint(a.checked_sub(*b).ok_or(Error::Overflow)?),
+            (Int(a), Int(b)) => Int(a.checked_sub(*b).ok_or(Error::Overflow)?),
+            (Float(a), Float(b)) => Float(*a - *b),
+            (Complex(a), Complex(b)) => Complex(*a - *b),
+            (Duration(a), Duration(b)) => Duration(*a - *b),
+            (Angle(a), Angle(b)) => Angle(*a - *b),
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
         Ok(Scalar::new_unchecked(result.assert_fits(out)?, out))
@@ -43,15 +43,15 @@ mod tests {
     use super::*;
     use crate::array::{Array, ArrayTy, ashape};
     use crate::duration::DurationUnit;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     fn f64_scalar(v: f64) -> Value {
@@ -61,7 +61,7 @@ mod tests {
     fn u_array(values: &[u128], bits: u32, shape: Vec<usize>) -> Value {
         Value::Array(Array::new_unchecked(
             values.iter().map(|&v| Primitive::uint(v)).collect(),
-            ArrayTy::new(Uint(bw(bits)), ashape(shape)),
+            ArrayTy::new(Uint(iw(bits)), ashape(shape)),
         ))
     }
 
@@ -71,7 +71,7 @@ mod tests {
     fn uint_sub() {
         let r = u_scalar(10, 8).sub_(u_scalar(3, 8)).unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_uint(bw(8)).unwrap(), 7),
+            Value::Scalar(s) => assert_eq!(s.value().as_uint(iw(8)).unwrap(), 7),
             _ => panic!("expected scalar"),
         }
     }
@@ -86,7 +86,7 @@ mod tests {
         // 5 - (-3) = 8 in Int(8)
         let r = i_scalar(5, 8).sub_(i_scalar(-3, 8)).unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_int(bw(8)).unwrap(), 8),
+            Value::Scalar(s) => assert_eq!(s.value().as_int(iw(8)).unwrap(), 8),
             _ => panic!("expected scalar"),
         }
     }
@@ -160,11 +160,11 @@ mod tests {
         // BitReg is cast to Uint, so subtraction works
         let a = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010_u128),
-            BitReg(bw(4)),
+            BitReg(4),
         ));
         let b = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b0101_u128),
-            BitReg(bw(4)),
+            BitReg(4),
         ));
         assert!(a.sub_(b).is_err());
     }
@@ -177,7 +177,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(n) if n.get() == 16));
-                assert_eq!(s.value().as_uint(bw(16)).unwrap(), 200);
+                assert_eq!(s.value().as_uint(iw(16)).unwrap(), 200);
             }
             _ => panic!("expected scalar"),
         }
@@ -217,7 +217,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![9, 18, 27]);
             }
@@ -251,7 +251,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![99, 98, 97]);
             }
@@ -269,7 +269,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![5, 15, 25]);
             }

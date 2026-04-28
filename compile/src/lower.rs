@@ -32,7 +32,7 @@ use crate::types::{
     resolve_type,
 };
 use crate::{
-    classical::{ArrayTy, Primitive, Scalar, Value, ValueTy, ashape, bw},
+    classical::{ArrayTy, Primitive, Scalar, Value, ValueTy, ashape, iw},
     types::SystemWidth,
 };
 
@@ -269,7 +269,7 @@ impl Lowerer {
                     self.resolver
                         .declare(name.name, SymbolKind::Gate, Type::Void, name.span)?;
                 let (param_ids, qubit_ids, gate_body) = self.with_scope(|this| {
-                    let angle_bw = this.resolver.options().system_width.bw();
+                    let angle_bw = this.resolver.options().system_width.iw();
                     let param_ids: Vec<_> = params
                         .iter()
                         .map(|p| {
@@ -920,9 +920,10 @@ impl Lowerer {
             && let Ok(Value::Scalar(scalar)) =
                 eval_const_expr(expr, self.resolver.symbols(), self.resolver.options())
         {
+            let ty = Type::from(scalar.ty());
             return Ok(sir::Expr {
-                kind: sir::ExprKind::Literal(scalar.value()),
-                ty: Type::from(scalar.ty()),
+                kind: sir::ExprKind::Literal(scalar.into_value()),
+                ty,
                 span,
             });
         }
@@ -948,7 +949,7 @@ impl Lowerer {
 
             ast::Expr::IntLiteral(s, enc, _) => {
                 let int = parse_int_literal(s, *enc).with_span(span)?;
-                let ty = Type::Classical(ValueTy::int(self.resolver.options().system_width.bw()));
+                let ty = Type::Classical(ValueTy::int(self.resolver.options().system_width.iw()));
                 Ok(sir::Expr {
                     kind: sir::ExprKind::Literal(Primitive::int(int)),
                     ty,
@@ -986,8 +987,8 @@ impl Lowerer {
             ast::Expr::BitstringLiteral(s, _) => {
                 let (bits, len) = parse_bitstring_literal(s)?;
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Literal(Primitive::bitreg(bits)),
-                    ty: Type::Classical(ValueTy::bitreg(bw(len as u32))),
+                    kind: sir::ExprKind::Literal(Primitive::bitreg_u128(bits)),
+                    ty: Type::Classical(ValueTy::bitreg(len as u32)),
                     span,
                 })
             }
@@ -1678,7 +1679,7 @@ impl Lowerer {
     fn frame_type(&self) -> Type {
         Type::Openpulse(openpulse::ValueTy::Scalar(openpulse::PrimitiveTy::frame(
             self.resolver.options().system_width.fw(),
-            self.resolver.options().system_width.bw(),
+            self.resolver.options().system_width.iw(),
         )))
     }
 
@@ -1690,8 +1691,8 @@ impl Lowerer {
 
     fn seed_openpulse_intrinsics(&mut self) -> Result<()> {
         use crate::classical::ValueTy;
-        let angle_bw = self.resolver.options().system_width.bw();
-        let uint_bw = self.resolver.options().system_width.bw();
+        let angle_bw = self.resolver.options().system_width.iw();
+        let uint_bw = self.resolver.options().system_width.iw();
         let float_fw = self.resolver.options().system_width.fw();
         let complex_ty = Type::Classical(ValueTy::complex(float_fw));
         let angle_ty = Type::Classical(ValueTy::angle(angle_bw));
@@ -1889,11 +1890,11 @@ fn coerce_literal(expr: sir::Expr, target: &Type) -> sir::Expr {
     if from == to {
         return expr;
     }
-    let Ok(casted) = Scalar::new(*prim, from).and_then(|s| s.cast(to)) else {
+    let Ok(casted) = Scalar::new(prim.clone(), from).and_then(|s| s.cast(to)) else {
         return expr;
     };
     sir::Expr {
-        kind: sir::ExprKind::Literal(casted.value()),
+        kind: sir::ExprKind::Literal(casted.into_value()),
         ty: Type::from(to),
         span: expr.span,
     }
@@ -1913,7 +1914,7 @@ fn is_foldable_kind(expr: &ast::Expr<'_>) -> bool {
 
 fn measure_result_type(qubit_ty: &Type) -> Type {
     match qubit_ty {
-        Type::QubitReg(n) => Type::Classical(ValueTy::bitreg(bw(*n as u32))),
+        Type::QubitReg(n) => Type::Classical(ValueTy::bitreg(*n as u32)),
         _ => Type::Classical(ValueTy::bit()),
     }
 }
@@ -1996,7 +1997,7 @@ fn intrinsic_result_type(
                     .map_err(classical_intrinsic_error)?;
                 if let sir::ExprKind::Literal(value) = &dim.kind {
                     let Some(dim) = value
-                        .as_int(bw(128))
+                        .as_int(iw(128))
                         .and_then(|i| usize::try_from(i).ok())
                     else {
                         return Err(CompileError::new(ErrorKind::Unsupported(format!(
@@ -2013,7 +2014,7 @@ fn intrinsic_result_type(
             } else {
                 ClassicalSizeof::return_ty(value_ty).map_err(classical_intrinsic_error)?;
             }
-            Ok(Type::Classical(ValueTy::uint(system_width.bw())))
+            Ok(Type::Classical(ValueTy::uint(system_width.iw())))
         }
     }
 }
@@ -2333,7 +2334,7 @@ mod tests {
         assert_eq!(program.symbols.get(q_sym).kind, SymbolKind::Qubit);
         assert_eq!(
             program.symbols.get(c_sym).ty,
-            Type::Classical(ValueTy::bitreg(bw(4)))
+            Type::Classical(ValueTy::bitreg(4))
         );
         assert_eq!(program.symbols.get(q_sym).ty, Type::QubitReg(2));
     }
@@ -2458,7 +2459,7 @@ mod tests {
         let source = "float[64] f = 1.0; angle[32](f);";
         let program = compile_inline(source).expect("float → angle should be valid");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::Classical(ValueTy::angle(bw(32))));
+        assert_eq!(e.ty, Type::Classical(ValueTy::angle(iw(32))));
     }
 
     #[test]
@@ -2483,7 +2484,7 @@ mod tests {
         let source = "angle[32] a; angle[32] b; a + b;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::Classical(ValueTy::angle(bw(32))));
+        assert_eq!(e.ty, Type::Classical(ValueTy::angle(iw(32))));
     }
 
     #[test]
@@ -2492,7 +2493,7 @@ mod tests {
         let source = "angle[32] a; angle[32] b; a / b;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::Classical(ValueTy::uint(bw(32))));
+        assert_eq!(e.ty, Type::Classical(ValueTy::uint(iw(32))));
     }
 
     #[test]
@@ -2501,19 +2502,19 @@ mod tests {
         let source = "angle[32] a; uint[32] n = 2; a * n;";
         let program = compile_inline(source).expect("should compile");
         let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::Classical(ValueTy::angle(bw(32))));
+        assert_eq!(e.ty, Type::Classical(ValueTy::angle(iw(32))));
     }
 
     #[test]
     fn type_add_signed_unsigned_same_width_uses_classical_promotion() {
         let result = binary_result_type(
             &sir::BinOp::Add,
-            &Type::Classical(ValueTy::int(bw(32))),
-            &Type::Classical(ValueTy::uint(bw(32))),
+            &Type::Classical(ValueTy::int(iw(32))),
+            &Type::Classical(ValueTy::uint(iw(32))),
             oqi_lex::span(0, 0),
         )
         .unwrap();
-        assert_eq!(result, Type::Classical(ValueTy::uint(bw(32))));
+        assert_eq!(result, Type::Classical(ValueTy::uint(iw(32))));
     }
 
     #[test]
@@ -2533,7 +2534,7 @@ mod tests {
         let result = binary_result_type(
             &sir::BinOp::Add,
             &Type::Classical(ValueTy::bool()),
-            &Type::Classical(ValueTy::int(bw(32))),
+            &Type::Classical(ValueTy::int(iw(32))),
             oqi_lex::span(0, 0),
         );
         assert!(result.is_err());
@@ -2554,7 +2555,7 @@ mod tests {
     fn type_intrinsic_sin_angle_uses_classical_return_ty() {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Sin,
-            &[typed_expr(Type::Classical(ValueTy::angle(bw(32))))],
+            &[typed_expr(Type::Classical(ValueTy::angle(iw(32))))],
             Default::default(),
         )
         .unwrap();
@@ -2566,24 +2567,24 @@ mod tests {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Mod,
             &[
-                typed_expr(Type::Classical(ValueTy::uint(bw(8)))),
-                typed_expr(Type::Classical(ValueTy::uint(bw(16)))),
+                typed_expr(Type::Classical(ValueTy::uint(iw(8)))),
+                typed_expr(Type::Classical(ValueTy::uint(iw(16)))),
             ],
             Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::Classical(ValueTy::uint(bw(16))));
+        assert_eq!(result, Type::Classical(ValueTy::uint(iw(16))));
     }
 
     #[test]
     fn type_intrinsic_popcount_uses_input_width() {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Popcount,
-            &[typed_expr(Type::Classical(ValueTy::bitreg(bw(8))))],
+            &[typed_expr(Type::Classical(ValueTy::bitreg(8)))],
             Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::Classical(ValueTy::uint(bw(8))));
+        assert_eq!(result, Type::Classical(ValueTy::uint(iw(8))));
     }
 
     #[test]
@@ -2603,7 +2604,7 @@ mod tests {
     fn type_intrinsic_imag_uses_classical_promotion() {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Imag,
-            &[typed_expr(Type::Classical(ValueTy::int(bw(8))))],
+            &[typed_expr(Type::Classical(ValueTy::int(iw(8))))],
             Default::default(),
         )
         .unwrap();
@@ -2615,13 +2616,13 @@ mod tests {
         let result = intrinsic_result_type(
             &sir::Intrinsic::Sizeof,
             &[typed_expr(Type::Classical(ValueTy::array(
-                crate::classical::PrimitiveTy::Uint(crate::classical::bw(8)),
+                crate::classical::PrimitiveTy::Uint(crate::classical::iw(8)),
                 crate::classical::ashape(vec![2, 3]),
             )))],
             Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::Classical(ValueTy::uint(bw(usize::BITS))));
+        assert_eq!(result, Type::Classical(ValueTy::uint(iw(usize::BITS))));
     }
 
     #[test]
@@ -2630,12 +2631,12 @@ mod tests {
             &sir::Intrinsic::Sizeof,
             &[
                 typed_expr(Type::Classical(ValueTy::array(
-                    crate::classical::PrimitiveTy::Uint(crate::classical::bw(8)),
+                    crate::classical::PrimitiveTy::Uint(crate::classical::iw(8)),
                     crate::classical::ashape(vec![2, 3]),
                 ))),
                 sir::Expr {
                     kind: sir::ExprKind::Literal(Primitive::int(3)),
-                    ty: Type::Classical(ValueTy::int(bw(64))),
+                    ty: Type::Classical(ValueTy::int(iw(64))),
                     span: oqi_lex::span(0, 0),
                 },
             ],
@@ -2650,10 +2651,10 @@ mod tests {
             &sir::Intrinsic::Sizeof,
             &[
                 typed_expr(Type::Classical(ValueTy::array(
-                    crate::classical::PrimitiveTy::Uint(crate::classical::bw(8)),
+                    crate::classical::PrimitiveTy::Uint(crate::classical::iw(8)),
                     crate::classical::ashape(vec![2, 3]),
                 ))),
-                typed_expr(Type::Classical(ValueTy::angle(bw(8)))),
+                typed_expr(Type::Classical(ValueTy::angle(iw(8)))),
             ],
             Default::default(),
         );
@@ -2674,14 +2675,14 @@ mod tests {
         let index = sir::IndexOp {
             kind: sir::IndexKind::Items(vec![sir::IndexItem::Single(Box::new(sir::Expr {
                 kind: sir::ExprKind::Literal(Primitive::int(0)),
-                ty: Type::Classical(ValueTy::int(bw(64))),
+                ty: Type::Classical(ValueTy::int(iw(64))),
                 span: oqi_lex::span(0, 0),
             }))]),
             span: oqi_lex::span(0, 0),
         };
         let result = index_result_type(
             &Type::Classical(ValueTy::array(
-                crate::classical::PrimitiveTy::Uint(crate::classical::bw(8)),
+                crate::classical::PrimitiveTy::Uint(crate::classical::iw(8)),
                 crate::classical::ashape(vec![2, 3]),
             )),
             &index,
@@ -2689,7 +2690,7 @@ mod tests {
         assert_eq!(
             result,
             Type::Classical(ValueTy::array_ref(
-                crate::classical::PrimitiveTy::Uint(crate::classical::bw(8)),
+                crate::classical::PrimitiveTy::Uint(crate::classical::iw(8)),
                 crate::classical::ArrayRefShape::Fixed(crate::classical::ashape(vec![3])),
                 crate::classical::RefAccess::Mutable,
             ))

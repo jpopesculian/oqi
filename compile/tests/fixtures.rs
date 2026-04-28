@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use oqi_compile::classical::{ValueTy, bw};
+use oqi_compile::classical::{ValueTy, iw};
 use oqi_compile::lower::compile_source;
 use oqi_compile::resolve::DefaultIncludeResolver;
 
@@ -366,7 +366,7 @@ fn classical_scalar_types() {
     );
     assert_eq!(
         sym("my_bitreg").ty,
-        oqi_compile::types::Type::Classical(ValueTy::bitreg(bw(8)))
+        oqi_compile::types::Type::Classical(ValueTy::bitreg(8))
     );
     assert_eq!(
         sym("my_bool").ty,
@@ -374,11 +374,11 @@ fn classical_scalar_types() {
     );
     assert_eq!(
         sym("my_int").ty,
-        oqi_compile::types::Type::Classical(ValueTy::int(bw(32)))
+        oqi_compile::types::Type::Classical(ValueTy::int(iw(32)))
     );
     assert_eq!(
         sym("my_uint").ty,
-        oqi_compile::types::Type::Classical(ValueTy::uint(bw(16)))
+        oqi_compile::types::Type::Classical(ValueTy::uint(iw(16)))
     );
     assert_eq!(
         sym("my_float").ty,
@@ -446,7 +446,7 @@ fn array_1d_declaration() {
     assert_eq!(
         sym.ty,
         oqi_compile::types::Type::Classical(ValueTy::array(
-            oqi_compile::classical::PrimitiveTy::Int(oqi_compile::classical::bw(32)),
+            oqi_compile::classical::PrimitiveTy::Int(oqi_compile::classical::iw(32)),
             oqi_compile::classical::ashape(vec![5]),
         ))
     );
@@ -484,7 +484,7 @@ fn const_declarations_and_builtin_constants() {
     assert_eq!(sym("q").ty, oqi_compile::types::Type::QubitReg(32));
     assert_eq!(
         sym("i").ty,
-        oqi_compile::types::Type::Classical(ValueTy::int(bw(32)))
+        oqi_compile::types::Type::Classical(ValueTy::int(iw(32)))
     );
 }
 
@@ -519,7 +519,7 @@ fn bitstring_literal() {
     let sym = p.symbols.iter().find(|s| s.name == "b").unwrap();
     assert_eq!(
         sym.ty,
-        oqi_compile::types::Type::Classical(ValueTy::bitreg(bw(8)))
+        oqi_compile::types::Type::Classical(ValueTy::bitreg(8))
     );
 }
 
@@ -939,7 +939,7 @@ fn const_ref_substitutes() {
         matches!(prim, Primitive::Int(10)),
         "expected Int(10), got {prim:?}"
     );
-    assert_eq!(*ty, Type::Classical(ValueTy::int(bw(32))));
+    assert_eq!(*ty, Type::Classical(ValueTy::int(iw(32))));
 }
 
 #[test]
@@ -949,7 +949,7 @@ fn arithmetic_folds_to_literal() {
     let (_, rv) = first_assignment(&p);
     let (prim, ty) = as_literal(rv);
     assert!(matches!(prim, Primitive::Int(5)));
-    assert_eq!(*ty, Type::Classical(ValueTy::int(bw(32))));
+    assert_eq!(*ty, Type::Classical(ValueTy::int(iw(32))));
 }
 
 #[test]
@@ -962,7 +962,7 @@ fn const_arithmetic_folds() {
     let (_, rv) = first_assignment(&p);
     let (prim, ty) = as_literal(rv);
     assert!(matches!(prim, Primitive::Int(15)));
-    assert_eq!(*ty, Type::Classical(ValueTy::int(bw(32))));
+    assert_eq!(*ty, Type::Classical(ValueTy::int(iw(32))));
 }
 
 #[test]
@@ -989,7 +989,7 @@ fn cast_inside_expression_folds() {
         matches!(prim, Primitive::Int(44)),
         "expected Int(44), got {prim:?}"
     );
-    assert_eq!(*ty, Type::Classical(ValueTy::int(bw(8))));
+    assert_eq!(*ty, Type::Classical(ValueTy::int(iw(8))));
 }
 
 #[test]
@@ -1055,7 +1055,7 @@ fn non_intrinsic_call_arg_coerced() {
     assert!(matches!(prim, Primitive::Int(5)));
     assert_eq!(
         *ty,
-        Type::Classical(ValueTy::int(bw(8))),
+        Type::Classical(ValueTy::int(iw(8))),
         "arg should be coerced to int[8]"
     );
 }

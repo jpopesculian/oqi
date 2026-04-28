@@ -1,5 +1,6 @@
 mod array;
 mod array_ref;
+mod bitreg;
 mod duration;
 mod error;
 mod index;
@@ -12,10 +13,11 @@ mod value;
 
 pub use array::{Array, ArrayDim, ArrayShape, ArrayTy, BaseArray, BaseArrayTy, ScalarIter, adim, ashape};
 pub use array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, BaseArrayRef, BaseArrayRefTy, RefAccess};
+pub use bitreg::BitReg;
 pub use duration::{Duration, DurationUnit};
 pub use error::{Error, Result};
 pub use index::Index;
-pub use primitive::{BitWidth, FloatWidth, Primitive, PrimitiveTy, bw};
+pub use primitive::{FloatWidth, IntWidth, Primitive, PrimitiveTy, iw};
 pub use scalar::{BaseScalar, Scalar};
 pub use shared::Shared;
 pub use value::{BaseValue, BaseValueTy, Value, ValueTy};

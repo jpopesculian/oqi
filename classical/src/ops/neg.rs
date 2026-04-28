@@ -25,10 +25,10 @@ impl UnOp for Neg {
     fn scalar_op(arg: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         let result = match arg.value() {
             Primitive::Int(v) => Primitive::Int(v.checked_neg().ok_or(Error::Overflow)?),
-            Primitive::Float(v) => Primitive::Float(-v),
-            Primitive::Complex(v) => Primitive::Complex(-v),
-            Primitive::Duration(v) => Primitive::Duration(-v),
-            Primitive::Angle(v) => Primitive::Angle(-v),
+            Primitive::Float(v) => Primitive::Float(-*v),
+            Primitive::Complex(v) => Primitive::Complex(-*v),
+            Primitive::Duration(v) => Primitive::Duration(-*v),
+            Primitive::Angle(v) => Primitive::Angle(-*v),
             _ => return Err(unsupported_scalar_unop::<Self>(arg.ty())),
         };
         Scalar::new(result.resize(out), out)
@@ -45,11 +45,11 @@ impl Value {
 mod tests {
     use super::*;
     use crate::DurationUnit;
-    use crate::primitive::{FloatWidth, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     fn f64_scalar(v: f64) -> Value {
@@ -65,7 +65,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Int(width) if width.get() == 8));
-                assert_eq!(s.value().as_int(bw(8)).unwrap(), -5);
+                assert_eq!(s.value().as_int(iw(8)).unwrap(), -5);
             }
             _ => panic!("expected scalar"),
         }
@@ -77,7 +77,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Int(width) if width.get() == 8));
-                assert_eq!(s.value().as_int(bw(8)).unwrap(), -128);
+                assert_eq!(s.value().as_int(iw(8)).unwrap(), -128);
             }
             _ => panic!("expected scalar"),
         }
@@ -137,14 +137,14 @@ mod tests {
     fn angle_neg_wraps() {
         let r = Value::Scalar(Scalar::new_unchecked(
             Primitive::Angle(turns::Angle(0b0010 << 124)),
-            Angle(bw(4)),
+            Angle(iw(4)),
         ))
         .neg_()
         .unwrap();
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Angle(width) if width.get() == 4));
-                assert_eq!(s.value().as_angle(bw(4)).unwrap(), 0b1110 << 124);
+                assert_eq!(s.value().as_angle(iw(4)).unwrap(), 0b1110 << 124);
             }
             _ => panic!("expected scalar"),
         }
@@ -158,7 +158,7 @@ mod tests {
 
     #[test]
     fn uint_neg_returns_none() {
-        let a = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Uint(bw(8))));
+        let a = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Uint(iw(8))));
         assert!(a.neg_().is_err());
     }
 }

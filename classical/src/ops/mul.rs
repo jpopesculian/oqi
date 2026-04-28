@@ -107,14 +107,14 @@ impl BinOp for Mul {
     fn scalar_op(lhs: Scalar, rhs: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         use Primitive::*;
         let result = match (lhs.value(), rhs.value()) {
-            (Uint(lhs), Uint(rhs)) => Uint(lhs.checked_mul(rhs).ok_or(Error::Overflow)?),
-            (Int(lhs), Int(rhs)) => Int(lhs.checked_mul(rhs).ok_or(Error::Overflow)?),
-            (Float(lhs), Float(rhs)) => Float(lhs * rhs),
-            (Complex(lhs), Complex(rhs)) => Complex(lhs * rhs),
-            (Angle(lhs), Uint(rhs)) => Angle(lhs * rhs),
-            (Uint(lhs), Angle(rhs)) => Angle(rhs * lhs),
-            (Duration(lhs), Float(rhs)) => Duration(lhs * rhs),
-            (Float(lhs), Duration(rhs)) => Duration(lhs * rhs),
+            (Uint(a), Uint(b)) => Uint(a.checked_mul(*b).ok_or(Error::Overflow)?),
+            (Int(a), Int(b)) => Int(a.checked_mul(*b).ok_or(Error::Overflow)?),
+            (Float(a), Float(b)) => Float(*a * *b),
+            (Complex(a), Complex(b)) => Complex(*a * *b),
+            (Angle(a), Uint(b)) => Angle(*a * *b),
+            (Uint(a), Angle(b)) => Angle(*b * *a),
+            (Duration(a), Float(b)) => Duration(*a * *b),
+            (Float(a), Duration(b)) => Duration(*a * *b),
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
         Scalar::new(result.assert_fits(out)?, out)
@@ -172,7 +172,7 @@ impl BinOp for Mul {
                             plan.k,
                             out_scalar_ty,
                         )?
-                        .value(),
+                        .into_value(),
                     );
                 }
             }
@@ -200,9 +200,13 @@ fn dot_product(
             is_func: Mul::IS_FUNC,
         });
     }
-    let mut acc = Mul::scalar_op(a.0[a.1], b.0[b.1], out)?;
+    let mut acc = Mul::scalar_op(a.0[a.1].clone(), b.0[b.1].clone(), out)?;
     for k in 1..n {
-        let prod = Mul::scalar_op(a.0[a.1 + k * a.2], b.0[b.1 + k * b.2], out)?;
+        let prod = Mul::scalar_op(
+            a.0[a.1 + k * a.2].clone(),
+            b.0[b.1 + k * b.2].clone(),
+            out,
+        )?;
         acc = Add::scalar_op(acc, prod, out)?;
     }
     Ok(acc)
@@ -260,14 +264,14 @@ mod tests {
     use super::*;
     use crate::array::ashape;
     use crate::duration::DurationUnit;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     fn f64_scalar(v: f64) -> Value {
@@ -277,7 +281,7 @@ mod tests {
     fn u_array(values: &[u128], bits: u32, shape: Vec<usize>) -> Value {
         Value::Array(Array::new_unchecked(
             values.iter().map(|&v| Primitive::uint(v)).collect(),
-            ArrayTy::new(Uint(bw(bits)), ashape(shape)),
+            ArrayTy::new(Uint(iw(bits)), ashape(shape)),
         ))
     }
 
@@ -294,7 +298,7 @@ mod tests {
     fn uint_mul() {
         let r = u_scalar(3, 8).mul_(u_scalar(4, 8)).unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_uint(bw(8)).unwrap(), 12),
+            Value::Scalar(s) => assert_eq!(s.value().as_uint(iw(8)).unwrap(), 12),
             _ => panic!("expected scalar"),
         }
     }
@@ -308,7 +312,7 @@ mod tests {
     fn int_mul() {
         let r = i_scalar(-3, 8).mul_(i_scalar(4, 8)).unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_int(bw(8)).unwrap(), -12),
+            Value::Scalar(s) => assert_eq!(s.value().as_int(iw(8)).unwrap(), -12),
             _ => panic!("expected scalar"),
         }
     }
@@ -371,8 +375,8 @@ mod tests {
 
     #[test]
     fn angle_mul_returns_none() {
-        let a = Value::Scalar(Scalar::new_unchecked(Primitive::uint(3_u128), Angle(bw(8))));
-        let b = Value::Scalar(Scalar::new_unchecked(Primitive::uint(2_u128), Angle(bw(8))));
+        let a = Value::Scalar(Scalar::new_unchecked(Primitive::uint(3_u128), Angle(iw(8))));
+        let b = Value::Scalar(Scalar::new_unchecked(Primitive::uint(2_u128), Angle(iw(8))));
         assert!(a.mul_(b).is_err());
     }
 
@@ -384,7 +388,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(n) if n.get() == 16));
-                assert_eq!(s.value().as_uint(bw(16)).unwrap(), 30_000);
+                assert_eq!(s.value().as_uint(iw(16)).unwrap(), 30_000);
             }
             _ => panic!("expected scalar"),
         }
@@ -413,7 +417,7 @@ mod tests {
         match r {
             Value::Array(s) => {
                 assert_eq!(s.ty().shape().get(), &[1]);
-                let value = s.scalars().next().unwrap().value();
+                let value = s.scalars().next().unwrap().into_value();
                 assert_eq!(value.as_float(F64).unwrap(), 32.0)
             }
             _ => panic!("expected array"),
@@ -680,8 +684,8 @@ mod tests {
         match r {
             Value::Array(arr) => {
                 assert_eq!(arr.ty().shape().get(), &[1]);
-                let value = arr.scalars().next().unwrap().value();
-                assert_eq!(value.as_uint(bw(16)).unwrap(), 400)
+                let value = arr.scalars().next().unwrap().into_value();
+                assert_eq!(value.as_uint(iw(16)).unwrap(), 400)
             }
             _ => panic!("expected scalar"),
         }

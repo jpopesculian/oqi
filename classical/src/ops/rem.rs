@@ -30,13 +30,13 @@ impl BinOp for Rem {
     fn scalar_op(lhs: Scalar, rhs: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         use Primitive::*;
         let result = match (lhs.value(), rhs.value()) {
-            (Uint(lhs), Uint(rhs)) => Uint(lhs.checked_rem(rhs).ok_or(Error::DivideByZero)?),
-            (Int(lhs), Int(rhs)) => Int(lhs.checked_rem(rhs).ok_or(if rhs == 0 {
+            (Uint(a), Uint(b)) => Uint(a.checked_rem(*b).ok_or(Error::DivideByZero)?),
+            (Int(a), Int(b)) => Int(a.checked_rem(*b).ok_or(if *b == 0 {
                 Error::DivideByZero
             } else {
                 Error::Overflow
             })?),
-            (Float(lhs), Float(rhs)) => Float(lhs % rhs),
+            (Float(a), Float(b)) => Float(*a % *b),
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
         Ok(Scalar::new_unchecked(result.assert_fits(out)?, out))
@@ -54,15 +54,15 @@ mod tests {
     use super::*;
     use crate::array::{Array, ArrayTy, ashape};
     use crate::duration::DurationUnit;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     fn f64_scalar(v: f64) -> Value {
@@ -72,7 +72,7 @@ mod tests {
     fn u_array(values: &[u128], bits: u32, shape: Vec<usize>) -> Value {
         Value::Array(Array::new_unchecked(
             values.iter().map(|&v| Primitive::uint(v)).collect(),
-            ArrayTy::new(Uint(bw(bits)), ashape(shape)),
+            ArrayTy::new(Uint(iw(bits)), ashape(shape)),
         ))
     }
 
@@ -82,7 +82,7 @@ mod tests {
     fn uint_rem() {
         let r = u_scalar(10, 8).rem_(u_scalar(3, 8)).unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_uint(bw(8)).unwrap(), 1),
+            Value::Scalar(s) => assert_eq!(s.value().as_uint(iw(8)).unwrap(), 1),
             _ => panic!("expected scalar"),
         }
     }
@@ -97,7 +97,7 @@ mod tests {
         // -7 % 3 = -1 (Rust truncated remainder)
         let r = i_scalar(-7, 8).rem_(i_scalar(3, 8)).unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_int(bw(8)).unwrap(), -1),
+            Value::Scalar(s) => assert_eq!(s.value().as_int(iw(8)).unwrap(), -1),
             _ => panic!("expected scalar"),
         }
     }
@@ -151,8 +151,8 @@ mod tests {
 
     #[test]
     fn angle_rem_returns_none() {
-        let a = Value::Scalar(Scalar::new_unchecked(Primitive::uint(8_u128), Angle(bw(8))));
-        let b = Value::Scalar(Scalar::new_unchecked(Primitive::uint(3_u128), Angle(bw(8))));
+        let a = Value::Scalar(Scalar::new_unchecked(Primitive::uint(8_u128), Angle(iw(8))));
+        let b = Value::Scalar(Scalar::new_unchecked(Primitive::uint(3_u128), Angle(iw(8))));
         assert!(a.rem_(b).is_err());
     }
 
@@ -164,7 +164,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(n) if n.get() == 16));
-                assert_eq!(s.value().as_uint(bw(16)).unwrap(), 300 % 7);
+                assert_eq!(s.value().as_uint(iw(16)).unwrap(), 300 % 7);
             }
             _ => panic!("expected scalar"),
         }
@@ -192,7 +192,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![3, 2, 2]);
             }
@@ -212,7 +212,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![1, 3, 7]);
             }
@@ -230,7 +230,7 @@ mod tests {
                 let vals: Vec<u128> = a
                     .values()
                     .iter()
-                    .map(|s| s.as_uint(bw(8)).unwrap())
+                    .map(|s| s.as_uint(iw(8)).unwrap())
                     .collect();
                 assert_eq!(vals, vec![1, 2, 1]);
             }

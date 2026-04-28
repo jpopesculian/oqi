@@ -141,7 +141,7 @@ impl Default for SymbolTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classical::{Value, ValueTy, bw};
+    use crate::classical::{Value, ValueTy, iw};
 
     fn span(start: usize, end: usize) -> Span {
         oqi_lex::span(start, end)
@@ -172,7 +172,7 @@ mod tests {
         let id = table.insert(
             "N".to_string(),
             SymbolKind::Const,
-            Type::Classical(ValueTy::uint(bw(32))),
+            Type::Classical(ValueTy::uint(iw(32))),
             span(0, 5),
         );
 
@@ -241,7 +241,7 @@ mod tests {
         let id1 = table.insert(
             "x".to_string(),
             SymbolKind::Variable,
-            Type::Classical(ValueTy::int(bw(32))),
+            Type::Classical(ValueTy::int(iw(32))),
             span(2, 3),
         );
 
@@ -260,9 +260,9 @@ mod tests {
         );
 
         let sym = table.get_mut(id);
-        sym.ty = Type::Classical(ValueTy::bitreg(bw(8)));
+        sym.ty = Type::Classical(ValueTy::bitreg(8));
 
-        assert_eq!(table.get(id).ty, Type::Classical(ValueTy::bitreg(bw(8))));
+        assert_eq!(table.get(id).ty, Type::Classical(ValueTy::bitreg(8)));
     }
 
     #[test]

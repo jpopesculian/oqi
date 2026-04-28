@@ -21,9 +21,9 @@ impl UnOp for BitNot {
 
     fn scalar_op(arg: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         let result = match arg.value() {
-            Primitive::Bit(v) => Primitive::Bit(!v),
-            Primitive::Uint(v) => Primitive::Uint(!v),
-            Primitive::Int(v) => Primitive::Int(!v),
+            Primitive::Bit(v) => Primitive::Bit(!*v),
+            Primitive::Uint(v) => Primitive::Uint(!*v),
+            Primitive::Int(v) => Primitive::Int(!*v),
             Primitive::BitReg(v) => Primitive::BitReg(!v),
             _ => return Err(unsupported_scalar_unop::<Self>(arg.ty())),
         };
@@ -40,7 +40,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn bit_scalar(v: bool) -> Value {
@@ -48,11 +48,11 @@ mod tests {
     }
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     #[test]
@@ -73,7 +73,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(width) if width.get() == 8));
-                assert_eq!(s.value().as_uint(bw(8)).unwrap(), 0xF0);
+                assert_eq!(s.value().as_uint(iw(8)).unwrap(), 0xF0);
             }
             _ => panic!("expected scalar"),
         }
@@ -85,7 +85,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Int(width) if width.get() == 8));
-                assert_eq!(s.value().as_int(bw(8)).unwrap(), -16);
+                assert_eq!(s.value().as_int(iw(8)).unwrap(), -16);
             }
             _ => panic!("expected scalar"),
         }
@@ -95,14 +95,14 @@ mod tests {
     fn bitreg_bitnot() {
         let r = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b0011_u128),
-            BitReg(bw(4)),
+            BitReg(4),
         ))
         .not_()
         .unwrap();
         match r {
             Value::Scalar(s) => {
-                assert!(matches!(s.ty(), BitReg(width) if width.get() == 4));
-                assert_eq!(s.value().as_uint(bw(4)).unwrap(), 0b1100);
+                assert!(matches!(s.ty(), BitReg(width) if width == 4));
+                assert_eq!(s.value().as_uint(iw(4)).unwrap(), 0b1100);
             }
             _ => panic!("expected scalar"),
         }

@@ -49,7 +49,7 @@ mod tests {
     use crate::DurationUnit;
     use crate::array::{Array, ArrayTy, ashape};
     use crate::index::Index;
-    use crate::primitive::{FloatWidth, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn bool_scalar(v: bool) -> Value {
@@ -61,17 +61,17 @@ mod tests {
     }
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     fn u_array(values: &[u128], bits: u32, shape: Vec<usize>) -> Value {
         Value::Array(Array::new_unchecked(
             values.iter().map(|&v| Primitive::uint(v)).collect(),
-            ArrayTy::new(Uint(bw(bits)), ashape(shape)),
+            ArrayTy::new(Uint(iw(bits)), ashape(shape)),
         ))
     }
 
@@ -152,11 +152,11 @@ mod tests {
     fn bitreg_eq_same_width() {
         let r = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010_u128),
-            BitReg(bw(4)),
+            BitReg(4),
         ))
         .eq_(Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010_u128),
-            BitReg(bw(4)),
+            BitReg(4),
         )))
         .unwrap();
         match r {
@@ -172,11 +172,11 @@ mod tests {
     fn bitreg_eq_mismatched_width_returns_none() {
         let a = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010_u128),
-            BitReg(bw(4)),
+            BitReg(4),
         ));
         let b = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010_u128),
-            BitReg(bw(8)),
+            BitReg(8),
         ));
         assert!(a.eq_(b).is_err());
     }

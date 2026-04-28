@@ -51,15 +51,15 @@ impl Value {
 mod tests {
     use super::*;
     use crate::duration::DurationUnit;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     // --- Scalar ^ Scalar ---
@@ -69,7 +69,7 @@ mod tests {
         // 0b1100 ^ 0b1010 = 0b0110
         let r = u_scalar(0b1100, 8).xor_(u_scalar(0b1010, 8)).unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_uint(bw(8)).unwrap(), 0b0110),
+            Value::Scalar(s) => assert_eq!(s.value().as_uint(iw(8)).unwrap(), 0b0110),
             _ => panic!("expected scalar"),
         }
     }
@@ -80,7 +80,7 @@ mod tests {
             .xor_(i_scalar(0xFF_u8 as i128, 8))
             .unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_int(bw(8)).unwrap(), 0x0F ^ -1),
+            Value::Scalar(s) => assert_eq!(s.value().as_int(iw(8)).unwrap(), 0x0F ^ -1),
             _ => panic!("expected scalar"),
         }
     }
@@ -95,16 +95,16 @@ mod tests {
     #[test]
     fn bitreg_bitxor_same_width() {
         let a = Value::Scalar(Scalar::new_unchecked(
-            Primitive::bitreg(0b1100_u128),
-            BitReg(bw(4)),
+            Primitive::bitreg_u128(0b1100_u128),
+            BitReg(4),
         ));
         let b = Value::Scalar(Scalar::new_unchecked(
-            Primitive::bitreg(0b1010_u128),
-            BitReg(bw(4)),
+            Primitive::bitreg_u128(0b1010_u128),
+            BitReg(4),
         ));
         let r = a.xor_(b).unwrap();
         match r {
-            Value::Scalar(s) => assert_eq!(s.value().as_bitreg(bw(4)).unwrap(), 0b0110),
+            Value::Scalar(s) => assert_eq!(s.value().as_bitreg(4).unwrap().as_u128(), 0b0110),
             _ => panic!("expected scalar"),
         }
     }
@@ -115,7 +115,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(n) if n.get() == 16));
-                assert_eq!(s.value().as_uint(bw(16)).unwrap(), 0x00FF ^ 0xFF0F);
+                assert_eq!(s.value().as_uint(iw(16)).unwrap(), 0x00FF ^ 0xFF0F);
             }
             _ => panic!("expected scalar"),
         }
@@ -155,11 +155,11 @@ mod tests {
     fn angle_bitxor_returns_none() {
         let a = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0xFF_u128),
-            Angle(bw(8)),
+            Angle(iw(8)),
         ));
         let b = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0x0F_u128),
-            Angle(bw(8)),
+            Angle(iw(8)),
         ));
         assert!(a.xor_(b).is_err());
     }

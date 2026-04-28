@@ -21,21 +21,21 @@ impl BinOp for Pow {
     fn scalar_op(lhs: Scalar, rhs: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         let result = match (lhs.value(), rhs.value()) {
             (Primitive::Uint(a), Primitive::Uint(b)) => Primitive::Uint(
-                a.checked_pow(b.try_into().map_err(|_| Error::Overflow)?)
+                a.checked_pow(u32::try_from(*b).map_err(|_| Error::Overflow)?)
                     .ok_or(Error::Overflow)?,
             ),
             (Primitive::Int(a), Primitive::Int(b)) => {
-                if b < 0 {
+                if *b < 0 {
                     Primitive::Int(0)
                 } else {
                     Primitive::Int(
-                        a.checked_pow(b.try_into().map_err(|_| Error::Overflow)?)
+                        a.checked_pow(u32::try_from(*b).map_err(|_| Error::Overflow)?)
                             .ok_or(Error::Overflow)?,
                     )
                 }
             }
-            (Primitive::Float(a), Primitive::Float(b)) => Primitive::Float(a.powf(b)),
-            (Primitive::Complex(a), Primitive::Complex(b)) => Primitive::Complex(a.powc(b)),
+            (Primitive::Float(a), Primitive::Float(b)) => Primitive::Float(a.powf(*b)),
+            (Primitive::Complex(a), Primitive::Complex(b)) => Primitive::Complex(a.powc(*b)),
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
         Ok(Scalar::new_unchecked(result.assert_fits(out)?, out))
@@ -51,15 +51,15 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitive::{FloatWidth, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     #[test]
@@ -68,7 +68,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(width) if width.get() == 8));
-                assert_eq!(s.value().as_uint(bw(8)).unwrap(), 81);
+                assert_eq!(s.value().as_uint(iw(8)).unwrap(), 81);
             }
             _ => panic!("expected scalar"),
         }
@@ -85,7 +85,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Int(width) if width.get() == 8));
-                assert_eq!(s.value().as_int(bw(8)).unwrap(), -27);
+                assert_eq!(s.value().as_int(iw(8)).unwrap(), -27);
             }
             _ => panic!("expected scalar"),
         }
@@ -97,7 +97,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Int(width) if width.get() == 8));
-                assert_eq!(s.value().as_int(bw(8)).unwrap(), 0);
+                assert_eq!(s.value().as_int(iw(8)).unwrap(), 0);
             }
             _ => panic!("expected scalar"),
         }
@@ -109,7 +109,7 @@ mod tests {
         match r {
             Value::Scalar(s) => {
                 assert!(matches!(s.ty(), Uint(width) if width.get() == 16));
-                assert_eq!(s.value().as_uint(bw(16)).unwrap(), 81);
+                assert_eq!(s.value().as_uint(iw(16)).unwrap(), 81);
             }
             _ => panic!("expected scalar"),
         }
@@ -118,10 +118,10 @@ mod tests {
     #[test]
     fn bitreg_pow_same_width() {
         assert!(
-            Value::Scalar(Scalar::new_unchecked(Primitive::BitReg(3), BitReg(bw(8))))
+            Value::Scalar(Scalar::new_unchecked(Primitive::bitreg_u128(3), BitReg(8)))
                 .pow_(Value::Scalar(Scalar::new_unchecked(
-                    Primitive::BitReg(4),
-                    BitReg(bw(8)),
+                    Primitive::bitreg_u128(4),
+                    BitReg(8),
                 )))
                 .is_err()
         );

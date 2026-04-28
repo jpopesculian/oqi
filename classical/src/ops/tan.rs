@@ -38,7 +38,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     #[test]
@@ -75,7 +75,7 @@ mod tests {
         // 8-bit angle 0 = 0 radians, tan(0) = 0
         let r = Value::Scalar(Scalar::new_unchecked(
             Primitive::Angle(turns::Angle(0)),
-            Angle(bw(8)),
+            Angle(iw(8)),
         ))
         .tan_()
         .unwrap();

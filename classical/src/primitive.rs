@@ -2,6 +2,7 @@ use std::fmt;
 
 use crate::{
     DurationUnit,
+    bitreg::BitReg,
     duration::Duration,
     error::{Error, Result},
     value::ValueTy,
@@ -9,10 +10,10 @@ use crate::{
 use num_complex::{Complex32, Complex64, c64};
 use turns::{Angle8, Angle16, Angle32, Angle64, Angle128};
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Primitive {
     Bit(bool),
-    BitReg(u128),
+    BitReg(BitReg),
     Uint(u128),
     Int(i128),
     Float(f64),
@@ -62,156 +63,158 @@ impl Primitive {
     }
 
     #[inline]
-    pub const fn bitreg(bits: u128) -> Self {
-        Self::BitReg(bits)
+    pub fn bitreg(reg: BitReg) -> Self {
+        Self::BitReg(reg)
     }
 
     #[inline]
-    pub const fn as_bit(self) -> bool {
+    pub fn bitreg_u128(bits: u128) -> Self {
+        Self::BitReg(BitReg::from(bits))
+    }
+
+    #[inline]
+    pub fn as_bit(&self) -> bool {
         match self {
-            Self::Bit(b) => b,
-            Self::Uint(v) | Self::BitReg(v) => v != 0, // truthiness: nonzero -> true
-            Self::Angle(a) => a.0 != 0,                // truthiness: nonzero -> true
-            Self::Int(v) => v != 0,                    // truthiness: nonzero -> true
-            Self::Float(v) => v != 0.0,                // truthiness: nonzero -> true
-            Self::Complex(c) => c.re != 0.0 || c.im != 0.0, // truthiness: nonzero -> true
-            Self::Duration(d) => d.value != 0.0,       // truthiness: nonzero -> true
+            Self::Bit(b) => *b,
+            Self::Uint(v) => *v != 0,
+            Self::BitReg(reg) => reg.as_u128() != 0 || matches!(reg, BitReg::Heap(b) if b.iter().any(|&x| x != 0)),
+            Self::Angle(a) => a.0 != 0,
+            Self::Int(v) => *v != 0,
+            Self::Float(v) => *v != 0.0,
+            Self::Complex(c) => c.re != 0.0 || c.im != 0.0,
+            Self::Duration(d) => d.value != 0.0,
         }
     }
 
     #[inline]
-    pub fn as_int(self, bits: BitWidth) -> Option<i128> {
+    pub fn as_int(&self, bits: IntWidth) -> Option<i128> {
         let v = match self {
             Self::Bit(b) => {
-                if b {
+                if *b {
                     1
                 } else {
                     0
                 }
             }
-            Self::BitReg(b) => b as i128,
-            Self::Int(v) => v,
-            Self::Float(v) => v as i128,
-            Self::Complex(c) => c.re as i128, // only take real part for uint conversion
+            Self::BitReg(reg) => reg.as_u128() as i128,
+            Self::Int(v) => *v,
+            Self::Float(v) => *v as i128,
+            Self::Complex(c) => c.re as i128,
             Self::Duration(d) => d.value as i128,
-            Self::Uint(v) => v as i128,
+            Self::Uint(v) => *v as i128,
             Self::Angle(_v) => return None,
         };
         Some(resize_int(v, bits))
     }
 
     #[inline]
-    pub fn as_uint(self, bits: BitWidth) -> Option<u128> {
+    pub fn as_uint(&self, bits: IntWidth) -> Option<u128> {
         let v = match self {
             Self::Bit(b) => {
-                if b {
+                if *b {
                     1
                 } else {
                     0
                 }
             }
-            Self::Int(v) => v as u128,
-            Self::Float(v) => v as u128,
-            Self::Complex(c) => c.re as u128, // only take real part for uint conversion
+            Self::Int(v) => *v as u128,
+            Self::Float(v) => *v as u128,
+            Self::Complex(c) => c.re as u128,
             Self::Duration(d) => d.value as u128,
-            Self::Uint(v) | Self::BitReg(v) => v,
+            Self::Uint(v) => *v,
+            Self::BitReg(reg) => reg.as_u128(),
             Self::Angle(_v) => return None,
         };
         Some(resize_uint(v, bits))
     }
 
     #[inline]
-    pub fn as_float(self, width: FloatWidth) -> Option<f64> {
+    pub fn as_float(&self, width: FloatWidth) -> Option<f64> {
         let v = match self {
             Self::Bit(b) => {
-                if b {
+                if *b {
                     1.0
                 } else {
                     0.0
                 }
             }
-            Self::Float(v) => v,
-            Self::Int(v) => v as f64,
-            Self::Uint(v) => v as f64,
-            Self::Complex(c) => c.re, // only take real part for float conversion
+            Self::Float(v) => *v,
+            Self::Int(v) => *v as f64,
+            Self::Uint(v) => *v as f64,
+            Self::Complex(c) => c.re,
             Self::Duration(d) => d.value,
             Self::Angle(v) => v.to_radians(),
             _ => return None,
         };
         Some(match width {
-            FloatWidth::F32 => v as f32 as f64, // round-trip through f32 to truncate precision
+            FloatWidth::F32 => v as f32 as f64,
             FloatWidth::F64 => v,
         })
     }
 
     #[inline]
-    pub fn as_complex(self, width: FloatWidth) -> Option<Complex64> {
+    pub fn as_complex(&self, width: FloatWidth) -> Option<Complex64> {
         let v = match self {
-            Self::Bit(b) => c64(if b { 1.0 } else { 0.0 }, 0.0),
-            Self::Complex(c) => c,
-            Self::Int(v) => c64(v as f64, 0.0),
-            Self::Uint(v) => c64(v as f64, 0.0),
-            Self::Float(v) => c64(v, 0.0),
+            Self::Bit(b) => c64(if *b { 1.0 } else { 0.0 }, 0.0),
+            Self::Complex(c) => *c,
+            Self::Int(v) => c64(*v as f64, 0.0),
+            Self::Uint(v) => c64(*v as f64, 0.0),
+            Self::Float(v) => c64(*v, 0.0),
             Self::Duration(d) => c64(d.value, 0.0),
             Self::Angle(v) => c64(v.to_radians(), 0.0),
             _ => return None,
         };
         Some(match width {
-            FloatWidth::F32 => c64(v.re as f32 as f64, v.im as f32 as f64), // round-trip through
-            // f32 to truncate precision
+            FloatWidth::F32 => c64(v.re as f32 as f64, v.im as f32 as f64),
             FloatWidth::F64 => v,
         })
     }
 
     #[inline]
-    pub fn as_duration(self) -> Option<Duration> {
+    pub fn as_duration(&self) -> Option<Duration> {
         match self {
-            Self::Duration(d) => Some(d),
+            Self::Duration(d) => Some(*d),
             _ => None,
         }
     }
 
     #[inline]
-    pub fn as_angle(self, bw: BitWidth) -> Option<u128> {
+    pub fn as_angle(&self, bw: IntWidth) -> Option<u128> {
         Some(match self {
             Self::Bit(b) => {
-                if b {
+                if *b {
                     u128::MAX
                 } else {
                     0
                 }
             }
             Self::Angle(v) => resize_angle(v.0, bw),
-            Self::Float(f) => radians_to_angle_bw(f, bw),
-            Self::Complex(Complex64 { re: f, .. }) => radians_to_angle_bw(f, bw),
+            Self::Float(f) => radians_to_angle_bw(*f, bw),
+            Self::Complex(Complex64 { re: f, .. }) => radians_to_angle_bw(*f, bw),
             _ => return None,
         })
     }
 
     #[inline]
-    pub fn as_bitreg(self, bw: BitWidth) -> Option<u128> {
-        let v = match self {
-            Self::Bit(b) => {
-                if b {
-                    1
-                } else {
-                    0
-                }
-            }
-            Self::Uint(v) => v,
-            Self::Int(v) => v as u128,
-            Self::BitReg(b) => b,
+    pub fn as_bitreg(&self, width: u32) -> Option<BitReg> {
+        let reg = match self {
+            Self::Bit(b) => BitReg::from(if *b { 1u128 } else { 0 }),
+            Self::Uint(v) => BitReg::from(*v),
+            Self::Int(v) => BitReg::from(*v as u128),
+            Self::BitReg(reg) => reg.clone(),
             _ => return None,
         };
-        Some(resize_uint(v, bw))
+        Some(reg.resize(width))
     }
 
     pub fn assert_fits(self, ty: PrimitiveTy) -> Result<Self> {
-        let Some(bw) = ty.bw() else { return Ok(self) };
-        let overflow = match self {
-            Self::Uint(v) => v >> bw.get() != 0,
+        let Some(bw) = ty.int_width() else {
+            return Ok(self);
+        };
+        let overflow = match &self {
+            Self::Uint(v) => *v >> bw.get() != 0,
             Self::Int(v) => {
-                let shifted = v >> (bw.get() - 1);
+                let shifted = *v >> (bw.get() - 1);
                 shifted != 0 && shifted != -1
             }
             _ => false,
@@ -223,44 +226,54 @@ impl Primitive {
         }
     }
 
-    pub const fn resize(self, ty: PrimitiveTy) -> Primitive {
-        let Some(bw) = ty.bw() else { return self };
-        match self {
-            Self::Uint(v) => Self::Uint(resize_uint(v, bw)),
-            Self::Int(v) => Self::Int(resize_int(v, bw)),
-            Self::BitReg(v) => Self::Uint(resize_uint(v, bw)),
-            Self::Angle(v) => Self::Angle(turns::Angle(resize_angle(v.0, bw))),
-            other => other,
+    pub fn resize(self, ty: PrimitiveTy) -> Primitive {
+        match ty {
+            PrimitiveTy::BitReg(width) => match self {
+                Self::BitReg(reg) => Self::BitReg(reg.resize(width)),
+                Self::Uint(v) => Self::BitReg(BitReg::from(v).resize(width)),
+                Self::Int(v) => Self::BitReg(BitReg::from(v as u128).resize(width)),
+                other => other,
+            },
+            _ => {
+                let Some(bw) = ty.int_width() else { return self };
+                match self {
+                    Self::Uint(v) => Self::Uint(resize_uint(v, bw)),
+                    Self::Int(v) => Self::Int(resize_int(v, bw)),
+                    Self::BitReg(reg) => Self::Uint(resize_uint(reg.as_u128(), bw)),
+                    Self::Angle(v) => Self::Angle(turns::Angle(resize_angle(v.0, bw))),
+                    other => other,
+                }
+            }
         }
     }
 
     #[inline]
-    pub const fn default_ty(self) -> PrimitiveTy {
+    pub fn default_ty(&self) -> PrimitiveTy {
         match self {
             Primitive::Bit(_) => PrimitiveTy::Bit,
-            Primitive::BitReg(_) => PrimitiveTy::BitReg(BitWidth::B128),
-            Primitive::Int(_) => PrimitiveTy::Int(BitWidth::B128),
-            Primitive::Uint(_) => PrimitiveTy::Uint(BitWidth::B128),
+            Primitive::BitReg(reg) => PrimitiveTy::BitReg(reg.default_width()),
+            Primitive::Int(_) => PrimitiveTy::Int(IntWidth::B128),
+            Primitive::Uint(_) => PrimitiveTy::Uint(IntWidth::B128),
             Primitive::Float(_) => PrimitiveTy::Float(FloatWidth::F64),
             Primitive::Complex(_) => PrimitiveTy::Complex(FloatWidth::F64),
             Primitive::Duration(_) => PrimitiveTy::Duration,
-            Primitive::Angle(_) => PrimitiveTy::Angle(BitWidth::B128),
+            Primitive::Angle(_) => PrimitiveTy::Angle(IntWidth::B128),
         }
     }
 
     pub fn as_ty(self, ty: PrimitiveTy) -> Result<Primitive> {
         use PrimitiveTy::*;
-        match ty {
+        let result = match ty {
             Bit | Bool => Some(Self::Bit(self.as_bit())),
-            BitReg(bw) => self.as_bitreg(bw).map(Self::BitReg),
+            BitReg(width) => self.as_bitreg(width).map(Self::BitReg),
             Int(bw) => self.as_int(bw).map(Self::Int),
             Uint(bw) => self.as_uint(bw).map(Self::Uint),
             Float(fw) => self.as_float(fw).map(Self::Float),
             Complex(fw) => self.as_complex(fw).map(Self::Complex),
             Duration => self.as_duration().map(Self::Duration),
             Angle(bw) => self.as_angle(bw).map(|v| Self::Angle(turns::Angle(v))),
-        }
-        .ok_or(Error::TypeMismatch { value: self, ty })
+        };
+        result.ok_or(Error::TypeMismatch { value: self, ty })
     }
 
     pub fn cast(self, from: PrimitiveTy, to: PrimitiveTy) -> Result<Self> {
@@ -345,10 +358,7 @@ impl fmt::Debug for Primitive {
                 .debug_tuple("Angle")
                 .field(&format_args!("{:0128b}", a.0))
                 .finish(),
-            BitReg(r) => f
-                .debug_tuple("BitReg")
-                .field(&format_args!("{:0128b}", r))
-                .finish(),
+            BitReg(r) => f.debug_tuple("BitReg").field(&format_args!("{}", r)).finish(),
         }
     }
 }
@@ -369,15 +379,15 @@ impl FloatWidth {
 }
 
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Debug)]
-pub struct BitWidth(u32);
+pub struct IntWidth(u32);
 
-impl BitWidth {
-    pub const B128: BitWidth = BitWidth(128);
-    pub const B72: BitWidth = BitWidth(72);
-    pub const B64: BitWidth = BitWidth(64);
-    pub const B32: BitWidth = BitWidth(32);
-    pub const B16: BitWidth = BitWidth(16);
-    pub const B8: BitWidth = BitWidth(8);
+impl IntWidth {
+    pub const B128: IntWidth = IntWidth(128);
+    pub const B72: IntWidth = IntWidth(72);
+    pub const B64: IntWidth = IntWidth(64);
+    pub const B32: IntWidth = IntWidth(32);
+    pub const B16: IntWidth = IntWidth(16);
+    pub const B8: IntWidth = IntWidth(8);
 
     #[inline]
     pub const fn new(bits: u32) -> Result<Self> {
@@ -397,40 +407,40 @@ impl BitWidth {
     }
 }
 
-impl PartialEq<u32> for BitWidth {
+impl PartialEq<u32> for IntWidth {
     fn eq(&self, other: &u32) -> bool {
         self.get() == *other
     }
 }
 
-impl PartialEq<BitWidth> for u32 {
-    fn eq(&self, other: &BitWidth) -> bool {
+impl PartialEq<IntWidth> for u32 {
+    fn eq(&self, other: &IntWidth) -> bool {
         *self == other.get()
     }
 }
 
-impl PartialOrd<u32> for BitWidth {
+impl PartialOrd<u32> for IntWidth {
     fn partial_cmp(&self, other: &u32) -> Option<std::cmp::Ordering> {
         self.get().partial_cmp(other)
     }
 }
 
-impl PartialOrd<BitWidth> for u32 {
-    fn partial_cmp(&self, other: &BitWidth) -> Option<std::cmp::Ordering> {
+impl PartialOrd<IntWidth> for u32 {
+    fn partial_cmp(&self, other: &IntWidth) -> Option<std::cmp::Ordering> {
         self.partial_cmp(&other.get())
     }
 }
 
 #[inline]
-pub fn bw(bits: u32) -> BitWidth {
-    BitWidth::new(bits).unwrap()
+pub fn iw(bits: u32) -> IntWidth {
+    IntWidth::new(bits).unwrap()
 }
 
 impl fmt::Display for Primitive {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Bit(v) => write!(f, "{}", if *v { 1 } else { 0 }),
-            Self::BitReg(v) => write!(f, "\"{:b}\"", v),
+            Self::BitReg(v) => write!(f, "\"{}\"", v),
             Self::Uint(v) => write!(f, "{}", v),
             Self::Int(v) => write!(f, "{}", v),
             Self::Float(v) => write!(f, "{}", v),
@@ -458,22 +468,27 @@ impl fmt::Display for Primitive {
 pub enum PrimitiveTy {
     Bool,
     Bit,
-    BitReg(BitWidth),
-    Int(BitWidth),
-    Uint(BitWidth),
+    BitReg(u32),
+    Int(IntWidth),
+    Uint(IntWidth),
     Float(FloatWidth),
     Complex(FloatWidth),
     Duration,
-    Angle(BitWidth),
+    Angle(IntWidth),
 }
 
 impl PrimitiveTy {
-    pub const fn bw(&self) -> Option<BitWidth> {
+    pub const fn int_width(&self) -> Option<IntWidth> {
         match self {
-            PrimitiveTy::BitReg(n)
-            | PrimitiveTy::Int(n)
-            | PrimitiveTy::Uint(n)
-            | PrimitiveTy::Angle(n) => Some(*n),
+            PrimitiveTy::Int(n) | PrimitiveTy::Uint(n) | PrimitiveTy::Angle(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    pub const fn bit_count(&self) -> Option<u32> {
+        match self {
+            PrimitiveTy::Int(n) | PrimitiveTy::Uint(n) | PrimitiveTy::Angle(n) => Some(n.get()),
+            PrimitiveTy::BitReg(n) => Some(*n),
             _ => None,
         }
     }
@@ -534,15 +549,11 @@ impl PrimitiveTy {
             // Angle <-> Angle
             | (Angle(_), Angle(_)) => {},
 
-            // Bitreg-like <-> Bitreg-like
-            (BitReg(a), BitReg(b))
-            | (Uint(a), BitReg(b))
-            | (BitReg(a), Int(b))
-            | (Int(a), BitReg(b))
-            | (BitReg(a), Uint(b))
-            | (Angle(a), BitReg(b))
-            | (BitReg(a), Angle(b))
-            if a == b => {}
+            // Bitreg-like <-> Bitreg-like (require equal bit-count)
+            (BitReg(a), BitReg(b)) if a == b => {}
+            (Uint(a), BitReg(b)) | (BitReg(b), Uint(a)) if a == b => {}
+            (Int(a), BitReg(b)) | (BitReg(b), Int(a)) if a == b => {}
+            (Angle(a), BitReg(b)) | (BitReg(b), Angle(a)) if a == b => {}
             _ => {
                 return Err(Error::UnsupportedCast {
                     from: Box::new(ValueTy::Scalar(self)),
@@ -614,7 +625,7 @@ impl fmt::Display for PrimitiveTy {
         match self {
             Bool => write!(f, "bool"),
             Bit => write!(f, "bit"),
-            BitReg(bw) => write!(f, "bit[{}]", bw.get()),
+            BitReg(bw) => write!(f, "bit[{}]", bw),
             Uint(bw) => write!(f, "uint[{}]", bw.get()),
             Int(bw) => write!(f, "int[{}]", bw.get()),
             Float(fw) => write!(f, "float[{}]", fw.get()),
@@ -626,8 +637,8 @@ impl fmt::Display for PrimitiveTy {
 }
 
 #[inline]
-const fn resize_uint(v: u128, bw: BitWidth) -> u128 {
-    let mask = if matches!(bw, BitWidth(128)) {
+pub(crate) const fn resize_uint(v: u128, bw: IntWidth) -> u128 {
+    let mask = if matches!(bw, IntWidth(128)) {
         u128::MAX
     } else {
         (1u128 << bw.get()) - 1
@@ -636,14 +647,14 @@ const fn resize_uint(v: u128, bw: BitWidth) -> u128 {
 }
 
 #[inline]
-pub(crate) const fn resize_int(v: i128, bw: BitWidth) -> i128 {
+pub(crate) const fn resize_int(v: i128, bw: IntWidth) -> i128 {
     let shift = 128 - bw.get();
     (v << shift) >> shift
 }
 
 #[inline]
-const fn resize_angle(v: u128, bw: BitWidth) -> u128 {
-    let mask = if matches!(bw, BitWidth(128)) {
+const fn resize_angle(v: u128, bw: IntWidth) -> u128 {
+    let mask = if matches!(bw, IntWidth(128)) {
         u128::MAX
     } else {
         !(u128::MAX >> bw.get())
@@ -652,26 +663,19 @@ const fn resize_angle(v: u128, bw: BitWidth) -> u128 {
 }
 
 #[inline]
-fn radians_to_angle_bw(radians: f64, bw: BitWidth) -> u128 {
+fn radians_to_angle_bw(radians: f64, bw: IntWidth) -> u128 {
     use std::f64::consts::TAU;
 
-    // Map radians into [0, TAU)
     let normalized = radians.rem_euclid(TAU);
-
-    // Convert to a fraction of a full turn
     let turns = normalized / TAU;
-
-    // Quantize into 2^bitwidth discrete values
     let buckets = 2.0_f64.powi(bw.get() as i32);
     let quantized = (turns * buckets).round_ties_even() as u128;
 
-    // Wrap 2^bitwidth back to 0
     let wrapped = match bw {
-        BitWidth(128) => quantized,
+        IntWidth(128) => quantized,
         _ => quantized % (1u128 << bw.get()),
     };
 
-    // Store in the high bits, zeroing the low bits
     wrapped << (128 - bw.get())
 }
 
@@ -686,15 +690,15 @@ mod tests {
     #[test]
     fn uint_to_uint_widen() {
         let s = Primitive::uint(200_u128);
-        let r = s.cast(Uint(bw(8)), Uint(bw(16))).unwrap();
-        assert_eq!(r.as_uint(bw(16)).unwrap(), 200);
+        let r = s.cast(Uint(iw(8)), Uint(iw(16))).unwrap();
+        assert_eq!(r.as_uint(iw(16)).unwrap(), 200);
     }
 
     #[test]
     fn uint_to_uint_truncate() {
-        let s = Primitive::uint(0x1FF_u128); // 511, 9 bits
-        let r = s.cast(Uint(bw(16)), Uint(bw(8))).unwrap();
-        assert_eq!(r.as_uint(bw(8)).unwrap(), 0xFF); // truncated to 8 bits
+        let s = Primitive::uint(0x1FF_u128);
+        let r = s.cast(Uint(iw(16)), Uint(iw(8))).unwrap();
+        assert_eq!(r.as_uint(iw(8)).unwrap(), 0xFF);
     }
 
     // --- Int <-> Int ---
@@ -702,15 +706,15 @@ mod tests {
     #[test]
     fn int_to_int_widen() {
         let s = Primitive::int(-5_i128);
-        let r = s.cast(Int(bw(8)), Int(bw(16))).unwrap();
-        assert_eq!(r.as_int(bw(16)).unwrap(), -5);
+        let r = s.cast(Int(iw(8)), Int(iw(16))).unwrap();
+        assert_eq!(r.as_int(iw(16)).unwrap(), -5);
     }
 
     #[test]
     fn int_to_int_truncate() {
         let s = Primitive::int(-1_i128);
-        let r = s.cast(Int(bw(32)), Int(bw(8))).unwrap();
-        assert_eq!(r.as_int(bw(8)).unwrap(), -1);
+        let r = s.cast(Int(iw(32)), Int(iw(8))).unwrap();
+        assert_eq!(r.as_int(iw(8)).unwrap(), -1);
     }
 
     // --- Uint <-> Int ---
@@ -718,15 +722,15 @@ mod tests {
     #[test]
     fn uint_to_int() {
         let s = Primitive::uint(42_u128);
-        let r = s.cast(Uint(bw(8)), Int(bw(16))).unwrap();
-        assert_eq!(r.as_int(bw(16)).unwrap(), 42);
+        let r = s.cast(Uint(iw(8)), Int(iw(16))).unwrap();
+        assert_eq!(r.as_int(iw(16)).unwrap(), 42);
     }
 
     #[test]
     fn int_to_uint() {
         let s = Primitive::int(-1_i128);
-        let r = s.cast(Int(bw(8)), Uint(bw(8))).unwrap();
-        assert_eq!(r.as_uint(bw(8)).unwrap(), 0xFF);
+        let r = s.cast(Int(iw(8)), Uint(iw(8))).unwrap();
+        assert_eq!(r.as_uint(iw(8)).unwrap(), 0xFF);
     }
 
     // --- Bit <-> Uint/Int ---
@@ -734,21 +738,21 @@ mod tests {
     #[test]
     fn bit_to_uint() {
         let s = Primitive::bit(true);
-        let r = s.cast(Bit, Uint(bw(32))).unwrap();
-        assert_eq!(r.as_uint(bw(32)).unwrap(), 1);
+        let r = s.cast(Bit, Uint(iw(32))).unwrap();
+        assert_eq!(r.as_uint(iw(32)).unwrap(), 1);
     }
 
     #[test]
     fn uint_to_bit_nonzero() {
         let s = Primitive::uint(42_u128);
-        let r = s.cast(Uint(bw(8)), Bit).unwrap();
-        assert!(r.as_bit()); // nonzero -> true (truthiness)
+        let r = s.cast(Uint(iw(8)), Bit).unwrap();
+        assert!(r.as_bit());
     }
 
     #[test]
     fn uint_to_bit_one() {
         let s = Primitive::uint(1_u128);
-        let r = s.cast(Uint(bw(8)), Bit).unwrap();
+        let r = s.cast(Uint(iw(8)), Bit).unwrap();
         assert!(r.as_bit());
     }
 
@@ -757,21 +761,21 @@ mod tests {
     #[test]
     fn uint_to_f32() {
         let s = Primitive::uint(100_u128);
-        let r = s.cast(Uint(bw(8)), Float(F32)).unwrap();
+        let r = s.cast(Uint(iw(8)), Float(F32)).unwrap();
         assert_eq!(r.as_float(F32).unwrap(), 100.0);
     }
 
     #[test]
     fn uint_to_f64() {
         let s = Primitive::uint(1_000_000_u128);
-        let r = s.cast(Uint(bw(32)), Float(F64)).unwrap();
+        let r = s.cast(Uint(iw(32)), Float(F64)).unwrap();
         assert_eq!(r.as_float(F64).unwrap(), 1_000_000.0);
     }
 
     #[test]
     fn int_to_f64() {
         let s = Primitive::int(-50_i128);
-        let r = s.cast(Int(bw(8)), Float(F64)).unwrap();
+        let r = s.cast(Int(iw(8)), Float(F64)).unwrap();
         assert_eq!(r.as_float(F64).unwrap(), -50.0);
     }
 
@@ -780,55 +784,52 @@ mod tests {
     #[test]
     fn f64_to_uint() {
         let s = Primitive::float(3.7);
-        let r = s.cast(Float(F64), Uint(bw(32))).unwrap();
-        assert_eq!(r.as_uint(bw(32)).unwrap(), 3); // truncates toward zero
+        let r = s.cast(Float(F64), Uint(iw(32))).unwrap();
+        assert_eq!(r.as_uint(iw(32)).unwrap(), 3);
     }
 
     #[test]
     fn f64_negative_to_uint_saturates() {
         let s = Primitive::float(-1.0);
-        let r = s.cast(Float(F64), Uint(bw(32))).unwrap();
-        assert_eq!(r.as_uint(bw(32)).unwrap(), 0); // saturates to 0
+        let r = s.cast(Float(F64), Uint(iw(32))).unwrap();
+        assert_eq!(r.as_uint(iw(32)).unwrap(), 0);
     }
 
     #[test]
     fn f64_nan_to_uint_saturates() {
         let s = Primitive::float(f64::NAN);
-        let r = s.cast(Float(F64), Uint(bw(32))).unwrap();
-        assert_eq!(r.as_uint(bw(32)).unwrap(), 0); // NaN -> 0
+        let r = s.cast(Float(F64), Uint(iw(32))).unwrap();
+        assert_eq!(r.as_uint(iw(32)).unwrap(), 0);
     }
 
     #[test]
     fn f64_inf_to_int_saturates() {
         let s = Primitive::float(f64::INFINITY);
-        let r = s.cast(Float(F64), Int(bw(32))).unwrap();
-        // f64::INFINITY as i128 saturates to i128::MAX, then masked to 32 bits
-        assert!(r.as_int(bw(32)).unwrap() != 0);
+        let r = s.cast(Float(F64), Int(iw(32))).unwrap();
+        assert!(r.as_int(iw(32)).unwrap() != 0);
     }
 
     #[test]
     fn f64_to_int() {
         let s = Primitive::float(-7.9);
-        let r = s.cast(Float(F64), Int(bw(32))).unwrap();
-        assert_eq!(r.as_int(bw(32)).unwrap(), -7);
+        let r = s.cast(Float(F64), Int(iw(32))).unwrap();
+        assert_eq!(r.as_int(iw(32)).unwrap(), -7);
     }
 
     #[test]
     fn float_to_angle_rounds_ties_to_even() {
         let two_pi = core::f64::consts::TAU;
         let f = two_pi * (127.0 / 512.0);
-        println!("{:?}", Primitive::angle(f));
-        let r = Primitive::float(f).cast(Float(F64), Angle(bw(8))).unwrap();
-        println!("{:?}", r);
-        assert_eq!(r.as_angle(bw(8)).unwrap(), 0b0100_0000 << 120);
+        let r = Primitive::float(f).cast(Float(F64), Angle(iw(8))).unwrap();
+        assert_eq!(r.as_angle(iw(8)).unwrap(), 0b0100_0000 << 120);
     }
 
     #[test]
     fn float_inf_to_angle_returns_0() {
         let res = Primitive::float(f64::INFINITY)
-            .cast(Float(F64), Angle(bw(8)))
+            .cast(Float(F64), Angle(iw(8)))
             .unwrap();
-        assert_eq!(res.as_angle(bw(8)).unwrap(), 0)
+        assert_eq!(res.as_angle(iw(8)).unwrap(), 0)
     }
 
     // --- Float <-> Float ---
@@ -852,7 +853,7 @@ mod tests {
     #[test]
     fn uint_to_c64() {
         let s = Primitive::uint(5_u128);
-        let r = s.cast(Uint(bw(8)), Complex(F64)).unwrap();
+        let r = s.cast(Uint(iw(8)), Complex(F64)).unwrap();
         let c = r.as_complex(F64).unwrap();
         assert_eq!(c.re, 5.0);
         assert_eq!(c.im, 0.0);
@@ -898,7 +899,7 @@ mod tests {
     #[test]
     fn complex_to_uint_returns_none() {
         let s = Primitive::complex(1.0, 0.0);
-        assert!(s.cast(Complex(F64), Uint(bw(32))).is_err());
+        assert!(s.cast(Complex(F64), Uint(iw(32))).is_err());
     }
 
     // --- Duration <-> Duration ---
@@ -921,18 +922,16 @@ mod tests {
 
     #[test]
     fn angle_widen() {
-        // 0b1010 in 4-bit angle, widened to 8-bit, preserves the value
         let s = Primitive::Angle(turns::Angle(0b1010_u128 << 124));
-        let r = s.cast(Angle(bw(4)), Angle(bw(8))).unwrap();
-        assert_eq!(r.as_angle(bw(8)).unwrap(), 0b1010u128 << 124);
+        let r = s.cast(Angle(iw(4)), Angle(iw(8))).unwrap();
+        assert_eq!(r.as_angle(iw(8)).unwrap(), 0b1010u128 << 124);
     }
 
     #[test]
     fn angle_narrow() {
-        // 0b10100011 in 8-bit angle, narrowed to 4-bit, truncates to lower 4 bits
         let s = Primitive::Angle(turns::Angle(0b10100011_u128 << 120));
-        let r = s.cast(Angle(bw(8)), Angle(bw(4))).unwrap();
-        assert_eq!(r.as_angle(bw(4)).unwrap(), 0b1010u128 << 124);
+        let r = s.cast(Angle(iw(8)), Angle(iw(4))).unwrap();
+        assert_eq!(r.as_angle(iw(4)).unwrap(), 0b1010u128 << 124);
     }
 
     // --- BitReg <-> Uint ---
@@ -940,8 +939,8 @@ mod tests {
     #[test]
     fn bitreg_to_uint() {
         let s = Primitive::uint(0b1101_u128);
-        let r = s.cast(BitReg(bw(4)), Uint(bw(4))).unwrap();
-        assert_eq!(r.as_uint(bw(8)).unwrap(), 0b1101);
+        let r = s.cast(BitReg(4), Uint(iw(4))).unwrap();
+        assert_eq!(r.as_uint(iw(8)).unwrap(), 0b1101);
     }
 
     // --- Invalid cross-category ---
@@ -949,25 +948,25 @@ mod tests {
     #[test]
     fn duration_to_uint_returns_none() {
         let s = Primitive::duration(100.0, crate::duration::DurationUnit::Ns);
-        assert!(s.cast(Duration, Uint(bw(32))).is_err());
+        assert!(s.cast(Duration, Uint(iw(32))).is_err());
     }
 
     #[test]
     fn angle_to_float_returns_some() {
         let s = Primitive::Angle(turns::Angle(42_u128));
-        assert!(s.cast(Angle(bw(8)), Float(F64)).is_ok());
+        assert!(s.cast(Angle(iw(8)), Float(F64)).is_ok());
     }
 
     #[test]
     fn angle_to_float_uses_angle_width() {
         let s = Primitive::Angle(turns::Angle(0b0100_0000_u128 << 120));
-        let r = s.cast(Angle(bw(8)), Float(F64)).unwrap();
+        let r = s.cast(Angle(iw(8)), Float(F64)).unwrap();
         assert!((r.as_float(F64).unwrap() - core::f64::consts::FRAC_PI_2).abs() < 1e-12);
     }
 
     #[test]
     fn uint_to_duration_returns_none() {
         let s = Primitive::uint(100_u128);
-        assert!(s.cast(Uint(bw(32)), Duration).is_err());
+        assert!(s.cast(Uint(iw(32)), Duration).is_err());
     }
 }

@@ -2,14 +2,14 @@ use super::BinOp;
 use crate::array::{ArrayTy, ashape};
 use crate::array_ref::ArrayRefTy;
 use crate::error::{Error, Result};
-use crate::primitive::{BitWidth, Primitive, PrimitiveTy};
+use crate::primitive::{IntWidth, Primitive, PrimitiveTy};
 use crate::scalar::Scalar;
 use crate::value::{Value, ValueTy};
 
 pub struct SizeofDim;
 
-const SIZEOF_DIM_TY: PrimitiveTy = PrimitiveTy::Int(BitWidth::B64);
-const SIZEOF_OUT_TY: PrimitiveTy = PrimitiveTy::Uint(BitWidth::B64);
+const SIZEOF_DIM_TY: PrimitiveTy = PrimitiveTy::Int(IntWidth::B64);
+const SIZEOF_OUT_TY: PrimitiveTy = PrimitiveTy::Uint(IntWidth::B64);
 
 fn sizeof_result(lhs: ValueTy, dim: usize, rhs: ValueTy) -> Result<Value> {
     let size = lhs
@@ -23,7 +23,7 @@ fn sizeof_result(lhs: ValueTy, dim: usize, rhs: ValueTy) -> Result<Value> {
 
 fn scalar_as_usize(value: Scalar) -> Option<usize> {
     let scalar = value.cast(SIZEOF_DIM_TY).ok()?;
-    usize::try_from(scalar.value().as_int(BitWidth::B64)?).ok()
+    usize::try_from(scalar.value().as_int(IntWidth::B64)?).ok()
 }
 
 impl BinOp for SizeofDim {
@@ -137,19 +137,19 @@ mod tests {
     use super::*;
     use crate::array::Array;
     use crate::index::Index;
-    use crate::primitive::{PrimitiveTy::*, bw};
+    use crate::primitive::{PrimitiveTy::*, iw};
 
     fn u_array(values: &[u128], bits: u32, shape: Vec<usize>) -> Value {
         Value::Array(Array::new_unchecked(
             values.iter().map(|&value| Primitive::uint(value)).collect(),
-            ArrayTy::new(Uint(bw(bits)), ashape(shape)),
+            ArrayTy::new(Uint(iw(bits)), ashape(shape)),
         ))
     }
 
     fn int(value: i128) -> Value {
         Value::Scalar(Scalar::new_unchecked(
             Primitive::int(value),
-            PrimitiveTy::Int(BitWidth::B64),
+            PrimitiveTy::Int(IntWidth::B64),
         ))
     }
 
@@ -162,7 +162,7 @@ mod tests {
         match result {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), SIZEOF_OUT_TY);
-                assert_eq!(scalar.value().as_uint(BitWidth::B64), Some(3));
+                assert_eq!(scalar.value().as_uint(IntWidth::B64), Some(3));
             }
             other => panic!("expected scalar, got {other:?}"),
         }
@@ -176,7 +176,7 @@ mod tests {
 
         match result {
             Value::Scalar(scalar) => {
-                assert_eq!(scalar.value().as_uint(BitWidth::B64), Some(8));
+                assert_eq!(scalar.value().as_uint(IntWidth::B64), Some(8));
             }
             other => panic!("expected scalar, got {other:?}"),
         }
@@ -192,7 +192,7 @@ mod tests {
 
         match result {
             Value::Scalar(scalar) => {
-                assert_eq!(scalar.value().as_uint(BitWidth::B64), Some(3));
+                assert_eq!(scalar.value().as_uint(IntWidth::B64), Some(3));
             }
             other => panic!("expected scalar, got {other:?}"),
         }
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn sizeof_dim_rejects_unsupported_dimension_type() {
         let array = u_array(&[1, 2, 3, 4], 8, vec![2, 2]);
-        let angle = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Angle(bw(8))));
+        let angle = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Angle(iw(8))));
 
         assert!(array.sizeof_dim_(angle).is_err());
     }

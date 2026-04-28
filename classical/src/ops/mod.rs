@@ -149,7 +149,7 @@ pub trait BinOp {
         let values = lhs
             .scalars()
             .zip(rhs.scalars())
-            .map(|(a, b)| Ok(Self::scalar_op(a, b, scalar_out_ty)?.value()))
+            .map(|(a, b)| Ok(Self::scalar_op(a, b, scalar_out_ty)?.into_value()))
             .collect::<Result<Vec<_>>>()?;
         Array::new(values, out)
     }
@@ -158,7 +158,7 @@ pub trait BinOp {
         let scalar_out_ty = out.ty();
         let values = lhs
             .scalars()
-            .map(|a| Ok(Self::scalar_op(a, rhs, scalar_out_ty)?.value()))
+            .map(|a| Ok(Self::scalar_op(a, rhs.clone(), scalar_out_ty)?.into_value()))
             .collect::<Result<Vec<_>>>()?;
         Array::new(values, out)
     }
@@ -167,7 +167,7 @@ pub trait BinOp {
         let scalar_out_ty = out.ty();
         let values = rhs
             .scalars()
-            .map(|b| Ok(Self::scalar_op(lhs, b, scalar_out_ty)?.value()))
+            .map(|b| Ok(Self::scalar_op(lhs.clone(), b, scalar_out_ty)?.into_value()))
             .collect::<Result<Vec<_>>>()?;
         Array::new(values, out)
     }
@@ -388,7 +388,7 @@ pub trait UnOp {
         let scalar_out_ty = out.ty();
         let values = arg
             .scalars()
-            .map(|scalar| Ok(Self::scalar_op(scalar, scalar_out_ty)?.value()))
+            .map(|scalar| Ok(Self::scalar_op(scalar, scalar_out_ty)?.into_value()))
             .collect::<Result<Vec<_>>>()?;
         Array::new(values, out)
     }
@@ -398,7 +398,7 @@ pub trait UnOp {
             .array()
             .borrow()?
             .scalars()
-            .map(|scalar| Ok(Self::scalar_op(scalar, scalar_out_ty)?.value()))
+            .map(|scalar| Ok(Self::scalar_op(scalar, scalar_out_ty)?.into_value()))
             .collect::<Result<Vec<_>>>()?;
         Array::new(values, out)
     }

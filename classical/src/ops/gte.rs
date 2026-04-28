@@ -21,7 +21,7 @@ impl BinOp for Gte {
 
     fn scalar_op(lhs: Scalar, rhs: Scalar, out: PrimitiveTy) -> Result<Scalar> {
         LogOr::scalar_op(
-            Gt::scalar_op(lhs, rhs, out)?,
+            Gt::scalar_op(lhs.clone(), rhs.clone(), out)?,
             Eq::scalar_op(lhs, rhs, out)?,
             out,
         )
@@ -38,7 +38,7 @@ impl Value {
 mod tests {
     use super::*;
     use crate::DurationUnit;
-    use crate::primitive::{FloatWidth, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn bool_scalar(v: bool) -> Value {
@@ -46,7 +46,7 @@ mod tests {
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     #[test]

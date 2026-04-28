@@ -3,7 +3,7 @@ use std::fmt;
 use num_complex::{Complex32, Complex64};
 
 use crate::{
-    BitWidth, FloatWidth, Primitive,
+    BitReg, FloatWidth, IntWidth, Primitive,
     array::{Array, ArrayShape, ArrayTy, BaseArray, BaseArrayTy},
     array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, BaseArrayRef, BaseArrayRefTy, RefAccess},
     duration::{Duration, DurationUnit},
@@ -19,7 +19,7 @@ pub enum BaseValue<V, T> {
     ArrayRef(BaseArrayRef<V, T>),
 }
 
-impl<V: Copy, T: Copy> BaseValue<V, T> {
+impl<V, T: Copy> BaseValue<V, T> {
     pub fn ty(&self) -> BaseValueTy<T> {
         match self {
             BaseValue::Scalar(s) => BaseValueTy::Scalar(s.ty()),
@@ -54,11 +54,11 @@ impl Value {
         Self::Scalar(Scalar::bit(v))
     }
     #[inline]
-    pub const fn int(v: i128, bw: BitWidth) -> Self {
+    pub const fn int(v: i128, bw: IntWidth) -> Self {
         Self::Scalar(Scalar::int(v, bw))
     }
     #[inline]
-    pub const fn uint(v: u128, bw: BitWidth) -> Self {
+    pub const fn uint(v: u128, bw: IntWidth) -> Self {
         Self::Scalar(Scalar::uint(v, bw))
     }
     #[inline]
@@ -74,8 +74,12 @@ impl Value {
         Self::Scalar(Scalar::duration(v, unit))
     }
     #[inline]
-    pub const fn bitreg(bits: u128, bw: BitWidth) -> Self {
-        Self::Scalar(Scalar::bitreg(bits, bw))
+    pub fn bitreg(reg: BitReg, width: u32) -> Self {
+        Self::Scalar(Scalar::bitreg(reg, width))
+    }
+    #[inline]
+    pub fn bitreg_u128(bits: u128, width: u32) -> Self {
+        Self::Scalar(Scalar::bitreg_u128(bits, width))
     }
     #[inline]
     pub fn angle(radians: f64) -> Self {
@@ -189,10 +193,10 @@ impl ValueTy {
 
     pub fn size(&self, dim: usize) -> Option<usize> {
         match self {
-            ValueTy::Scalar(ty) if dim == 0 => ty.bw().map(|bw| bw.get() as usize),
+            ValueTy::Scalar(ty) if dim == 0 => ty.bit_count().map(|bw| bw as usize),
             ValueTy::Array(ty) => {
                 if dim == ty.shape().dim() {
-                    ty.ty().bw().map(|bw| bw.get() as usize)
+                    ty.ty().bit_count().map(|bw| bw as usize)
                 } else {
                     ty.shape().get().get(dim).copied()
                 }
@@ -200,7 +204,7 @@ impl ValueTy {
             ValueTy::ArrayRef(ty) => match ty.shape() {
                 ArrayRefShape::Fixed(shape) => {
                     if dim == shape.dim() {
-                        ty.ty().bw().map(|bw| bw.get() as usize)
+                        ty.ty().bit_count().map(|bw| bw as usize)
                     } else {
                         shape.get().get(dim).copied()
                     }
@@ -222,12 +226,12 @@ impl ValueTy {
     }
 
     #[inline]
-    pub const fn int(bw: BitWidth) -> Self {
+    pub const fn int(bw: IntWidth) -> Self {
         Self::Scalar(PrimitiveTy::Int(bw))
     }
 
     #[inline]
-    pub const fn uint(bw: BitWidth) -> Self {
+    pub const fn uint(bw: IntWidth) -> Self {
         Self::Scalar(PrimitiveTy::Uint(bw))
     }
 
@@ -242,7 +246,7 @@ impl ValueTy {
     }
 
     #[inline]
-    pub const fn angle(bw: BitWidth) -> Self {
+    pub const fn angle(bw: IntWidth) -> Self {
         Self::Scalar(PrimitiveTy::Angle(bw))
     }
 
@@ -252,8 +256,8 @@ impl ValueTy {
     }
 
     #[inline]
-    pub const fn bitreg(bw: BitWidth) -> Self {
-        Self::Scalar(PrimitiveTy::BitReg(bw))
+    pub const fn bitreg(width: u32) -> Self {
+        Self::Scalar(PrimitiveTy::BitReg(width))
     }
 
     #[inline]
@@ -305,7 +309,7 @@ mod tests {
         DurationUnit,
         array::{Array, ArrayTy, adim, ashape},
         array_ref::{ArrayRefShape, ArrayRefTy, RefAccess},
-        primitive::{FloatWidth::F64, Primitive, PrimitiveTy, PrimitiveTy::*, bw},
+        primitive::{FloatWidth::F64, Primitive, PrimitiveTy, PrimitiveTy::*, iw},
         scalar::Scalar,
     };
 
@@ -315,7 +319,7 @@ mod tests {
 
     #[test]
     fn scalar_cast_delegates_to_scalar_cast() {
-        let value = Value::Scalar(Scalar::new_unchecked(Primitive::uint(42_u128), Uint(bw(8))));
+        let value = Value::Scalar(Scalar::new_unchecked(Primitive::uint(42_u128), Uint(iw(8))));
 
         let cast = value.cast(ValueTy::Scalar(Float(F64))).unwrap();
 
@@ -332,7 +336,7 @@ mod tests {
     fn array_cast_preserves_shape_and_casts_each_element() {
         let value = Value::Array(Array::new_unchecked(
             vec![Primitive::uint(1_u128), Primitive::uint(2_u128)],
-            aty(Uint(bw(8)), vec![2]),
+            aty(Uint(iw(8)), vec![2]),
         ));
 
         let cast = value
@@ -359,12 +363,12 @@ mod tests {
     fn array_allow_rejects_shape_changes() {
         let value = Value::Array(Array::new_unchecked(
             vec![Primitive::uint(1_u128), Primitive::uint(2_u128)],
-            aty(Uint(bw(8)), vec![2]),
+            aty(Uint(iw(8)), vec![2]),
         ));
 
         assert!(
             value
-                .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1, 2])))
+                .cast(ValueTy::Array(aty(Uint(iw(8)), vec![1, 2])))
                 .is_ok()
         );
     }
@@ -373,30 +377,30 @@ mod tests {
     fn array_cast_rejects_len_changes() {
         let value = Value::Array(Array::new_unchecked(
             vec![Primitive::uint(1_u128), Primitive::uint(2_u128)],
-            aty(Uint(bw(8)), vec![2]),
+            aty(Uint(iw(8)), vec![2]),
         ));
 
         assert!(
             value
-                .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1, 3])))
+                .cast(ValueTy::Array(aty(Uint(iw(8)), vec![1, 3])))
                 .is_err()
         );
     }
 
     #[test]
     fn cast_rejects_scalar_array_mismatch() {
-        let scalar = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Uint(bw(8))));
+        let scalar = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Uint(iw(8))));
         let array = Value::Array(Array::new_unchecked(
             vec![Primitive::uint(1_u128)],
-            aty(Uint(bw(8)), vec![1]),
+            aty(Uint(iw(8)), vec![1]),
         ));
 
         assert!(
             scalar
-                .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1])))
+                .cast(ValueTy::Array(aty(Uint(iw(8)), vec![1])))
                 .is_err()
         );
-        assert!(array.cast(ValueTy::Scalar(Uint(bw(8)))).is_err());
+        assert!(array.cast(ValueTy::Scalar(Uint(iw(8)))).is_err());
     }
 
     #[test]
@@ -408,14 +412,14 @@ mod tests {
 
         assert!(
             value
-                .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1])))
+                .cast(ValueTy::Array(aty(Uint(iw(8)), vec![1])))
                 .is_err()
         );
     }
 
     #[test]
     fn value_ty_scalar_cast_returns_target_type() {
-        let cast = ValueTy::Scalar(Uint(bw(8)))
+        let cast = ValueTy::Scalar(Uint(iw(8)))
             .cast(ValueTy::Scalar(Float(F64)))
             .unwrap();
 
@@ -424,7 +428,7 @@ mod tests {
 
     #[test]
     fn value_ty_array_cast_returns_target_type() {
-        let cast = ValueTy::Array(aty(Uint(bw(8)), vec![2]))
+        let cast = ValueTy::Array(aty(Uint(iw(8)), vec![2]))
             .cast(ValueTy::Array(aty(Float(F64), vec![1, 2])))
             .unwrap();
 
@@ -438,7 +442,7 @@ mod tests {
             ArrayRefShape::Dim(adim(1)),
             RefAccess::Readonly,
         ));
-        let cast = ValueTy::Array(aty(Uint(bw(8)), vec![2]))
+        let cast = ValueTy::Array(aty(Uint(iw(8)), vec![2]))
             .cast(target)
             .unwrap();
 
@@ -448,7 +452,7 @@ mod tests {
     #[test]
     fn value_ty_array_ref_to_array_cast_uses_array_ref_rules() {
         let cast = ValueTy::ArrayRef(ArrayRefTy::new(
-            Uint(bw(8)),
+            Uint(iw(8)),
             ArrayRefShape::Fixed(ashape(vec![2])),
             RefAccess::Mutable,
         ))
@@ -461,8 +465,8 @@ mod tests {
     #[test]
     fn value_ty_cast_rejects_scalar_array_mismatch() {
         assert!(
-            ValueTy::Scalar(Uint(bw(8)))
-                .cast(ValueTy::Array(aty(Uint(bw(8)), vec![1])))
+            ValueTy::Scalar(Uint(iw(8)))
+                .cast(ValueTy::Array(aty(Uint(iw(8)), vec![1])))
                 .is_err()
         );
     }

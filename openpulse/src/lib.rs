@@ -1,7 +1,7 @@
 use std::fmt;
 
 use num_complex::Complex64;
-use oqi_classical::{BaseValueTy, BitWidth, FloatWidth};
+use oqi_classical::{BaseValueTy, IntWidth, FloatWidth};
 use turns::Angle128;
 
 #[derive(Debug, Clone)]
@@ -24,7 +24,7 @@ pub enum Primitive<P> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimitiveTy {
     Port,
-    Frame(FloatWidth, BitWidth),
+    Frame(FloatWidth, IntWidth),
     Waveform(FloatWidth),
 }
 
@@ -37,7 +37,7 @@ impl PrimitiveTy {
     }
 
     #[inline]
-    pub const fn frame(fw: FloatWidth, bw: BitWidth) -> Self {
+    pub const fn frame(fw: FloatWidth, bw: IntWidth) -> Self {
         Self::Frame(fw, bw)
     }
 

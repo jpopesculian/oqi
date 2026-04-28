@@ -93,7 +93,7 @@ impl BinOp for Concat {
             .values()
             .iter()
             .chain(rhs.values().iter())
-            .copied()
+            .cloned()
             .collect();
         Array::new(new_values, out)
     }
@@ -140,12 +140,12 @@ impl Value {
 mod tests {
     use super::*;
     use crate::index::Index;
-    use crate::primitive::{Primitive, PrimitiveTy::*, bw};
+    use crate::primitive::{Primitive, PrimitiveTy::*, iw};
 
     fn u_array(values: &[u128], bits: u32, shape: Vec<usize>) -> Value {
         Value::Array(Array::new_unchecked(
             values.iter().map(|&value| Primitive::uint(value)).collect(),
-            ArrayTy::new(Uint(bw(bits)), ashape(shape)),
+            ArrayTy::new(Uint(iw(bits)), ashape(shape)),
         ))
     }
 
@@ -166,7 +166,7 @@ mod tests {
                 let values: Vec<u128> = array
                     .values()
                     .iter()
-                    .map(|value| value.as_uint(bw(bits)).unwrap())
+                    .map(|value| value.as_uint(iw(bits)).unwrap())
                     .collect();
                 assert_eq!(values, expected);
             }

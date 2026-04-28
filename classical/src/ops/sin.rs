@@ -38,7 +38,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth::*, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     #[test]
@@ -76,14 +76,14 @@ mod tests {
         // 8-bit angle: 64/256 = quarter turn = π/2
         let r = Value::Scalar(Scalar::new_unchecked(
             Primitive::angle(core::f64::consts::FRAC_PI_2),
-            Angle(bw(8)),
+            Angle(iw(8)),
         ))
         .sin_()
         .unwrap();
         println!("{:?}", Primitive::angle(core::f64::consts::FRAC_PI_2));
         println!(
             "{:?}",
-            Primitive::angle(core::f64::consts::FRAC_PI_2).as_angle(bw(8))
+            Primitive::angle(core::f64::consts::FRAC_PI_2).as_angle(iw(8))
         );
         println!("{:?}", r);
         match r {
@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn sin_int_err() {
         assert!(
-            Value::Scalar(Scalar::new_unchecked(Primitive::int(0), Int(bw(8))))
+            Value::Scalar(Scalar::new_unchecked(Primitive::int(0), Int(iw(8))))
                 .sin_()
                 .is_err()
         )

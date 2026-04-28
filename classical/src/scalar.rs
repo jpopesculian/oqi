@@ -2,11 +2,12 @@ use std::fmt;
 
 use num_complex::{Complex32, Complex64};
 
+use crate::bitreg::BitReg;
 use crate::duration::{Duration, DurationUnit};
 use crate::error::Result;
-use crate::primitive::{BitWidth, FloatWidth, Primitive, PrimitiveTy, bw};
+use crate::primitive::{FloatWidth, IntWidth, Primitive, PrimitiveTy, iw};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct BaseScalar<V, T> {
     value: V,
     ty: T,
@@ -17,14 +18,19 @@ impl<V, T> BaseScalar<V, T> {
     pub const fn new_unchecked(value: V, ty: T) -> Self {
         BaseScalar { value, ty }
     }
-}
 
-impl<V: Copy, T: Copy> BaseScalar<V, T> {
     #[inline]
-    pub const fn value(&self) -> V {
-        self.value
+    pub const fn value(&self) -> &V {
+        &self.value
     }
 
+    #[inline]
+    pub fn into_value(self) -> V {
+        self.value
+    }
+}
+
+impl<V, T: Copy> BaseScalar<V, T> {
     #[inline]
     pub const fn ty(&self) -> T {
         self.ty
@@ -53,11 +59,11 @@ impl Scalar {
         Self::new_unchecked(Primitive::bit(v), PrimitiveTy::Bit)
     }
     #[inline]
-    pub const fn int(v: i128, bw: BitWidth) -> Self {
+    pub const fn int(v: i128, bw: IntWidth) -> Self {
         Self::new_unchecked(Primitive::int(v), PrimitiveTy::Int(bw))
     }
     #[inline]
-    pub const fn uint(v: u128, bw: BitWidth) -> Self {
+    pub const fn uint(v: u128, bw: IntWidth) -> Self {
         Self::new_unchecked(Primitive::uint(v), PrimitiveTy::Uint(bw))
     }
     #[inline]
@@ -73,8 +79,12 @@ impl Scalar {
         Self::new_unchecked(Primitive::duration(v, unit), PrimitiveTy::Duration)
     }
     #[inline]
-    pub const fn bitreg(bits: u128, bw: BitWidth) -> Self {
-        Self::new_unchecked(Primitive::bitreg(bits), PrimitiveTy::BitReg(bw))
+    pub fn bitreg(reg: BitReg, width: u32) -> Self {
+        Self::new_unchecked(Primitive::bitreg(reg), PrimitiveTy::BitReg(width))
+    }
+    #[inline]
+    pub fn bitreg_u128(bits: u128, width: u32) -> Self {
+        Self::new_unchecked(Primitive::bitreg_u128(bits), PrimitiveTy::BitReg(width))
     }
     #[inline]
     pub fn angle(radians: f64) -> Self {
@@ -85,7 +95,8 @@ impl Scalar {
 impl From<Primitive> for Scalar {
     #[inline]
     fn from(value: Primitive) -> Self {
-        Self::new_unchecked(value, value.default_ty())
+        let ty = value.default_ty();
+        Self::new_unchecked(value, ty)
     }
 }
 
@@ -94,7 +105,7 @@ macro_rules! impl_from_int {
         $(
         impl From<$ty> for Scalar {
             fn from(value: $ty) -> Self {
-                Self::int(value as i128, bw($bw))
+                Self::int(value as i128, iw($bw))
             }
         }
         )*
@@ -106,7 +117,7 @@ macro_rules! impl_from_uint {
         $(
         impl From<$ty> for Scalar {
             fn from(value: $ty) -> Self {
-                Self::uint(value as u128, bw($bw))
+                Self::uint(value as u128, iw($bw))
             }
         }
         )*
@@ -157,7 +168,7 @@ macro_rules! impl_from_angle {
         $(
         impl From<$ty> for Scalar {
             fn from(value: $ty) -> Self {
-                Self::new_unchecked(Primitive::from(value), PrimitiveTy::Angle(bw($bw)))
+                Self::new_unchecked(Primitive::from(value), PrimitiveTy::Angle(iw($bw)))
             }
         }
         )*
@@ -179,7 +190,7 @@ impl fmt::Display for Scalar {
                 if matches!(self.ty(), PrimitiveTy::Bool) {
                     write!(f, "{}", v)
                 } else {
-                    write!(f, "{}", if v { 1 } else { 0 })
+                    write!(f, "{}", if *v { 1 } else { 0 })
                 }
             }
             Primitive::Uint(v) => write!(f, "{}", v),
@@ -201,12 +212,10 @@ impl fmt::Display for Scalar {
                 }
             }
             Primitive::Complex(v) => write!(f, "({}+{}im)", v.re, v.im),
-            Primitive::BitReg(v) => {
-                let bw = self.ty().bw().unwrap_or(BitWidth::B128).get();
+            Primitive::BitReg(reg) => {
+                let bw = self.ty().bit_count().unwrap_or(reg.default_width());
                 write!(f, "\"")?;
-                for i in 0..bw {
-                    write!(f, "{}", v & (1 << (bw - 1 - i)))?;
-                }
+                reg.fmt_bits(f, bw)?;
                 write!(f, "\"")?;
                 Ok(())
             }
@@ -217,14 +226,14 @@ impl fmt::Display for Scalar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bw;
+    use crate::iw;
 
     #[test]
     fn angle_display_uses_reduced_pi_fraction() {
         let angle4 = |bits: u128| {
             Scalar::new_unchecked(
                 Primitive::Angle(turns::Angle(bits << 124)),
-                PrimitiveTy::Angle(bw(4)),
+                PrimitiveTy::Angle(iw(4)),
             )
         };
 

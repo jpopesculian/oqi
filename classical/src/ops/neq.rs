@@ -34,7 +34,7 @@ impl Value {
 mod tests {
     use super::*;
     use crate::DurationUnit;
-    use crate::primitive::{FloatWidth, PrimitiveTy::*, bw};
+    use crate::primitive::{FloatWidth, PrimitiveTy::*, iw};
     use crate::scalar::Scalar;
 
     fn bool_scalar(v: bool) -> Value {
@@ -46,11 +46,11 @@ mod tests {
     }
 
     fn u_scalar(v: u128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::uint(v), Uint(iw(bits))))
     }
 
     fn i_scalar(v: i128, bits: u32) -> Value {
-        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(bw(bits))))
+        Value::Scalar(Scalar::new_unchecked(Primitive::int(v), Int(iw(bits))))
     }
 
     #[test]
@@ -130,11 +130,11 @@ mod tests {
     fn bitreg_neq_same_width() {
         let r = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010_u128),
-            BitReg(bw(4)),
+            BitReg(4),
         ))
         .neq_(Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b0101_u128),
-            BitReg(bw(4)),
+            BitReg(4),
         )))
         .unwrap();
         match r {
@@ -150,11 +150,11 @@ mod tests {
     fn bitreg_neq_mismatched_width_returns_none() {
         let a = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010_u128),
-            BitReg(bw(4)),
+            BitReg(4),
         ));
         let b = Value::Scalar(Scalar::new_unchecked(
             Primitive::uint(0b1010_u128),
-            BitReg(bw(8)),
+            BitReg(8),
         ));
         assert!(a.neq_(b).is_err());
     }

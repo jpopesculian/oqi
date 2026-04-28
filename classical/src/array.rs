@@ -44,7 +44,8 @@ impl Array {
             });
         }
         for value in values.iter_mut() {
-            *value = value.as_ty(ty.ty())?;
+            let cur = std::mem::replace(value, Primitive::Bit(false));
+            *value = cur.as_ty(ty.ty())?;
         }
         Ok(Array::new_unchecked(values, ty))
     }
@@ -83,7 +84,7 @@ pub struct ScalarIter<'a> {
 impl<'a> Iterator for ScalarIter<'a> {
     type Item = Scalar;
     fn next(&mut self) -> Option<Self::Item> {
-        let next = Scalar::new_unchecked(*self.slice.get(self.index)?, self.ty);
+        let next = Scalar::new_unchecked(self.slice.get(self.index)?.clone(), self.ty);
         self.index += 1;
         Some(next)
     }
@@ -347,7 +348,7 @@ impl<T: fmt::Display> fmt::Display for BaseArrayTy<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitive::{Primitive, PrimitiveTy, PrimitiveTy::Uint, bw};
+    use crate::primitive::{Primitive, PrimitiveTy, PrimitiveTy::Uint, iw};
 
     #[test]
     fn display_formats_one_dimensional_arrays() {
@@ -357,7 +358,7 @@ mod tests {
                 Primitive::uint(2_u128),
                 Primitive::uint(3_u128),
             ],
-            ArrayTy::new(Uint(bw(8)), shape![3]),
+            ArrayTy::new(Uint(iw(8)), shape![3]),
         );
 
         assert_eq!(array.to_string(), "{1, 2, 3}");
@@ -374,7 +375,7 @@ mod tests {
                 Primitive::uint(5_u128),
                 Primitive::uint(6_u128),
             ],
-            ArrayTy::new(Uint(bw(8)), shape![2, 3]),
+            ArrayTy::new(Uint(iw(8)), shape![2, 3]),
         );
 
         assert_eq!(array.to_string(), "{{1, 2, 3}, {4, 5, 6}}");
@@ -389,7 +390,7 @@ mod tests {
 
     #[test]
     fn array_ty_display_formats_scalar_type_and_dims() {
-        let ty = ArrayTy::new(Uint(bw(8)), shape![2, 3, 4]);
+        let ty = ArrayTy::new(Uint(iw(8)), shape![2, 3, 4]);
 
         assert_eq!(ty.to_string(), "array[uint[8], 2, 3, 4]");
     }

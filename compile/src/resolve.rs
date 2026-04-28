@@ -285,7 +285,7 @@ pub(crate) fn lookup_intrinsic(name: &str) -> Option<Intrinsic> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classical::bw;
+    use crate::classical::iw;
     use crate::classical::{PrimitiveTy, Value};
     use std::path::Path;
 
@@ -406,7 +406,7 @@ mod tests {
             .declare(
                 "x",
                 SymbolKind::Variable,
-                Type::Classical(ValueTy::int(bw(32))),
+                Type::Classical(ValueTy::int(iw(32))),
                 span(2, 3),
             )
             .unwrap();

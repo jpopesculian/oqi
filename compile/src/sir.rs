@@ -86,6 +86,7 @@ pub enum CalibrationOperand {
     Ident(String),
 }
 
+#[derive(Clone)]
 pub enum CalibrationBody {
     Opaque(String),
     OpenPulse(Vec<Stmt>),
@@ -93,100 +94,133 @@ pub enum CalibrationBody {
 
 // ── Statements (2.3) ─────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct Stmt {
     pub kind: StmtKind,
     pub annotations: Vec<Annotation>,
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub struct Annotation {
     pub keyword: String,
     pub content: Option<String>,
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub enum StmtKind {
     // --- Aliases ---
-    Alias {
-        symbol: SymbolId,
-        value: Vec<Expr>,
-    },
+    Alias(Alias<Expr>),
 
     // --- Quantum operations ---
-    GateCall {
-        gate: SymbolId,
-        modifiers: Vec<GateModifier>,
-        args: Vec<Expr>,
-        qubits: Vec<QubitOperand>,
-    },
-    Measure {
-        measure: MeasureExpr,
-        target: Option<LValue>,
-    },
-    Reset {
-        operand: QubitOperand,
-    },
-    Barrier {
-        operands: Vec<QubitOperand>,
-    },
-    Delay {
-        duration: Expr,
-        operands: Vec<QubitOperand>,
-    },
-    Box {
-        duration: Option<Expr>,
-        body: Vec<Stmt>,
-    },
+    GateCall(GateCall<Expr>),
+    Measure(Measure<Expr>),
+    Reset(QubitOperand<Expr>),
+    Barrier(Vec<QubitOperand<Expr>>),
+    Delay(Delay<Expr>),
+    Box(BoxStmt),
 
     // --- Classical operations ---
-    Assignment {
-        target: LValue,
-        value: RValue,
-    },
+    Assignment(Assignment<Expr>),
 
     // --- Control flow ---
-    If {
-        condition: Expr,
-        then_body: Vec<Stmt>,
-        else_body: Option<Vec<Stmt>>,
-    },
-    For {
-        var: SymbolId,
-        iterable: ForIterable,
-        body: Vec<Stmt>,
-    },
-    While {
-        condition: Expr,
-        body: Vec<Stmt>,
-    },
-    Switch {
-        target: Expr,
-        cases: Vec<SwitchCase>,
-    },
+    If(If),
+    For(For),
+    While(While),
+    Switch(Switch),
     Break,
     Continue,
-    Return(Option<RValue>),
+    Return(Option<RValue<Expr>>),
     End,
 
     // --- Misc ---
     Pragma(String),
-    Cal {
-        body: CalibrationBody,
-    },
+    Cal(CalibrationBody),
     ExprStmt(Expr),
-    Nop {
-        operands: Vec<QubitOperand>,
-    },
+    Nop(Vec<QubitOperand<Expr>>),
+}
+
+// ── Generic statement-level payload structs ──────────────────────────
+// Generic over `E` (the expression type) so the same struct can serve
+// both SIR (`E = Expr`) and CFG (`E = BlockExpr`).
+
+#[derive(Clone)]
+pub struct Alias<E> {
+    pub symbol: SymbolId,
+    pub value: Vec<E>,
+}
+
+#[derive(Clone)]
+pub struct GateCall<E> {
+    pub gate: SymbolId,
+    pub modifiers: Vec<GateModifier<E>>,
+    pub args: Vec<E>,
+    pub qubits: Vec<QubitOperand<E>>,
+}
+
+#[derive(Clone)]
+pub struct Measure<E> {
+    pub measure: MeasureExpr<E>,
+    pub target: Option<LValue<E>>,
+}
+
+#[derive(Clone)]
+pub struct Delay<E> {
+    pub duration: E,
+    pub operands: Vec<QubitOperand<E>>,
+}
+
+#[derive(Clone)]
+pub struct BoxStmt {
+    pub duration: Option<Expr>,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Clone)]
+pub struct Assignment<E> {
+    pub target: LValue<E>,
+    pub value: RValue<E>,
+}
+
+// ── Control-flow statement structs (SIR-only) ────────────────────────
+
+#[derive(Clone)]
+pub struct If {
+    pub condition: Expr,
+    pub then_body: Vec<Stmt>,
+    pub else_body: Option<Vec<Stmt>>,
+}
+
+#[derive(Clone)]
+pub struct For {
+    pub var: SymbolId,
+    pub iterable: ForIterable,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Clone)]
+pub struct While {
+    pub condition: Expr,
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Clone)]
+pub struct Switch {
+    pub target: Expr,
+    pub cases: Vec<SwitchCase>,
 }
 
 // ── Expressions (2.4) ────────────────────────────────────────────────
 
+#[derive(Clone)]
 pub struct Expr {
     pub kind: ExprKind,
     pub ty: Type,
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub enum ExprKind {
     // --- Literals ---
     Literal(Primitive),
@@ -196,29 +230,52 @@ pub enum ExprKind {
     HardwareQubit(usize),
 
     // --- Operations ---
-    Binary {
-        op: BinOp,
-        left: Box<Expr>,
-        right: Box<Expr>,
-    },
-    Unary {
-        op: UnOp,
-        operand: Box<Expr>,
-    },
-    Cast {
-        target_ty: Type,
-        operand: Box<Expr>,
-    },
-    Index {
-        base: Box<Expr>,
-        index: IndexOp,
-    },
-    Call {
-        callee: CallTarget,
-        args: Vec<Expr>,
-    },
+    Binary(Binary<Expr>),
+    Unary(Unary<Expr>),
+    Cast(Cast<Expr>),
+    Index(Index<Expr>),
+    Call(Call<Expr>),
     DurationOf(Vec<Stmt>),
-    ArrayLiteral(ArrayLiteral),
+    ArrayLiteral(ArrayLiteral<Expr>),
+}
+
+// ── Generic expression payload structs ───────────────────────────────
+
+#[derive(Clone)]
+pub struct Binary<E> {
+    pub op: BinOp,
+    pub left: Box<E>,
+    pub right: Box<E>,
+}
+
+#[derive(Clone)]
+pub struct Unary<E> {
+    pub op: UnOp,
+    pub operand: Box<E>,
+}
+
+#[derive(Clone)]
+pub struct Cast<E> {
+    pub target_ty: Type,
+    pub operand: Box<E>,
+}
+
+#[derive(Clone)]
+pub struct Index<E> {
+    pub base: Box<E>,
+    pub index: IndexOp<E>,
+}
+
+#[derive(Clone)]
+pub struct Call<E> {
+    pub callee: CallTarget,
+    pub args: Vec<E>,
+}
+
+#[derive(Clone)]
+pub struct ArrayLiteral<E> {
+    pub items: Vec<E>,
+    pub span: Span,
 }
 
 // ── Supporting types (2.5) ───────────────────────────────────────────
@@ -253,50 +310,58 @@ pub enum UnOp {
     LogNot,
 }
 
-pub enum GateModifier {
+#[derive(Clone)]
+pub enum GateModifier<E> {
     Inv,
-    Pow(Box<Expr>),
+    Pow(Box<E>),
     Ctrl(usize),
     NegCtrl(usize),
 }
 
-pub enum QubitOperand {
+#[derive(Clone)]
+pub enum QubitOperand<E> {
     Indexed {
         symbol: SymbolId,
-        indices: Vec<IndexOp>,
+        indices: Vec<IndexOp<E>>,
     },
     Hardware(usize),
 }
 
-pub enum LValue {
+#[derive(Clone)]
+pub enum LValue<E> {
     Var(SymbolId),
     Indexed {
         symbol: SymbolId,
-        indices: Vec<IndexOp>,
+        indices: Vec<IndexOp<E>>,
     },
 }
 
-pub struct IndexOp {
-    pub kind: IndexKind,
+#[derive(Clone)]
+pub struct IndexOp<E> {
+    pub kind: IndexKind<E>,
     pub span: Span,
 }
 
-pub enum IndexKind {
-    Set(Vec<Expr>),
-    Items(Vec<IndexItem>),
+#[derive(Clone)]
+pub enum IndexKind<E> {
+    Set(Vec<E>),
+    Items(Vec<IndexItem<E>>),
 }
 
-pub enum IndexItem {
-    Single(Box<Expr>),
-    Range(RangeExpr),
+#[derive(Clone)]
+pub enum IndexItem<E> {
+    Single(Box<E>),
+    Range(RangeExpr<E>),
 }
 
-pub struct RangeExpr {
-    pub start: Option<Box<Expr>>,
-    pub step: Option<Box<Expr>>,
-    pub end: Option<Box<Expr>>,
+#[derive(Clone)]
+pub struct RangeExpr<E> {
+    pub start: Option<Box<E>>,
+    pub step: Option<Box<E>>,
+    pub end: Option<Box<E>>,
 }
 
+#[derive(Clone)]
 pub enum ForIterable {
     Range {
         start: Option<Box<Expr>>,
@@ -307,40 +372,44 @@ pub enum ForIterable {
     Expr(Box<Expr>),
 }
 
+#[derive(Clone)]
 pub struct SwitchCase {
-    pub labels: SwitchLabels,
+    pub labels: SwitchLabels<Expr>,
     pub body: Vec<Stmt>,
 }
 
-pub enum SwitchLabels {
-    Values(Vec<Expr>),
+#[derive(Clone)]
+pub enum SwitchLabels<E> {
+    Values(Vec<E>),
     Default,
 }
 
-pub struct MeasureExpr {
-    pub kind: MeasureExprKind,
+#[derive(Clone)]
+pub struct MeasureExpr<E> {
+    pub kind: MeasureExprKind<E>,
     pub ty: Type,
     pub span: Span,
 }
 
-pub enum MeasureExprKind {
+#[derive(Clone)]
+pub enum MeasureExprKind<E> {
     Measure {
-        operand: QubitOperand,
+        operand: QubitOperand<E>,
     },
     QuantumCall {
         callee: SymbolId,
-        args: Vec<Expr>,
-        qubits: Vec<QubitOperand>,
+        args: Vec<E>,
+        qubits: Vec<QubitOperand<E>>,
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum CallTarget {
     Symbol(SymbolId),
     Intrinsic(Intrinsic),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Intrinsic {
     Sin,
     Cos,
@@ -362,14 +431,10 @@ pub enum Intrinsic {
     Sizeof,
 }
 
-pub enum RValue {
-    Expr(Box<Expr>),
-    Measure(MeasureExpr),
-}
-
-pub struct ArrayLiteral {
-    pub items: Vec<Expr>,
-    pub span: Span,
+#[derive(Clone)]
+pub enum RValue<E> {
+    Expr(Box<E>),
+    Measure(MeasureExpr<E>),
 }
 
 #[cfg(test)]
@@ -411,7 +476,7 @@ mod tests {
         }
     }
 
-    fn indexed_qubit(sym: SymbolId, idx: u128, span: Span) -> QubitOperand {
+    fn indexed_qubit(sym: SymbolId, idx: u128, span: Span) -> QubitOperand<Expr> {
         QubitOperand::Indexed {
             symbol: sym,
             indices: vec![IndexOp {
@@ -421,35 +486,40 @@ mod tests {
         }
     }
 
-    fn bare_qubit(sym: SymbolId) -> QubitOperand {
+    fn bare_qubit(sym: SymbolId) -> QubitOperand<Expr> {
         QubitOperand::Indexed {
             symbol: sym,
             indices: vec![],
         }
     }
 
-    fn gate_call(gate: SymbolId, args: Vec<Expr>, qubits: Vec<QubitOperand>, span: Span) -> Stmt {
+    fn gate_call(
+        gate: SymbolId,
+        args: Vec<Expr>,
+        qubits: Vec<QubitOperand<Expr>>,
+        span: Span,
+    ) -> Stmt {
         stmt(
-            StmtKind::GateCall {
+            StmtKind::GateCall(GateCall {
                 gate,
                 modifiers: vec![],
                 args,
                 qubits,
-            },
+            }),
             span,
         )
     }
 
-    fn measure_assign(target: SymbolId, qubit: QubitOperand, span: Span) -> Stmt {
+    fn measure_assign(target: SymbolId, qubit: QubitOperand<Expr>, span: Span) -> Stmt {
         stmt(
-            StmtKind::Measure {
+            StmtKind::Measure(Measure {
                 measure: MeasureExpr {
                     kind: MeasureExprKind::Measure { operand: qubit },
                     ty: Type::Classical(ValueTy::bit()),
                     span,
                 },
                 target: Some(LValue::Var(target)),
-            },
+            }),
             span,
         )
     }
@@ -551,12 +621,7 @@ mod tests {
         let _ = (c0, c1, c2);
         let body = vec![
             // reset q;
-            stmt(
-                StmtKind::Reset {
-                    operand: bare_qubit(q),
-                },
-                s,
-            ),
+            stmt(StmtKind::Reset(bare_qubit(q)), s),
             // U(0.3, 0.2, 0.1) q[0];
             gate_call(
                 u_gate,
@@ -574,12 +639,7 @@ mod tests {
                 s,
             ),
             // barrier q;
-            stmt(
-                StmtKind::Barrier {
-                    operands: vec![bare_qubit(q)],
-                },
-                s,
-            ),
+            stmt(StmtKind::Barrier(vec![bare_qubit(q)]), s),
             // cx q[0], q[1];
             gate_call(
                 cx_gate,
@@ -595,36 +655,36 @@ mod tests {
             measure_assign(c1, indexed_qubit(q, 1, s), s),
             // if (c0 == 1) z q[2];
             stmt(
-                StmtKind::If {
+                StmtKind::If(If {
                     condition: Expr {
-                        kind: ExprKind::Binary {
+                        kind: ExprKind::Binary(Binary {
                             op: BinOp::Eq,
                             left: Box::new(var_expr(c0, Type::Classical(ValueTy::bit()), s)),
                             right: Box::new(uint_expr(1, s)),
-                        },
+                        }),
                         ty: Type::Classical(ValueTy::bool()),
                         span: s,
                     },
                     then_body: vec![gate_call(z_gate, vec![], vec![indexed_qubit(q, 2, s)], s)],
                     else_body: None,
-                },
+                }),
                 s,
             ),
             // if (c1 == 1) { x q[2]; }
             stmt(
-                StmtKind::If {
+                StmtKind::If(If {
                     condition: Expr {
-                        kind: ExprKind::Binary {
+                        kind: ExprKind::Binary(Binary {
                             op: BinOp::Eq,
                             left: Box::new(var_expr(c1, Type::Classical(ValueTy::bit()), s)),
                             right: Box::new(uint_expr(1, s)),
-                        },
+                        }),
                         ty: Type::Classical(ValueTy::bool()),
                         span: s,
                     },
                     then_body: vec![gate_call(x_gate, vec![], vec![indexed_qubit(q, 2, s)], s)],
                     else_body: None,
-                },
+                }),
                 s,
             ),
             // post q[2];
@@ -664,21 +724,21 @@ mod tests {
         assert!(program.gates[0].body.body.is_empty());
 
         // Verify first body stmt is reset (declarations are symbol-table only)
-        assert!(matches!(program.body[0].kind, StmtKind::Reset { .. }));
+        assert!(matches!(program.body[0].kind, StmtKind::Reset(_)));
 
         // Verify last stmt is a measure into c2
         assert!(matches!(
             program.body[12].kind,
-            StmtKind::Measure { target: Some(_), .. }
+            StmtKind::Measure(Measure { target: Some(_), .. })
         ));
 
         // Verify an if-statement is present
         assert!(matches!(
             program.body[9].kind,
-            StmtKind::If {
+            StmtKind::If(If {
                 else_body: None,
                 ..
-            }
+            })
         ));
     }
 }

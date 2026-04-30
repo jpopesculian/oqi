@@ -471,7 +471,7 @@ impl Lowerer {
             ast::StmtKind::Cal(body) => {
                 let body = self.lower_cal_body(body)?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Cal { body },
+                    kind: sir::StmtKind::Cal(body),
                     annotations,
                     span,
                 }]
@@ -531,12 +531,12 @@ impl Lowerer {
                     .map(|o| self.lower_gate_operand(o))
                     .collect::<Result<_>>()?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::GateCall {
+                    kind: sir::StmtKind::GateCall(sir::GateCall {
                         gate,
                         modifiers: sir_mods,
                         args: sir_args,
                         qubits: sir_qubits,
-                    },
+                    }),
                     annotations,
                     span,
                 }]
@@ -549,10 +549,10 @@ impl Lowerer {
                     None => None,
                 };
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Measure {
+                    kind: sir::StmtKind::Measure(sir::Measure {
                         measure: sir_measure,
                         target: sir_target,
-                    },
+                    }),
                     annotations,
                     span,
                 }]
@@ -561,7 +561,7 @@ impl Lowerer {
             ast::StmtKind::Reset(operand) => {
                 let op = self.lower_gate_operand(operand)?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Reset { operand: op },
+                    kind: sir::StmtKind::Reset(op),
                     annotations,
                     span,
                 }]
@@ -573,7 +573,7 @@ impl Lowerer {
                     .map(|o| self.lower_gate_operand(o))
                     .collect::<Result<_>>()?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Barrier { operands: ops },
+                    kind: sir::StmtKind::Barrier(ops),
                     annotations,
                     span,
                 }]
@@ -585,10 +585,10 @@ impl Lowerer {
                 if let (ast::AssignOp::Assign, ast::ExprOrMeasure::Measure(m)) = (op, value) {
                     let measure = self.lower_measure_expr(m)?;
                     return Ok(vec![sir::Stmt {
-                        kind: sir::StmtKind::Assignment {
+                        kind: sir::StmtKind::Assignment(sir::Assignment {
                             target: lv,
                             value: sir::RValue::Measure(measure),
-                        },
+                        }),
                         annotations,
                         span,
                     }]);
@@ -608,10 +608,10 @@ impl Lowerer {
                         .symbols_mut()
                         .new_temp(temp_ty.clone(), span, scope);
                     let measure_stmt = sir::Stmt {
-                        kind: sir::StmtKind::Measure {
+                        kind: sir::StmtKind::Measure(sir::Measure {
                             measure,
                             target: Some(sir::LValue::Var(temp_sym)),
-                        },
+                        }),
                         annotations: vec![],
                         span,
                     };
@@ -623,19 +623,19 @@ impl Lowerer {
                         span,
                     };
                     let bin = sir::Expr {
-                        kind: sir::ExprKind::Binary {
+                        kind: sir::ExprKind::Binary(sir::Binary {
                             op: bin_op,
                             left: Box::new(left),
                             right: Box::new(right),
-                        },
+                        }),
                         ty: left_ty,
                         span,
                     };
                     let assign_stmt = sir::Stmt {
-                        kind: sir::StmtKind::Assignment {
+                        kind: sir::StmtKind::Assignment(sir::Assignment {
                             target: lv,
                             value: sir::RValue::Expr(Box::new(bin)),
-                        },
+                        }),
                         annotations,
                         span,
                     };
@@ -654,21 +654,21 @@ impl Lowerer {
                         let left = self.lower_indexed_ident_to_expr(target)?;
                         let ty = left.ty.clone();
                         Box::new(sir::Expr {
-                            kind: sir::ExprKind::Binary {
+                            kind: sir::ExprKind::Binary(sir::Binary {
                                 op: bin_op,
                                 left: Box::new(left),
                                 right: Box::new(rhs_expr),
-                            },
+                            }),
                             ty,
                             span,
                         })
                     }
                 };
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Assignment {
+                    kind: sir::StmtKind::Assignment(sir::Assignment {
                         target: lv,
                         value: sir::RValue::Expr(sir_value),
-                    },
+                    }),
                     annotations,
                     span,
                 }]
@@ -686,11 +686,11 @@ impl Lowerer {
                     None => None,
                 };
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::If {
+                    kind: sir::StmtKind::If(sir::If {
                         condition: cond,
                         then_body: then_stmts,
                         else_body: else_stmts,
-                    },
+                    }),
                     annotations,
                     span,
                 }]
@@ -726,11 +726,11 @@ impl Lowerer {
                     Ok((var_sym, sir_iterable, body_stmts))
                 })?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::For {
+                    kind: sir::StmtKind::For(sir::For {
                         var: var_sym,
                         iterable: sir_iterable,
                         body: body_stmts,
-                    },
+                    }),
                     annotations,
                     span,
                 }]
@@ -740,10 +740,10 @@ impl Lowerer {
                 let cond = self.lower_expr(condition)?;
                 let body_stmts = self.lower_body(body, ScopeKind::While)?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::While {
+                    kind: sir::StmtKind::While(sir::While {
                         condition: cond,
                         body: body_stmts,
-                    },
+                    }),
                     annotations,
                     span,
                 }]
@@ -756,10 +756,10 @@ impl Lowerer {
                     .map(|c| self.lower_switch_case(c))
                     .collect::<Result<_>>()?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Switch {
+                    kind: sir::StmtKind::Switch(sir::Switch {
                         target: tgt,
                         cases: sir_cases,
-                    },
+                    }),
                     annotations,
                     span,
                 }]
@@ -809,10 +809,10 @@ impl Lowerer {
                     self.resolver
                         .declare(name.name, SymbolKind::Alias, Type::Void, name.span)?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Alias {
+                    kind: sir::StmtKind::Alias(sir::Alias {
                         symbol,
                         value: exprs,
-                    },
+                    }),
                     annotations,
                     span,
                 }]
@@ -828,10 +828,10 @@ impl Lowerer {
                     .map(|o| self.lower_gate_operand(o))
                     .collect::<Result<_>>()?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Delay {
+                    kind: sir::StmtKind::Delay(sir::Delay {
                         duration: dur,
                         operands: ops,
-                    },
+                    }),
                     annotations,
                     span,
                 }]
@@ -850,10 +850,10 @@ impl Lowerer {
                     Ok(body_stmts)
                 })?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Box {
+                    kind: sir::StmtKind::Box(sir::BoxStmt {
                         duration: dur,
                         body: body_stmts,
-                    },
+                    }),
                     annotations,
                     span,
                 }]
@@ -865,7 +865,7 @@ impl Lowerer {
                     .map(|o| self.lower_gate_operand(o))
                     .collect::<Result<_>>()?;
                 vec![sir::Stmt {
-                    kind: sir::StmtKind::Nop { operands: ops },
+                    kind: sir::StmtKind::Nop(ops),
                     annotations,
                     span,
                 }]
@@ -1035,11 +1035,11 @@ impl Lowerer {
                 let sir_op = map_bin_op(op);
                 let ty = binary_result_type(&sir_op, &l.ty, &r.ty, span)?;
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Binary {
+                    kind: sir::ExprKind::Binary(sir::Binary {
                         op: sir_op,
                         left: Box::new(l),
                         right: Box::new(r),
-                    },
+                    }),
                     ty,
                     span,
                 })
@@ -1050,10 +1050,10 @@ impl Lowerer {
                 let sir_op = map_un_op(op);
                 let ty = unary_result_type(&sir_op, &inner.ty);
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Unary {
+                    kind: sir::ExprKind::Unary(sir::Unary {
                         op: sir_op,
                         operand: Box::new(inner),
-                    },
+                    }),
                     ty,
                     span,
                 })
@@ -1064,10 +1064,10 @@ impl Lowerer {
                 let idx = self.lower_index_op(index)?;
                 let ty = index_result_type(&base.ty, &idx);
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Index {
+                    kind: sir::ExprKind::Index(sir::Index {
                         base: Box::new(base),
                         index: idx,
-                    },
+                    }),
                     ty,
                     span,
                 })
@@ -1097,10 +1097,10 @@ impl Lowerer {
                 }
                 let ty = self.call_result_type(&callee, &sir_args).with_span(span)?;
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Call {
+                    kind: sir::ExprKind::Call(sir::Call {
                         callee,
                         args: sir_args,
-                    },
+                    }),
                     ty,
                     span,
                 })
@@ -1112,10 +1112,10 @@ impl Lowerer {
                 validate_cast(&inner.ty, &target_ty, span)?;
                 let result_ty = target_ty.clone();
                 Ok(sir::Expr {
-                    kind: sir::ExprKind::Cast {
+                    kind: sir::ExprKind::Cast(sir::Cast {
                         target_ty,
                         operand: Box::new(inner),
-                    },
+                    }),
                     ty: result_ty,
                     span,
                 })
@@ -1146,7 +1146,10 @@ impl Lowerer {
 
     // ── Helper lowering methods ─────────────────────────────────────────
 
-    fn lower_gate_operand(&mut self, op: &ast::GateOperand<'_>) -> Result<sir::QubitOperand> {
+    fn lower_gate_operand(
+        &mut self,
+        op: &ast::GateOperand<'_>,
+    ) -> Result<sir::QubitOperand<sir::Expr>> {
         match op {
             ast::GateOperand::Indexed(id) => {
                 let sym = self.resolver.resolve(id.name.name, id.name.span)?;
@@ -1166,7 +1169,10 @@ impl Lowerer {
         }
     }
 
-    fn lower_indexed_ident_to_lvalue(&mut self, id: &ast::IndexedIdent<'_>) -> Result<sir::LValue> {
+    fn lower_indexed_ident_to_lvalue(
+        &mut self,
+        id: &ast::IndexedIdent<'_>,
+    ) -> Result<sir::LValue<sir::Expr>> {
         let sym = self.resolver.resolve(id.name.name, id.name.span)?;
         if id.indices.is_empty() {
             Ok(sir::LValue::Var(sym))
@@ -1196,10 +1202,10 @@ impl Lowerer {
             let ty = index_result_type(&expr.ty, &sir_idx);
             let span = oqi_lex::span(id.name.span.start, idx.span.end);
             expr = sir::Expr {
-                kind: sir::ExprKind::Index {
+                kind: sir::ExprKind::Index(sir::Index {
                     base: Box::new(expr),
                     index: sir_idx,
-                },
+                }),
                 ty,
                 span,
             };
@@ -1207,7 +1213,7 @@ impl Lowerer {
         Ok(expr)
     }
 
-    fn lower_index_op(&mut self, op: &ast::IndexOp<'_>) -> Result<sir::IndexOp> {
+    fn lower_index_op(&mut self, op: &ast::IndexOp<'_>) -> Result<sir::IndexOp<sir::Expr>> {
         let kind = match &op.kind {
             ast::IndexKind::Set(exprs) => {
                 let items = exprs
@@ -1251,7 +1257,10 @@ impl Lowerer {
         })
     }
 
-    fn lower_gate_modifier(&mut self, m: &ast::GateModifier<'_>) -> Result<sir::GateModifier> {
+    fn lower_gate_modifier(
+        &mut self,
+        m: &ast::GateModifier<'_>,
+    ) -> Result<sir::GateModifier<sir::Expr>> {
         match m {
             ast::GateModifier::Inv(_) => Ok(sir::GateModifier::Inv),
             ast::GateModifier::Pow(expr, _) => {
@@ -1278,7 +1287,10 @@ impl Lowerer {
         }
     }
 
-    fn lower_measure_expr(&mut self, m: &ast::MeasureExpr<'_>) -> Result<sir::MeasureExpr> {
+    fn lower_measure_expr(
+        &mut self,
+        m: &ast::MeasureExpr<'_>,
+    ) -> Result<sir::MeasureExpr<sir::Expr>> {
         match m {
             ast::MeasureExpr::Measure { operand, span } => {
                 let op = self.lower_gate_operand(operand)?;
@@ -1333,7 +1345,7 @@ impl Lowerer {
         }
     }
 
-    fn lvalue_type(&self, lv: &sir::LValue) -> Type {
+    fn lvalue_type(&self, lv: &sir::LValue<sir::Expr>) -> Type {
         match lv {
             sir::LValue::Var(sym) => self.resolver.symbols().get(*sym).ty.clone(),
             sir::LValue::Indexed { symbol, indices } => {
@@ -1346,7 +1358,7 @@ impl Lowerer {
         }
     }
 
-    fn qubit_operand_type(&self, op: &sir::QubitOperand) -> Type {
+    fn qubit_operand_type(&self, op: &sir::QubitOperand<sir::Expr>) -> Type {
         match op {
             sir::QubitOperand::Hardware(_) => Type::PhysicalQubit,
             sir::QubitOperand::Indexed { symbol, indices } => {
@@ -1374,10 +1386,10 @@ impl Lowerer {
             Some(ast::ExprOrMeasure::Expr(ast::Expr::ArrayLiteral(al))) => {
                 let e = self.lower_array_literal_expr(al)?;
                 Ok(vec![sir::Stmt {
-                    kind: sir::StmtKind::Assignment {
+                    kind: sir::StmtKind::Assignment(sir::Assignment {
                         target: sir::LValue::Var(symbol),
                         value: sir::RValue::Expr(Box::new(e)),
-                    },
+                    }),
                     annotations,
                     span,
                 }])
@@ -1387,10 +1399,10 @@ impl Lowerer {
                 let target_ty = self.resolver.symbols().get(symbol).ty.clone();
                 let e = coerce_literal(e, &target_ty);
                 Ok(vec![sir::Stmt {
-                    kind: sir::StmtKind::Assignment {
+                    kind: sir::StmtKind::Assignment(sir::Assignment {
                         target: sir::LValue::Var(symbol),
                         value: sir::RValue::Expr(Box::new(e)),
-                    },
+                    }),
                     annotations,
                     span,
                 }])
@@ -1398,10 +1410,10 @@ impl Lowerer {
             Some(ast::ExprOrMeasure::Measure(m)) => {
                 let measure = self.lower_measure_expr(m)?;
                 Ok(vec![sir::Stmt {
-                    kind: sir::StmtKind::Measure {
+                    kind: sir::StmtKind::Measure(sir::Measure {
                         measure,
                         target: Some(sir::LValue::Var(symbol)),
-                    },
+                    }),
                     annotations,
                     span,
                 }])
@@ -1638,12 +1650,12 @@ impl Lowerer {
 
 fn validate_gate_stmt(stmt: &sir::Stmt) -> Result<()> {
     match &stmt.kind {
-        sir::StmtKind::GateCall { .. } | sir::StmtKind::Barrier { .. } => Ok(()),
-        sir::StmtKind::If {
+        sir::StmtKind::GateCall(_) | sir::StmtKind::Barrier(_) => Ok(()),
+        sir::StmtKind::If(sir::If {
             then_body,
             else_body,
             ..
-        } => {
+        }) => {
             for s in then_body {
                 validate_gate_stmt(s)?;
             }
@@ -1654,13 +1666,13 @@ fn validate_gate_stmt(stmt: &sir::Stmt) -> Result<()> {
             }
             Ok(())
         }
-        sir::StmtKind::For { body, .. } => {
+        sir::StmtKind::For(sir::For { body, .. }) => {
             for s in body {
                 validate_gate_stmt(s)?;
             }
             Ok(())
         }
-        sir::StmtKind::While { body, .. } => {
+        sir::StmtKind::While(sir::While { body, .. }) => {
             for s in body {
                 validate_gate_stmt(s)?;
             }
@@ -1865,7 +1877,7 @@ fn type_mismatch(expected: &Type, got: &Type, span: oqi_lex::Span) -> CompileErr
     .with_span(span)
 }
 
-fn single_item_indices(index: &sir::IndexOp) -> Option<Vec<ClassicalIndex>> {
+fn single_item_indices(index: &sir::IndexOp<sir::Expr>) -> Option<Vec<ClassicalIndex>> {
     match &index.kind {
         sir::IndexKind::Items(items) => items
             .iter()
@@ -1942,7 +1954,7 @@ fn measure_result_type(qubit_ty: &Type) -> Type {
     }
 }
 
-fn index_result_type(base_ty: &Type, index: &sir::IndexOp) -> Type {
+fn index_result_type(base_ty: &Type, index: &sir::IndexOp<sir::Expr>) -> Type {
     if let Some(indices) = single_item_indices(index) {
         if matches!(base_ty, Type::QubitReg(_)) && indices.len() == 1 {
             return Type::Qubit;
@@ -2248,7 +2260,7 @@ mod tests {
         let has_for = program
             .body
             .iter()
-            .any(|s| matches!(s.kind, sir::StmtKind::For { .. }));
+            .any(|s| matches!(s.kind, sir::StmtKind::For(_)));
         assert!(has_for);
 
         // Symbol table has key variables
@@ -2287,7 +2299,7 @@ mod tests {
             g.body.body.iter().any(|s| {
                 matches!(
                     &s.kind,
-                    sir::StmtKind::GateCall { gate, .. }
+                    sir::StmtKind::GateCall(sir::GateCall { gate, .. })
                         if program.symbols.get(*gate).name == "gphase"
                 )
             })
@@ -2443,7 +2455,7 @@ mod tests {
         let has_gate_call = program
             .body
             .iter()
-            .any(|s| matches!(&s.kind, sir::StmtKind::GateCall { .. }));
+            .any(|s| matches!(&s.kind, sir::StmtKind::GateCall(_)));
         assert!(has_gate_call);
     }
 
@@ -2797,9 +2809,9 @@ mod tests {
         let if_stmt = program
             .body
             .iter()
-            .find(|s| matches!(s.kind, sir::StmtKind::If { .. }));
+            .find(|s| matches!(s.kind, sir::StmtKind::If(_)));
         assert!(if_stmt.is_some());
-        if let sir::StmtKind::If { condition, .. } = &if_stmt.unwrap().kind {
+        if let sir::StmtKind::If(sir::If { condition, .. }) = &if_stmt.unwrap().kind {
             assert_eq!(
                 condition.ty,
                 Type::Classical(ValueTy::bool()),
@@ -2817,14 +2829,14 @@ mod tests {
         let for_stmt = program
             .body
             .iter()
-            .find(|s| matches!(s.kind, sir::StmtKind::For { .. }));
+            .find(|s| matches!(s.kind, sir::StmtKind::For(_)));
         assert!(for_stmt.is_some());
-        if let sir::StmtKind::For { body, .. } = &for_stmt.unwrap().kind {
+        if let sir::StmtKind::For(sir::For { body, .. }) = &for_stmt.unwrap().kind {
             let if_stmt = body
                 .iter()
-                .find(|s| matches!(s.kind, sir::StmtKind::If { .. }));
+                .find(|s| matches!(s.kind, sir::StmtKind::If(_)));
             assert!(if_stmt.is_some());
-            if let sir::StmtKind::If { condition, .. } = &if_stmt.unwrap().kind {
+            if let sir::StmtKind::If(sir::If { condition, .. }) = &if_stmt.unwrap().kind {
                 assert_eq!(
                     condition.ty,
                     Type::Classical(ValueTy::bool()),

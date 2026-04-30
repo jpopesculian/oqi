@@ -1,3 +1,4 @@
+pub mod cfg;
 pub mod classical;
 pub mod display;
 pub mod error;

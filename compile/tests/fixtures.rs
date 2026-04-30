@@ -170,7 +170,9 @@ fn msd_undeclared_success() {
 
 #[test]
 fn compound_assign_with_measure_desugars() {
-    use oqi_compile::sir::{BinOp, ExprKind, LValue, MeasureExprKind, RValue, StmtKind};
+    use oqi_compile::sir::{
+        Assignment, BinOp, Binary, ExprKind, LValue, Measure, MeasureExprKind, RValue, StmtKind,
+    };
     use oqi_compile::symbol::SymbolKind;
 
     let src = r#"
@@ -196,12 +198,12 @@ fn compound_assign_with_measure_desugars() {
     let measure_idx = p
         .body
         .iter()
-        .position(|s| matches!(s.kind, StmtKind::Measure { .. }))
+        .position(|s| matches!(s.kind, StmtKind::Measure(_)))
         .expect("expected a Measure stmt");
     let assign_idx = p
         .body
         .iter()
-        .position(|s| matches!(s.kind, StmtKind::Assignment { .. }))
+        .position(|s| matches!(s.kind, StmtKind::Assignment(_)))
         .expect("expected an Assignment stmt");
     assert!(
         measure_idx < assign_idx,
@@ -209,20 +211,20 @@ fn compound_assign_with_measure_desugars() {
     );
 
     // Measure targets the temp.
-    let StmtKind::Measure { measure, target } = &p.body[measure_idx].kind else {
+    let StmtKind::Measure(Measure { measure, target }) = &p.body[measure_idx].kind else {
         unreachable!();
     };
     assert!(matches!(measure.kind, MeasureExprKind::Measure { .. }));
     assert!(matches!(target, Some(LValue::Var(s)) if *s == temp.id));
 
     // Assignment is `a = a & $temp`.
-    let StmtKind::Assignment { value, .. } = &p.body[assign_idx].kind else {
+    let StmtKind::Assignment(Assignment { value, .. }) = &p.body[assign_idx].kind else {
         unreachable!();
     };
     let RValue::Expr(e) = value else {
         panic!("expected RValue::Expr, got measure form");
     };
-    let ExprKind::Binary { op, left, right } = &e.kind else {
+    let ExprKind::Binary(Binary { op, left, right }) = &e.kind else {
         panic!("expected Binary expression in desugared assignment");
     };
     assert_eq!(*op, BinOp::BitAnd);
@@ -904,19 +906,21 @@ fn io_declarations() {
 // ── Constant folding ────────────────────────────────────────────────
 
 use oqi_compile::classical::{FloatWidth, Primitive};
-use oqi_compile::sir::{self, ExprKind, RValue, StmtKind};
+use oqi_compile::sir::{self, Assignment, Call, ExprKind, RValue, StmtKind};
 use oqi_compile::types::Type;
 
-fn first_assignment(program: &sir::Program) -> (&sir::LValue, &sir::RValue) {
+fn first_assignment(
+    program: &sir::Program,
+) -> (&sir::LValue<sir::Expr>, &sir::RValue<sir::Expr>) {
     for stmt in &program.body {
-        if let StmtKind::Assignment { target, value } = &stmt.kind {
+        if let StmtKind::Assignment(Assignment { target, value }) = &stmt.kind {
             return (target, value);
         }
     }
     panic!("no Assignment statement found");
 }
 
-fn as_literal(rv: &RValue) -> (&Primitive, &Type) {
+fn as_literal(rv: &RValue<sir::Expr>) -> (&Primitive, &Type) {
     let RValue::Expr(e) = rv else {
         panic!("expected RValue::Expr");
     };
@@ -1004,7 +1008,7 @@ fn non_foldable_survives() {
         panic!("expected RValue::Expr");
     };
     assert!(
-        matches!(&e.kind, ExprKind::Binary { .. }),
+        matches!(&e.kind, ExprKind::Binary(_)),
         "non-foldable expression should remain a Binary"
     );
 }
@@ -1034,14 +1038,14 @@ fn non_intrinsic_call_arg_coerced() {
         .body
         .iter()
         .find_map(|s| match &s.kind {
-            StmtKind::Assignment { target, value } => Some((target, value)),
+            StmtKind::Assignment(Assignment { target, value }) => Some((target, value)),
             _ => None,
         })
         .expect("expected an assignment");
     let RValue::Expr(e) = rv else {
         panic!("expected RValue::Expr");
     };
-    let ExprKind::Call { args, .. } = &e.kind else {
+    let ExprKind::Call(Call { args, .. }) = &e.kind else {
         panic!("expected Call");
     };
     assert_eq!(args.len(), 1);

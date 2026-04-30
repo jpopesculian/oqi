@@ -1,9 +1,33 @@
 use std::fmt;
 
+use crate::cfg::{
+    BasicBlockId, BlockBoxStmt, BlockCalibrationBody, BlockExpr, BlockExprKind, BlockStmt,
+    BlockStmtKind, Cfg, CfgDisplay, Terminator,
+};
 use crate::error::{CompileError, ErrorKind};
 use crate::sir::*;
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::Type;
+
+/// Format an expression in either the SIR or CFG world. Implemented for
+/// [`Expr`] (delegates to [`fmt_expr`]) and [`BlockExpr`] (delegates to
+/// [`fmt_block_expr`]) so the per-payload helpers (`fmt_qubit_op`,
+/// `fmt_index`, etc.) can be generic over the expression type.
+trait FmtExpr {
+    fn fmt_e(&self, f: &mut fmt::Formatter<'_>, symbols: &SymbolTable) -> fmt::Result;
+}
+
+impl FmtExpr for Expr {
+    fn fmt_e(&self, f: &mut fmt::Formatter<'_>, symbols: &SymbolTable) -> fmt::Result {
+        fmt_expr(f, self, symbols)
+    }
+}
+
+impl FmtExpr for BlockExpr {
+    fn fmt_e(&self, f: &mut fmt::Formatter<'_>, symbols: &SymbolTable) -> fmt::Result {
+        fmt_block_expr(f, self, symbols)
+    }
+}
 
 // ── Simple type displays ────────────────────────────────────────────
 
@@ -334,13 +358,12 @@ fn pad(f: &mut fmt::Formatter<'_>, indent: usize) -> fmt::Result {
     Ok(())
 }
 
-fn fmt_stmt(
+fn fmt_annotations(
     f: &mut fmt::Formatter<'_>,
-    stmt: &Stmt,
-    symbols: &SymbolTable,
+    annotations: &[Annotation],
     indent: usize,
 ) -> fmt::Result {
-    for ann in &stmt.annotations {
+    for ann in annotations {
         pad(f, indent)?;
         write!(f, "@{}", ann.keyword)?;
         if let Some(ref content) = ann.content {
@@ -348,111 +371,183 @@ fn fmt_stmt(
         }
         writeln!(f)?;
     }
+    Ok(())
+}
+
+fn fmt_alias<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    a: &Alias<E>,
+    symbols: &SymbolTable,
+) -> fmt::Result {
+    write!(f, "alias {} = ", a.symbol)?;
+    for (i, v) in a.value.iter().enumerate() {
+        if i > 0 {
+            write!(f, " ++ ")?;
+        }
+        v.fmt_e(f, symbols)?;
+    }
+    writeln!(f)
+}
+
+fn fmt_gate_call<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    g: &GateCall<E>,
+    symbols: &SymbolTable,
+) -> fmt::Result {
+    write!(f, "gate_call ")?;
+    for m in &g.modifiers {
+        fmt_gate_modifier(f, m, symbols)?;
+        write!(f, " ")?;
+    }
+    write!(f, "{}", g.gate)?;
+    write!(f, " (")?;
+    for (i, arg) in g.args.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        arg.fmt_e(f, symbols)?;
+    }
+    write!(f, ") [")?;
+    for (i, q) in g.qubits.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        fmt_qubit_op(f, q, symbols)?;
+    }
+    writeln!(f, "]")
+}
+
+fn fmt_measure_stmt<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    m: &Measure<E>,
+    symbols: &SymbolTable,
+) -> fmt::Result {
+    fmt_measure(f, &m.measure, symbols)?;
+    if let Some(lv) = &m.target {
+        write!(f, " -> ")?;
+        fmt_lvalue(f, lv, symbols)?;
+    }
+    writeln!(f)
+}
+
+fn fmt_reset<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    operand: &QubitOperand<E>,
+    symbols: &SymbolTable,
+) -> fmt::Result {
+    write!(f, "reset ")?;
+    fmt_qubit_op(f, operand, symbols)?;
+    writeln!(f)
+}
+
+fn fmt_barrier<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    operands: &[QubitOperand<E>],
+    symbols: &SymbolTable,
+) -> fmt::Result {
+    write!(f, "barrier")?;
+    if !operands.is_empty() {
+        write!(f, " ")?;
+        for (i, q) in operands.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            fmt_qubit_op(f, q, symbols)?;
+        }
+    }
+    writeln!(f)
+}
+
+fn fmt_delay<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    d: &Delay<E>,
+    symbols: &SymbolTable,
+) -> fmt::Result {
+    write!(f, "delay ")?;
+    d.duration.fmt_e(f, symbols)?;
+    for q in &d.operands {
+        write!(f, " ")?;
+        fmt_qubit_op(f, q, symbols)?;
+    }
+    writeln!(f)
+}
+
+fn fmt_box_stmt(
+    f: &mut fmt::Formatter<'_>,
+    b: &BoxStmt,
+    symbols: &SymbolTable,
+    indent: usize,
+) -> fmt::Result {
+    write!(f, "box")?;
+    if let Some(dur) = &b.duration {
+        write!(f, "[")?;
+        fmt_expr(f, dur, symbols)?;
+        write!(f, "]")?;
+    }
+    writeln!(f, " {{")?;
+    for s in &b.body {
+        fmt_stmt(f, s, symbols, indent + 2)?;
+    }
+    pad(f, indent)?;
+    writeln!(f, "}}")
+}
+
+fn fmt_assignment<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    a: &Assignment<E>,
+    symbols: &SymbolTable,
+) -> fmt::Result {
+    write!(f, "assign ")?;
+    fmt_lvalue(f, &a.target, symbols)?;
+    write!(f, " = ")?;
+    match &a.value {
+        RValue::Expr(e) => e.fmt_e(f, symbols)?,
+        RValue::Measure(m) => fmt_measure(f, m, symbols)?,
+    }
+    writeln!(f)
+}
+
+fn fmt_nop<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    operands: &[QubitOperand<E>],
+    symbols: &SymbolTable,
+) -> fmt::Result {
+    write!(f, "nop")?;
+    if !operands.is_empty() {
+        write!(f, " ")?;
+        for (i, q) in operands.iter().enumerate() {
+            if i > 0 {
+                write!(f, ", ")?;
+            }
+            fmt_qubit_op(f, q, symbols)?;
+        }
+    }
+    writeln!(f)
+}
+
+fn fmt_stmt(
+    f: &mut fmt::Formatter<'_>,
+    stmt: &Stmt,
+    symbols: &SymbolTable,
+    indent: usize,
+) -> fmt::Result {
+    fmt_annotations(f, &stmt.annotations, indent)?;
 
     pad(f, indent)?;
     match &stmt.kind {
-        StmtKind::Alias { symbol, value } => {
-            write!(f, "alias {symbol} = ")?;
-            for (i, v) in value.iter().enumerate() {
-                if i > 0 {
-                    write!(f, " ++ ")?;
-                }
-                fmt_expr(f, v, symbols)?;
-            }
-            writeln!(f)
-        }
-        StmtKind::GateCall {
-            gate,
-            modifiers,
-            args,
-            qubits,
-        } => {
-            write!(f, "gate_call ")?;
-            for m in modifiers {
-                fmt_gate_modifier(f, m, symbols)?;
-                write!(f, " ")?;
-            }
-            write!(f, "{gate}")?;
-            write!(f, " (")?;
-            for (i, arg) in args.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                fmt_expr(f, arg, symbols)?;
-            }
-            write!(f, ") [")?;
-            for (i, q) in qubits.iter().enumerate() {
-                if i > 0 {
-                    write!(f, ", ")?;
-                }
-                fmt_qubit_op(f, q, symbols)?;
-            }
-            writeln!(f, "]")
-        }
-        StmtKind::Measure { measure, target } => {
-            fmt_measure(f, measure, symbols)?;
-            if let Some(lv) = target {
-                write!(f, " -> ")?;
-                fmt_lvalue(f, lv, symbols)?;
-            }
-            writeln!(f)
-        }
-        StmtKind::Reset { operand } => {
-            write!(f, "reset ")?;
-            fmt_qubit_op(f, operand, symbols)?;
-            writeln!(f)
-        }
-        StmtKind::Barrier { operands } => {
-            write!(f, "barrier")?;
-            if !operands.is_empty() {
-                write!(f, " ")?;
-                for (i, q) in operands.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    fmt_qubit_op(f, q, symbols)?;
-                }
-            }
-            writeln!(f)
-        }
-        StmtKind::Delay { duration, operands } => {
-            write!(f, "delay ")?;
-            fmt_expr(f, duration, symbols)?;
-            for q in operands {
-                write!(f, " ")?;
-                fmt_qubit_op(f, q, symbols)?;
-            }
-            writeln!(f)
-        }
-        StmtKind::Box { duration, body } => {
-            write!(f, "box")?;
-            if let Some(dur) = duration {
-                write!(f, "[")?;
-                fmt_expr(f, dur, symbols)?;
-                write!(f, "]")?;
-            }
-            writeln!(f, " {{")?;
-            for s in body {
-                fmt_stmt(f, s, symbols, indent + 2)?;
-            }
-            pad(f, indent)?;
-            writeln!(f, "}}")
-        }
-        StmtKind::Assignment { target, value } => {
-            write!(f, "assign ")?;
-            fmt_lvalue(f, target, symbols)?;
-            write!(f, " = ")?;
-            match value {
-                RValue::Expr(e) => fmt_expr(f, e, symbols)?,
-                RValue::Measure(m) => fmt_measure(f, m, symbols)?,
-            }
-            writeln!(f)
-        }
-        StmtKind::If {
+        StmtKind::Alias(a) => fmt_alias(f, a, symbols),
+        StmtKind::GateCall(g) => fmt_gate_call(f, g, symbols),
+        StmtKind::Measure(m) => fmt_measure_stmt(f, m, symbols),
+        StmtKind::Reset(operand) => fmt_reset(f, operand, symbols),
+        StmtKind::Barrier(operands) => fmt_barrier(f, operands, symbols),
+        StmtKind::Delay(d) => fmt_delay(f, d, symbols),
+        StmtKind::Box(b) => fmt_box_stmt(f, b, symbols, indent),
+        StmtKind::Assignment(a) => fmt_assignment(f, a, symbols),
+        StmtKind::If(If {
             condition,
             then_body,
             else_body,
-        } => {
+        }) => {
             write!(f, "if ")?;
             fmt_expr(f, condition, symbols)?;
             writeln!(f, " {{")?;
@@ -471,11 +566,11 @@ fn fmt_stmt(
                 writeln!(f, "}}")
             }
         }
-        StmtKind::For {
+        StmtKind::For(For {
             var,
             iterable,
             body,
-        } => {
+        }) => {
             write!(f, "for {var} in ")?;
             fmt_for_iterable(f, iterable, symbols)?;
             writeln!(f, " {{")?;
@@ -485,7 +580,7 @@ fn fmt_stmt(
             pad(f, indent)?;
             writeln!(f, "}}")
         }
-        StmtKind::While { condition, body } => {
+        StmtKind::While(While { condition, body }) => {
             write!(f, "while ")?;
             fmt_expr(f, condition, symbols)?;
             writeln!(f, " {{")?;
@@ -495,7 +590,7 @@ fn fmt_stmt(
             pad(f, indent)?;
             writeln!(f, "}}")
         }
-        StmtKind::Switch { target, cases } => {
+        StmtKind::Switch(Switch { target, cases }) => {
             write!(f, "switch ")?;
             fmt_expr(f, target, symbols)?;
             writeln!(f, " {{")?;
@@ -538,24 +633,174 @@ fn fmt_stmt(
         }
         StmtKind::End => writeln!(f, "end"),
         StmtKind::Pragma(content) => writeln!(f, "pragma {content}"),
-        StmtKind::Cal { body } => fmt_cal_body(f, body, symbols, indent, "cal"),
+        StmtKind::Cal(body) => fmt_cal_body(f, body, symbols, indent, "cal"),
         StmtKind::ExprStmt(expr) => {
             fmt_expr(f, expr, symbols)?;
             writeln!(f)
         }
-        StmtKind::Nop { operands } => {
-            write!(f, "nop")?;
-            if !operands.is_empty() {
-                write!(f, " ")?;
-                for (i, q) in operands.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+        StmtKind::Nop(operands) => fmt_nop(f, operands, symbols),
+    }
+}
+
+pub(crate) fn fmt_block_stmt(
+    f: &mut fmt::Formatter<'_>,
+    stmt: &BlockStmt,
+    symbols: &SymbolTable,
+    indent: usize,
+) -> fmt::Result {
+    fmt_annotations(f, &stmt.annotations, indent)?;
+    pad(f, indent)?;
+    match &stmt.kind {
+        BlockStmtKind::Alias(a) => fmt_alias(f, a, symbols),
+        BlockStmtKind::GateCall(g) => fmt_gate_call(f, g, symbols),
+        BlockStmtKind::Measure(m) => fmt_measure_stmt(f, m, symbols),
+        BlockStmtKind::Reset(operand) => fmt_reset(f, operand, symbols),
+        BlockStmtKind::Barrier(operands) => fmt_barrier(f, operands, symbols),
+        BlockStmtKind::Delay(d) => fmt_delay(f, d, symbols),
+        BlockStmtKind::Box(b) => fmt_block_box(f, b, symbols, indent),
+        BlockStmtKind::Assignment(a) => fmt_assignment(f, a, symbols),
+        BlockStmtKind::Pragma(content) => writeln!(f, "pragma {content}"),
+        BlockStmtKind::Cal(body) => fmt_block_cal_body(f, body, symbols, indent),
+        BlockStmtKind::ExprStmt(expr) => {
+            fmt_block_expr(f, expr, symbols)?;
+            writeln!(f)
+        }
+        BlockStmtKind::Nop(operands) => fmt_nop(f, operands, symbols),
+    }
+}
+
+fn fmt_block_box(
+    f: &mut fmt::Formatter<'_>,
+    b: &BlockBoxStmt,
+    symbols: &SymbolTable,
+    indent: usize,
+) -> fmt::Result {
+    write!(f, "box")?;
+    if let Some(dur) = &b.duration {
+        write!(f, "[")?;
+        fmt_block_expr(f, dur, symbols)?;
+        write!(f, "]")?;
+    }
+    writeln!(f, " {{")?;
+    fmt_block_cfg(f, &b.body, symbols, indent + 2)?;
+    pad(f, indent)?;
+    writeln!(f, "}}")
+}
+
+fn fmt_block_cal_body(
+    f: &mut fmt::Formatter<'_>,
+    body: &BlockCalibrationBody,
+    symbols: &SymbolTable,
+    indent: usize,
+) -> fmt::Result {
+    match body {
+        BlockCalibrationBody::Opaque(s) => writeln!(f, "cal {{ {s} }}"),
+        BlockCalibrationBody::OpenPulse(cfg) => {
+            writeln!(f, "cal {{")?;
+            fmt_block_cfg(f, cfg, symbols, indent + 2)?;
+            pad(f, indent)?;
+            writeln!(f, "}}")
+        }
+    }
+}
+
+fn fmt_basic_block_id(f: &mut fmt::Formatter<'_>, id: BasicBlockId) -> fmt::Result {
+    write!(f, "bb{}", id.0)
+}
+
+fn fmt_terminator(
+    f: &mut fmt::Formatter<'_>,
+    term: &Terminator,
+    symbols: &SymbolTable,
+) -> fmt::Result {
+    match term {
+        Terminator::Goto(target) => {
+            write!(f, "goto ")?;
+            fmt_basic_block_id(f, *target)?;
+            writeln!(f)
+        }
+        Terminator::Branch {
+            cond,
+            then_bb,
+            else_bb,
+        } => {
+            write!(f, "branch ")?;
+            fmt_block_expr(f, cond, symbols)?;
+            write!(f, " ? ")?;
+            fmt_basic_block_id(f, *then_bb)?;
+            write!(f, " : ")?;
+            fmt_basic_block_id(f, *else_bb)?;
+            writeln!(f)
+        }
+        Terminator::Switch {
+            target,
+            cases,
+            default,
+        } => {
+            write!(f, "switch ")?;
+            fmt_block_expr(f, target, symbols)?;
+            writeln!(f, " {{")?;
+            for (labels, bb) in cases {
+                match labels {
+                    SwitchLabels::Values(vals) => {
+                        for (i, v) in vals.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            fmt_block_expr(f, v, symbols)?;
+                        }
                     }
-                    fmt_qubit_op(f, q, symbols)?;
+                    SwitchLabels::Default => write!(f, "default")?,
+                }
+                write!(f, " -> ")?;
+                fmt_basic_block_id(f, *bb)?;
+                writeln!(f)?;
+            }
+            if let Some(d) = default {
+                write!(f, "default -> ")?;
+                fmt_basic_block_id(f, *d)?;
+                writeln!(f)?;
+            }
+            writeln!(f, "}}")
+        }
+        Terminator::Return(val) => {
+            write!(f, "return")?;
+            if let Some(rv) = val {
+                write!(f, " ")?;
+                match rv {
+                    RValue::Expr(e) => fmt_block_expr(f, e, symbols)?,
+                    RValue::Measure(m) => fmt_measure(f, m, symbols)?,
                 }
             }
             writeln!(f)
         }
+        Terminator::End => writeln!(f, "end"),
+        Terminator::Unreachable => writeln!(f, "unreachable"),
+    }
+}
+
+fn fmt_block_cfg(
+    f: &mut fmt::Formatter<'_>,
+    cfg: &Cfg,
+    symbols: &SymbolTable,
+    indent: usize,
+) -> fmt::Result {
+    for block in &cfg.blocks {
+        pad(f, indent)?;
+        fmt_basic_block_id(f, block.id)?;
+        writeln!(f, ":")?;
+        for stmt in &block.stmts {
+            fmt_block_stmt(f, stmt, symbols, indent + 2)?;
+        }
+        pad(f, indent + 2)?;
+        fmt_terminator(f, &block.terminator, symbols)?;
+    }
+    Ok(())
+}
+
+impl fmt::Display for CfgDisplay<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt_block_cfg(f, self.cfg, self.symbols, 0)
     }
 }
 
@@ -566,30 +811,30 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, symbols: &SymbolTable) -> f
         ExprKind::Literal(v) => write!(f, "{}", v),
         ExprKind::Var(id) => write!(f, "{id}"),
         ExprKind::HardwareQubit(n) => write!(f, "${n}"),
-        ExprKind::Binary { op, left, right } => {
+        ExprKind::Binary(Binary { op, left, right }) => {
             write!(f, "(")?;
             fmt_expr(f, left, symbols)?;
             write!(f, " {op} ")?;
             fmt_expr(f, right, symbols)?;
             write!(f, ")")
         }
-        ExprKind::Unary { op, operand } => {
+        ExprKind::Unary(Unary { op, operand }) => {
             write!(f, "({op}")?;
             fmt_expr(f, operand, symbols)?;
             write!(f, ")")
         }
-        ExprKind::Cast { target_ty, operand } => {
+        ExprKind::Cast(Cast { target_ty, operand }) => {
             write!(f, "{target_ty}(")?;
             fmt_expr(f, operand, symbols)?;
             write!(f, ")")
         }
-        ExprKind::Index { base, index } => {
+        ExprKind::Index(Index { base, index }) => {
             fmt_expr(f, base, symbols)?;
             write!(f, "[")?;
             fmt_index(f, index, symbols)?;
             write!(f, "]")
         }
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call(Call { callee, args }) => {
             match callee {
                 CallTarget::Symbol(id) => write!(f, "{id}")?,
                 CallTarget::Intrinsic(i) => write!(f, "{i}")?,
@@ -614,11 +859,62 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, symbols: &SymbolTable) -> f
     }
 }
 
+fn fmt_block_expr(
+    f: &mut fmt::Formatter<'_>,
+    expr: &BlockExpr,
+    symbols: &SymbolTable,
+) -> fmt::Result {
+    match &expr.kind {
+        BlockExprKind::Literal(v) => write!(f, "{}", v),
+        BlockExprKind::Var(id) => write!(f, "{id}"),
+        BlockExprKind::HardwareQubit(n) => write!(f, "${n}"),
+        BlockExprKind::Binary(Binary { op, left, right }) => {
+            write!(f, "(")?;
+            fmt_block_expr(f, left, symbols)?;
+            write!(f, " {op} ")?;
+            fmt_block_expr(f, right, symbols)?;
+            write!(f, ")")
+        }
+        BlockExprKind::Unary(Unary { op, operand }) => {
+            write!(f, "({op}")?;
+            fmt_block_expr(f, operand, symbols)?;
+            write!(f, ")")
+        }
+        BlockExprKind::Cast(Cast { target_ty, operand }) => {
+            write!(f, "{target_ty}(")?;
+            fmt_block_expr(f, operand, symbols)?;
+            write!(f, ")")
+        }
+        BlockExprKind::Index(Index { base, index }) => {
+            fmt_block_expr(f, base, symbols)?;
+            write!(f, "[")?;
+            fmt_index(f, index, symbols)?;
+            write!(f, "]")
+        }
+        BlockExprKind::Call(Call { callee, args }) => {
+            match callee {
+                CallTarget::Symbol(id) => write!(f, "{id}")?,
+                CallTarget::Intrinsic(i) => write!(f, "{i}")?,
+            }
+            write!(f, "(")?;
+            for (i, arg) in args.iter().enumerate() {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                fmt_block_expr(f, arg, symbols)?;
+            }
+            write!(f, ")")
+        }
+        BlockExprKind::DurationOf(_) => write!(f, "durationof {{ <cfg> }}"),
+        BlockExprKind::ArrayLiteral(arr) => fmt_array_literal(f, arr, symbols),
+    }
+}
+
 // ── Helper displays ─────────────────────────────────────────────────
 
-fn fmt_qubit_op(
+fn fmt_qubit_op<E: FmtExpr>(
     f: &mut fmt::Formatter<'_>,
-    op: &QubitOperand,
+    op: &QubitOperand<E>,
     symbols: &SymbolTable,
 ) -> fmt::Result {
     match op {
@@ -635,7 +931,11 @@ fn fmt_qubit_op(
     }
 }
 
-fn fmt_lvalue(f: &mut fmt::Formatter<'_>, lv: &LValue, symbols: &SymbolTable) -> fmt::Result {
+fn fmt_lvalue<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    lv: &LValue<E>,
+    symbols: &SymbolTable,
+) -> fmt::Result {
     match lv {
         LValue::Var(id) => write!(f, "{id}"),
         LValue::Indexed { symbol, indices } => {
@@ -650,7 +950,11 @@ fn fmt_lvalue(f: &mut fmt::Formatter<'_>, lv: &LValue, symbols: &SymbolTable) ->
     }
 }
 
-fn fmt_index(f: &mut fmt::Formatter<'_>, idx: &IndexOp, symbols: &SymbolTable) -> fmt::Result {
+fn fmt_index<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    idx: &IndexOp<E>,
+    symbols: &SymbolTable,
+) -> fmt::Result {
     match &idx.kind {
         IndexKind::Set(exprs) => {
             write!(f, "{{")?;
@@ -658,7 +962,7 @@ fn fmt_index(f: &mut fmt::Formatter<'_>, idx: &IndexOp, symbols: &SymbolTable) -
                 if i > 0 {
                     write!(f, ", ")?;
                 }
-                fmt_expr(f, e, symbols)?;
+                e.fmt_e(f, symbols)?;
             }
             write!(f, "}}")
         }
@@ -668,7 +972,7 @@ fn fmt_index(f: &mut fmt::Formatter<'_>, idx: &IndexOp, symbols: &SymbolTable) -
                     write!(f, ", ")?;
                 }
                 match item {
-                    IndexItem::Single(e) => fmt_expr(f, e, symbols)?,
+                    IndexItem::Single(e) => e.fmt_e(f, symbols)?,
                     IndexItem::Range(r) => fmt_range(f, r, symbols)?,
                 }
             }
@@ -677,31 +981,35 @@ fn fmt_index(f: &mut fmt::Formatter<'_>, idx: &IndexOp, symbols: &SymbolTable) -
     }
 }
 
-fn fmt_range(f: &mut fmt::Formatter<'_>, range: &RangeExpr, symbols: &SymbolTable) -> fmt::Result {
+fn fmt_range<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    range: &RangeExpr<E>,
+    symbols: &SymbolTable,
+) -> fmt::Result {
     if let Some(start) = &range.start {
-        fmt_expr(f, start, symbols)?;
+        start.fmt_e(f, symbols)?;
     }
     write!(f, ":")?;
     if let Some(step) = &range.step {
-        fmt_expr(f, step, symbols)?;
+        step.fmt_e(f, symbols)?;
         write!(f, ":")?;
     }
     if let Some(end) = &range.end {
-        fmt_expr(f, end, symbols)?;
+        end.fmt_e(f, symbols)?;
     }
     Ok(())
 }
 
-fn fmt_gate_modifier(
+fn fmt_gate_modifier<E: FmtExpr>(
     f: &mut fmt::Formatter<'_>,
-    m: &GateModifier,
+    m: &GateModifier<E>,
     symbols: &SymbolTable,
 ) -> fmt::Result {
     match m {
         GateModifier::Inv => write!(f, "inv @"),
         GateModifier::Pow(expr) => {
             write!(f, "pow(")?;
-            fmt_expr(f, expr, symbols)?;
+            expr.fmt_e(f, symbols)?;
             write!(f, ") @")
         }
         GateModifier::Ctrl(n) => write!(f, "ctrl({n}) @"),
@@ -709,7 +1017,11 @@ fn fmt_gate_modifier(
     }
 }
 
-fn fmt_measure(f: &mut fmt::Formatter<'_>, m: &MeasureExpr, symbols: &SymbolTable) -> fmt::Result {
+fn fmt_measure<E: FmtExpr>(
+    f: &mut fmt::Formatter<'_>,
+    m: &MeasureExpr<E>,
+    symbols: &SymbolTable,
+) -> fmt::Result {
     match &m.kind {
         MeasureExprKind::Measure { operand } => {
             write!(f, "measure ")?;
@@ -725,7 +1037,7 @@ fn fmt_measure(f: &mut fmt::Formatter<'_>, m: &MeasureExpr, symbols: &SymbolTabl
                 if i > 0 {
                     write!(f, ", ")?;
                 }
-                fmt_expr(f, arg, symbols)?;
+                arg.fmt_e(f, symbols)?;
             }
             write!(f, ") [")?;
             for (i, q) in qubits.iter().enumerate() {
@@ -774,9 +1086,9 @@ fn fmt_for_iterable(
     }
 }
 
-fn fmt_array_literal(
+fn fmt_array_literal<E: FmtExpr>(
     f: &mut fmt::Formatter<'_>,
-    arr: &ArrayLiteral,
+    arr: &ArrayLiteral<E>,
     symbols: &SymbolTable,
 ) -> fmt::Result {
     write!(f, "{{")?;
@@ -784,7 +1096,7 @@ fn fmt_array_literal(
         if i > 0 {
             write!(f, ", ")?;
         }
-        fmt_expr(f, item, symbols)?;
+        item.fmt_e(f, symbols)?;
     }
     write!(f, "}}")
 }

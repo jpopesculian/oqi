@@ -7,5 +7,6 @@ pub mod openpulse;
 pub mod resolve;
 pub mod scope;
 pub mod sir;
+pub mod ssa;
 pub mod symbol;
 pub mod types;

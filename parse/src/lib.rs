@@ -1518,9 +1518,11 @@ impl<'a> Parser<'a> {
     }
 
     /// Parse the rest of a range expression after consuming the first ':'.
-    /// `start` is the expression before the colon (if any).
+    /// `start` is the expression before the colon (if any). Ranges are
+    /// `start : end` or `start : step : end` — the component after the
+    /// first colon is the step only when a second colon follows.
     fn parse_range_after_colon(&mut self, start: Option<Expr<'a>>) -> Result<RangeExpr<'a>> {
-        let end = if !matches!(
+        let second = if !matches!(
             self.peek(),
             Some(Token::Colon | Token::RBracket | Token::Comma) | None
         ) {
@@ -1529,11 +1531,16 @@ impl<'a> Parser<'a> {
             None
         };
 
-        let step = if matches!(self.peek(), Some(Token::Colon)) {
+        let (step, end) = if matches!(self.peek(), Some(Token::Colon)) {
             self.advance();
-            Some(Box::new(self.parse_expr(0)?))
+            let end = if !matches!(self.peek(), Some(Token::RBracket | Token::Comma) | None) {
+                Some(Box::new(self.parse_expr(0)?))
+            } else {
+                None
+            };
+            (second, end)
         } else {
-            None
+            (None, second)
         };
 
         Ok(RangeExpr {
@@ -2604,5 +2611,39 @@ cphase(π / 2) q[0], q[1];
     fn io_declarations() {
         let prog = parse_ok("input int[32] x; output bit y;");
         assert_eq!(prog.body.len(), 2);
+    }
+
+    #[test]
+    fn range_three_components_is_start_step_end() {
+        let stmt = parse_stmt("for uint i in [2: -1: 0] { }");
+        let StmtKind::For { iterable, .. } = stmt.kind else {
+            panic!("expected for");
+        };
+        let ForIterable::Range(r, _) = iterable else {
+            panic!("expected range iterable");
+        };
+        assert!(matches!(r.start.as_deref(), Some(Expr::IntLiteral("2", ..))));
+        assert!(
+            matches!(r.step.as_deref(), Some(Expr::UnaryOp { .. })),
+            "middle component is the step"
+        );
+        assert!(
+            matches!(r.end.as_deref(), Some(Expr::IntLiteral("0", ..))),
+            "trailing component is the end"
+        );
+    }
+
+    #[test]
+    fn range_two_components_has_no_step() {
+        let stmt = parse_stmt("for uint i in [0: 3] { }");
+        let StmtKind::For { iterable, .. } = stmt.kind else {
+            panic!("expected for");
+        };
+        let ForIterable::Range(r, _) = iterable else {
+            panic!("expected range iterable");
+        };
+        assert!(matches!(r.start.as_deref(), Some(Expr::IntLiteral("0", ..))));
+        assert!(r.step.is_none());
+        assert!(matches!(r.end.as_deref(), Some(Expr::IntLiteral("3", ..))));
     }
 }

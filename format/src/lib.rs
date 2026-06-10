@@ -1017,12 +1017,12 @@ impl<'a> Format for ast::RangeExpr<'a> {
             start.format(fmt, ctx, config)?;
         }
         ctx.write_str(fmt, ":")?;
+        if let Some(step) = &self.step {
+            step.format(fmt, ctx, config)?;
+            ctx.write_str(fmt, ":")?;
+        }
         if let Some(end) = &self.end {
             end.format(fmt, ctx, config)?;
-        }
-        if let Some(step) = &self.step {
-            ctx.write_str(fmt, ":")?;
-            step.format(fmt, ctx, config)?;
         }
         Ok(())
     }

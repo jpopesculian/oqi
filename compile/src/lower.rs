@@ -432,9 +432,9 @@ impl Lowerer {
                     let sir_operands: Vec<_> = operands
                         .iter()
                         .map(|o| match o {
-                            ast::DefcalOperand::HardwareQubit(s, _) => {
-                                Ok(sir::CalibrationOperand::Hardware(parse_hardware_qubit(s)))
-                            }
+                            ast::DefcalOperand::HardwareQubit(s, span) => Ok(
+                                sir::CalibrationOperand::Hardware(parse_hardware_qubit(s, *span)?),
+                            ),
                             ast::DefcalOperand::Ident(id) => {
                                 this.resolver.declare(
                                     id.name,
@@ -962,7 +962,7 @@ impl Lowerer {
             }
 
             ast::Expr::HardwareQubit(s, _) => {
-                let n = parse_hardware_qubit(s);
+                let n = parse_hardware_qubit(s, span)?;
                 Ok(sir::Expr {
                     kind: sir::ExprKind::HardwareQubit(n),
                     ty: Type::PhysicalQubit,
@@ -1163,8 +1163,8 @@ impl Lowerer {
                     indices,
                 })
             }
-            ast::GateOperand::HardwareQubit(s, _) => {
-                Ok(sir::QubitOperand::Hardware(parse_hardware_qubit(s)))
+            ast::GateOperand::HardwareQubit(s, span) => {
+                Ok(sir::QubitOperand::Hardware(parse_hardware_qubit(s, *span)?))
             }
         }
     }
@@ -1422,6 +1422,12 @@ impl Lowerer {
     }
 
     fn lower_array_literal_expr(&mut self, al: &ast::ArrayLiteral<'_>) -> Result<sir::Expr> {
+        if al.items.is_empty() {
+            return Err(CompileError::new(ErrorKind::InvalidLiteral(
+                "array literal must have at least one element".into(),
+            ))
+            .with_span(al.span));
+        }
         let items = al
             .items
             .iter()
@@ -1685,10 +1691,15 @@ fn validate_gate_stmt(stmt: &sir::Stmt) -> Result<()> {
     }
 }
 
-fn parse_hardware_qubit(s: &str) -> usize {
+fn parse_hardware_qubit(s: &str, span: oqi_lex::Span) -> Result<usize> {
     s.strip_prefix('$')
         .and_then(|n| n.parse().ok())
-        .unwrap_or(0)
+        .ok_or_else(|| {
+            CompileError::new(ErrorKind::InvalidLiteral(format!(
+                "invalid hardware qubit `{s}`"
+            )))
+            .with_span(span)
+        })
 }
 
 impl Lowerer {
@@ -2844,5 +2855,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn empty_array_literal_is_rejected() {
+        let err = match compile_source("array[int[32], 1] a = {};", DefaultIncludeResolver, None) {
+            Err(e) => e,
+            Ok(_) => panic!("empty array literal should be rejected"),
+        };
+        assert!(matches!(err.kind, ErrorKind::InvalidLiteral(_)));
+    }
+
+    #[test]
+    fn overflowing_hardware_qubit_is_rejected() {
+        let err = match compile_source(
+            "reset $99999999999999999999999999;",
+            DefaultIncludeResolver,
+            None,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("overflowing hardware qubit index should be rejected"),
+        };
+        assert!(matches!(err.kind, ErrorKind::InvalidLiteral(_)));
     }
 }

@@ -195,10 +195,7 @@ fn while_loop_body_returns_to_header() {
     let Terminator::Goto(body_succ) = top.blocks[body_bb.0].terminator else {
         panic!("body should goto header");
     };
-    assert_eq!(
-        body_succ, header.id,
-        "while body must return to its header"
-    );
+    assert_eq!(body_succ, header.id, "while body must return to its header");
     // After block is downstream of header (false branch).
     assert_ne!(after_bb, body_bb);
 }
@@ -325,10 +322,7 @@ fn switch_dispatches_to_each_case_then_merges() {
         .iter()
         .find(|b| matches!(b.terminator, Terminator::Switch { .. }))
         .expect("expected a Switch terminator");
-    let Terminator::Switch {
-        cases, default, ..
-    } = &switch_bb.terminator
-    else {
+    let Terminator::Switch { cases, default, .. } = &switch_bb.terminator else {
         unreachable!()
     };
 

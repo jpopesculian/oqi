@@ -14,7 +14,7 @@ impl UnOp for Popcount {
         match arg {
             PrimitiveTy::BitReg(n) => Ok((
                 PrimitiveTy::BitReg(n),
-                PrimitiveTy::Uint(crate::primitive::IntWidth::new(n.max(1).min(128))?),
+                PrimitiveTy::Uint(crate::primitive::IntWidth::new(n.clamp(1, 128))?),
             )),
             _ => Err(unsupported_scalar_unop::<Self>(arg)),
         }

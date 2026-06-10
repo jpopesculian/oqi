@@ -536,7 +536,10 @@ impl Array {
         }
 
         let value = if result_shape.is_empty() {
-            Value::Scalar(Scalar::new_unchecked(result.into_iter().next().unwrap(), ty))
+            Value::Scalar(Scalar::new_unchecked(
+                result.into_iter().next().unwrap(),
+                ty,
+            ))
         } else {
             Value::Array(Array::new_unchecked(
                 result,

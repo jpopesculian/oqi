@@ -1,7 +1,7 @@
 use std::fmt;
 
 use num_complex::Complex64;
-use oqi_classical::{BaseValueTy, IntWidth, FloatWidth};
+use oqi_classical::{BaseValueTy, FloatWidth, IntWidth};
 use serde::{Deserialize, Serialize};
 use turns::Angle128;
 
@@ -58,4 +58,3 @@ impl fmt::Display for PrimitiveTy {
         }
     }
 }
-

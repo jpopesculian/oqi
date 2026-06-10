@@ -261,7 +261,11 @@ fn matrix_pow<F: Float>(m: [[Complex<F>; 2]; 2], k: F) -> [[Complex<F>; 2]; 2] {
     let mut out = [[Complex::zero(); 2]; 2];
     for i in 0..2 {
         for j in 0..2 {
-            let iden = if i == j { Complex::one() } else { Complex::zero() };
+            let iden = if i == j {
+                Complex::one()
+            } else {
+                Complex::zero()
+            };
             let m_minus_l2 = m[i][j] - l2 * iden;
             let m_minus_l1 = m[i][j] - l1 * iden;
             out[i][j] = (l1k * m_minus_l2 - l2k * m_minus_l1) / denom;
@@ -377,6 +381,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::single_range_in_vec_init)]
     fn get_maps_to_global_ranges() {
         let mut mem = QuantumMemory::new();
         let a = mem.alloc(3);

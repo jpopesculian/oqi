@@ -435,7 +435,7 @@ pub enum Intrinsic {
 #[derive(Clone)]
 pub enum RValue<E> {
     Expr(Box<E>),
-    Measure(MeasureExpr<E>),
+    Measure(Box<MeasureExpr<E>>),
 }
 
 #[cfg(test)]
@@ -730,7 +730,10 @@ mod tests {
         // Verify last stmt is a measure into c2
         assert!(matches!(
             program.body[12].kind,
-            StmtKind::Measure(Measure { target: Some(_), .. })
+            StmtKind::Measure(Measure {
+                target: Some(_),
+                ..
+            })
         ));
 
         // Verify an if-statement is present

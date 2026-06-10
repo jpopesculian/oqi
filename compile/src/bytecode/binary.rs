@@ -19,7 +19,10 @@ impl From<postcard::Error> for EncodeError {
 #[derive(Debug)]
 pub enum DecodeError {
     BadMagic,
-    IncompatibleVersion { found: BcVersion, expected: BcVersion },
+    IncompatibleVersion {
+        found: BcVersion,
+        expected: BcVersion,
+    },
     Postcard(postcard::Error),
 }
 

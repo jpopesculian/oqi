@@ -15,10 +15,10 @@ use oqi_lex::Span;
 use crate::classical::{Primitive, PrimitiveTy, ValueTy};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{
-    self, Alias, Annotation, ArrayLiteral, Assignment, BinOp, Binary, BoxStmt, Call,
-    CalibrationBody, Cast, Delay, Expr, ExprKind, For, ForIterable, GateCall, GateModifier, If,
-    Index, IndexItem, IndexKind, IndexOp, LValue, Measure, MeasureExpr, MeasureExprKind,
-    QubitOperand, RValue, Stmt, StmtKind, SwitchCase, SwitchLabels, UnOp, Unary, While,
+    self, Alias, Annotation, ArrayLiteral, Assignment, BinOp, Binary, BoxStmt, CalibrationBody,
+    Call, Cast, Delay, Expr, ExprKind, For, ForIterable, GateCall, GateModifier, If, Index,
+    IndexItem, IndexKind, IndexOp, LValue, Measure, MeasureExpr, MeasureExprKind, QubitOperand,
+    RValue, Stmt, StmtKind, SwitchCase, SwitchLabels, UnOp, Unary, While,
 };
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::Type;
@@ -137,9 +137,7 @@ impl Terminator {
             Terminator::Branch {
                 then_bb, else_bb, ..
             } => SuccessorsInner::Two(Some(*then_bb), Some(*else_bb)),
-            Terminator::Switch {
-                cases, default, ..
-            } => SuccessorsInner::Switch {
+            Terminator::Switch { cases, default, .. } => SuccessorsInner::Switch {
                 cases: cases.iter(),
                 default: *default,
             },
@@ -173,10 +171,9 @@ impl Iterator for Successors<'_> {
             SuccessorsInner::Empty => None,
             SuccessorsInner::One(slot) => slot.take(),
             SuccessorsInner::Two(a, b) => a.take().or_else(|| b.take()),
-            SuccessorsInner::Switch { cases, default } => cases
-                .next()
-                .map(|(_, bb)| *bb)
-                .or_else(|| default.take()),
+            SuccessorsInner::Switch { cases, default } => {
+                cases.next().map(|(_, bb)| *bb).or_else(|| default.take())
+            }
         }
     }
 }
@@ -395,9 +392,9 @@ impl<'a> CfgBuilder<'a> {
     }
 
     fn innermost_break(&self) -> Option<BasicBlockId> {
-        self.frames.iter().rev().find_map(|f| match f {
-            FrameKind::Loop(l) => Some(l.break_target),
-            FrameKind::Switch { break_target } => Some(*break_target),
+        self.frames.last().map(|f| match f {
+            FrameKind::Loop(l) => l.break_target,
+            FrameKind::Switch { break_target } => *break_target,
         })
     }
 
@@ -620,7 +617,9 @@ impl<'a> CfgBuilder<'a> {
             | StmtKind::Continue
             | StmtKind::Return(_)
             | StmtKind::End => {
-                unreachable!("control-flow variants are handled by lower_stmt before reaching this point")
+                unreachable!(
+                    "control-flow variants are handled by lower_stmt before reaching this point"
+                )
             }
         })
     }
@@ -761,12 +760,7 @@ impl<'a> CfgBuilder<'a> {
         Ok(())
     }
 
-    fn lower_switch(
-        &mut self,
-        target: Expr,
-        cases: Vec<SwitchCase>,
-        span: Span,
-    ) -> Result<()> {
+    fn lower_switch(&mut self, target: Expr, cases: Vec<SwitchCase>, span: Span) -> Result<()> {
         let target = self.lower_expr(target)?;
         let after_bb = self.new_block(span);
 
@@ -858,7 +852,10 @@ impl<'a> CfgBuilder<'a> {
                 let inner = build_body(stmts, CfgOwner::DurationOf, false, self.symbols)?;
                 BlockExprKind::DurationOf(inner)
             }
-            ExprKind::ArrayLiteral(ArrayLiteral { items, span: lit_span }) => {
+            ExprKind::ArrayLiteral(ArrayLiteral {
+                items,
+                span: lit_span,
+            }) => {
                 let items = items
                     .into_iter()
                     .map(|e| self.lower_expr(e))
@@ -871,10 +868,7 @@ impl<'a> CfgBuilder<'a> {
         })
     }
 
-    fn lower_qubit_operand(
-        &mut self,
-        q: QubitOperand<Expr>,
-    ) -> Result<QubitOperand<BlockExpr>> {
+    fn lower_qubit_operand(&mut self, q: QubitOperand<Expr>) -> Result<QubitOperand<BlockExpr>> {
         Ok(match q {
             QubitOperand::Indexed { symbol, indices } => {
                 let indices = indices
@@ -903,7 +897,7 @@ impl<'a> CfgBuilder<'a> {
     fn lower_rvalue(&mut self, rv: RValue<Expr>) -> Result<RValue<BlockExpr>> {
         Ok(match rv {
             RValue::Expr(e) => RValue::Expr(Box::new(self.lower_expr(*e)?)),
-            RValue::Measure(m) => RValue::Measure(self.lower_measure_expr(m)?),
+            RValue::Measure(m) => RValue::Measure(Box::new(self.lower_measure_expr(*m)?)),
         })
     }
 
@@ -917,10 +911,7 @@ impl<'a> CfgBuilder<'a> {
         Ok(Measure { measure, target })
     }
 
-    fn lower_measure_expr(
-        &mut self,
-        m: MeasureExpr<Expr>,
-    ) -> Result<MeasureExpr<BlockExpr>> {
+    fn lower_measure_expr(&mut self, m: MeasureExpr<Expr>) -> Result<MeasureExpr<BlockExpr>> {
         let MeasureExpr { kind, ty, span } = m;
         let kind = match kind {
             MeasureExprKind::Measure { operand } => MeasureExprKind::Measure {
@@ -970,10 +961,7 @@ impl<'a> CfgBuilder<'a> {
         Ok(IndexOp { kind, span })
     }
 
-    fn lower_index_item(
-        &mut self,
-        item: IndexItem<Expr>,
-    ) -> Result<IndexItem<BlockExpr>> {
+    fn lower_index_item(&mut self, item: IndexItem<Expr>) -> Result<IndexItem<BlockExpr>> {
         Ok(match item {
             IndexItem::Single(e) => IndexItem::Single(Box::new(self.lower_expr(*e)?)),
             IndexItem::Range(r) => {
@@ -995,10 +983,7 @@ impl<'a> CfgBuilder<'a> {
         })
     }
 
-    fn lower_gate_modifier(
-        &mut self,
-        m: GateModifier<Expr>,
-    ) -> Result<GateModifier<BlockExpr>> {
+    fn lower_gate_modifier(&mut self, m: GateModifier<Expr>) -> Result<GateModifier<BlockExpr>> {
         Ok(match m {
             GateModifier::Inv => GateModifier::Inv,
             GateModifier::Pow(e) => GateModifier::Pow(Box::new(self.lower_expr(*e)?)),
@@ -1105,8 +1090,8 @@ mod tests {
             annotations: vec![],
             span: Span::default(),
         };
-        let cfg = build_body(vec![box_stmt], CfgOwner::TopLevel, false, &symbols)
-            .expect("build_body");
+        let cfg =
+            build_body(vec![box_stmt], CfgOwner::TopLevel, false, &symbols).expect("build_body");
 
         let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::Box(_)));
         let BlockStmtKind::Box(BlockBoxStmt { body, .. }) = inner else {
@@ -1132,8 +1117,8 @@ mod tests {
             annotations: vec![],
             span: Span::default(),
         };
-        let cfg = build_body(vec![cal_stmt], CfgOwner::TopLevel, false, &symbols)
-            .expect("build_body");
+        let cfg =
+            build_body(vec![cal_stmt], CfgOwner::TopLevel, false, &symbols).expect("build_body");
 
         let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::Cal(_)));
         let BlockStmtKind::Cal(BlockCalibrationBody::OpenPulse(body)) = inner else {
@@ -1155,8 +1140,8 @@ mod tests {
             annotations: vec![],
             span: Span::default(),
         };
-        let cfg = build_body(vec![cal_stmt], CfgOwner::TopLevel, false, &symbols)
-            .expect("build_body");
+        let cfg =
+            build_body(vec![cal_stmt], CfgOwner::TopLevel, false, &symbols).expect("build_body");
 
         let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::Cal(_)));
         assert!(matches!(
@@ -1183,11 +1168,10 @@ mod tests {
             annotations: vec![],
             span: Span::default(),
         };
-        let cfg = build_body(vec![expr_stmt], CfgOwner::TopLevel, false, &symbols)
-            .expect("build_body");
+        let cfg =
+            build_body(vec![expr_stmt], CfgOwner::TopLevel, false, &symbols).expect("build_body");
 
-        let inner =
-            find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::ExprStmt(_)));
+        let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::ExprStmt(_)));
         let BlockStmtKind::ExprStmt(BlockExpr {
             kind: BlockExprKind::DurationOf(inner_cfg),
             ..
@@ -1211,8 +1195,8 @@ mod tests {
         // exercises the lower_expr path for If conditions).
         let symbols = SymbolTable::new();
         let if_only = if_stmt(vec![], vec![]);
-        let cfg = build_body(vec![if_only], CfgOwner::TopLevel, false, &symbols)
-            .expect("build_body");
+        let cfg =
+            build_body(vec![if_only], CfgOwner::TopLevel, false, &symbols).expect("build_body");
 
         let mut found_branch = false;
         for block in &cfg.blocks {

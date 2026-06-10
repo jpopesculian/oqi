@@ -23,7 +23,7 @@ use crate::ssa::{
 use crate::symbol::SymbolTable;
 
 use super::phi_elim::deconstruct_phis;
-use super::regalloc::{allocate_registers, RegMap};
+use super::regalloc::{RegMap, allocate_registers};
 use super::types::{
     BcBlock, BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcProcedure,
     BcSwitchLabels, BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner, Reg, StringId,
@@ -208,7 +208,7 @@ impl<'a> EmitCtx<'a> {
                 // reuse the assignment path so an indexed target gets
                 // its StoreElement.
                 Some(t) => {
-                    let value = RValue::Measure(measure.clone());
+                    let value = RValue::Measure(Box::new(measure.clone()));
                     self.emit_assignment(t, &value, instrs, reg_map, span);
                 }
                 None => {
@@ -221,14 +221,20 @@ impl<'a> EmitCtx<'a> {
             },
             SsaStmtKind::Reset(q) => {
                 let qubit = self.lower_qubit_operand(q, instrs, reg_map);
-                instrs.push(BcInstr { op: BcOp::Reset { qubit }, span });
+                instrs.push(BcInstr {
+                    op: BcOp::Reset { qubit },
+                    span,
+                });
             }
             SsaStmtKind::Barrier(qs) => {
                 let qubits = qs
                     .iter()
                     .map(|q| self.lower_qubit_operand(q, instrs, reg_map))
                     .collect();
-                instrs.push(BcInstr { op: BcOp::Barrier { qubits }, span });
+                instrs.push(BcInstr {
+                    op: BcOp::Barrier { qubits },
+                    span,
+                });
             }
             SsaStmtKind::Delay(Delay { duration, operands }) => {
                 let duration = self.lower_expr_to_operand(duration, instrs, reg_map);
@@ -259,12 +265,18 @@ impl<'a> EmitCtx<'a> {
             }
             SsaStmtKind::Pragma(s) => {
                 let content = self.intern_string(s.clone());
-                instrs.push(BcInstr { op: BcOp::Pragma { content }, span });
+                instrs.push(BcInstr {
+                    op: BcOp::Pragma { content },
+                    span,
+                });
             }
             SsaStmtKind::Cal(body) => match body {
                 SsaCalibrationBody::Opaque(s) => {
                     let content = self.intern_string(s.clone());
-                    instrs.push(BcInstr { op: BcOp::CalOpaque { content }, span });
+                    instrs.push(BcInstr {
+                        op: BcOp::CalOpaque { content },
+                        span,
+                    });
                 }
                 SsaCalibrationBody::OpenPulse(cfg) => {
                     let body_id = self.emit_root(cfg, ProcOwner::InlineCal);
@@ -285,7 +297,10 @@ impl<'a> EmitCtx<'a> {
                     .iter()
                     .map(|q| self.lower_qubit_operand(q, instrs, reg_map))
                     .collect();
-                instrs.push(BcInstr { op: BcOp::Nop { qubits }, span });
+                instrs.push(BcInstr {
+                    op: BcOp::Nop { qubits },
+                    span,
+                });
             }
         }
     }
@@ -303,11 +318,7 @@ impl<'a> EmitCtx<'a> {
                 let dest = self.reg_for(*v, reg_map);
                 self.emit_rvalue_to_dest(value, dest, instrs, reg_map, span);
             }
-            SsaLValue::Indexed {
-                old,
-                new,
-                indices,
-            } => {
+            SsaLValue::Indexed { old, new, indices } => {
                 // Indexed store: read `old`, compute `new = old[index] = value`.
                 let base = BcOperand::Reg(self.reg_for(*old, reg_map));
                 let new_reg = self.reg_for(*new, reg_map);
@@ -463,9 +474,7 @@ impl<'a> EmitCtx<'a> {
                 });
             }
             // Trivial cases: just produce an operand and Move it.
-            SsaExprKind::Literal(_)
-            | SsaExprKind::Var(_)
-            | SsaExprKind::HardwareQubit(_) => {
+            SsaExprKind::Literal(_) | SsaExprKind::Var(_) | SsaExprKind::HardwareQubit(_) => {
                 let src = self.lower_expr_to_operand(e, instrs, reg_map);
                 instrs.push(BcInstr {
                     op: BcOp::Move { dest, src },
@@ -492,10 +501,9 @@ impl<'a> EmitCtx<'a> {
             SsaExprKind::HardwareQubit(n) => BcOperand::HardwareQubit(*n as u32),
             // Anything else: spill into a synthetic temp register.
             _ => {
-                let ty = e
-                    .ty
-                    .value_ty()
-                    .unwrap_or(ValueTy::Scalar(PrimitiveTy::Bool));
+                let ty =
+                    e.ty.value_ty()
+                        .unwrap_or(ValueTy::Scalar(PrimitiveTy::Bool));
                 let temp = self.alloc_temp_reg(reg_map, ty);
                 self.emit_expr_to_dest(e, temp, instrs, reg_map, e.span);
                 BcOperand::Reg(temp)
@@ -611,10 +619,7 @@ impl<'a> EmitCtx<'a> {
             RValue::Expr(e) => self.lower_expr_to_operand(e, instrs, reg_map),
             RValue::Measure(m) => {
                 let qubit = self.measure_to_operand(m, instrs, reg_map);
-                let ty = m
-                    .ty
-                    .value_ty()
-                    .unwrap_or(ValueTy::Scalar(PrimitiveTy::Bit));
+                let ty = m.ty.value_ty().unwrap_or(ValueTy::Scalar(PrimitiveTy::Bit));
                 let temp = self.alloc_temp_reg(reg_map, ty);
                 instrs.push(BcInstr {
                     op: BcOp::Measure {
@@ -676,7 +681,8 @@ impl<'a> EmitCtx<'a> {
                 }
             }
             SsaTerminator::Return(rv) => BcTerminator::Return(
-                rv.as_ref().map(|r| self.rvalue_to_operand(r, instrs, reg_map)),
+                rv.as_ref()
+                    .map(|r| self.rvalue_to_operand(r, instrs, reg_map)),
             ),
             SsaTerminator::End => BcTerminator::End,
             SsaTerminator::Unreachable => BcTerminator::Unreachable,
@@ -742,4 +748,3 @@ fn primitive_to_value(p: crate::classical::Primitive, ty: &crate::types::Type) -
         )),
     }
 }
-

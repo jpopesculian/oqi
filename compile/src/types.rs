@@ -6,11 +6,11 @@ use oqi_parse::ast;
 use serde::{Deserialize, Serialize};
 
 use crate::classical::{
-    ArrayRefShape, ArrayRefTy, ArrayTy, IntWidth, Duration, DurationUnit, PrimitiveTy, RefAccess,
+    ArrayRefShape, ArrayRefTy, ArrayTy, Duration, DurationUnit, IntWidth, PrimitiveTy, RefAccess,
     Value, ValueTy, adim, ashape, iw, value_as_usize,
 };
-use crate::openpulse;
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
+use crate::openpulse;
 use crate::resolve::lookup_intrinsic;
 use crate::sir::Intrinsic;
 use crate::symbol::SymbolTable;
@@ -979,7 +979,10 @@ mod tests {
         match val {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::BitReg(4));
-                assert_eq!(scalar.value().as_bitreg(4).map(|r| r.as_u128()), Some(0b0110_u128));
+                assert_eq!(
+                    scalar.value().as_bitreg(4).map(|r| r.as_u128()),
+                    Some(0b0110_u128)
+                );
             }
             other => panic!("expected bitstring literal, got {other:?}"),
         }
@@ -1066,7 +1069,10 @@ mod tests {
         match val {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::BitReg(4));
-                assert_eq!(scalar.value().as_bitreg(4).map(|r| r.as_u128()), Some(0b0011_u128));
+                assert_eq!(
+                    scalar.value().as_bitreg(4).map(|r| r.as_u128()),
+                    Some(0b0011_u128)
+                );
             }
             other => panic!("expected bitreg result, got {other:?}"),
         }

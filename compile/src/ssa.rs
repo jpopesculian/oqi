@@ -32,9 +32,9 @@ use crate::cfg::{
 };
 use crate::classical::Primitive;
 use crate::sir::{
-    Alias, Annotation, ArrayLiteral, Assignment, Binary, Call, Cast, Delay, GateCall,
-    GateModifier, Index, IndexItem, IndexKind, IndexOp, LValue, Measure, MeasureExpr,
-    MeasureExprKind, QubitOperand, RValue, RangeExpr, SwitchLabels, Unary,
+    Alias, Annotation, ArrayLiteral, Assignment, Binary, Call, Cast, Delay, GateCall, GateModifier,
+    Index, IndexItem, IndexKind, IndexOp, LValue, Measure, MeasureExpr, MeasureExprKind,
+    QubitOperand, RValue, RangeExpr, SwitchLabels, Unary,
 };
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::Type;
@@ -206,11 +206,7 @@ pub fn build_program(cfgs: &ProgramCfgs, symbols: &SymbolTable) -> ProgramSsa {
         .iter()
         .map(|c| build_cfg(c, symbols))
         .collect();
-    let gates = cfgs
-        .gates
-        .iter()
-        .map(|c| build_cfg(c, symbols))
-        .collect();
+    let gates = cfgs.gates.iter().map(|c| build_cfg(c, symbols)).collect();
     let calibrations = cfgs
         .calibrations
         .iter()
@@ -534,7 +530,11 @@ impl<'a> Renamer<'a> {
     /// phi destinations that were allocated up front in the pre-pass.
     /// For *fresh* defs use [`Renamer::alloc`].
     fn push(&mut self, sym: SymbolId, version: u32) {
-        self.versions.entry(sym).or_insert((1, Vec::new())).1.push(version);
+        self.versions
+            .entry(sym)
+            .or_insert((1, Vec::new()))
+            .1
+            .push(version);
     }
 
     fn pop(&mut self, sym: SymbolId) {
@@ -770,7 +770,11 @@ fn lower_block_stmt_with_defs(
         }),
         BlockStmtKind::GateCall(g) => SsaStmtKind::GateCall(GateCall {
             gate: g.gate,
-            modifiers: g.modifiers.iter().map(|m| lower_gate_modifier(m, r)).collect(),
+            modifiers: g
+                .modifiers
+                .iter()
+                .map(|m| lower_gate_modifier(m, r))
+                .collect(),
             args: g.args.iter().map(|e| lower_expr(e, r)).collect(),
             qubits: g.qubits.iter().map(|q| lower_qubit_operand(q, r)).collect(),
         }),
@@ -791,7 +795,11 @@ fn lower_block_stmt_with_defs(
         }
         BlockStmtKind::Delay(d) => SsaStmtKind::Delay(Delay {
             duration: lower_expr(&d.duration, r),
-            operands: d.operands.iter().map(|q| lower_qubit_operand(q, r)).collect(),
+            operands: d
+                .operands
+                .iter()
+                .map(|q| lower_qubit_operand(q, r))
+                .collect(),
         }),
         BlockStmtKind::Box(b) => SsaStmtKind::Box(SsaBoxStmt {
             duration: b.duration.as_ref().map(|e| lower_expr(e, r)),
@@ -812,9 +820,9 @@ fn lower_block_stmt_with_defs(
             BlockCalibrationBody::Opaque(s) => {
                 SsaStmtKind::Cal(SsaCalibrationBody::Opaque(s.clone()))
             }
-            BlockCalibrationBody::OpenPulse(inner) => SsaStmtKind::Cal(
-                SsaCalibrationBody::OpenPulse(build_cfg(inner, r.symbols)),
-            ),
+            BlockCalibrationBody::OpenPulse(inner) => {
+                SsaStmtKind::Cal(SsaCalibrationBody::OpenPulse(build_cfg(inner, r.symbols)))
+            }
         },
         BlockStmtKind::ExprStmt(e) => SsaStmtKind::ExprStmt(lower_expr(e, r)),
         BlockStmtKind::Nop(qs) => {
@@ -1023,7 +1031,7 @@ fn lower_measure_expr(m: &MeasureExpr<BlockExpr>, r: &Renamer<'_>) -> MeasureExp
 fn lower_rvalue(rv: &RValue<BlockExpr>, r: &Renamer<'_>) -> RValue<SsaExpr> {
     match rv {
         RValue::Expr(e) => RValue::Expr(Box::new(lower_expr(e, r))),
-        RValue::Measure(m) => RValue::Measure(lower_measure_expr(m, r)),
+        RValue::Measure(m) => RValue::Measure(Box::new(lower_measure_expr(m, r))),
     }
 }
 
@@ -1050,10 +1058,7 @@ mod tests {
     }
 
     fn lookup_symbol(program: &crate::sir::Program, name: &str) -> SymbolId {
-        program
-            .symbols
-            .lookup(name)
-            .expect("symbol should exist")
+        program.symbols.lookup(name).expect("symbol should exist")
     }
 
     #[test]
@@ -1150,10 +1155,7 @@ mod tests {
         // The two source versions must be distinct (init def vs. advance def).
         let v0 = phi_for_i[0].sources[0].1.version;
         let v1 = phi_for_i[0].sources[1].1.version;
-        assert_ne!(
-            v0, v1,
-            "pre-header and back-edge versions must be distinct"
-        );
+        assert_ne!(v0, v1, "pre-header and back-edge versions must be distinct");
     }
 
     #[test]
@@ -1320,7 +1322,10 @@ mod tests {
         // Every subroutine, gate, and OpenPulse calibration should have
         // produced an SsaCfg with at least an entry and exit block.
         for sub in &ssa.subroutines {
-            assert!(sub.blocks.len() >= 2, "subroutine CFG should have ≥2 blocks");
+            assert!(
+                sub.blocks.len() >= 2,
+                "subroutine CFG should have ≥2 blocks"
+            );
         }
         for gate in &ssa.gates {
             assert!(gate.blocks.len() >= 2, "gate CFG should have ≥2 blocks");
@@ -1428,7 +1433,10 @@ mod tests {
         indexed_targets.sort_by_key(|(_, n)| n.version);
         let v0 = indexed_targets[0];
         let v1 = indexed_targets[1];
-        assert!(v0.1.version < v1.1.version, "versions must monotonically increase");
+        assert!(
+            v0.1.version < v1.1.version,
+            "versions must monotonically increase"
+        );
         // The second indexed assignment's `old` should equal the first's `new`
         // (it reads what the previous write produced).
         assert_eq!(v1.0, v0.1, "second a[..] write must read first's def");
@@ -1469,10 +1477,7 @@ mod tests {
                             }
                         }
                     }
-                    assert!(
-                        found_versioned,
-                        "box body should have SSA-versioned defs"
-                    );
+                    assert!(found_versioned, "box body should have SSA-versioned defs");
                 }
             }
         }
@@ -1511,7 +1516,10 @@ mod tests {
                 found_x_read = true;
             }
         }
-        assert!(found_x_read, "expected to find a read of x in the subroutine body");
+        assert!(
+            found_x_read,
+            "expected to find a read of x in the subroutine body"
+        );
     }
 
     #[test]
@@ -1552,6 +1560,9 @@ mod tests {
                 }
             }
         }
-        assert!(found_dead_read, "expected to find the dead `x = x + 2` read");
+        assert!(
+            found_dead_read,
+            "expected to find the dead `x = x + 2` read"
+        );
     }
 }

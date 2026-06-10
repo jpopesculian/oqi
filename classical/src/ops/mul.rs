@@ -202,11 +202,7 @@ fn dot_product(
     }
     let mut acc = Mul::scalar_op(a.0[a.1].clone(), b.0[b.1].clone(), out)?;
     for k in 1..n {
-        let prod = Mul::scalar_op(
-            a.0[a.1 + k * a.2].clone(),
-            b.0[b.1 + k * b.2].clone(),
-            out,
-        )?;
+        let prod = Mul::scalar_op(a.0[a.1 + k * a.2].clone(), b.0[b.1 + k * b.2].clone(), out)?;
         acc = Add::scalar_op(acc, prod, out)?;
     }
     Ok(acc)

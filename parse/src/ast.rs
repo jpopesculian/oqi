@@ -25,7 +25,7 @@ pub struct Version<'a> {
 
 #[derive(Debug)]
 pub enum StmtOrScope<'a> {
-    Stmt(Stmt<'a>),
+    Stmt(Box<Stmt<'a>>),
     Scope(Scope<'a>),
 }
 
@@ -161,9 +161,13 @@ pub enum StmtKind<'a> {
         body: CalBody<'a>,
     },
     /// `extern frame Identifier ;` — OpenPulse-only.
-    ExternFrame { name: Ident<'a> },
+    ExternFrame {
+        name: Ident<'a>,
+    },
     /// `extern port Identifier ;` — OpenPulse-only.
-    ExternPort { name: Ident<'a> },
+    ExternPort {
+        name: Ident<'a>,
+    },
 }
 
 /// Body of a `cal` or `defcal` block.

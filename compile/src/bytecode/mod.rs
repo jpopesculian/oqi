@@ -16,14 +16,14 @@
 //!   primary, VM-ingestable form) plus a textual disassembly (debug
 //!   aid).
 
-pub mod types;
-pub mod phi_elim;
-pub mod regalloc;
-pub mod emit;
 pub mod binary;
 pub mod disasm;
+pub mod emit;
+pub mod phi_elim;
+pub mod regalloc;
+pub mod types;
 
-pub use binary::{from_bytes, to_bytes, DecodeError, EncodeError};
+pub use binary::{DecodeError, EncodeError, from_bytes, to_bytes};
 pub use emit::emit;
 pub use types::*;
 
@@ -187,7 +187,10 @@ mod tests {
             "#,
         );
         let text = format!("{module}");
-        assert!(text.contains("gate_call"), "disasm missing gate_call:\n{text}");
+        assert!(
+            text.contains("gate_call"),
+            "disasm missing gate_call:\n{text}"
+        );
         assert!(text.contains(".module"), "disasm missing .module header");
         assert!(text.contains(".proc"), "disasm missing .proc");
     }

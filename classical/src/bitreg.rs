@@ -15,7 +15,7 @@ const STACK_BYTES: usize = 16;
 
 #[inline]
 fn ceil_div_8(width: u32) -> usize {
-    ((width as usize) + 7) / 8
+    (width as usize).div_ceil(8)
 }
 
 impl BitReg {
@@ -64,11 +64,7 @@ impl BitReg {
                     return;
                 }
                 let mask = 1u128 << pos;
-                if value {
-                    *v |= mask
-                } else {
-                    *v &= !mask
-                }
+                if value { *v |= mask } else { *v &= !mask }
             }
             Self::Heap(bytes) => {
                 let byte_idx = pos / 8;
@@ -325,8 +321,8 @@ fn binop_bytes(lhs: &BitReg, rhs: &BitReg, op: impl Fn(u8, u8) -> u8) -> BitReg 
     }
     let n = lhs.storage_byte_count().max(rhs.storage_byte_count());
     let mut out = vec![0u8; n];
-    for i in 0..n {
-        out[i] = op(lhs.storage_byte(i), rhs.storage_byte(i));
+    for (i, o) in out.iter_mut().enumerate() {
+        *o = op(lhs.storage_byte(i), rhs.storage_byte(i));
     }
     BitReg::Heap(out.into_boxed_slice())
 }
@@ -557,7 +553,10 @@ mod tests {
     #[test]
     fn stack_eq_heap_when_padding_is_zero() {
         let stack = BitReg::Stack(0xAA_u128);
-        let heap = BitReg::from(Box::new([0xAA, 0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) as Box<[u8]>);
+        let heap =
+            BitReg::from(
+                Box::new([0xAA, 0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) as Box<[u8]>,
+            );
         assert_eq!(stack, heap);
     }
 
@@ -574,8 +573,8 @@ mod tests {
     #[test]
     fn round_trip_256_bit_heap() {
         let mut bytes = vec![0u8; 32];
-        for i in 0..32 {
-            bytes[i] = i as u8;
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = i as u8;
         }
         let r = BitReg::from(bytes.clone().into_boxed_slice());
         let bits: Vec<bool> = r.iter_bits().take(256).collect();

@@ -78,7 +78,9 @@ impl Primitive {
         match self {
             Self::Bit(b) => *b,
             Self::Uint(v) => *v != 0,
-            Self::BitReg(reg) => reg.as_u128() != 0 || matches!(reg, BitReg::Heap(b) if b.iter().any(|&x| x != 0)),
+            Self::BitReg(reg) => {
+                reg.as_u128() != 0 || matches!(reg, BitReg::Heap(b) if b.iter().any(|&x| x != 0))
+            }
             Self::Angle(a) => a.0 != 0,
             Self::Int(v) => *v != 0,
             Self::Float(v) => *v != 0.0,
@@ -236,7 +238,9 @@ impl Primitive {
                 other => other,
             },
             _ => {
-                let Some(bw) = ty.int_width() else { return self };
+                let Some(bw) = ty.int_width() else {
+                    return self;
+                };
                 match self {
                     Self::Uint(v) => Self::Uint(resize_uint(v, bw)),
                     Self::Int(v) => Self::Int(resize_int(v, bw)),
@@ -359,7 +363,10 @@ impl fmt::Debug for Primitive {
                 .debug_tuple("Angle")
                 .field(&format_args!("{:0128b}", a.0))
                 .finish(),
-            BitReg(r) => f.debug_tuple("BitReg").field(&format_args!("{}", r)).finish(),
+            BitReg(r) => f
+                .debug_tuple("BitReg")
+                .field(&format_args!("{}", r))
+                .finish(),
         }
     }
 }

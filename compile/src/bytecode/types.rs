@@ -128,36 +128,132 @@ pub enum BcCallTarget {
 #[derive(Clone, Serialize, Deserialize)]
 pub enum BcOp {
     // ── Classical arithmetic / bit / comparison (TAC) ──────────────
-    Add { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Sub { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Mul { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Div { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Mod { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Pow { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    BitAnd { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    BitOr { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    BitXor { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Shl { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Shr { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    LogAnd { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    LogOr { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Eq { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Neq { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Lt { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Gt { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Le { dest: Reg, lhs: BcOperand, rhs: BcOperand },
-    Ge { dest: Reg, lhs: BcOperand, rhs: BcOperand },
+    Add {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Sub {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Mul {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Div {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Mod {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Pow {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    BitAnd {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    BitOr {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    BitXor {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Shl {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Shr {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    LogAnd {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    LogOr {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Eq {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Neq {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Lt {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Gt {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Le {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
+    Ge {
+        dest: Reg,
+        lhs: BcOperand,
+        rhs: BcOperand,
+    },
 
-    Neg { dest: Reg, src: BcOperand },
-    BitNot { dest: Reg, src: BcOperand },
-    LogNot { dest: Reg, src: BcOperand },
-    Cast { dest: Reg, target_ty: ValueTy, src: BcOperand },
+    Neg {
+        dest: Reg,
+        src: BcOperand,
+    },
+    BitNot {
+        dest: Reg,
+        src: BcOperand,
+    },
+    LogNot {
+        dest: Reg,
+        src: BcOperand,
+    },
+    Cast {
+        dest: Reg,
+        target_ty: ValueTy,
+        src: BcOperand,
+    },
 
     // ── Moves & memory ─────────────────────────────────────────────
     /// `dest = src`. Covers literal-to-register copies and the parallel
     /// register-to-register moves inserted by phi elimination.
-    Move { dest: Reg, src: BcOperand },
-    LoadElement { dest: Reg, base: BcOperand, index: BcOperand },
+    Move {
+        dest: Reg,
+        src: BcOperand,
+    },
+    LoadElement {
+        dest: Reg,
+        base: BcOperand,
+        index: BcOperand,
+    },
     /// Whole-array kill+def: `new = base; new[index] = value`. Reads
     /// the entire array via `base`, produces a fresh `new` register
     /// after the partial update.
@@ -167,7 +263,10 @@ pub enum BcOp {
         index: BcOperand,
         value: BcOperand,
     },
-    NewArray { dest: Reg, items: Vec<BcOperand> },
+    NewArray {
+        dest: Reg,
+        items: Vec<BcOperand>,
+    },
 
     // ── Call ───────────────────────────────────────────────────────
     Call {
@@ -183,21 +282,48 @@ pub enum BcOp {
         args: Vec<BcOperand>,
         qubits: Vec<BcOperand>,
     },
-    Measure { dest: Option<Reg>, qubit: BcOperand },
-    Reset { qubit: BcOperand },
-    Barrier { qubits: Vec<BcOperand> },
-    Delay { duration: BcOperand, qubits: Vec<BcOperand> },
-    Nop { qubits: Vec<BcOperand> },
+    Measure {
+        dest: Option<Reg>,
+        qubit: BcOperand,
+    },
+    Reset {
+        qubit: BcOperand,
+    },
+    Barrier {
+        qubits: Vec<BcOperand>,
+    },
+    Delay {
+        duration: BcOperand,
+        qubits: Vec<BcOperand>,
+    },
+    Nop {
+        qubits: Vec<BcOperand>,
+    },
 
     // ── Structured timing constructs (lifted to procedures) ────────
-    Box { duration: Option<BcOperand>, body: ProcId },
-    CalOpaque { content: StringId },
-    CalOpenPulse { body: ProcId },
-    DurationOf { dest: Reg, body: ProcId },
+    Box {
+        duration: Option<BcOperand>,
+        body: ProcId,
+    },
+    CalOpaque {
+        content: StringId,
+    },
+    CalOpenPulse {
+        body: ProcId,
+    },
+    DurationOf {
+        dest: Reg,
+        body: ProcId,
+    },
 
     // ── Misc ───────────────────────────────────────────────────────
-    Pragma { content: StringId },
-    Alias { symbol: SymbolId, value: Vec<BcOperand> },
+    Pragma {
+        content: StringId,
+    },
+    Alias {
+        symbol: SymbolId,
+        value: Vec<BcOperand>,
+    },
 }
 
 // ── Terminators ──────────────────────────────────────────────────────

@@ -76,14 +76,8 @@ mod tests {
 
     #[test]
     fn bitreg_logor_returns_none() {
-        let a = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b01_u128),
-            BitReg(2),
-        ));
-        let b = Value::Scalar(Scalar::new_unchecked(
-            Primitive::uint(0b11_u128),
-            BitReg(2),
-        ));
+        let a = Value::Scalar(Scalar::new_unchecked(Primitive::uint(0b01_u128), BitReg(2)));
+        let b = Value::Scalar(Scalar::new_unchecked(Primitive::uint(0b11_u128), BitReg(2)));
         assert!(a.lor_(b).is_err());
     }
 }

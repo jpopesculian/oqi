@@ -11,13 +11,13 @@ use std::collections::HashMap;
 
 use oqi_classical::ValueTy;
 
+use crate::sir::{
+    Alias, Binary, Call, Cast, Delay, GateCall, GateModifier, Index, IndexItem, IndexKind, IndexOp,
+    MeasureExpr, MeasureExprKind, QubitOperand, RValue, RangeExpr, SwitchLabels, Unary,
+};
 use crate::ssa::{
     SsaAssignment, SsaCfg, SsaExpr, SsaExprKind, SsaLValue, SsaMeasure, SsaStmtKind, SsaTerminator,
     SsaValue,
-};
-use crate::sir::{
-    Alias, Binary, Call, Cast, Delay, GateCall, GateModifier, Index, IndexItem, IndexKind,
-    IndexOp, MeasureExpr, MeasureExprKind, QubitOperand, RValue, RangeExpr, SwitchLabels, Unary,
 };
 use crate::symbol::SymbolTable;
 
@@ -192,11 +192,7 @@ fn visit_qubit_operand(q: &QubitOperand<SsaExpr>, map: &mut RegMap, symbols: &Sy
 fn visit_lvalue(lv: &SsaLValue, map: &mut RegMap, symbols: &SymbolTable) {
     match lv {
         SsaLValue::Var(v) => try_alloc(map, symbols, *v),
-        SsaLValue::Indexed {
-            old,
-            new,
-            indices,
-        } => {
+        SsaLValue::Indexed { old, new, indices } => {
             try_alloc(map, symbols, *old);
             try_alloc(map, symbols, *new);
             for io in indices {

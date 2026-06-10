@@ -11,7 +11,9 @@ mod shared;
 mod ty;
 mod value;
 
-pub use array::{Array, ArrayDim, ArrayShape, ArrayTy, BaseArray, BaseArrayTy, ScalarIter, adim, ashape};
+pub use array::{
+    Array, ArrayDim, ArrayShape, ArrayTy, BaseArray, BaseArrayTy, ScalarIter, adim, ashape,
+};
 pub use array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, BaseArrayRef, BaseArrayRefTy, RefAccess};
 pub use bitreg::BitReg;
 pub use duration::{Duration, DurationUnit};
@@ -35,7 +37,9 @@ mod serde_tests {
         postcard::from_bytes(&bytes).expect("decode")
     }
 
-    fn ty_roundtrip<T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug>(
+    fn ty_roundtrip<
+        T: serde::Serialize + serde::de::DeserializeOwned + PartialEq + std::fmt::Debug,
+    >(
         v: T,
     ) {
         let v2 = roundtrip(&v);
@@ -75,7 +79,7 @@ mod serde_tests {
         assert_value_roundtrips_via_string(Value::bit(true));
         assert_value_roundtrips_via_string(Value::int(-42, iw(32)));
         assert_value_roundtrips_via_string(Value::uint(0xDEAD_BEEF_u128, iw(64)));
-        assert_value_roundtrips_via_string(Value::float(3.14, FloatWidth::F64));
+        assert_value_roundtrips_via_string(Value::float(2.5, FloatWidth::F64));
         assert_value_roundtrips_via_string(Value::complex(1.0, 2.0, FloatWidth::F64));
         assert_value_roundtrips_via_string(Value::duration(150.0, DurationUnit::Ns));
         assert_value_roundtrips_via_string(Value::angle(1.5));

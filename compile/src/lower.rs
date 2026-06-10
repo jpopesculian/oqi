@@ -286,33 +286,34 @@ impl Lowerer {
                 let gate_sym =
                     self.resolver
                         .declare(name.name, SymbolKind::Gate, Type::Void, name.span)?;
-                let (param_ids, qubit_ids, gate_body) = self.with_scope(ScopeKind::Gate, body.span, |this| {
-                    let angle_bw = this.resolver.options().system_width.iw();
-                    let param_ids: Vec<_> = params
-                        .iter()
-                        .map(|p| {
-                            this.resolver.declare(
-                                p.name,
-                                SymbolKind::GateParam,
-                                Type::Classical(ValueTy::angle(angle_bw)),
-                                p.span,
-                            )
-                        })
-                        .collect::<Result<_>>()?;
-                    let qubit_ids: Vec<_> = qubits
-                        .iter()
-                        .map(|q| {
-                            this.resolver.declare(
-                                q.name,
-                                SymbolKind::GateQubit,
-                                Type::Qubit,
-                                q.span,
-                            )
-                        })
-                        .collect::<Result<_>>()?;
-                    let gate_body = this.lower_gate_body(body)?;
-                    Ok((param_ids, qubit_ids, gate_body))
-                })?;
+                let (param_ids, qubit_ids, gate_body) =
+                    self.with_scope(ScopeKind::Gate, body.span, |this| {
+                        let angle_bw = this.resolver.options().system_width.iw();
+                        let param_ids: Vec<_> = params
+                            .iter()
+                            .map(|p| {
+                                this.resolver.declare(
+                                    p.name,
+                                    SymbolKind::GateParam,
+                                    Type::Classical(ValueTy::angle(angle_bw)),
+                                    p.span,
+                                )
+                            })
+                            .collect::<Result<_>>()?;
+                        let qubit_ids: Vec<_> = qubits
+                            .iter()
+                            .map(|q| {
+                                this.resolver.declare(
+                                    q.name,
+                                    SymbolKind::GateQubit,
+                                    Type::Qubit,
+                                    q.span,
+                                )
+                            })
+                            .collect::<Result<_>>()?;
+                        let gate_body = this.lower_gate_body(body)?;
+                        Ok((param_ids, qubit_ids, gate_body))
+                    })?;
                 self.gates.push(sir::GateDecl {
                     symbol: gate_sym,
                     params: param_ids,
@@ -335,25 +336,26 @@ impl Lowerer {
                     Type::Void,
                     name.span,
                 )?;
-                let (sir_params, ret_ty, body_stmts) = self.with_scope(ScopeKind::Subroutine, body.span, |this| {
-                    let sir_params = this.lower_arg_defs(params)?;
-                    let ret_ty = match return_ty {
-                        Some(s) => Some(resolve_scalar_type(
-                            s,
-                            this.resolver.symbols(),
-                            this.resolver.options(),
-                        )?),
-                        None => None,
-                    };
-                    if let Some(ref ty) = ret_ty {
-                        this.resolver.symbols_mut().get_mut(sub_sym).ty = ty.clone();
-                    }
-                    let mut body_stmts = Vec::new();
-                    for item in &body.body {
-                        body_stmts.extend(this.lower_stmt_or_scope(item)?);
-                    }
-                    Ok((sir_params, ret_ty, body_stmts))
-                })?;
+                let (sir_params, ret_ty, body_stmts) =
+                    self.with_scope(ScopeKind::Subroutine, body.span, |this| {
+                        let sir_params = this.lower_arg_defs(params)?;
+                        let ret_ty = match return_ty {
+                            Some(s) => Some(resolve_scalar_type(
+                                s,
+                                this.resolver.symbols(),
+                                this.resolver.options(),
+                            )?),
+                            None => None,
+                        };
+                        if let Some(ref ty) = ret_ty {
+                            this.resolver.symbols_mut().get_mut(sub_sym).ty = ty.clone();
+                        }
+                        let mut body_stmts = Vec::new();
+                        for item in &body.body {
+                            body_stmts.extend(this.lower_stmt_or_scope(item)?);
+                        }
+                        Ok((sir_params, ret_ty, body_stmts))
+                    })?;
                 self.subroutines.push(sir::SubroutineDecl {
                     symbol: sub_sym,
                     params: sir_params,
@@ -416,47 +418,50 @@ impl Lowerer {
                         sir::CalibrationTarget::Named(id.name.to_string())
                     }
                 };
-                let (sir_args, sir_operands, ret_ty, sir_body) = self.with_scope(ScopeKind::Defcal, span, |this| {
-                    let sir_args: Vec<_> = args
-                        .iter()
-                        .map(|a| match a {
-                            ast::DefcalArgDef::Expr(e) => {
-                                Ok(sir::CalibrationArg::Expr(Box::new(this.lower_expr(e)?)))
-                            }
-                            ast::DefcalArgDef::ArgDef(ad) => {
-                                let (sym, _) = this.lower_single_arg_def(ad)?;
-                                Ok(sir::CalibrationArg::Param(sym))
-                            }
-                        })
-                        .collect::<Result<_>>()?;
-                    let sir_operands: Vec<_> = operands
-                        .iter()
-                        .map(|o| match o {
-                            ast::DefcalOperand::HardwareQubit(s, span) => Ok(
-                                sir::CalibrationOperand::Hardware(parse_hardware_qubit(s, *span)?),
-                            ),
-                            ast::DefcalOperand::Ident(id) => {
-                                this.resolver.declare(
-                                    id.name,
-                                    SymbolKind::GateQubit,
-                                    Type::Qubit,
-                                    id.span,
-                                )?;
-                                Ok(sir::CalibrationOperand::Ident(id.name.to_string()))
-                            }
-                        })
-                        .collect::<Result<_>>()?;
-                    let ret_ty = match return_ty {
-                        Some(s) => Some(resolve_scalar_type(
-                            s,
-                            this.resolver.symbols(),
-                            this.resolver.options(),
-                        )?),
-                        None => None,
-                    };
-                    let sir_body = this.lower_cal_body(body)?;
-                    Ok((sir_args, sir_operands, ret_ty, sir_body))
-                })?;
+                let (sir_args, sir_operands, ret_ty, sir_body) =
+                    self.with_scope(ScopeKind::Defcal, span, |this| {
+                        let sir_args: Vec<_> = args
+                            .iter()
+                            .map(|a| match a {
+                                ast::DefcalArgDef::Expr(e) => {
+                                    Ok(sir::CalibrationArg::Expr(Box::new(this.lower_expr(e)?)))
+                                }
+                                ast::DefcalArgDef::ArgDef(ad) => {
+                                    let (sym, _) = this.lower_single_arg_def(ad)?;
+                                    Ok(sir::CalibrationArg::Param(sym))
+                                }
+                            })
+                            .collect::<Result<_>>()?;
+                        let sir_operands: Vec<_> = operands
+                            .iter()
+                            .map(|o| match o {
+                                ast::DefcalOperand::HardwareQubit(s, span) => {
+                                    Ok(sir::CalibrationOperand::Hardware(parse_hardware_qubit(
+                                        s, *span,
+                                    )?))
+                                }
+                                ast::DefcalOperand::Ident(id) => {
+                                    this.resolver.declare(
+                                        id.name,
+                                        SymbolKind::GateQubit,
+                                        Type::Qubit,
+                                        id.span,
+                                    )?;
+                                    Ok(sir::CalibrationOperand::Ident(id.name.to_string()))
+                                }
+                            })
+                            .collect::<Result<_>>()?;
+                        let ret_ty = match return_ty {
+                            Some(s) => Some(resolve_scalar_type(
+                                s,
+                                this.resolver.symbols(),
+                                this.resolver.options(),
+                            )?),
+                            None => None,
+                        };
+                        let sir_body = this.lower_cal_body(body)?;
+                        Ok((sir_args, sir_operands, ret_ty, sir_body))
+                    })?;
                 self.calibrations.push(sir::CalibrationDecl {
                     target: sir_target,
                     args: sir_args,
@@ -482,7 +487,11 @@ impl Lowerer {
                 let inner = grammar
                     .strip_prefix('"')
                     .and_then(|s| s.strip_suffix('"'))
-                    .or_else(|| grammar.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+                    .or_else(|| {
+                        grammar
+                            .strip_prefix('\'')
+                            .and_then(|s| s.strip_suffix('\''))
+                    })
                     .unwrap_or(grammar);
                 if inner == "openpulse" {
                     self.seed_openpulse_intrinsics()?;
@@ -587,7 +596,7 @@ impl Lowerer {
                     return Ok(vec![sir::Stmt {
                         kind: sir::StmtKind::Assignment(sir::Assignment {
                             target: lv,
-                            value: sir::RValue::Measure(measure),
+                            value: sir::RValue::Measure(Box::new(measure)),
                         }),
                         annotations,
                         span,
@@ -597,16 +606,15 @@ impl Lowerer {
                 // temp + assignment pair: `a &= measure q` becomes
                 // `temp $N = measure q; a = a & $N`.
                 if let ast::ExprOrMeasure::Measure(m) = value {
-                    let bin_op = compound_to_bin_op(op).expect(
-                        "non-Assign op with Measure RHS must be a compound op",
-                    );
+                    let bin_op = compound_to_bin_op(op)
+                        .expect("non-Assign op with Measure RHS must be a compound op");
                     let measure = self.lower_measure_expr(m)?;
                     let temp_ty = measure.ty.clone();
                     let scope = self.resolver.current_scope();
-                    let temp_sym = self
-                        .resolver
-                        .symbols_mut()
-                        .new_temp(temp_ty.clone(), span, scope);
+                    let temp_sym =
+                        self.resolver
+                            .symbols_mut()
+                            .new_temp(temp_ty.clone(), span, scope);
                     let measure_stmt = sir::Stmt {
                         kind: sir::StmtKind::Measure(sir::Measure {
                             measure,
@@ -708,23 +716,27 @@ impl Lowerer {
                     ast::StmtOrScope::Stmt(s) => s.span,
                     ast::StmtOrScope::Scope(sc) => sc.span,
                 };
-                let (var_sym, sir_iterable, body_stmts) = self.with_scope(ScopeKind::For, for_body_span, |this| {
-                    let var_sym =
-                        this.resolver
-                            .declare(var.name, SymbolKind::LoopVar, var_ty, var.span)?;
-                    let sir_iterable = this.lower_for_iterable(iterable)?;
-                    let body_stmts = match body.as_ref() {
-                        ast::StmtOrScope::Stmt(s) => this.lower_stmt(s)?,
-                        ast::StmtOrScope::Scope(sc) => {
-                            let mut stmts = Vec::new();
-                            for item in &sc.body {
-                                stmts.extend(this.lower_stmt_or_scope(item)?);
+                let (var_sym, sir_iterable, body_stmts) =
+                    self.with_scope(ScopeKind::For, for_body_span, |this| {
+                        let var_sym = this.resolver.declare(
+                            var.name,
+                            SymbolKind::LoopVar,
+                            var_ty,
+                            var.span,
+                        )?;
+                        let sir_iterable = this.lower_for_iterable(iterable)?;
+                        let body_stmts = match body.as_ref() {
+                            ast::StmtOrScope::Stmt(s) => this.lower_stmt(s)?,
+                            ast::StmtOrScope::Scope(sc) => {
+                                let mut stmts = Vec::new();
+                                for item in &sc.body {
+                                    stmts.extend(this.lower_stmt_or_scope(item)?);
+                                }
+                                stmts
                             }
-                            stmts
-                        }
-                    };
-                    Ok((var_sym, sir_iterable, body_stmts))
-                })?;
+                        };
+                        Ok((var_sym, sir_iterable, body_stmts))
+                    })?;
                 vec![sir::Stmt {
                     kind: sir::StmtKind::For(sir::For {
                         var: var_sym,
@@ -789,7 +801,7 @@ impl Lowerer {
                         Some(sir::RValue::Expr(Box::new(self.lower_expr(e)?)))
                     }
                     Some(ast::ExprOrMeasure::Measure(m)) => {
-                        Some(sir::RValue::Measure(self.lower_measure_expr(m)?))
+                        Some(sir::RValue::Measure(Box::new(self.lower_measure_expr(m)?)))
                     }
                     None => None,
                 };
@@ -1338,10 +1350,11 @@ impl Lowerer {
                     .map(|p| self.resolver.symbols().get(p.symbol).ty.clone())
                     .collect(),
             )
-        } else if let Some(d) = self.externs.iter().find(|d| d.symbol == sym) {
-            Some(d.param_types.clone())
         } else {
-            None
+            self.externs
+                .iter()
+                .find(|d| d.symbol == sym)
+                .map(|d| d.param_types.clone())
         }
     }
 
@@ -1705,9 +1718,9 @@ fn parse_hardware_qubit(s: &str, span: oqi_lex::Span) -> Result<usize> {
 impl Lowerer {
     fn lower_cal_body(&mut self, body: &ast::CalBody<'_>) -> Result<sir::CalibrationBody> {
         match body {
-            ast::CalBody::Raw(text) => Ok(sir::CalibrationBody::Opaque(
-                text.unwrap_or("").to_string(),
-            )),
+            ast::CalBody::Raw(text) => {
+                Ok(sir::CalibrationBody::Opaque(text.unwrap_or("").to_string()))
+            }
             ast::CalBody::OpenPulse(items) => {
                 let mut stmts = Vec::new();
                 for item in items {
@@ -1776,9 +1789,9 @@ impl Lowerer {
             if self.resolver.symbols().lookup(name).is_some() {
                 continue;
             }
-            let sym =
-                self.resolver
-                    .declare(name, SymbolKind::Extern, Type::Void, span)?;
+            let sym = self
+                .resolver
+                .declare(name, SymbolKind::Extern, Type::Void, span)?;
             if let Some(ref ty) = ret_ty {
                 self.resolver.symbols_mut().get_mut(sym).ty = ty.clone();
             }
@@ -2042,9 +2055,7 @@ fn intrinsic_result_type(
                 ClassicalSizeofDim::return_ty(value_ty, dim_ty)
                     .map_err(classical_intrinsic_error)?;
                 if let sir::ExprKind::Literal(value) = &dim.kind {
-                    let Some(dim) = value
-                        .as_int(iw(128))
-                        .and_then(|i| usize::try_from(i).ok())
+                    let Some(dim) = value.as_int(iw(128)).and_then(|i| usize::try_from(i).ok())
                     else {
                         return Err(CompileError::new(ErrorKind::Unsupported(format!(
                             "intrinsic `{intrinsic}` requires a non-negative integer dimension, got `{}`",
@@ -2404,11 +2415,7 @@ mod tests {
         assert_eq!(program.scopes.get(p_scope).depth, 0);
 
         // `s` is also in the Subroutine scope (same one as `p`)
-        let s = program
-            .symbols
-            .iter()
-            .find(|sym| sym.name == "s")
-            .unwrap();
+        let s = program.symbols.iter().find(|sym| sym.name == "s").unwrap();
         assert_eq!(s.scope, Some(p_scope));
 
         // Loop variable `i` is in a For scope nested inside the Subroutine
@@ -2423,11 +2430,7 @@ mod tests {
         assert_eq!(for_node.parent, Some(p_scope));
 
         // `t` is in an IfThen scope nested inside the For
-        let t = program
-            .symbols
-            .iter()
-            .find(|sym| sym.name == "t")
-            .unwrap();
+        let t = program.symbols.iter().find(|sym| sym.name == "t").unwrap();
         let if_scope = t.scope.expect("t must be scoped");
         let if_node = program.scopes.get(if_scope);
         assert_eq!(if_node.kind, ScopeKind::IfThen);
@@ -2843,9 +2846,7 @@ mod tests {
             .find(|s| matches!(s.kind, sir::StmtKind::For(_)));
         assert!(for_stmt.is_some());
         if let sir::StmtKind::For(sir::For { body, .. }) = &for_stmt.unwrap().kind {
-            let if_stmt = body
-                .iter()
-                .find(|s| matches!(s.kind, sir::StmtKind::If(_)));
+            let if_stmt = body.iter().find(|s| matches!(s.kind, sir::StmtKind::If(_)));
             assert!(if_stmt.is_some());
             if let sir::StmtKind::If(sir::If { condition, .. }) = &if_stmt.unwrap().kind {
                 assert_eq!(

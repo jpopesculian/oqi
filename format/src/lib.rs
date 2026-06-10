@@ -361,10 +361,7 @@ impl<'a> CompactHint for ast::StmtOrScope<'a> {
     fn requires_trailing_newline(&self) -> bool {
         matches!(
             self,
-            ast::StmtOrScope::Stmt(ast::Stmt {
-                kind: ast::StmtKind::Pragma(_),
-                ..
-            })
+            ast::StmtOrScope::Stmt(s) if matches!(s.kind, ast::StmtKind::Pragma(_))
         )
     }
 }

@@ -12,8 +12,13 @@ impl UnOp for Imag {
     const IS_FUNC: bool = true;
 
     fn scalar_check(arg: PrimitiveTy) -> Result<(PrimitiveTy, PrimitiveTy)> {
-        match promote_arithmetic(arg, PrimitiveTy::Complex(arg.fw().unwrap_or(FloatWidth::F64))) {
-            Some(PrimitiveTy::Complex(fw)) => Ok((PrimitiveTy::Complex(fw), PrimitiveTy::Float(fw))),
+        match promote_arithmetic(
+            arg,
+            PrimitiveTy::Complex(arg.fw().unwrap_or(FloatWidth::F64)),
+        ) {
+            Some(PrimitiveTy::Complex(fw)) => {
+                Ok((PrimitiveTy::Complex(fw), PrimitiveTy::Float(fw)))
+            }
             _ => Err(Error::unsupported_unop(
                 Self::NAME,
                 arg.into(),

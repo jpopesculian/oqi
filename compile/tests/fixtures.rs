@@ -71,7 +71,14 @@ fn defcal() {
         .iter()
         .map(|e| p.symbols.get(e.symbol).name.as_str())
         .collect();
-    for name in ["newframe", "gaussian", "play", "capture", "shift_phase", "threshold"] {
+    for name in [
+        "newframe",
+        "gaussian",
+        "play",
+        "capture",
+        "shift_phase",
+        "threshold",
+    ] {
         assert!(
             extern_names.contains(&name),
             "missing OpenPulse intrinsic {name} in externs: {extern_names:?}",
@@ -909,9 +916,7 @@ use oqi_compile::classical::{FloatWidth, Primitive};
 use oqi_compile::sir::{self, Assignment, Call, ExprKind, RValue, StmtKind};
 use oqi_compile::types::Type;
 
-fn first_assignment(
-    program: &sir::Program,
-) -> (&sir::LValue<sir::Expr>, &sir::RValue<sir::Expr>) {
+fn first_assignment(program: &sir::Program) -> (&sir::LValue<sir::Expr>, &sir::RValue<sir::Expr>) {
     for stmt in &program.body {
         if let StmtKind::Assignment(Assignment { target, value }) = &stmt.kind {
             return (target, value);

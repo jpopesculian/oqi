@@ -96,7 +96,10 @@ pub trait BinOp {
     const IS_FUNC: bool = false;
 
     // given the inputs, get lhs cast, rhs cast and ouput type
-    fn scalar_check(lht: PrimitiveTy, rht: PrimitiveTy) -> Result<(PrimitiveTy, PrimitiveTy, PrimitiveTy)> {
+    fn scalar_check(
+        lht: PrimitiveTy,
+        rht: PrimitiveTy,
+    ) -> Result<(PrimitiveTy, PrimitiveTy, PrimitiveTy)> {
         Err(Error::unsupported_scalar_binop(
             Self::NAME,
             lht,

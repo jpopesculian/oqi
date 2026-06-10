@@ -175,9 +175,7 @@ impl Resolver {
             );
         }
         let scope = self.current_scope();
-        let id = self
-            .symbols
-            .insert(name.to_string(), kind, ty, span, scope);
+        let id = self.symbols.insert(name.to_string(), kind, ty, span, scope);
         self.lookup_stack
             .last_mut()
             .unwrap()

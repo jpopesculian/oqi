@@ -47,9 +47,7 @@ fn parse_openpulse_block(body: &str, offset: usize) -> Result<Vec<StmtOrScope<'_
                 ));
             }
             Some(Token::Nop) => {
-                return Err(sub.error(
-                    "`nop` is not allowed inside an OpenPulse calibration block",
-                ));
+                return Err(sub.error("`nop` is not allowed inside an OpenPulse calibration block"));
             }
             Some(Token::DefCalGrammar) => {
                 return Err(sub.error(
@@ -276,7 +274,7 @@ impl<'a> Parser<'a> {
         if matches!(self.peek(), Some(Token::LBrace)) {
             Ok(StmtOrScope::Scope(self.parse_scope()?))
         } else {
-            Ok(StmtOrScope::Stmt(self.parse_statement()?))
+            Ok(StmtOrScope::Stmt(Box::new(self.parse_statement()?)))
         }
     }
 
@@ -2037,7 +2035,7 @@ mod tests {
         let prog = parse_ok(src);
         assert_eq!(prog.body.len(), 1, "expected exactly one statement");
         match prog.body.into_iter().next().unwrap() {
-            StmtOrScope::Stmt(s) => s,
+            StmtOrScope::Stmt(s) => *s,
             StmtOrScope::Scope(_) => panic!("expected statement, got scope"),
         }
     }
@@ -2361,7 +2359,7 @@ mod tests {
             cal {
                 gate g q { }
             }"#;
-        let err = parse(src).err().expect("parse should fail");
+        let err = parse(src).expect_err("parse should fail");
         assert!(err.message.contains("gate"), "got: {}", err.message);
     }
 
@@ -2622,7 +2620,10 @@ cphase(π / 2) q[0], q[1];
         let ForIterable::Range(r, _) = iterable else {
             panic!("expected range iterable");
         };
-        assert!(matches!(r.start.as_deref(), Some(Expr::IntLiteral("2", ..))));
+        assert!(matches!(
+            r.start.as_deref(),
+            Some(Expr::IntLiteral("2", ..))
+        ));
         assert!(
             matches!(r.step.as_deref(), Some(Expr::UnaryOp { .. })),
             "middle component is the step"
@@ -2642,7 +2643,10 @@ cphase(π / 2) q[0], q[1];
         let ForIterable::Range(r, _) = iterable else {
             panic!("expected range iterable");
         };
-        assert!(matches!(r.start.as_deref(), Some(Expr::IntLiteral("0", ..))));
+        assert!(matches!(
+            r.start.as_deref(),
+            Some(Expr::IntLiteral("0", ..))
+        ));
         assert!(r.step.is_none());
         assert!(matches!(r.end.as_deref(), Some(Expr::IntLiteral("3", ..))));
     }

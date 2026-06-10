@@ -30,7 +30,10 @@ impl BinOp for SizeofDim {
     const NAME: &'static str = "sizeof";
     const IS_FUNC: bool = true;
 
-    fn scalar_check(lhs: PrimitiveTy, rhs: PrimitiveTy) -> Result<(PrimitiveTy, PrimitiveTy, PrimitiveTy)> {
+    fn scalar_check(
+        lhs: PrimitiveTy,
+        rhs: PrimitiveTy,
+    ) -> Result<(PrimitiveTy, PrimitiveTy, PrimitiveTy)> {
         if ValueTy::Scalar(lhs).size(0).is_none() {
             return Err(Error::unsupported_binop(
                 Self::NAME,

@@ -11,11 +11,7 @@ use super::types::{
 impl fmt::Display for BcModule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, ".module openqasm 3")?;
-        writeln!(
-            f,
-            ".version {}.{}",
-            self.version.major, self.version.minor
-        )?;
+        writeln!(f, ".version {}.{}", self.version.major, self.version.minor)?;
         writeln!(f, ".entry proc{}", self.entry.0)?;
 
         if !self.symbols.is_empty() {
@@ -111,7 +107,11 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
         BcOp::Neg { dest, src } => fmt_un(f, "neg", dest, src),
         BcOp::BitNot { dest, src } => fmt_un(f, "not", dest, src),
         BcOp::LogNot { dest, src } => fmt_un(f, "lnot", dest, src),
-        BcOp::Cast { dest, target_ty, src } => {
+        BcOp::Cast {
+            dest,
+            target_ty,
+            src,
+        } => {
             write!(f, "{} = cast {} ", fmt_reg(*dest), target_ty)?;
             fmt_operand(f, src)
         }
@@ -258,12 +258,25 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
 fn fmt_terminator(f: &mut fmt::Formatter<'_>, term: &BcTerminator) -> fmt::Result {
     match term {
         BcTerminator::Goto(b) => write!(f, "goto {}", fmt_block_id(*b)),
-        BcTerminator::Branch { cond, then_bb, else_bb } => {
+        BcTerminator::Branch {
+            cond,
+            then_bb,
+            else_bb,
+        } => {
             write!(f, "branch ")?;
             fmt_operand(f, cond)?;
-            write!(f, " ? {} : {}", fmt_block_id(*then_bb), fmt_block_id(*else_bb))
+            write!(
+                f,
+                " ? {} : {}",
+                fmt_block_id(*then_bb),
+                fmt_block_id(*else_bb)
+            )
         }
-        BcTerminator::Switch { target, cases, default } => {
+        BcTerminator::Switch {
+            target,
+            cases,
+            default,
+        } => {
             write!(f, "switch ")?;
             fmt_operand(f, target)?;
             for (labels, bb) in cases {

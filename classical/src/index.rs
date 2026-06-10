@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::array::{Array, ArrayDim, ArrayShape, ArrayTy};
 use crate::array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
 use crate::bitreg::BitReg;
@@ -8,7 +10,7 @@ use crate::{
     primitive::{Primitive, PrimitiveTy, resize_int},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Index {
     Item(isize),
     Slice {

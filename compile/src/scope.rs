@@ -1,12 +1,13 @@
 use oqi_lex::Span;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ScopeId(pub usize);
 
 /// The kind of a non-global scope. The global scope itself is implicit —
 /// represented by `Symbol::scope == None` and `Scope::parent == None` —
 /// because it has no introducing construct, no span, and no kind to record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ScopeKind {
     Subroutine,
     Gate,

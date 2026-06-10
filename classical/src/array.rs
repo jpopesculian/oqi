@@ -1,12 +1,14 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::array_ref::{ArrayRef, ArrayRefShape, BaseArrayRefTy, RefAccess};
 use crate::primitive::{Primitive, PrimitiveTy};
 use crate::scalar::Scalar;
 use crate::shared::Shared;
 use crate::{Error, Result};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BaseArray<V, T> {
     values: Vec<V>,
     ty: BaseArrayTy<T>,
@@ -130,7 +132,7 @@ impl fmt::Display for Array {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ArrayDim(usize);
 
 impl ArrayDim {
@@ -181,7 +183,7 @@ impl PartialOrd<ArrayDim> for usize {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ArrayShape {
     shape: [usize; ArrayDim::MAX],
     dim: ArrayDim,
@@ -261,7 +263,7 @@ macro_rules! shape {
 }
 pub(crate) use shape;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BaseArrayTy<T> {
     ty: T,
     shape: ArrayShape,

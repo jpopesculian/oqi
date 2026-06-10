@@ -1,19 +1,22 @@
 use oqi_lex::Span;
+use serde::{Deserialize, Serialize};
 
 use crate::classical::Value;
 use crate::scope::ScopeId;
 use crate::types::Type;
 
 /// Unique identifier for a symbol in the symbol table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SymbolId(pub usize);
 
 /// Central symbol table holding all declared names.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SymbolTable {
     symbols: Vec<Symbol>,
     temp_counter: usize,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Symbol {
     pub id: SymbolId,
     pub name: String,
@@ -26,7 +29,7 @@ pub struct Symbol {
     pub scope: Option<ScopeId>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SymbolKind {
     /// `const int[32] N = 10;`
     Const,

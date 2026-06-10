@@ -1,5 +1,7 @@
 use std::fmt;
 
+use serde::{Deserialize, Serialize};
+
 use crate::array::{Array, ArrayDim, ArrayShape, ArrayTy, BaseArray, BaseArrayTy};
 use crate::error::{Error, Result};
 use crate::index::Index;
@@ -7,7 +9,7 @@ use crate::primitive::{Primitive, PrimitiveTy};
 use crate::shared::Shared;
 use crate::value::Value;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseArrayRef<V, T> {
     array: Shared<BaseArray<V, T>>,
     indices: Vec<Index>,
@@ -94,7 +96,7 @@ impl fmt::Display for ArrayRef {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefAccess {
     Readonly,
     Mutable,
@@ -109,7 +111,7 @@ impl fmt::Display for RefAccess {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ArrayRefShape {
     Fixed(ArrayShape),
     Dim(ArrayDim),
@@ -177,7 +179,7 @@ impl fmt::Display for ArrayRefShape {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BaseArrayRefTy<T> {
     ty: T,
     shape: ArrayRefShape,

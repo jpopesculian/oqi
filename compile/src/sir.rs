@@ -1,4 +1,5 @@
 use oqi_lex::Span;
+use serde::{Deserialize, Serialize};
 
 use crate::classical::Primitive;
 use crate::scope::ScopeTable;
@@ -409,7 +410,7 @@ pub enum CallTarget {
     Intrinsic(Intrinsic),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Intrinsic {
     Sin,
     Cos,

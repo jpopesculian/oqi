@@ -1,3 +1,4 @@
+pub mod bytecode;
 pub mod cfg;
 pub mod classical;
 pub mod display;

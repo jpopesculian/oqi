@@ -3,6 +3,7 @@ use oqi_classical::ops::{
     UnOp as ClassicalUnOp,
 };
 use oqi_parse::ast;
+use serde::{Deserialize, Serialize};
 
 use crate::classical::{
     ArrayRefShape, ArrayRefTy, ArrayTy, IntWidth, Duration, DurationUnit, PrimitiveTy, RefAccess,
@@ -17,7 +18,7 @@ use crate::symbol::SymbolTable;
 pub use crate::classical::FloatWidth;
 
 /// Fully resolved type — no expression designators, no lifetimes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Type {
     Void,
     Classical(ValueTy),

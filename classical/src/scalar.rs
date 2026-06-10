@@ -1,13 +1,14 @@
 use std::fmt;
 
 use num_complex::{Complex32, Complex64};
+use serde::{Deserialize, Serialize};
 
 use crate::bitreg::BitReg;
 use crate::duration::{Duration, DurationUnit};
 use crate::error::Result;
 use crate::primitive::{FloatWidth, IntWidth, Primitive, PrimitiveTy, iw};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BaseScalar<V, T> {
     value: V,
     ty: T,

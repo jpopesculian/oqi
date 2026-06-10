@@ -2,26 +2,28 @@ use std::fmt;
 
 use num_complex::Complex64;
 use oqi_classical::{BaseValueTy, IntWidth, FloatWidth};
+use serde::{Deserialize, Serialize};
 use turns::Angle128;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Frame<P> {
     pub port: P,
     pub freq: f64,
+    #[serde(with = "turns::serde::raw")]
     pub phase: Angle128,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Waveform(pub Vec<Complex64>);
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Primitive<P> {
     Port(P),
     Frame(Frame<P>),
     Waveform(Waveform),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PrimitiveTy {
     Port,
     Frame(FloatWidth, IntWidth),

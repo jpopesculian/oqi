@@ -3,7 +3,9 @@ use std::fmt;
 use std::iter::repeat;
 use std::ops::{BitAnd, BitOr, BitXor, Not, Range, Shl, Shr};
 
-#[derive(Clone, Debug)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BitReg {
     Stack(u128),
     Heap(Box<[u8]>),

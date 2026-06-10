@@ -1,6 +1,7 @@
 use std::fmt;
 
 use num_complex::{Complex32, Complex64};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     BitReg, FloatWidth, IntWidth, Primitive,
@@ -12,7 +13,7 @@ use crate::{
     scalar::{BaseScalar, Scalar},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum BaseValue<V, T> {
     Scalar(BaseScalar<V, T>),
     Array(BaseArray<V, T>),
@@ -158,7 +159,7 @@ impl fmt::Display for Value {
     }
 }
 
-#[derive(Clone, Debug, Copy, PartialEq)]
+#[derive(Clone, Debug, Copy, PartialEq, Serialize, Deserialize)]
 pub enum BaseValueTy<T> {
     Scalar(T),
     Array(BaseArrayTy<T>),

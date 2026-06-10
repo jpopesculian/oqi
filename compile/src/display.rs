@@ -167,6 +167,12 @@ impl fmt::Display for ErrorKind {
             ErrorKind::InvalidSwitch(msg) => write!(f, "invalid switch: {msg}"),
             ErrorKind::InvalidLiteral(msg) => write!(f, "invalid literal: {msg}"),
             ErrorKind::Unsupported(msg) => write!(f, "unsupported: {msg}"),
+            ErrorKind::QubitIndexOutOfRange { index, len } => {
+                write!(
+                    f,
+                    "qubit index {index} out of range for register of length {len}"
+                )
+            }
         }
     }
 }

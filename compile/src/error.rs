@@ -20,6 +20,7 @@ pub enum ErrorKind {
     InvalidSwitch(String),
     Unsupported(String),
     InvalidLiteral(String),
+    QubitIndexOutOfRange { index: i128, len: usize },
 }
 
 #[derive(Debug, Clone)]

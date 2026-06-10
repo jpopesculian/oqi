@@ -23,6 +23,10 @@ pub struct StringId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Reg(pub u32);
 
+/// Index into [`QubitTable::regions`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct QubitRegionId(pub u32);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockId(pub u32);
 
@@ -35,7 +39,28 @@ pub struct BcVersion {
 }
 
 impl BcVersion {
-    pub const CURRENT: BcVersion = BcVersion { major: 0, minor: 1 };
+    pub const CURRENT: BcVersion = BcVersion { major: 0, minor: 2 };
+}
+
+/// Global quantum memory: every named register is statically allocated
+/// into one flat index space; operands reference it via regions.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct QubitTable {
+    /// Total size of global quantum memory.
+    pub num_qubits: u32,
+    pub regions: Vec<QubitRegion>,
+}
+
+/// A (possibly non-contiguous) set of global qubit indices: a declared
+/// register, a resolved `let` alias, or a static slice.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct QubitRegion {
+    /// Half-open global index ranges in logical order; adjacent ranges
+    /// are merged.
+    pub ranges: Vec<(u32, u32)>,
+    /// Originating symbol, for disassembly only — regions are deduped
+    /// on `ranges`, so distinct symbols may share a region.
+    pub origin: Option<SymbolId>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -46,6 +71,8 @@ pub struct BcModule {
     pub constants: Vec<Value>,
     /// Pool of strings (pragma payloads, opaque cal text).
     pub strings: Vec<String>,
+    /// Global quantum memory layout referenced by qubit operands.
+    pub qubits: QubitTable,
     pub procedures: Vec<BcProcedure>,
     /// Index into `procedures` for the program's top-level body.
     pub entry: ProcId,
@@ -96,11 +123,27 @@ pub enum BcOperand {
     Reg(Reg),
     /// Pooled constant value.
     Const(ConstId),
-    /// Hardware qubit reference: `$0`, `$1`, etc.
+    /// Hardware qubit reference: `$0`, `$1`, etc. — a separate
+    /// physical namespace, distinct from global quantum memory.
     HardwareQubit(u32),
-    /// Symbolic qubit register, optionally indexed by a classical operand.
-    QubitReg {
-        symbol: SymbolId,
+    /// Statically resolved single qubit: an index into global quantum
+    /// memory.
+    Qubit(u32),
+    /// A whole region of global quantum memory (declared register,
+    /// resolved alias, or static slice).
+    QubitRegion(QubitRegionId),
+    /// Runtime-indexed register: the VM maps the logical `index`
+    /// through the region's ranges at execution time.
+    QubitIndexed {
+        region: QubitRegionId,
+        index: Box<BcOperand>,
+    },
+    /// Qubit parameter of the enclosing gate/subroutine body, bound at
+    /// call time. For gates the slot is the position in the declared
+    /// qubit list (after any `ctrl @` controls); for subroutines it is
+    /// the position in the full parameter list.
+    QubitParam {
+        slot: u32,
         index: Option<Box<BcOperand>>,
     },
 }

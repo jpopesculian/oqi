@@ -42,6 +42,24 @@ impl fmt::Display for BcModule {
             }
         }
 
+        if self.qubits.num_qubits > 0 || !self.qubits.regions.is_empty() {
+            writeln!(f)?;
+            writeln!(f, ".qubits {}", self.qubits.num_qubits)?;
+            for (i, region) in self.qubits.regions.iter().enumerate() {
+                write!(f, "  qr{i} =")?;
+                for (j, (start, end)) in region.ranges.iter().enumerate() {
+                    if j > 0 {
+                        write!(f, " ++")?;
+                    }
+                    write!(f, " [{start}..{end})")?;
+                }
+                if let Some(sym) = region.origin {
+                    write!(f, " ; {}", self.symbols.get(sym).name)?;
+                }
+                writeln!(f)?;
+            }
+        }
+
         for (i, proc) in self.procedures.iter().enumerate() {
             writeln!(f)?;
             write!(f, ".proc {} ", i)?;
@@ -335,8 +353,15 @@ fn fmt_operand(f: &mut fmt::Formatter<'_>, op: &BcOperand) -> fmt::Result {
         BcOperand::Reg(r) => write!(f, "{}", fmt_reg(*r)),
         BcOperand::Const(c) => write!(f, "{}", fmt_const(*c)),
         BcOperand::HardwareQubit(n) => write!(f, "${n}"),
-        BcOperand::QubitReg { symbol, index } => {
-            write!(f, "s{}", symbol.0)?;
+        BcOperand::Qubit(n) => write!(f, "q@{n}"),
+        BcOperand::QubitRegion(id) => write!(f, "qr{}", id.0),
+        BcOperand::QubitIndexed { region, index } => {
+            write!(f, "qr{}[", region.0)?;
+            fmt_operand(f, index)?;
+            write!(f, "]")
+        }
+        BcOperand::QubitParam { slot, index } => {
+            write!(f, "qp{slot}")?;
             if let Some(idx) = index {
                 write!(f, "[")?;
                 fmt_operand(f, idx)?;

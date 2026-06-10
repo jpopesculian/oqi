@@ -5,6 +5,12 @@
 //! [`BcInstr`]s. Nested CFGs (Box / inline-Cal / DurationOf) are
 //! recursively lowered to their own procedures and referenced by
 //! [`ProcId`].
+//!
+//! Qubit references are lowered through the [`QubitLayout`]: named
+//! registers and resolved `let` aliases become global quantum memory
+//! references ([`BcOperand::Qubit`] / [`BcOperand::QubitRegion`] /
+//! [`BcOperand::QubitIndexed`]); gate and subroutine qubit parameters
+//! become positional [`BcOperand::QubitParam`]s bound at call time.
 
 use std::collections::HashMap;
 
@@ -12,6 +18,8 @@ use oqi_classical::{Value, ValueTy};
 use oqi_lex::Span;
 
 use crate::classical::PrimitiveTy;
+use crate::error::{CompileError, ErrorKind, Result};
+use crate::qubits::{self, QubitLayout};
 use crate::sir::{
     Alias, Binary, Call, CallTarget, Cast, Delay, GateCall, GateModifier, Index, IndexItem,
     IndexKind, IndexOp, MeasureExpr, MeasureExprKind, QubitOperand, RValue,
@@ -20,41 +28,51 @@ use crate::ssa::{
     ProgramSsa, SsaAssignment, SsaBlock, SsaBoxStmt, SsaCalibrationBody, SsaCfg, SsaExpr,
     SsaExprKind, SsaLValue, SsaMeasure, SsaStmtKind, SsaTerminator, SsaValue,
 };
-use crate::symbol::SymbolTable;
+use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 
 use super::phi_elim::deconstruct_phis;
 use super::regalloc::{RegMap, allocate_registers};
 use super::types::{
     BcBlock, BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcProcedure,
-    BcSwitchLabels, BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner, Reg, StringId,
+    BcSwitchLabels, BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner, QubitRegion,
+    QubitRegionId, QubitTable, Reg, StringId,
 };
 
-/// Entry point: lower an SSA program to bytecode.
-pub fn emit(ssa: &ProgramSsa, symbols: &SymbolTable) -> BcModule {
-    let mut ctx = EmitCtx::new(symbols);
-    let entry = ctx.emit_root(&ssa.top_level, ProcOwner::TopLevel);
+/// Entry point: lower an SSA program to bytecode against the global
+/// qubit layout (see [`crate::qubits::build_layout`]).
+pub fn emit(
+    ssa: &ProgramSsa,
+    symbols: &SymbolTable,
+    layout: QubitLayout,
+) -> Result<BcModule, CompileError> {
+    let mut ctx = EmitCtx::new(symbols, layout);
+    let entry = ctx.emit_root(&ssa.top_level, ProcOwner::TopLevel)?;
     for sub in &ssa.subroutines {
         let owner = sub_owner(&sub.owner);
-        ctx.emit_root(sub, owner);
+        ctx.emit_root(sub, owner)?;
     }
     for gate in &ssa.gates {
         let owner = gate_owner(&gate.owner);
-        ctx.emit_root(gate, owner);
+        ctx.emit_root(gate, owner)?;
     }
     for (i, cal) in ssa.calibrations.iter().enumerate() {
         if let Some(c) = cal {
-            ctx.emit_root(c, ProcOwner::Calibration(i as u32));
+            ctx.emit_root(c, ProcOwner::Calibration(i as u32))?;
         }
     }
 
-    BcModule {
+    Ok(BcModule {
         version: BcVersion::CURRENT,
         symbols: symbols.clone(),
         constants: ctx.constants,
         strings: ctx.strings,
+        qubits: QubitTable {
+            num_qubits: ctx.layout.num_qubits() as u32,
+            regions: ctx.qubit_regions,
+        },
         procedures: ctx.procedures,
         entry,
-    }
+    })
 }
 
 fn sub_owner(owner: &crate::cfg::CfgOwner) -> ProcOwner {
@@ -74,6 +92,11 @@ fn gate_owner(owner: &crate::cfg::CfgOwner) -> ProcOwner {
 /// Mutable emission state shared across procedures.
 struct EmitCtx<'a> {
     symbols: &'a SymbolTable,
+    /// Global qubit layout; gains alias definitions during emission.
+    layout: QubitLayout,
+    qubit_regions: Vec<QubitRegion>,
+    /// Resolved ranges of each entry in `qubit_regions`, for dedup.
+    region_index: HashMap<Vec<(u32, u32)>, QubitRegionId>,
     procedures: Vec<BcProcedure>,
     constants: Vec<Value>,
     /// Postcard encoding of each entry in `constants`, for dedup.
@@ -82,9 +105,12 @@ struct EmitCtx<'a> {
 }
 
 impl<'a> EmitCtx<'a> {
-    fn new(symbols: &'a SymbolTable) -> Self {
+    fn new(symbols: &'a SymbolTable, layout: QubitLayout) -> Self {
         Self {
             symbols,
+            layout,
+            qubit_regions: Vec::new(),
+            region_index: HashMap::new(),
             procedures: Vec::new(),
             constants: Vec::new(),
             const_index: HashMap::new(),
@@ -95,7 +121,7 @@ impl<'a> EmitCtx<'a> {
     /// Emit a top-level CFG (or a recursive nested one); return its
     /// `ProcId`. Always reserves the slot first so nested emissions
     /// see a stable id.
-    fn emit_root(&mut self, cfg: &SsaCfg, owner: ProcOwner) -> ProcId {
+    fn emit_root(&mut self, cfg: &SsaCfg, owner: ProcOwner) -> Result<ProcId> {
         let id = ProcId(self.procedures.len() as u32);
         // Reserve a placeholder slot. We'll overwrite it after the
         // body is emitted (so nested CFGs can recurse and grab
@@ -106,12 +132,12 @@ impl<'a> EmitCtx<'a> {
             blocks: Vec::new(),
             entry: BlockId(0),
         });
-        let proc = self.emit_proc(cfg, owner);
+        let proc = self.emit_proc(cfg, owner)?;
         self.procedures[id.0 as usize] = proc;
-        id
+        Ok(id)
     }
 
-    fn emit_proc(&mut self, cfg: &SsaCfg, owner: ProcOwner) -> BcProcedure {
+    fn emit_proc(&mut self, cfg: &SsaCfg, owner: ProcOwner) -> Result<BcProcedure> {
         // Phi-eliminate a clone so the source SSA isn't mutated.
         let cfg = deconstruct_phis(cfg.clone());
         let mut reg_map = allocate_registers(&cfg, self.symbols);
@@ -120,17 +146,17 @@ impl<'a> EmitCtx<'a> {
             .blocks
             .iter()
             .map(|b| self.emit_block(b, &mut reg_map))
-            .collect();
+            .collect::<Result<_>>()?;
 
-        BcProcedure {
+        Ok(BcProcedure {
             owner,
             register_types: reg_map.types,
             blocks,
             entry: BlockId(cfg.entry.0 as u32),
-        }
+        })
     }
 
-    fn emit_block(&mut self, block: &SsaBlock, reg_map: &mut RegMap) -> BcBlock {
+    fn emit_block(&mut self, block: &SsaBlock, reg_map: &mut RegMap) -> Result<BcBlock> {
         // phi_elim has already cleared phis; if any remain (e.g. a
         // future caller skipped phi elimination), record them as
         // placeholder Moves — but assert empty to keep the bytecode
@@ -142,16 +168,17 @@ impl<'a> EmitCtx<'a> {
 
         let mut instrs: Vec<BcInstr> = Vec::new();
         for stmt in &block.stmts {
-            self.emit_stmt(stmt, &mut instrs, reg_map);
+            self.emit_stmt(stmt, &mut instrs, reg_map)?;
         }
-        let terminator = self.emit_terminator(&block.terminator, &mut instrs, reg_map, block.span);
+        let terminator =
+            self.emit_terminator(&block.terminator, &mut instrs, reg_map, block.span)?;
 
-        BcBlock {
+        Ok(BcBlock {
             id: BlockId(block.id.0 as u32),
             instrs,
             terminator,
             span: block.span,
-        }
+        })
     }
 
     fn emit_stmt(
@@ -159,21 +186,28 @@ impl<'a> EmitCtx<'a> {
         stmt: &crate::ssa::SsaStmt,
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
-    ) {
+    ) -> Result<()> {
         let span = stmt.span;
         match &stmt.kind {
             SsaStmtKind::Alias(Alias { symbol, value }) => {
-                let value = value
-                    .iter()
-                    .map(|e| self.lower_expr_to_operand(e, instrs, reg_map))
-                    .collect();
-                instrs.push(BcInstr {
-                    op: BcOp::Alias {
-                        symbol: *symbol,
-                        value,
-                    },
-                    span,
-                });
+                // Qubit aliases resolve into the layout and emit
+                // nothing; classical aliases keep their metadata op.
+                match self.layout.resolve_alias_value(value, self.symbols)? {
+                    Some(reg) => self.layout.define_alias(*symbol, reg),
+                    None => {
+                        let value = value
+                            .iter()
+                            .map(|e| self.lower_expr_to_operand(e, instrs, reg_map))
+                            .collect::<Result<_>>()?;
+                        instrs.push(BcInstr {
+                            op: BcOp::Alias {
+                                symbol: *symbol,
+                                value,
+                            },
+                            span,
+                        });
+                    }
+                }
             }
             SsaStmtKind::GateCall(GateCall {
                 gate,
@@ -184,15 +218,15 @@ impl<'a> EmitCtx<'a> {
                 let modifiers: Vec<BcGateModifier> = modifiers
                     .iter()
                     .map(|m| self.lower_gate_modifier(m, instrs, reg_map))
-                    .collect();
+                    .collect::<Result<_>>()?;
                 let args: Vec<BcOperand> = args
                     .iter()
                     .map(|a| self.lower_expr_to_operand(a, instrs, reg_map))
-                    .collect();
+                    .collect::<Result<_>>()?;
                 let qubits: Vec<BcOperand> = qubits
                     .iter()
-                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map))
-                    .collect();
+                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map, span))
+                    .collect::<Result<_>>()?;
                 instrs.push(BcInstr {
                     op: BcOp::GateCall {
                         gate: *gate,
@@ -209,10 +243,10 @@ impl<'a> EmitCtx<'a> {
                 // its StoreElement.
                 Some(t) => {
                     let value = RValue::Measure(Box::new(measure.clone()));
-                    self.emit_assignment(t, &value, instrs, reg_map, span);
+                    self.emit_assignment(t, &value, instrs, reg_map, span)?;
                 }
                 None => {
-                    let qubit = self.measure_to_operand(measure, instrs, reg_map);
+                    let qubit = self.measure_to_operand(measure, instrs, reg_map)?;
                     instrs.push(BcInstr {
                         op: BcOp::Measure { dest: None, qubit },
                         span,
@@ -220,7 +254,7 @@ impl<'a> EmitCtx<'a> {
                 }
             },
             SsaStmtKind::Reset(q) => {
-                let qubit = self.lower_qubit_operand(q, instrs, reg_map);
+                let qubit = self.lower_qubit_operand(q, instrs, reg_map, span)?;
                 instrs.push(BcInstr {
                     op: BcOp::Reset { qubit },
                     span,
@@ -229,19 +263,19 @@ impl<'a> EmitCtx<'a> {
             SsaStmtKind::Barrier(qs) => {
                 let qubits = qs
                     .iter()
-                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map))
-                    .collect();
+                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map, span))
+                    .collect::<Result<_>>()?;
                 instrs.push(BcInstr {
                     op: BcOp::Barrier { qubits },
                     span,
                 });
             }
             SsaStmtKind::Delay(Delay { duration, operands }) => {
-                let duration = self.lower_expr_to_operand(duration, instrs, reg_map);
+                let duration = self.lower_expr_to_operand(duration, instrs, reg_map)?;
                 let qubits = operands
                     .iter()
-                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map))
-                    .collect();
+                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map, span))
+                    .collect::<Result<_>>()?;
                 instrs.push(BcInstr {
                     op: BcOp::Delay { duration, qubits },
                     span,
@@ -250,8 +284,9 @@ impl<'a> EmitCtx<'a> {
             SsaStmtKind::Box(SsaBoxStmt { duration, body }) => {
                 let duration = duration
                     .as_ref()
-                    .map(|e| self.lower_expr_to_operand(e, instrs, reg_map));
-                let body_id = self.emit_root(body, ProcOwner::Box);
+                    .map(|e| self.lower_expr_to_operand(e, instrs, reg_map))
+                    .transpose()?;
+                let body_id = self.emit_root(body, ProcOwner::Box)?;
                 instrs.push(BcInstr {
                     op: BcOp::Box {
                         duration,
@@ -261,7 +296,7 @@ impl<'a> EmitCtx<'a> {
                 });
             }
             SsaStmtKind::Assignment(SsaAssignment { target, value }) => {
-                self.emit_assignment(target, value, instrs, reg_map, span);
+                self.emit_assignment(target, value, instrs, reg_map, span)?;
             }
             SsaStmtKind::Pragma(s) => {
                 let content = self.intern_string(s.clone());
@@ -279,7 +314,7 @@ impl<'a> EmitCtx<'a> {
                     });
                 }
                 SsaCalibrationBody::OpenPulse(cfg) => {
-                    let body_id = self.emit_root(cfg, ProcOwner::InlineCal);
+                    let body_id = self.emit_root(cfg, ProcOwner::InlineCal)?;
                     instrs.push(BcInstr {
                         op: BcOp::CalOpenPulse { body: body_id },
                         span,
@@ -287,7 +322,7 @@ impl<'a> EmitCtx<'a> {
                 }
             },
             SsaStmtKind::ExprStmt(e) => {
-                let _ = self.lower_expr_to_operand(e, instrs, reg_map);
+                let _ = self.lower_expr_to_operand(e, instrs, reg_map)?;
                 // Pure-side-effect statements (calls etc.) get emitted
                 // inside lower_expr_to_operand. Top-level value is
                 // discarded.
@@ -295,14 +330,15 @@ impl<'a> EmitCtx<'a> {
             SsaStmtKind::Nop(qs) => {
                 let qubits = qs
                     .iter()
-                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map))
-                    .collect();
+                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map, span))
+                    .collect::<Result<_>>()?;
                 instrs.push(BcInstr {
                     op: BcOp::Nop { qubits },
                     span,
                 });
             }
         }
+        Ok(())
     }
 
     fn emit_assignment(
@@ -312,11 +348,11 @@ impl<'a> EmitCtx<'a> {
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
         span: Span,
-    ) {
+    ) -> Result<()> {
         match target {
             SsaLValue::Var(v) => {
                 let dest = self.reg_for(*v, reg_map);
-                self.emit_rvalue_to_dest(value, dest, instrs, reg_map, span);
+                self.emit_rvalue_to_dest(value, dest, instrs, reg_map, span)?;
             }
             SsaLValue::Indexed { old, new, indices } => {
                 // Indexed store: read `old`, compute `new = old[index] = value`.
@@ -327,11 +363,11 @@ impl<'a> EmitCtx<'a> {
                 // each as a separate StoreElement chained through a
                 // single new register. v1: only the first dim.
                 let index = if let Some(io) = indices.first() {
-                    self.lower_index_op_to_operand(io, instrs, reg_map)
+                    self.lower_index_op_to_operand(io, instrs, reg_map)?
                 } else {
                     BcOperand::Const(self.intern_const(Value::int(0, oqi_classical::iw(64))))
                 };
-                let value = self.rvalue_to_operand(value, instrs, reg_map);
+                let value = self.rvalue_to_operand(value, instrs, reg_map)?;
                 instrs.push(BcInstr {
                     op: BcOp::StoreElement {
                         new: new_reg,
@@ -343,6 +379,7 @@ impl<'a> EmitCtx<'a> {
                 });
             }
         }
+        Ok(())
     }
 
     fn emit_rvalue_to_dest(
@@ -352,11 +389,11 @@ impl<'a> EmitCtx<'a> {
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
         span: Span,
-    ) {
+    ) -> Result<()> {
         match rv {
-            RValue::Expr(e) => self.emit_expr_to_dest(e, dest, instrs, reg_map, span),
+            RValue::Expr(e) => self.emit_expr_to_dest(e, dest, instrs, reg_map, span)?,
             RValue::Measure(m) => {
-                let qubit = self.measure_to_operand(m, instrs, reg_map);
+                let qubit = self.measure_to_operand(m, instrs, reg_map)?;
                 instrs.push(BcInstr {
                     op: BcOp::Measure {
                         dest: Some(dest),
@@ -366,6 +403,7 @@ impl<'a> EmitCtx<'a> {
                 });
             }
         }
+        Ok(())
     }
 
     fn emit_expr_to_dest(
@@ -375,11 +413,11 @@ impl<'a> EmitCtx<'a> {
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
         span: Span,
-    ) {
+    ) -> Result<()> {
         match &e.kind {
             SsaExprKind::Binary(Binary { op, left, right }) => {
-                let lhs = self.lower_expr_to_operand(left, instrs, reg_map);
-                let rhs = self.lower_expr_to_operand(right, instrs, reg_map);
+                let lhs = self.lower_expr_to_operand(left, instrs, reg_map)?;
+                let rhs = self.lower_expr_to_operand(right, instrs, reg_map)?;
                 let bc = match op {
                     crate::sir::BinOp::Add => BcOp::Add { dest, lhs, rhs },
                     crate::sir::BinOp::Sub => BcOp::Sub { dest, lhs, rhs },
@@ -404,7 +442,7 @@ impl<'a> EmitCtx<'a> {
                 instrs.push(BcInstr { op: bc, span });
             }
             SsaExprKind::Unary(crate::sir::Unary { op, operand }) => {
-                let src = self.lower_expr_to_operand(operand, instrs, reg_map);
+                let src = self.lower_expr_to_operand(operand, instrs, reg_map)?;
                 let bc = match op {
                     crate::sir::UnOp::Neg => BcOp::Neg { dest, src },
                     crate::sir::UnOp::BitNot => BcOp::BitNot { dest, src },
@@ -413,7 +451,7 @@ impl<'a> EmitCtx<'a> {
                 instrs.push(BcInstr { op: bc, span });
             }
             SsaExprKind::Cast(Cast { target_ty, operand }) => {
-                let src = self.lower_expr_to_operand(operand, instrs, reg_map);
+                let src = self.lower_expr_to_operand(operand, instrs, reg_map)?;
                 let target_ty = target_ty
                     .value_ty()
                     .unwrap_or(ValueTy::Scalar(PrimitiveTy::Bool));
@@ -427,8 +465,8 @@ impl<'a> EmitCtx<'a> {
                 });
             }
             SsaExprKind::Index(Index { base, index }) => {
-                let base = self.lower_expr_to_operand(base, instrs, reg_map);
-                let index = self.lower_index_op_to_operand(index, instrs, reg_map);
+                let base = self.lower_expr_to_operand(base, instrs, reg_map)?;
+                let index = self.lower_index_op_to_operand(index, instrs, reg_map)?;
                 instrs.push(BcInstr {
                     op: BcOp::LoadElement { dest, base, index },
                     span,
@@ -438,7 +476,7 @@ impl<'a> EmitCtx<'a> {
                 let args = args
                     .iter()
                     .map(|a| self.lower_expr_to_operand(a, instrs, reg_map))
-                    .collect();
+                    .collect::<Result<_>>()?;
                 let callee = match callee {
                     CallTarget::Symbol(s) => BcCallTarget::Symbol(*s),
                     CallTarget::Intrinsic(i) => BcCallTarget::Intrinsic(i.clone()),
@@ -457,14 +495,14 @@ impl<'a> EmitCtx<'a> {
                     .items
                     .iter()
                     .map(|x| self.lower_expr_to_operand(x, instrs, reg_map))
-                    .collect();
+                    .collect::<Result<_>>()?;
                 instrs.push(BcInstr {
                     op: BcOp::NewArray { dest, items },
                     span,
                 });
             }
             SsaExprKind::DurationOf(cfg) => {
-                let body_id = self.emit_root(cfg, ProcOwner::DurationOf);
+                let body_id = self.emit_root(cfg, ProcOwner::DurationOf)?;
                 instrs.push(BcInstr {
                     op: BcOp::DurationOf {
                         dest,
@@ -475,24 +513,32 @@ impl<'a> EmitCtx<'a> {
             }
             // Trivial cases: just produce an operand and Move it.
             SsaExprKind::Literal(_) | SsaExprKind::Var(_) | SsaExprKind::HardwareQubit(_) => {
-                let src = self.lower_expr_to_operand(e, instrs, reg_map);
+                let src = self.lower_expr_to_operand(e, instrs, reg_map)?;
                 instrs.push(BcInstr {
                     op: BcOp::Move { dest, src },
                     span,
                 });
             }
         }
+        Ok(())
     }
 
     /// Lower an SsaExpr into a single BcOperand, emitting intermediate
-    /// instructions for any non-trivial sub-expression.
+    /// instructions for any non-trivial sub-expression. Qubit
+    /// references (named registers, aliases, parameters — bare or
+    /// indexed) are resolved through the layout so that call arguments
+    /// carry global qubit references.
     fn lower_expr_to_operand(
         &mut self,
         e: &SsaExpr,
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
-    ) -> BcOperand {
-        match &e.kind {
+    ) -> Result<BcOperand> {
+        if let Some((sym, ops)) = self.peel_qubit_ref(e) {
+            let ops: Vec<IndexOp<SsaExpr>> = ops.into_iter().cloned().collect();
+            return self.resolve_qubit_ref(sym, &ops, instrs, reg_map, e.span);
+        }
+        Ok(match &e.kind {
             SsaExprKind::Literal(p) => {
                 let v = primitive_to_value(p.clone(), &e.ty);
                 BcOperand::Const(self.intern_const(v))
@@ -505,10 +551,10 @@ impl<'a> EmitCtx<'a> {
                     e.ty.value_ty()
                         .unwrap_or(ValueTy::Scalar(PrimitiveTy::Bool));
                 let temp = self.alloc_temp_reg(reg_map, ty);
-                self.emit_expr_to_dest(e, temp, instrs, reg_map, e.span);
+                self.emit_expr_to_dest(e, temp, instrs, reg_map, e.span)?;
                 BcOperand::Reg(temp)
             }
-        }
+        })
     }
 
     fn lower_qubit_operand(
@@ -516,19 +562,140 @@ impl<'a> EmitCtx<'a> {
         q: &QubitOperand<SsaExpr>,
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
-    ) -> BcOperand {
+        span: Span,
+    ) -> Result<BcOperand> {
         match q {
             QubitOperand::Indexed { symbol, indices } => {
-                let index = indices
-                    .first()
-                    .map(|io| Box::new(self.lower_index_op_to_operand(io, instrs, reg_map)));
-                BcOperand::QubitReg {
-                    symbol: *symbol,
-                    index,
-                }
+                self.resolve_qubit_ref(*symbol, indices, instrs, reg_map, span)
             }
-            QubitOperand::Hardware(n) => BcOperand::HardwareQubit(*n as u32),
+            QubitOperand::Hardware(n) => Ok(BcOperand::HardwareQubit(*n as u32)),
         }
+    }
+
+    /// Resolve a (possibly indexed) named qubit reference to a global
+    /// memory operand, or to a positional parameter reference inside
+    /// gate/subroutine bodies.
+    fn resolve_qubit_ref(
+        &mut self,
+        symbol: SymbolId,
+        indices: &[IndexOp<SsaExpr>],
+        instrs: &mut Vec<BcInstr>,
+        reg_map: &mut RegMap,
+        span: Span,
+    ) -> Result<BcOperand> {
+        // Gate / subroutine qubit parameter: bound at call time.
+        if let Some(slot) = self.layout.param_slot(symbol) {
+            return match indices {
+                [] => Ok(BcOperand::QubitParam { slot, index: None }),
+                [io] => match qubits::single_index_expr(io) {
+                    Some(e) => {
+                        let index = Box::new(self.lower_expr_to_operand(e, instrs, reg_map)?);
+                        Ok(BcOperand::QubitParam {
+                            slot,
+                            index: Some(index),
+                        })
+                    }
+                    None => Err(CompileError::new(ErrorKind::Unsupported(
+                        "slices of qubit parameters are not supported".into(),
+                    ))
+                    .with_span(io.span)),
+                },
+                _ => Err(CompileError::new(ErrorKind::Unsupported(
+                    "multi-dimensional index on a quantum register".into(),
+                ))
+                .with_span(span)),
+            };
+        }
+
+        // Declared register or resolved alias: global memory.
+        if let Some(reg) = self.layout.register_of(symbol) {
+            let reg = reg.clone();
+            return match indices {
+                [] => {
+                    if reg.len() == 1 {
+                        Ok(BcOperand::Qubit(self.must_global(&reg, 0)))
+                    } else {
+                        Ok(BcOperand::QubitRegion(self.region_for(&reg, Some(symbol))))
+                    }
+                }
+                [io] => match qubits::resolve_static_index(io, reg.len()) {
+                    Ok(idxs) => {
+                        if let [only] = idxs.as_slice() {
+                            Ok(BcOperand::Qubit(self.must_global(&reg, *only)))
+                        } else {
+                            let sub = qubits::select(&reg, &idxs);
+                            Ok(BcOperand::QubitRegion(self.region_for(&sub, Some(symbol))))
+                        }
+                    }
+                    // Runtime single index: the VM maps the logical
+                    // index through the region's ranges.
+                    Err(e) if matches!(e.kind, ErrorKind::NonConstantExpression) => {
+                        match qubits::single_index_expr(io) {
+                            Some(e) => {
+                                let region = self.region_for(&reg, Some(symbol));
+                                let index =
+                                    Box::new(self.lower_expr_to_operand(e, instrs, reg_map)?);
+                                Ok(BcOperand::QubitIndexed { region, index })
+                            }
+                            None => Err(CompileError::new(ErrorKind::Unsupported(
+                                "runtime-valued slice of a quantum register".into(),
+                            ))
+                            .with_span(io.span)),
+                        }
+                    }
+                    Err(e) => Err(e),
+                },
+                _ => Err(CompileError::new(ErrorKind::Unsupported(
+                    "multi-dimensional index on a quantum register".into(),
+                ))
+                .with_span(span)),
+            };
+        }
+
+        Err(CompileError::new(ErrorKind::Unsupported(format!(
+            "cannot resolve qubit reference `{}`",
+            self.symbols.get(symbol).name
+        )))
+        .with_span(span))
+    }
+
+    /// Whether `e` is a (possibly indexed) reference to a named qubit
+    /// register, qubit alias, or qubit parameter; returns the base
+    /// symbol and the index ops in application order.
+    fn peel_qubit_ref<'e>(&self, e: &'e SsaExpr) -> Option<(SymbolId, Vec<&'e IndexOp<SsaExpr>>)> {
+        let (sym, ops) = qubits::peel_index_chain(e)?;
+        let qubit_like = self.layout.param_slot(sym).is_some()
+            || self.layout.register_of(sym).is_some()
+            || matches!(
+                self.symbols.get(sym).kind,
+                SymbolKind::Qubit | SymbolKind::GateQubit
+            );
+        qubit_like.then_some((sym, ops))
+    }
+
+    fn must_global(&self, reg: &oqi_quantum::QuantumRegister, local: usize) -> u32 {
+        self.layout
+            .global_index(reg, local)
+            .expect("local index validated against register length") as u32
+    }
+
+    /// Intern a region for `reg`, deduplicating on its global ranges.
+    fn region_for(
+        &mut self,
+        reg: &oqi_quantum::QuantumRegister,
+        origin: Option<SymbolId>,
+    ) -> QubitRegionId {
+        let ranges = self.layout.global_ranges(reg);
+        if let Some(&id) = self.region_index.get(&ranges) {
+            return id;
+        }
+        let id = QubitRegionId(self.qubit_regions.len() as u32);
+        self.qubit_regions.push(QubitRegion {
+            ranges: ranges.clone(),
+            origin,
+        });
+        self.region_index.insert(ranges, id);
+        id
     }
 
     fn lower_index_op_to_operand(
@@ -536,14 +703,14 @@ impl<'a> EmitCtx<'a> {
         io: &IndexOp<SsaExpr>,
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
-    ) -> BcOperand {
+    ) -> Result<BcOperand> {
         // v1: only single-item indices. Slices/sets collapse to their
         // first element. (A richer model would lift slicing into its
         // own opcodes.)
-        match &io.kind {
+        Ok(match &io.kind {
             IndexKind::Set(es) => {
                 if let Some(e) = es.first() {
-                    self.lower_expr_to_operand(e, instrs, reg_map)
+                    self.lower_expr_to_operand(e, instrs, reg_map)?
                 } else {
                     BcOperand::Const(self.intern_const(Value::int(0, oqi_classical::iw(64))))
                 }
@@ -551,10 +718,10 @@ impl<'a> EmitCtx<'a> {
             IndexKind::Items(items) => {
                 if let Some(item) = items.first() {
                     match item {
-                        IndexItem::Single(e) => self.lower_expr_to_operand(e, instrs, reg_map),
+                        IndexItem::Single(e) => self.lower_expr_to_operand(e, instrs, reg_map)?,
                         IndexItem::Range(r) => {
                             if let Some(start) = &r.start {
-                                self.lower_expr_to_operand(start, instrs, reg_map)
+                                self.lower_expr_to_operand(start, instrs, reg_map)?
                             } else {
                                 BcOperand::Const(
                                     self.intern_const(Value::int(0, oqi_classical::iw(64))),
@@ -566,7 +733,7 @@ impl<'a> EmitCtx<'a> {
                     BcOperand::Const(self.intern_const(Value::int(0, oqi_classical::iw(64))))
                 }
             }
-        }
+        })
     }
 
     fn lower_gate_modifier(
@@ -574,15 +741,15 @@ impl<'a> EmitCtx<'a> {
         m: &GateModifier<SsaExpr>,
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
-    ) -> BcGateModifier {
-        match m {
+    ) -> Result<BcGateModifier> {
+        Ok(match m {
             GateModifier::Inv => BcGateModifier::Inv,
             GateModifier::Pow(e) => {
-                BcGateModifier::Pow(self.lower_expr_to_operand(e, instrs, reg_map))
+                BcGateModifier::Pow(self.lower_expr_to_operand(e, instrs, reg_map)?)
             }
             GateModifier::Ctrl(n) => BcGateModifier::Ctrl(*n as u32),
             GateModifier::NegCtrl(n) => BcGateModifier::NegCtrl(*n as u32),
-        }
+        })
     }
 
     /// Lower the qubit being measured to an operand.
@@ -591,10 +758,10 @@ impl<'a> EmitCtx<'a> {
         m: &MeasureExpr<SsaExpr>,
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
-    ) -> BcOperand {
+    ) -> Result<BcOperand> {
         match &m.kind {
             MeasureExprKind::Measure { operand } => {
-                self.lower_qubit_operand(operand, instrs, reg_map)
+                self.lower_qubit_operand(operand, instrs, reg_map, m.span)
             }
             MeasureExprKind::QuantumCall { qubits, .. } => {
                 // QuantumCall in measure position: lower its first
@@ -603,8 +770,8 @@ impl<'a> EmitCtx<'a> {
                 // bytecode.)
                 qubits
                     .first()
-                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map))
-                    .unwrap_or(BcOperand::HardwareQubit(0))
+                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map, m.span))
+                    .unwrap_or(Ok(BcOperand::HardwareQubit(0)))
             }
         }
     }
@@ -614,11 +781,11 @@ impl<'a> EmitCtx<'a> {
         rv: &RValue<SsaExpr>,
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
-    ) -> BcOperand {
+    ) -> Result<BcOperand> {
         match rv {
             RValue::Expr(e) => self.lower_expr_to_operand(e, instrs, reg_map),
             RValue::Measure(m) => {
-                let qubit = self.measure_to_operand(m, instrs, reg_map);
+                let qubit = self.measure_to_operand(m, instrs, reg_map)?;
                 let ty = m.ty.value_ty().unwrap_or(ValueTy::Scalar(PrimitiveTy::Bit));
                 let temp = self.alloc_temp_reg(reg_map, ty);
                 instrs.push(BcInstr {
@@ -628,7 +795,7 @@ impl<'a> EmitCtx<'a> {
                     },
                     span: m.span,
                 });
-                BcOperand::Reg(temp)
+                Ok(BcOperand::Reg(temp))
             }
         }
     }
@@ -639,15 +806,15 @@ impl<'a> EmitCtx<'a> {
         instrs: &mut Vec<BcInstr>,
         reg_map: &mut RegMap,
         _span: Span,
-    ) -> BcTerminator {
-        match term {
+    ) -> Result<BcTerminator> {
+        Ok(match term {
             SsaTerminator::Goto(b) => BcTerminator::Goto(BlockId(b.0 as u32)),
             SsaTerminator::Branch {
                 cond,
                 then_bb,
                 else_bb,
             } => {
-                let cond = self.lower_expr_to_operand(cond, instrs, reg_map);
+                let cond = self.lower_expr_to_operand(cond, instrs, reg_map)?;
                 BcTerminator::Branch {
                     cond,
                     then_bb: BlockId(then_bb.0 as u32),
@@ -659,7 +826,7 @@ impl<'a> EmitCtx<'a> {
                 cases,
                 default,
             } => {
-                let target = self.lower_expr_to_operand(target, instrs, reg_map);
+                let target = self.lower_expr_to_operand(target, instrs, reg_map)?;
                 let cases = cases
                     .iter()
                     .map(|(labels, bb)| {
@@ -668,12 +835,12 @@ impl<'a> EmitCtx<'a> {
                             crate::sir::SwitchLabels::Values(vs) => BcSwitchLabels::Values(
                                 vs.iter()
                                     .map(|v| self.lower_expr_to_operand(v, instrs, reg_map))
-                                    .collect(),
+                                    .collect::<Result<_>>()?,
                             ),
                         };
-                        (lab, BlockId(bb.0 as u32))
+                        Ok((lab, BlockId(bb.0 as u32)))
                     })
-                    .collect();
+                    .collect::<Result<_>>()?;
                 BcTerminator::Switch {
                     target,
                     cases,
@@ -682,11 +849,12 @@ impl<'a> EmitCtx<'a> {
             }
             SsaTerminator::Return(rv) => BcTerminator::Return(
                 rv.as_ref()
-                    .map(|r| self.rvalue_to_operand(r, instrs, reg_map)),
+                    .map(|r| self.rvalue_to_operand(r, instrs, reg_map))
+                    .transpose()?,
             ),
             SsaTerminator::End => BcTerminator::End,
             SsaTerminator::Unreachable => BcTerminator::Unreachable,
-        }
+        })
     }
 
     // ── Helpers ────────────────────────────────────────────────────

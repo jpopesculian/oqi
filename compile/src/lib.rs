@@ -5,6 +5,7 @@ pub mod display;
 pub mod error;
 pub mod lower;
 pub mod openpulse;
+pub mod qubits;
 pub mod resolve;
 pub mod scope;
 pub mod sir;

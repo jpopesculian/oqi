@@ -429,6 +429,7 @@ dependencies = [
  "oqi-lex",
  "oqi-openpulse",
  "oqi-parse",
+ "oqi-quantum",
  "postcard",
  "serde",
 ]

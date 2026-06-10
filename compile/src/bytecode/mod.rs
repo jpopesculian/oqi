@@ -36,10 +36,15 @@ mod tests {
     use crate::ssa;
 
     fn build_bytecode(src: &str) -> BcModule {
+        try_build_bytecode(src).expect("emit bytecode")
+    }
+
+    fn try_build_bytecode(src: &str) -> Result<BcModule, crate::error::CompileError> {
         let program = compile_source(src, DefaultIncludeResolver, None).expect("compile");
         let cfgs = cfg::build_program(&program).expect("cfg");
         let ssa = ssa::build_program(&cfgs, &program.symbols);
-        emit(&ssa, &program.symbols)
+        let layout = crate::qubits::build_layout(&program);
+        emit(&ssa, &program.symbols, layout)
     }
 
     #[test]
@@ -118,6 +123,185 @@ mod tests {
             matches!(value, BcOperand::Reg(r) if r == dest),
             "StoreElement should read the measured value's register"
         );
+    }
+
+    /// All ops of every block of every procedure.
+    fn all_ops(module: &BcModule) -> impl Iterator<Item = &BcOp> {
+        module
+            .procedures
+            .iter()
+            .flat_map(|p| &p.blocks)
+            .flat_map(|b| &b.instrs)
+            .map(|i| &i.op)
+    }
+
+    #[test]
+    fn static_index_resolves_to_global_qubit() {
+        let module = build_bytecode("qubit[3] a; qubit[2] b; reset b[1];");
+        assert_eq!(module.qubits.num_qubits, 5);
+        // `b` starts at global 3, so b[1] is global 4.
+        let found = all_ops(&module).any(|op| {
+            matches!(
+                op,
+                BcOp::Reset {
+                    qubit: BcOperand::Qubit(4)
+                }
+            )
+        });
+        assert!(found, "reset b[1] should lower to Qubit(4):\n{module}");
+    }
+
+    #[test]
+    fn whole_register_operand_is_region() {
+        let module = build_bytecode("qubit[3] a; reset a;");
+        let region = all_ops(&module)
+            .find_map(|op| match op {
+                BcOp::Reset {
+                    qubit: BcOperand::QubitRegion(id),
+                } => Some(*id),
+                _ => None,
+            })
+            .expect("reset of a register should use a region operand");
+        assert_eq!(module.qubits.regions[region.0 as usize].ranges, [(0, 3)]);
+    }
+
+    #[test]
+    fn static_slice_operand_is_region() {
+        let module = build_bytecode("qubit[4] b; reset b[1:2];");
+        let region = all_ops(&module)
+            .find_map(|op| match op {
+                BcOp::Reset {
+                    qubit: BcOperand::QubitRegion(id),
+                } => Some(*id),
+                _ => None,
+            })
+            .expect("static slice should use a region operand");
+        assert_eq!(module.qubits.regions[region.0 as usize].ranges, [(1, 3)]);
+    }
+
+    #[test]
+    fn runtime_index_uses_qubit_indexed() {
+        let module = build_bytecode("input uint[32] i; qubit[3] a; reset a[i];");
+        let found = all_ops(&module).any(|op| {
+            matches!(
+                op,
+                BcOp::Reset {
+                    qubit: BcOperand::QubitIndexed { .. },
+                }
+            )
+        });
+        assert!(
+            found,
+            "runtime index should lower to QubitIndexed:\n{module}"
+        );
+    }
+
+    #[test]
+    fn qubit_alias_resolves_and_emits_no_alias_op() {
+        let module = build_bytecode(
+            r#"
+                qubit[2] one;
+                qubit[10] two;
+                let concatenated = one ++ two;
+                reset concatenated[5];
+            "#,
+        );
+        // concatenated[5] is global qubit 5 (one ++ two is 0..12).
+        let found = all_ops(&module).any(|op| {
+            matches!(
+                op,
+                BcOp::Reset {
+                    qubit: BcOperand::Qubit(5)
+                }
+            )
+        });
+        assert!(found, "alias index should resolve statically:\n{module}");
+        let alias_ops = all_ops(&module)
+            .filter(|op| matches!(op, BcOp::Alias { .. }))
+            .count();
+        assert_eq!(alias_ops, 0, "qubit aliases should not emit Alias ops");
+    }
+
+    #[test]
+    fn subroutine_qubit_param_and_call_args() {
+        let module = build_bytecode(
+            r#"
+                qubit[2] b;
+                def f(int n, qubit[2] d) {
+                    reset d[0];
+                }
+                f(1, b);
+            "#,
+        );
+        // The body references its qubit param positionally.
+        let body_ok = all_ops(&module).any(|op| {
+            matches!(
+                op,
+                BcOp::Reset {
+                    qubit: BcOperand::QubitParam {
+                        slot: 1,
+                        index: Some(_),
+                    },
+                }
+            )
+        });
+        assert!(body_ok, "body should use QubitParam slot 1:\n{module}");
+        // The call site passes a resolved global region.
+        let call_ok = all_ops(&module).any(|op| match op {
+            BcOp::Call { args, .. } => {
+                matches!(
+                    args.as_slice(),
+                    [BcOperand::Const(_), BcOperand::QubitRegion(_)]
+                )
+            }
+            _ => false,
+        });
+        assert!(call_ok, "call should pass [Const, QubitRegion]:\n{module}");
+    }
+
+    #[test]
+    fn gate_body_uses_qubit_params() {
+        let module = build_bytecode(
+            r#"
+                include "stdgates.inc";
+                gate flip a {
+                    x a;
+                }
+                qubit q;
+                flip q;
+            "#,
+        );
+        let body_ok = all_ops(&module).any(|op| match op {
+            BcOp::GateCall { qubits, .. } => matches!(
+                qubits.as_slice(),
+                [BcOperand::QubitParam {
+                    slot: 0,
+                    index: None,
+                }]
+            ),
+            _ => false,
+        });
+        assert!(body_ok, "gate body should use QubitParam slot 0:\n{module}");
+        let call_ok = all_ops(&module).any(|op| match op {
+            BcOp::GateCall { qubits, .. } => {
+                matches!(qubits.as_slice(), [BcOperand::Qubit(0)])
+            }
+            _ => false,
+        });
+        assert!(call_ok, "gate call should pass the global qubit:\n{module}");
+    }
+
+    #[test]
+    fn runtime_shaped_alias_is_rejected() {
+        let err =
+            match try_build_bytecode("input uint[32] i; qubit[4] q; let bp = q[{i}]; reset bp;") {
+                Err(e) => e,
+                Ok(_) => panic!("runtime-shaped alias should be rejected"),
+            };
+        assert!(matches!(
+            err.kind,
+            crate::error::ErrorKind::NonConstantExpression
+        ));
     }
 
     #[test]
@@ -201,12 +385,15 @@ mod tests {
         let program = compile_source(src, DefaultIncludeResolver, None).expect("compile");
         let cfgs = cfg::build_program(&program).expect("cfg");
         let ssa = ssa::build_program(&cfgs, &program.symbols);
-        let module = emit(&ssa, &program.symbols);
+        let layout = crate::qubits::build_layout(&program);
+        let module = emit(&ssa, &program.symbols, layout).expect("emit");
 
         let bytes = to_bytes(&module).expect("encode");
         assert!(bytes.len() > 4, "encoded module should be non-trivial");
         let module2 = from_bytes(&bytes).expect("decode");
         assert_eq!(module.procedures.len(), module2.procedures.len());
+        assert_eq!(module.qubits.num_qubits, module2.qubits.num_qubits);
+        assert_eq!(module.qubits.regions.len(), module2.qubits.regions.len());
 
         let text = format!("{module}");
         assert!(text.contains("gate_call"));
@@ -220,7 +407,12 @@ mod tests {
         let program = compile_source(src, DefaultIncludeResolver, None).expect("compile");
         let cfgs = cfg::build_program(&program).expect("cfg");
         let ssa = ssa::build_program(&cfgs, &program.symbols);
-        let module = emit(&ssa, &program.symbols);
+        let layout = crate::qubits::build_layout(&program);
+        let module = emit(&ssa, &program.symbols, layout).expect("emit");
+        // adder.qasm: cin(1) + a(4) + b(4) + cout(1).
+        assert_eq!(module.qubits.num_qubits, 10);
+        let text = format!("{module}");
+        assert!(text.contains(".qubits 10"), "disasm:\n{text}");
         let bytes = to_bytes(&module).expect("encode");
         assert!(bytes.len() > 4);
         let _ = from_bytes(&bytes).expect("decode");

@@ -8,5 +8,6 @@ members = [
   "classical",
   "openpulse",
   "quantum",
+  "vm",
 ]
 resolver = "2"

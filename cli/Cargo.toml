@@ -12,4 +12,5 @@ ariadne = "0.6"
 clap = { version = "4", features = ["derive"] }
 oqi-compile = { path = "../compile" }
 oqi-format = { path = "../format" }
+oqi-vm = { path = "../vm" }
 rayon = "1"

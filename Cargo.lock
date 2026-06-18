@@ -416,6 +416,7 @@ dependencies = [
  "clap",
  "oqi-compile",
  "oqi-format",
+ "oqi-vm",
  "rayon",
 ]
 
@@ -476,6 +477,16 @@ version = "0.1.0"
 dependencies = [
  "num-complex",
  "num-traits",
+]
+
+[[package]]
+name = "oqi-vm"
+version = "0.1.0"
+dependencies = [
+ "num-complex",
+ "oqi-classical",
+ "oqi-compile",
+ "oqi-quantum",
 ]
 
 [[package]]

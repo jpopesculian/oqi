@@ -41,6 +41,10 @@ pub struct QubitLayout {
     /// their positional slot (gate: position in the declared qubit
     /// list; subroutine: position in the full parameter list).
     param_slots: HashMap<SymbolId, u32>,
+    /// Classical parameters of each gate/subroutine, keyed by the
+    /// gate/subroutine symbol, in declaration order. Used by the
+    /// bytecode emitter to record the calling convention.
+    classical_params: HashMap<SymbolId, Vec<SymbolId>>,
 }
 
 /// Allocate every global qubit declaration into a fresh global memory
@@ -61,17 +65,25 @@ pub fn build_layout(program: &sir::Program) -> QubitLayout {
     }
 
     let mut param_slots = HashMap::new();
+    let mut classical_params = HashMap::new();
     for gate in &program.gates {
         for (slot, q) in gate.qubits.iter().enumerate() {
             param_slots.insert(*q, slot as u32);
         }
+        // Every declared gate parameter is classical (gates take only
+        // qubits and classical angle-like params).
+        classical_params.insert(gate.symbol, gate.params.clone());
     }
     for sub in &program.subroutines {
+        let mut classical = Vec::new();
         for (slot, p) in sub.params.iter().enumerate() {
             if matches!(p.passing, ParamPassing::QubitRef) {
                 param_slots.insert(p.symbol, slot as u32);
+            } else {
+                classical.push(p.symbol);
             }
         }
+        classical_params.insert(sub.symbol, classical);
     }
 
     QubitLayout {
@@ -79,6 +91,7 @@ pub fn build_layout(program: &sir::Program) -> QubitLayout {
         registers,
         aliases: HashMap::new(),
         param_slots,
+        classical_params,
     }
 }
 
@@ -96,6 +109,13 @@ impl QubitLayout {
     /// Positional slot of a gate/subroutine qubit parameter.
     pub fn param_slot(&self, sym: SymbolId) -> Option<u32> {
         self.param_slots.get(&sym).copied()
+    }
+
+    /// Classical parameters of a gate/subroutine, in declaration order.
+    pub fn classical_params(&self, sym: SymbolId) -> &[SymbolId] {
+        self.classical_params
+            .get(&sym)
+            .map_or(&[], |v| v.as_slice())
     }
 
     pub fn define_alias(&mut self, sym: SymbolId, reg: QuantumRegister) {

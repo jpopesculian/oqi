@@ -7,8 +7,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ariadne::{Label, Report, ReportKind, Source};
 use clap::{Parser, Subcommand};
+use oqi_compile::error::CompileError;
 use oqi_compile::resolve::DefaultIncludeResolver;
+use oqi_compile::{bytecode, cfg, qubits, ssa};
 use oqi_format::Config;
+use oqi_vm::{NoExterns, StateVectorSim, Vm};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 const DIAGNOSTIC_TAB_SIZE: usize = 4;
@@ -32,6 +35,16 @@ enum Command {
         dump: bool,
     },
 
+    /// Compile and run an OpenQASM file on the CPU simulator
+    Run {
+        /// The OpenQASM file to run
+        path: PathBuf,
+
+        /// Print the final state vector after the run
+        #[arg(long)]
+        state: bool,
+    },
+
     /// Format OpenQASM files
     Fmt {
         /// Use compact formatting
@@ -52,6 +65,7 @@ fn main() -> ExitCode {
 
     match cli.command {
         Command::Compile { path, dump } => compile(&path, dump),
+        Command::Run { path, state } => run(&path, state),
         Command::Fmt {
             compact,
             stdout,
@@ -107,6 +121,84 @@ fn compile(path: &Path, dump: bool) -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+fn run(path: &Path, show_state: bool) -> ExitCode {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Full pipeline: source → SIR → CFG → SSA → bytecode.
+    let program =
+        match oqi_compile::lower::compile_source(&source, DefaultIncludeResolver, Some(path)) {
+            Ok(p) => p,
+            Err(e) => return report_compile_error(path, &source, e),
+        };
+    let cfgs = match cfg::build_program(&program) {
+        Ok(c) => c,
+        Err(e) => return report_compile_error(path, &source, e),
+    };
+    let ssa = ssa::build_program(&cfgs, &program.symbols);
+    let layout = qubits::build_layout(&program);
+    let module = match bytecode::emit(&ssa, &program.symbols, layout) {
+        Ok(m) => m,
+        Err(e) => return report_compile_error(path, &source, e),
+    };
+
+    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    match vm.run() {
+        Ok(result) => {
+            for (qubit, bit) in &result.measurements {
+                println!("q[{qubit}] = {}", if *bit { 1 } else { 0 });
+            }
+            if show_state {
+                let width = module.qubits.num_qubits as usize;
+                for (i, amp) in vm.backend().state().iter().enumerate() {
+                    if amp.norm() > 1e-12 {
+                        println!("|{i:0width$b}> = {amp}");
+                    }
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("{}: runtime error: {e}", path.display());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Render a compiler diagnostic with source context and return failure.
+fn report_compile_error(path: &Path, source: &str, e: CompileError) -> ExitCode {
+    let diagnostic_path = e.path.as_deref().unwrap_or(path);
+    let diagnostic_source = match load_diagnostic_source(path, source, e.path.as_deref()) {
+        Ok(source) => source,
+        Err(read_err) => {
+            eprintln!(
+                "{}: failed to read source for diagnostic: {read_err}",
+                diagnostic_path.display()
+            );
+            eprintln!("{}: {}", diagnostic_path.display(), e);
+            return ExitCode::FAILURE;
+        }
+    };
+    let (line, column) = e
+        .span
+        .doc_position(diagnostic_source.as_ref(), DIAGNOSTIC_TAB_SIZE);
+    let headline = format_diagnostic_message(diagnostic_path, line, column, &e.to_string());
+    emit_error_report(
+        diagnostic_path,
+        diagnostic_source.as_ref(),
+        Range::from(e.span),
+        &headline,
+        &e.to_string(),
+    );
+    ExitCode::FAILURE
 }
 
 fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {

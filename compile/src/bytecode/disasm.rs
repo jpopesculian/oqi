@@ -64,7 +64,18 @@ impl fmt::Display for BcModule {
             writeln!(f)?;
             write!(f, ".proc {} ", i)?;
             fmt_owner(f, &proc.owner)?;
-            writeln!(f, " (registers={})", proc.register_types.len())?;
+            write!(f, " (registers={}", proc.register_types.len())?;
+            if !proc.params.is_empty() {
+                write!(f, ", params=[")?;
+                for (j, r) in proc.params.iter().enumerate() {
+                    if j > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "r{}", r.0)?;
+                }
+                write!(f, "]")?;
+            }
+            writeln!(f, ")")?;
             for block in &proc.blocks {
                 fmt_block(f, block)?;
             }

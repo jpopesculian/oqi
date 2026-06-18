@@ -1,7 +1,7 @@
 //! Step D + E: SSA → bytecode.
 //!
 //! Walks each [`SsaCfg`] in `ProgramSsa`, optionally running phi
-//! elimination first, then converts every [`SsaStmt`] into one or more
+//! elimination first, then converts every [`SsaStmt`](crate::ssa::SsaStmt) into one or more
 //! [`BcInstr`]s. Nested CFGs (Box / inline-Cal / DurationOf) are
 //! recursively lowered to their own procedures and referenced by
 //! [`ProcId`].
@@ -129,6 +129,7 @@ impl<'a> EmitCtx<'a> {
         self.procedures.push(BcProcedure {
             owner: owner.clone(),
             register_types: Vec::new(),
+            params: Vec::new(),
             blocks: Vec::new(),
             entry: BlockId(0),
         });
@@ -142,6 +143,12 @@ impl<'a> EmitCtx<'a> {
         let cfg = deconstruct_phis(cfg.clone());
         let mut reg_map = allocate_registers(&cfg, self.symbols);
 
+        // Record the calling convention: the register holding each
+        // classical parameter (read at version 0). Allocating here is
+        // idempotent — a referenced param reuses its existing register,
+        // an unreferenced one gets a fresh slot.
+        let params = self.param_registers(&owner, &mut reg_map);
+
         let blocks: Vec<BcBlock> = cfg
             .blocks
             .iter()
@@ -151,9 +158,34 @@ impl<'a> EmitCtx<'a> {
         Ok(BcProcedure {
             owner,
             register_types: reg_map.types,
+            params,
             blocks,
             entry: BlockId(cfg.entry.0 as u32),
         })
+    }
+
+    /// Registers holding the classical parameters of a gate/subroutine,
+    /// in declaration order. Empty for owners that take no classical
+    /// parameters.
+    fn param_registers(&self, owner: &ProcOwner, reg_map: &mut RegMap) -> Vec<Reg> {
+        let sym = match owner {
+            ProcOwner::Gate(s) | ProcOwner::Subroutine(s) => *s,
+            _ => return Vec::new(),
+        };
+        let params = self.layout.classical_params(sym).to_vec();
+        params
+            .into_iter()
+            .map(|symbol| {
+                let v = SsaValue { symbol, version: 0 };
+                let ty = self
+                    .symbols
+                    .get(symbol)
+                    .ty
+                    .value_ty()
+                    .expect("classical parameter must have a value type");
+                reg_map.alloc(v, ty)
+            })
+            .collect()
     }
 
     fn emit_block(&mut self, block: &SsaBlock, reg_map: &mut RegMap) -> Result<BcBlock> {
@@ -543,7 +575,16 @@ impl<'a> EmitCtx<'a> {
                 let v = primitive_to_value(p.clone(), &e.ty);
                 BcOperand::Const(self.intern_const(v))
             }
-            SsaExprKind::Var(v) => BcOperand::Reg(self.reg_for(*v, reg_map)),
+            SsaExprKind::Var(v) => {
+                // Compile-time constants (`pi`, `tau`, `euler`, user
+                // `const`s) carry their value in the symbol table; inline
+                // it as a pooled constant rather than a register read that
+                // nothing ever assigns.
+                match self.symbols.get(v.symbol).const_value.clone() {
+                    Some(value) => BcOperand::Const(self.intern_const(value)),
+                    None => BcOperand::Reg(self.reg_for(*v, reg_map)),
+                }
+            }
             SsaExprKind::HardwareQubit(n) => BcOperand::HardwareQubit(*n as u32),
             // Anything else: spill into a synthetic temp register.
             _ => {

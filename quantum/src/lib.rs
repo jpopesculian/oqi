@@ -301,6 +301,12 @@ impl<F: Float> StateVector<F> {
         &self.state
     }
 
+    /// Mutable access to the raw amplitudes. Callers are responsible for
+    /// keeping the state normalized (e.g. measurement collapse).
+    pub fn state_mut(&mut self) -> &mut [Complex<F>] {
+        &mut self.state
+    }
+
     pub fn global_phase(&self) -> F {
         self.global_phase
     }

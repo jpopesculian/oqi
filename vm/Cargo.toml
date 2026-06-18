@@ -1,0 +1,10 @@
+[package]
+name = "oqi-vm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+oqi-compile = { path = "../compile" }
+oqi-classical = { path = "../classical" }
+oqi-quantum = { path = "../quantum" }
+num-complex = "0.4"

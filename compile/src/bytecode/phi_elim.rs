@@ -8,7 +8,7 @@
 //!
 //! After this pass, every block's `phis` field is empty. The SSA
 //! version numbers are preserved as register hints; the bytecode
-//! emitter's register allocator dense-numbers them into [`Reg`]s.
+//! emitter's register allocator dense-numbers them into [`Reg`](super::types::Reg)s.
 
 use std::collections::HashMap;
 

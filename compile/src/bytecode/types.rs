@@ -39,7 +39,7 @@ pub struct BcVersion {
 }
 
 impl BcVersion {
-    pub const CURRENT: BcVersion = BcVersion { major: 0, minor: 2 };
+    pub const CURRENT: BcVersion = BcVersion { major: 0, minor: 3 };
 }
 
 /// Global quantum memory: every named register is statically allocated
@@ -83,6 +83,14 @@ pub struct BcProcedure {
     pub owner: ProcOwner,
     /// Classical type of each register, indexed by [`Reg`].
     pub register_types: Vec<ValueTy>,
+    /// Registers holding this procedure's classical parameters, in
+    /// declaration order. Empty for procedures that take no classical
+    /// parameters (top-level, box/cal/durationof bodies). The calling
+    /// convention: a caller binds its positional classical arguments to
+    /// these registers before entering the body. Qubit parameters are
+    /// addressed separately as positional [`BcOperand::QubitParam`]
+    /// slots, not registers, so they never appear here.
+    pub params: Vec<Reg>,
     pub blocks: Vec<BcBlock>,
     pub entry: BlockId,
 }

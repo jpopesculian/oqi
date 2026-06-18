@@ -33,7 +33,7 @@ use crate::types::{
     resolve_type,
 };
 use crate::{
-    classical::{ArrayTy, Primitive, Scalar, Value, ValueTy, ashape, iw},
+    classical::{ArrayTy, Primitive, PrimitiveTy, Scalar, Value, ValueTy, ashape, iw},
     types::SystemWidth,
 };
 
@@ -1540,13 +1540,158 @@ impl Lowerer {
     fn lower_gate_body(&mut self, scope: &ast::Scope<'_>) -> Result<sir::GateBody> {
         let mut stmts = Vec::new();
         for item in &scope.body {
-            let lowered = self.lower_stmt_or_scope(item)?;
-            for s in &lowered {
-                validate_gate_stmt(s)?;
-            }
-            stmts.extend(lowered);
+            self.lower_gate_item(item, &mut stmts)?;
         }
         Ok(sir::GateBody { body: stmts })
+    }
+
+    /// Lower one gate-body item, unrolling `for` loops and rejecting
+    /// branching. Appends only `GateCall`/`Barrier` statements to `out`.
+    fn lower_gate_item(
+        &mut self,
+        item: &ast::StmtOrScope<'_>,
+        out: &mut Vec<sir::Stmt>,
+    ) -> Result<()> {
+        match item {
+            ast::StmtOrScope::Scope(scope) => {
+                self.with_scope(ScopeKind::Anonymous, scope.span, |this| {
+                    for it in &scope.body {
+                        this.lower_gate_item(it, out)?;
+                    }
+                    Ok(())
+                })
+            }
+            ast::StmtOrScope::Stmt(stmt) => self.lower_gate_stmt(stmt, out),
+        }
+    }
+
+    fn lower_gate_stmt(&mut self, stmt: &ast::Stmt<'_>, out: &mut Vec<sir::Stmt>) -> Result<()> {
+        match &stmt.kind {
+            ast::StmtKind::For {
+                ty,
+                var,
+                iterable,
+                body,
+            } => self.unroll_gate_for(ty, var, iterable, body, out),
+            ast::StmtKind::If { .. }
+            | ast::StmtKind::While { .. }
+            | ast::StmtKind::Switch { .. } => Err(CompileError::new(ErrorKind::InvalidGateBody(
+                "branching is not allowed in a gate body".into(),
+            ))
+            .with_span(stmt.span)),
+            _ => {
+                let lowered = self.lower_stmt(stmt)?;
+                for s in &lowered {
+                    validate_gate_stmt(s)?;
+                }
+                out.extend(lowered);
+                Ok(())
+            }
+        }
+    }
+
+    /// Fully unroll a `for` loop in a gate body. The loop variable is bound
+    /// as a `const` of its declared value, so index/angle expressions in the
+    /// body (`q[i+1]`, `ry(theta * i)`) resolve to concrete values.
+    fn unroll_gate_for(
+        &mut self,
+        ty: &ast::ScalarType<'_>,
+        var: &ast::Ident<'_>,
+        iterable: &ast::ForIterable<'_>,
+        body: &ast::StmtOrScope<'_>,
+        out: &mut Vec<sir::Stmt>,
+    ) -> Result<()> {
+        let var_ty = resolve_scalar_type(ty, self.resolver.symbols(), self.resolver.options())?;
+        let values = self.gate_for_values(iterable)?;
+        let body_span = match body {
+            ast::StmtOrScope::Stmt(s) => s.span,
+            ast::StmtOrScope::Scope(sc) => sc.span,
+        };
+        for v in values {
+            let cv = gate_loop_value(&var_ty, v);
+            self.with_scope(ScopeKind::For, body_span, |this| {
+                let var_sym =
+                    this.resolver
+                        .declare(var.name, SymbolKind::Const, var_ty.clone(), var.span)?;
+                this.resolver.symbols_mut().set_const_value(var_sym, cv);
+                this.lower_gate_item(body, out)
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Evaluate the iterable of a gate-body `for` loop to a concrete sequence
+    /// of integers. Range semantics mirror the CFG builder: `start` defaults
+    /// to 0, `step` to 1, and `end` is inclusive.
+    fn gate_for_values(&self, it: &ast::ForIterable<'_>) -> Result<Vec<i128>> {
+        match it {
+            ast::ForIterable::Range(range, span) => {
+                let start = match &range.start {
+                    Some(e) => self.gate_const_int(e)?,
+                    None => 0,
+                };
+                let step = match &range.step {
+                    Some(e) => self.gate_const_int(e)?,
+                    None => 1,
+                };
+                let end = match &range.end {
+                    Some(e) => self.gate_const_int(e)?,
+                    None => {
+                        return Err(CompileError::new(ErrorKind::InvalidGateBody(
+                            "range for-loop in a gate body requires an explicit end".into(),
+                        ))
+                        .with_span(*span));
+                    }
+                };
+                if step == 0 {
+                    return Err(CompileError::new(ErrorKind::InvalidGateBody(
+                        "for-loop range step must be non-zero".into(),
+                    ))
+                    .with_span(*span));
+                }
+                let mut values = Vec::new();
+                let mut i = start;
+                if step > 0 {
+                    while i <= end {
+                        values.push(i);
+                        i += step;
+                    }
+                } else {
+                    while i >= end {
+                        values.push(i);
+                        i += step;
+                    }
+                }
+                Ok(values)
+            }
+            ast::ForIterable::Set(exprs, _) => {
+                exprs.iter().map(|e| self.gate_const_int(e)).collect()
+            }
+            ast::ForIterable::Expr(e) => Err(CompileError::new(ErrorKind::InvalidGateBody(
+                "iterating a general expression in a gate body is not supported".into(),
+            ))
+            .with_span(e.span())),
+        }
+    }
+
+    /// Evaluate `e` to a compile-time constant integer, for use as a
+    /// gate-body loop bound. Errors if `e` is not a constant integer.
+    fn gate_const_int(&self, e: &ast::Expr<'_>) -> Result<i128> {
+        let err = || {
+            CompileError::new(ErrorKind::InvalidGateBody(
+                "loop bounds in a gate body must be compile-time constant integers".into(),
+            ))
+            .with_span(e.span())
+        };
+        let Value::Scalar(s) = eval_const_expr(e, self.resolver.symbols(), self.resolver.options())
+            .map_err(|_| err())?
+        else {
+            return Err(err());
+        };
+        s.cast(PrimitiveTy::Int(iw(128)))
+            .ok()
+            .and_then(|s| s.value().as_int(iw(128)))
+            .ok_or_else(err)
     }
 
     // ── Subroutine param lowering ───────────────────────────────────────
@@ -1667,36 +1812,21 @@ impl Lowerer {
 
 // ── Free functions ──────────────────────────────────────────────────────
 
+/// Build the `const_value` bound to an unrolled loop variable. Stored at the
+/// variable's declared type when the integer fits, otherwise as a 128-bit int.
+fn gate_loop_value(var_ty: &Type, v: i128) -> Value {
+    let base = Value::int(v, iw(128));
+    match var_ty.value_ty() {
+        Some(vt) => base.clone().cast(vt).unwrap_or(base),
+        None => base,
+    }
+}
+
+/// After unrolling and branch rejection, a gate body contains only gate calls
+/// and barriers. This is a defense-in-depth check on the lowered statements.
 fn validate_gate_stmt(stmt: &sir::Stmt) -> Result<()> {
     match &stmt.kind {
         sir::StmtKind::GateCall(_) | sir::StmtKind::Barrier(_) => Ok(()),
-        sir::StmtKind::If(sir::If {
-            then_body,
-            else_body,
-            ..
-        }) => {
-            for s in then_body {
-                validate_gate_stmt(s)?;
-            }
-            if let Some(eb) = else_body {
-                for s in eb {
-                    validate_gate_stmt(s)?;
-                }
-            }
-            Ok(())
-        }
-        sir::StmtKind::For(sir::For { body, .. }) => {
-            for s in body {
-                validate_gate_stmt(s)?;
-            }
-            Ok(())
-        }
-        sir::StmtKind::While(sir::While { body, .. }) => {
-            for s in body {
-                validate_gate_stmt(s)?;
-            }
-            Ok(())
-        }
         _ => Err(CompileError::new(ErrorKind::InvalidGateBody(
             "statement not allowed in gate body".into(),
         ))
@@ -2878,5 +3008,114 @@ mod tests {
             Ok(_) => panic!("overflowing hardware qubit index should be rejected"),
         };
         assert!(matches!(err.kind, ErrorKind::InvalidLiteral(_)));
+    }
+
+    // ── Gate-body loop unrolling / branch rejection ─────────────────────
+
+    fn gate_body<'a>(program: &'a sir::Program, name: &str) -> &'a [sir::Stmt] {
+        let g = program
+            .gates
+            .iter()
+            .find(|g| program.symbols.get(g.symbol).name == name)
+            .expect("gate should exist");
+        &g.body.body
+    }
+
+    #[test]
+    fn gate_for_loop_is_unrolled() {
+        let program = compile_inline("gate g q { for uint i in [0:2] { U(0, 0, 0) q; } }").unwrap();
+        let body = gate_body(&program, "g");
+        assert_eq!(body.len(), 3);
+        assert!(
+            body.iter()
+                .all(|s| matches!(s.kind, sir::StmtKind::GateCall(_)))
+        );
+    }
+
+    #[test]
+    fn gate_nested_for_loops_are_unrolled() {
+        let program = compile_inline(
+            "gate g q { for uint i in [0:1] { for uint j in [0:2] { U(0, 0, 0) q; } } }",
+        )
+        .unwrap();
+        // 2 * 3 = 6 unrolled gate calls, no control flow.
+        assert_eq!(gate_body(&program, "g").len(), 6);
+    }
+
+    #[test]
+    fn gate_empty_range_unrolls_to_identity() {
+        let program = compile_inline("gate g q { for int i in [0:-1] { U(0, 0, 0) q; } }").unwrap();
+        assert!(gate_body(&program, "g").is_empty());
+    }
+
+    #[test]
+    fn gate_set_iterable_is_unrolled() {
+        let program =
+            compile_inline("gate g q { for uint i in {1, 3, 5} { U(0, 0, 0) q; } }").unwrap();
+        assert_eq!(gate_body(&program, "g").len(), 3);
+    }
+
+    fn expect_invalid_gate_body(source: &str) {
+        match compile_inline(source) {
+            Err(e) => assert!(
+                matches!(e.kind, ErrorKind::InvalidGateBody(_)),
+                "expected InvalidGateBody, got {:?}",
+                e.kind
+            ),
+            Ok(_) => panic!("expected `{source}` to be rejected"),
+        }
+    }
+
+    #[test]
+    fn if_in_gate_body_is_rejected() {
+        expect_invalid_gate_body("gate g q { if (true) { U(0, 0, 0) q; } }");
+    }
+
+    #[test]
+    fn while_in_gate_body_is_rejected() {
+        expect_invalid_gate_body("gate g q { while (true) { U(0, 0, 0) q; } }");
+    }
+
+    #[test]
+    fn switch_in_gate_body_is_rejected() {
+        expect_invalid_gate_body("gate g q { switch (1) { case 1 { U(0, 0, 0) q; } } }");
+    }
+
+    #[test]
+    fn nonconst_loop_bound_in_gate_body_is_rejected() {
+        expect_invalid_gate_body("gate g(theta) q { for uint i in [0:theta] { U(0, 0, 0) q; } }");
+    }
+
+    #[test]
+    fn unrolled_gate_emits_single_block() {
+        let program = compile_inline("gate g q { for uint i in [0:2] { U(0, 0, 0) q; } }").unwrap();
+        let cfgs = crate::cfg::build_program(&program).unwrap();
+        let ssa = crate::ssa::build_program(&cfgs, &program.symbols);
+        let layout = crate::qubits::build_layout(&program);
+        let module = crate::bytecode::emit(&ssa, &program.symbols, layout).unwrap();
+        let proc = module
+            .procedures
+            .iter()
+            .find(|p| {
+                matches!(&p.owner, crate::bytecode::ProcOwner::Gate(s)
+                    if program.symbols.get(*s).name == "g")
+            })
+            .expect("gate procedure should exist");
+        // No loops or branches survive: every block ends in straight-line
+        // control flow (Goto/Return), never a conditional Branch/Switch.
+        assert!(proc.blocks.iter().all(|b| matches!(
+            b.terminator,
+            crate::bytecode::BcTerminator::Goto(_)
+                | crate::bytecode::BcTerminator::Return(_)
+                | crate::bytecode::BcTerminator::End
+        )));
+        // The three unrolled U calls land in a single straight-line block.
+        let gate_calls: usize = proc
+            .blocks
+            .iter()
+            .flat_map(|b| &b.instrs)
+            .filter(|i| matches!(i.op, crate::bytecode::BcOp::GateCall { .. }))
+            .count();
+        assert_eq!(gate_calls, 3);
     }
 }

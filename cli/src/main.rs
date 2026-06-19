@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -7,11 +8,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ariadne::{Label, Report, ReportKind, Source};
 use clap::{Parser, Subcommand};
+use oqi_compile::classical::{PrimitiveTy, Value, ValueTy};
 use oqi_compile::error::CompileError;
 use oqi_compile::resolve::DefaultIncludeResolver;
+use oqi_compile::symbol::{SymbolId, SymbolKind};
 use oqi_compile::{bytecode, cfg, qubits, ssa};
 use oqi_format::Config;
-use oqi_vm::{NoExterns, StateVectorSim, Vm};
+use oqi_vm::{NoExterns, StateVectorSim, Vm, VmError};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 const DIAGNOSTIC_TAB_SIZE: usize = 4;
@@ -43,6 +46,10 @@ enum Command {
         /// Print the final state vector after the run
         #[arg(long)]
         state: bool,
+
+        /// Supply a value for a declared input (repeatable)
+        #[arg(long = "input", value_name = "NAME=VALUE")]
+        input: Vec<String>,
     },
 
     /// Format OpenQASM files
@@ -65,7 +72,7 @@ fn main() -> ExitCode {
 
     match cli.command {
         Command::Compile { path, dump } => compile(&path, dump),
-        Command::Run { path, state } => run(&path, state),
+        Command::Run { path, state, input } => run(&path, state, &input),
         Command::Fmt {
             compact,
             stdout,
@@ -123,7 +130,7 @@ fn compile(path: &Path, dump: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(path: &Path, show_state: bool) -> ExitCode {
+fn run(path: &Path, show_state: bool, input_specs: &[String]) -> ExitCode {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -149,12 +156,23 @@ fn run(path: &Path, show_state: bool) -> ExitCode {
         Err(e) => return report_compile_error(path, &source, e),
     };
 
+    let inputs = match parse_inputs(&module, input_specs) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
-    match vm.run() {
+    match vm.run_with_inputs(inputs) {
         Ok(result) => {
             for (qubit, bit) in &result.measurements {
                 println!("q[{qubit}] = {}", if *bit { 1 } else { 0 });
+            }
+            for (sym, value) in &result.outputs {
+                println!("{} = {value}", module.symbols.get(*sym).name);
             }
             if show_state {
                 let width = module.qubits.num_qubits as usize;
@@ -166,11 +184,75 @@ fn run(path: &Path, show_state: bool) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Err(VmError::MissingInput(sym)) => {
+            let name = &module.symbols.get(sym).name;
+            eprintln!(
+                "{}: missing input `{name}` (supply it with --input {name}=…)",
+                path.display()
+            );
+            ExitCode::FAILURE
+        }
         Err(e) => {
             eprintln!("{}: runtime error: {e}", path.display());
             ExitCode::FAILURE
         }
     }
+}
+
+/// Parse `--input NAME=VALUE` specs into a symbol-keyed value map,
+/// coercing each value to its declared scalar type. Errors on an unknown
+/// name, a non-input symbol, an unparsable value, or a non-scalar type.
+fn parse_inputs(
+    module: &bytecode::BcModule,
+    specs: &[String],
+) -> Result<HashMap<SymbolId, Value>, String> {
+    let mut map = HashMap::new();
+    for spec in specs {
+        let (name, raw) = spec
+            .split_once('=')
+            .ok_or_else(|| format!("invalid --input `{spec}` (expected NAME=VALUE)"))?;
+        let sym = module
+            .symbols
+            .iter()
+            .find(|s| s.kind == SymbolKind::Input && s.name == name)
+            .ok_or_else(|| format!("no input named `{name}`"))?;
+        let ty = sym
+            .ty
+            .value_ty()
+            .ok_or_else(|| format!("input `{name}` has no value type"))?;
+        let value = match ty {
+            ValueTy::Scalar(PrimitiveTy::Int(w)) => Value::int(
+                raw.parse()
+                    .map_err(|_| format!("input `{name}`: `{raw}` is not an integer"))?,
+                w,
+            ),
+            ValueTy::Scalar(PrimitiveTy::Uint(w)) => Value::uint(
+                raw.parse()
+                    .map_err(|_| format!("input `{name}`: `{raw}` is not an unsigned integer"))?,
+                w,
+            ),
+            ValueTy::Scalar(PrimitiveTy::Float(w)) => Value::float(
+                raw.parse()
+                    .map_err(|_| format!("input `{name}`: `{raw}` is not a float"))?,
+                w,
+            ),
+            ValueTy::Scalar(PrimitiveTy::Bit) | ValueTy::Scalar(PrimitiveTy::Bool) => {
+                let b = match raw {
+                    "0" | "false" => false,
+                    "1" | "true" => true,
+                    _ => {
+                        return Err(format!(
+                            "input `{name}`: `{raw}` is not a bit (use 0/1/true/false)"
+                        ));
+                    }
+                };
+                Value::bit(b)
+            }
+            _ => return Err(format!("input `{name}` has a type unsupported on the CLI")),
+        };
+        map.insert(sym.id, value);
+    }
+    Ok(map)
 }
 
 /// Render a compiler diagnostic with source context and return failure.

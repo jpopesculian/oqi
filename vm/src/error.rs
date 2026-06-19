@@ -1,10 +1,16 @@
 use std::fmt;
 
+use oqi_compile::symbol::SymbolId;
+
 /// Errors raised while executing a bytecode module.
 #[derive(Debug)]
 pub enum VmError {
     /// A register was read before being assigned a value.
     UnsetRegister(u32),
+    /// A declared `input` was not given a value before running.
+    MissingInput(SymbolId),
+    /// A value was supplied for a symbol that isn't a declared `input`.
+    UnknownInput(SymbolId),
     /// A `Call` targeted an `extern` the provider doesn't implement.
     UnknownExtern(String),
     /// A `GateCall` referenced a gate with no executable definition
@@ -27,6 +33,12 @@ impl fmt::Display for VmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             VmError::UnsetRegister(r) => write!(f, "register r{r} read before assignment"),
+            VmError::MissingInput(s) => {
+                write!(f, "no value supplied for input symbol {}", s.0)
+            }
+            VmError::UnknownInput(s) => {
+                write!(f, "value supplied for symbol {} which is not an input", s.0)
+            }
             VmError::UnknownExtern(name) => write!(f, "extern function `{name}` is not provided"),
             VmError::UndefinedGate(name) => write!(f, "gate `{name}` has no executable definition"),
             VmError::Unsupported(what) => write!(f, "unsupported: {what}"),

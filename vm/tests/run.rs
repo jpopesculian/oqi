@@ -1,9 +1,12 @@
 //! End-to-end tests: compile OpenQASM source to bytecode, then run it.
 
+use std::collections::HashMap;
+
 use oqi_classical::{Value, iw};
 use oqi_compile::bytecode::{BcModule, emit};
 use oqi_compile::lower::compile_source;
 use oqi_compile::resolve::DefaultIncludeResolver;
+use oqi_compile::symbol::SymbolId;
 use oqi_compile::{cfg, qubits, ssa};
 use oqi_vm::{FnRegistry, NoExterns, StateVectorSim, Vm, VmError};
 
@@ -362,4 +365,120 @@ fn teleport_fixture_runs_end_to_end() {
     let m = run_measurements(src);
     // teleport.qasm performs three measurements (c0, c1, c2).
     assert_eq!(m.len(), 3, "expected 3 measurements, got {m:?}");
+}
+
+/// Run and return named outputs as `(name, displayed value)`, sorted by name.
+fn run_outputs(src: &str) -> Vec<(String, String)> {
+    let module = build(src);
+    let sim = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    let result = vm.run().expect("run");
+    let mut out: Vec<(String, String)> = result
+        .outputs
+        .iter()
+        .map(|(sym, v)| (module.symbols.get(*sym).name.clone(), v.to_string()))
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn no_output_decl_returns_all_named_classical_vars() {
+    let outs = run_outputs(
+        r#"
+            include "stdgates.inc";
+            qubit q;
+            int v = 1;
+            int w = v + 2;
+            if (w == 3) { x q; }
+            bit c = measure q;
+        "#,
+    );
+    assert_eq!(
+        outs,
+        vec![
+            ("c".to_string(), "1".to_string()),
+            ("v".to_string(), "1".to_string()),
+            ("w".to_string(), "3".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn output_decl_returns_only_outputs_taken_branch() {
+    // Output reassigned in a taken branch: final value must be from that
+    // branch (exercises the reaching-def-at-exit path through a phi).
+    let outs = run_outputs(
+        r#"
+            output int x;
+            int c = 1;
+            x = 1;
+            if (c == 1) { x = 2; }
+        "#,
+    );
+    assert_eq!(outs, vec![("x".to_string(), "2".to_string())]);
+}
+
+#[test]
+fn output_decl_returns_only_outputs_untaken_branch() {
+    let outs = run_outputs(
+        r#"
+            output int x;
+            int c = 0;
+            x = 1;
+            if (c == 1) { x = 2; }
+        "#,
+    );
+    assert_eq!(outs, vec![("x".to_string(), "1".to_string())]);
+}
+
+/// Symbol id of a declared symbol by name.
+fn sym_id(module: &BcModule, name: &str) -> SymbolId {
+    module.symbols.iter().find(|s| s.name == name).unwrap().id
+}
+
+const INPUT_BRANCH_SRC: &str = r#"
+    include "stdgates.inc";
+    input int n;
+    qubit q;
+    if (n == 1) { x q; }
+    bit c = measure q;
+"#;
+
+#[test]
+fn input_value_drives_a_branch() {
+    let module = build(INPUT_BRANCH_SRC);
+    let n = sym_id(&module, "n");
+    for (val, expect) in [(1i128, true), (0, false)] {
+        let sim = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
+        let mut vm = Vm::new(&module, sim, NoExterns);
+        let inputs = HashMap::from([(n, Value::int(val, iw(32)))]);
+        let r = vm.run_with_inputs(inputs).expect("run");
+        assert_eq!(r.measurements, vec![(0, expect)], "n = {val}");
+    }
+}
+
+#[test]
+fn missing_input_is_rejected() {
+    let module = build(INPUT_BRANCH_SRC);
+    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    match vm.run_with_inputs(HashMap::new()) {
+        Err(VmError::MissingInput(_)) => {}
+        other => panic!("expected MissingInput, got {other:?}"),
+    }
+}
+
+#[test]
+fn value_for_non_input_symbol_is_rejected() {
+    let module = build(INPUT_BRANCH_SRC);
+    let n = sym_id(&module, "n");
+    let q = sym_id(&module, "q");
+    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    let inputs = HashMap::from([(n, Value::int(1, iw(32))), (q, Value::int(0, iw(32)))]);
+    match vm.run_with_inputs(inputs) {
+        Err(VmError::UnknownInput(_)) => {}
+        other => panic!("expected UnknownInput, got {other:?}"),
+    }
 }

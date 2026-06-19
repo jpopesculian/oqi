@@ -30,6 +30,10 @@ pub struct RunResult {
     pub measurements: Vec<(u32, bool)>,
     /// Final register file of the top-level procedure, for inspection.
     pub registers: Vec<Option<Value>>,
+    /// Named program outputs and their final values. Each `SymbolId`
+    /// resolves to a name via [`BcModule::symbols`]. See
+    /// [`BcModule::outputs`] for the selection rule.
+    pub outputs: Vec<(SymbolId, Value)>,
 }
 
 /// One procedure activation.
@@ -131,19 +135,58 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         &self.backend
     }
 
-    /// Execute the module's entry procedure.
+    /// Execute the module's entry procedure with no host-supplied
+    /// inputs. If the program declares any `input`, prefer
+    /// [`Vm::run_with_inputs`] — running with an empty map errors on the
+    /// first missing input.
     pub fn run(&mut self) -> Result<RunResult> {
+        self.run_with_inputs(HashMap::new())
+    }
+
+    /// Execute the entry procedure, seeding each declared `input` from
+    /// `inputs` (keyed by symbol id; resolve names via
+    /// [`oqi_compile::bytecode::BcModule::symbols`]). Every declared
+    /// input must be present and castable to its declared type; a value
+    /// for a symbol that isn't a declared input is rejected.
+    pub fn run_with_inputs(&mut self, mut inputs: HashMap<SymbolId, Value>) -> Result<RunResult> {
         let entry = self.module.entry;
+        let mut regs = self.fresh_regs(entry);
+
+        // Seed declared inputs; reject missing ones and type mismatches.
+        let reg_types = &self.module.procedures[entry.0 as usize].register_types;
+        for (sym, reg) in &self.module.inputs {
+            let value = inputs.remove(sym).ok_or(VmError::MissingInput(*sym))?;
+            let want = reg_types[reg.0 as usize];
+            regs[reg.0 as usize] = Some(value.cast(want)?);
+        }
+        // Any leftover entries name symbols that aren't declared inputs.
+        if let Some(sym) = inputs.keys().next() {
+            return Err(VmError::UnknownInput(*sym));
+        }
+
         let mut frame = Frame {
             proc: entry,
-            regs: self.fresh_regs(entry),
+            regs,
             qubit_args: Vec::new(),
             mods: GateModifiers::none(),
         };
         self.exec_proc(&mut frame)?;
+        let outputs = self
+            .module
+            .outputs
+            .iter()
+            .filter_map(|(sym, reg)| {
+                frame
+                    .regs
+                    .get(reg.0 as usize)
+                    .and_then(|v| v.clone())
+                    .map(|v| (*sym, v))
+            })
+            .collect();
         Ok(RunResult {
             measurements: std::mem::take(&mut self.measurements),
             registers: frame.regs,
+            outputs,
         })
     }
 

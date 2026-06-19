@@ -71,6 +71,12 @@ pub struct SsaCfg {
     pub entry: BasicBlockId,
     pub exit: BasicBlockId,
     pub owner: CfgOwner,
+    /// Reaching definition of each live symbol at the `exit` block —
+    /// i.e. the SSA value holding each variable's final value when the
+    /// body falls off the end. Empty when `exit` is unreachable (the
+    /// body ends with an explicit `return`/`end`). Used by the bytecode
+    /// emitter to map named program outputs to registers.
+    pub exit_defs: HashMap<SymbolId, SsaValue>,
 }
 
 #[derive(Clone)]
@@ -510,6 +516,20 @@ impl<'a> Renamer<'a> {
         }
     }
 
+    /// Snapshot the reaching definition of every symbol with a live
+    /// version on its stack. Symbols whose only value is the implicit
+    /// entry value (version 0) are omitted.
+    fn snapshot_live(&self) -> HashMap<SymbolId, SsaValue> {
+        self.versions
+            .iter()
+            .filter_map(|(&symbol, (_, stack))| {
+                stack
+                    .last()
+                    .map(|&version| (symbol, SsaValue { symbol, version }))
+            })
+            .collect()
+    }
+
     /// Current SSA name for a read of `sym`. If `sym` has no defs in
     /// scope (or is a non-candidate), returns version 0.
     fn read(&self, sym: SymbolId) -> SsaValue {
@@ -618,6 +638,7 @@ fn rename(
         dom_children,
         phis_by_block,
         out_blocks: (0..n).map(|_| None).collect(),
+        exit_defs: HashMap::new(),
     };
     ctx.rename_block(cfg.entry, &mut renamer);
 
@@ -641,6 +662,7 @@ fn rename(
     let RenameCtx {
         mut phis_by_block,
         mut out_blocks,
+        exit_defs,
         ..
     } = ctx;
     let blocks: Vec<SsaBlock> = (0..n)
@@ -683,6 +705,7 @@ fn rename(
         entry: cfg.entry,
         exit: cfg.exit,
         owner: cfg.owner.clone(),
+        exit_defs,
     }
 }
 
@@ -692,6 +715,8 @@ struct RenameCtx<'a> {
     dom_children: Vec<Vec<BasicBlockId>>,
     phis_by_block: Vec<Vec<Phi>>,
     out_blocks: Vec<Option<SsaBlock>>,
+    /// Reaching defs snapshotted when the DFS visits `cfg.exit`.
+    exit_defs: HashMap<SymbolId, SsaValue>,
 }
 
 impl RenameCtx<'_> {
@@ -703,6 +728,13 @@ impl RenameCtx<'_> {
         for phi in &self.phis_by_block[bb.0] {
             renamer.push(phi.dest.symbol, phi.dest.version);
             pushed.push(phi.dest.symbol);
+        }
+
+        // At the (synthetic, statement-free) exit block, the live
+        // version of each symbol after its phis is exactly that symbol's
+        // final value when the body falls off the end.
+        if bb == self.cfg.exit {
+            self.exit_defs = renamer.snapshot_live();
         }
 
         let src_block = &self.cfg.blocks[bb.0];

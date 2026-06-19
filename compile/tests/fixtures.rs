@@ -910,6 +910,80 @@ fn io_declarations() {
     assert_eq!(sym("result").kind, oqi_compile::symbol::SymbolKind::Output);
 }
 
+/// Source → bytecode, then the names of the module's program outputs,
+/// sorted.
+fn output_names(source: &str) -> Vec<String> {
+    use oqi_compile::{bytecode, cfg, qubits, ssa};
+    let program = compile_inline(source).expect("compile");
+    let cfgs = cfg::build_program(&program).expect("cfg");
+    let ssa = ssa::build_program(&cfgs, &program.symbols);
+    let layout = qubits::build_layout(&program);
+    let module = bytecode::emit(&ssa, &program.symbols, layout).expect("emit");
+    let mut names: Vec<String> = module
+        .outputs
+        .iter()
+        .map(|(sym, _)| module.symbols.get(*sym).name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn outputs_sidecar_honors_output_decls() {
+    // When any `output` is declared, only those symbols are outputs.
+    let names = output_names(
+        r#"
+            output int x;
+            int c = 1;
+            x = 1;
+            if (c == 1) { x = 2; }
+        "#,
+    );
+    assert_eq!(names, vec!["x".to_string()]);
+}
+
+/// Source → bytecode, then the names of the module's declared inputs,
+/// sorted.
+fn input_names(source: &str) -> Vec<String> {
+    use oqi_compile::{bytecode, cfg, qubits, ssa};
+    let program = compile_inline(source).expect("compile");
+    let cfgs = cfg::build_program(&program).expect("cfg");
+    let ssa = ssa::build_program(&cfgs, &program.symbols);
+    let layout = qubits::build_layout(&program);
+    let module = bytecode::emit(&ssa, &program.symbols, layout).expect("emit");
+    let mut names: Vec<String> = module
+        .inputs
+        .iter()
+        .map(|(sym, _)| module.symbols.get(*sym).name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn inputs_sidecar_lists_all_declared_inputs() {
+    // Both inputs are listed even though neither is read (force-allocated).
+    let names = input_names(
+        r#"
+            input float[64] theta;
+            input int n;
+        "#,
+    );
+    assert_eq!(names, vec!["n".to_string(), "theta".to_string()]);
+}
+
+#[test]
+fn outputs_sidecar_defaults_to_all_named_vars() {
+    // With no `output` decls, every named classical variable is an output.
+    let names = output_names(
+        r#"
+            int v = 1;
+            int w = v + 2;
+        "#,
+    );
+    assert_eq!(names, vec!["v".to_string(), "w".to_string()]);
+}
+
 // ── Constant folding ────────────────────────────────────────────────
 
 use oqi_compile::classical::{FloatWidth, Primitive};

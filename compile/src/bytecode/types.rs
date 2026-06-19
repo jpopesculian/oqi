@@ -76,6 +76,18 @@ pub struct BcModule {
     pub procedures: Vec<BcProcedure>,
     /// Index into `procedures` for the program's top-level body.
     pub entry: ProcId,
+    /// The program's input contract: each `(symbol, reg)` pairs an
+    /// `input`-declared variable with the register in the entry
+    /// procedure's register file that holds its value. The host seeds
+    /// these before running. One entry per declared `input`, sorted by
+    /// symbol id (declaration order).
+    pub inputs: Vec<(SymbolId, Reg)>,
+    /// Named program outputs: each `(symbol, reg)` pairs a source-level
+    /// classical variable with the register in the entry procedure's
+    /// register file holding its final value. Follows OpenQASM 3
+    /// semantics — if any `output` is declared only those appear, else
+    /// every named classical variable. Sorted by symbol id.
+    pub outputs: Vec<(SymbolId, Reg)>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

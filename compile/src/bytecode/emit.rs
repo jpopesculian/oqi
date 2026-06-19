@@ -72,6 +72,8 @@ pub fn emit(
         },
         procedures: ctx.procedures,
         entry,
+        inputs: ctx.inputs,
+        outputs: ctx.outputs,
     })
 }
 
@@ -102,6 +104,11 @@ struct EmitCtx<'a> {
     /// Postcard encoding of each entry in `constants`, for dedup.
     const_index: HashMap<Vec<u8>, ConstId>,
     strings: Vec<String>,
+    /// The program's input contract, resolved while emitting the
+    /// top-level body.
+    inputs: Vec<(SymbolId, Reg)>,
+    /// Named program outputs, resolved while emitting the top-level body.
+    outputs: Vec<(SymbolId, Reg)>,
 }
 
 impl<'a> EmitCtx<'a> {
@@ -115,6 +122,8 @@ impl<'a> EmitCtx<'a> {
             constants: Vec::new(),
             const_index: HashMap::new(),
             strings: Vec::new(),
+            inputs: Vec::new(),
+            outputs: Vec::new(),
         }
     }
 
@@ -149,6 +158,13 @@ impl<'a> EmitCtx<'a> {
         // an unreferenced one gets a fresh slot.
         let params = self.param_registers(&owner, &mut reg_map);
 
+        // The top-level body's `input` decls and exit reaching defs
+        // become the program's input contract and named outputs.
+        if matches!(owner, ProcOwner::TopLevel) {
+            self.inputs = self.collect_inputs(&mut reg_map);
+            self.outputs = self.collect_outputs(&cfg, &reg_map);
+        }
+
         let blocks: Vec<BcBlock> = cfg
             .blocks
             .iter()
@@ -162,6 +178,55 @@ impl<'a> EmitCtx<'a> {
             blocks,
             entry: BlockId(cfg.entry.0 as u32),
         })
+    }
+
+    /// The program's input contract: a `(symbol, reg)` for every
+    /// `input`-declared variable. The register is the symbol's version-0
+    /// (entry) value, force-allocated here so even an unread input has a
+    /// seedable slot — mirroring how `param_registers` allocates
+    /// unreferenced parameters. Sorted by symbol id (declaration order).
+    fn collect_inputs(&self, reg_map: &mut RegMap) -> Vec<(SymbolId, Reg)> {
+        let mut inputs: Vec<(SymbolId, Reg)> = self
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Input)
+            .filter_map(|s| {
+                let ty = s.ty.value_ty()?;
+                let reg = reg_map.alloc(
+                    SsaValue {
+                        symbol: s.id,
+                        version: 0,
+                    },
+                    ty,
+                );
+                Some((s.id, reg))
+            })
+            .collect();
+        inputs.sort_by_key(|(sym, _)| sym.0);
+        inputs
+    }
+
+    /// Resolve the top-level body's exit reaching defs to named program
+    /// outputs. Per OpenQASM 3: if any `output` is declared, only those
+    /// symbols are outputs; otherwise every named classical variable is.
+    /// Only symbols actually assigned at top level (version ≥ 1, with an
+    /// allocated register) are included. Sorted by symbol id for
+    /// deterministic bytecode.
+    fn collect_outputs(&self, cfg: &SsaCfg, reg_map: &RegMap) -> Vec<(SymbolId, Reg)> {
+        let has_outputs = self.symbols.iter().any(|s| s.kind == SymbolKind::Output);
+        let wanted = if has_outputs {
+            SymbolKind::Output
+        } else {
+            SymbolKind::Variable
+        };
+        let mut outputs: Vec<(SymbolId, Reg)> = cfg
+            .exit_defs
+            .iter()
+            .filter(|(sym, ssa)| ssa.version >= 1 && self.symbols.get(**sym).kind == wanted)
+            .filter_map(|(sym, ssa)| reg_map.by_ssa.get(ssa).map(|reg| (*sym, *reg)))
+            .collect();
+        outputs.sort_by_key(|(sym, _)| sym.0);
+        outputs
     }
 
     /// Registers holding the classical parameters of a gate/subroutine,

@@ -45,6 +45,46 @@ struct Frame {
     mods: GateModifiers,
 }
 
+/// A leaf primitive recorded while flattening a gate body. Used to apply
+/// `inv`/`pow` modifiers correctly to composite gates (see
+/// [`Vm::exec_gate_call`]): the body is executed once with recording on,
+/// producing a straight-line trace of these, which is then reversed and
+/// inverted (for `inv`) or repeated (for integer `pow`) before emission.
+enum Leaf {
+    U {
+        target: u32,
+        theta: f64,
+        phi: f64,
+        lambda: f64,
+        controls: Vec<u32>,
+        neg_controls: Vec<u32>,
+        power: f64,
+    },
+    Gphase {
+        gamma: f64,
+        controls: Vec<u32>,
+        neg_controls: Vec<u32>,
+        power: f64,
+    },
+}
+
+impl Leaf {
+    /// Whether this leaf acts non-trivially on a qubit (a `U`, or a
+    /// *controlled* global phase, which is a relative phase). Uncontrolled
+    /// `gphase` is a global scalar and so is not "real" here. Used to
+    /// decide whether a fractional power can be folded per-leaf exactly.
+    fn is_real(&self) -> bool {
+        match self {
+            Leaf::U { .. } => true,
+            Leaf::Gphase {
+                controls,
+                neg_controls,
+                ..
+            } => !controls.is_empty() || !neg_controls.is_empty(),
+        }
+    }
+}
+
 /// A virtual machine over a bytecode module with a chosen quantum
 /// backend and extern provider.
 pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
@@ -54,6 +94,9 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     gate_procs: HashMap<SymbolId, ProcId>,
     sub_procs: HashMap<SymbolId, ProcId>,
     measurements: Vec<(u32, bool)>,
+    /// When `Some`, leaf `U`/`gphase` calls are appended here instead of
+    /// being applied to the backend (gate-body flattening for modifiers).
+    recording: Option<Vec<Leaf>>,
 }
 
 impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
@@ -78,6 +121,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             gate_procs,
             sub_procs,
             measurements: Vec::new(),
+            recording: None,
         }
     }
 
@@ -412,9 +456,13 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         qubits: &[BcOperand],
         frame: &mut Frame,
     ) -> Result<()> {
-        // Fold modifiers (inherited context + this call's) into one
-        // effective set, consuming leading qubit operands as controls.
-        let mut power = frame.mods.power;
+        // Fold this call's `inv`/`pow` modifiers into one local power
+        // scalar, and accumulate controls (inherited context + this
+        // call's), consuming leading qubit operands as controls. Power is
+        // *not* inherited: an enclosing `inv`/`pow` is resolved where it
+        // appears, by flattening that gate's body (see the proc branch
+        // below), so `frame.mods.power` is always 1.
+        let mut power = 1.0;
         let mut ctrl_kinds: Vec<bool> = Vec::new(); // true = negctrl
         for m in modifiers {
             match m {
@@ -477,13 +525,36 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         vec![qs[idx]]
                     })
                     .collect();
-                let mut child = Frame {
-                    proc: proc_id,
-                    regs,
-                    qubit_args,
-                    mods: eff.clone(),
-                };
-                self.exec_proc(&mut child)?;
+                if eff.power == 1.0 {
+                    // No `inv`/`pow`: recurse, propagating controls. `ctrl`
+                    // distributes over a sequence, so this is exact.
+                    let mut child = Frame {
+                        proc: proc_id,
+                        regs,
+                        qubit_args,
+                        mods: eff.clone(),
+                    };
+                    self.exec_proc(&mut child)?;
+                } else {
+                    // `inv`/`pow` on a (possibly composite) body: flatten
+                    // the body to a leaf trace, then reverse+invert or
+                    // repeat it before emitting. Recording runs with a
+                    // clean context; the outer controls are merged back in
+                    // at emit time.
+                    let mut child = Frame {
+                        proc: proc_id,
+                        regs,
+                        qubit_args,
+                        mods: GateModifiers::none(),
+                    };
+                    let prev = self.recording.take();
+                    self.recording = Some(Vec::new());
+                    let res = self.exec_proc(&mut child);
+                    let trace = self.recording.take().unwrap_or_default();
+                    self.recording = prev;
+                    res?;
+                    self.apply_transformed(trace, eff.power, &eff)?;
+                }
             }
             Ok(())
         } else {
@@ -495,18 +566,128 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     let lambda = value_f64(&self.eval(frame, &args[2])?)?;
                     for op in arg_ops {
                         for q in self.qubits(frame, op)? {
-                            self.backend.u(q, theta, phi, lambda, &eff);
+                            self.emit_u(q, theta, phi, lambda, &eff);
                         }
                     }
                     Ok(())
                 }
                 "gphase" => {
                     let gamma = value_f64(&self.eval(frame, &args[0])?)?;
-                    self.backend.gphase(gamma, &eff);
+                    self.emit_gphase(gamma, &eff);
                     Ok(())
                 }
                 other => Err(VmError::UndefinedGate(other.to_string())),
             }
+        }
+    }
+
+    /// Apply (or, when recording, record) a leaf `U`.
+    fn emit_u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
+        if let Some(buf) = self.recording.as_mut() {
+            buf.push(Leaf::U {
+                target,
+                theta,
+                phi,
+                lambda,
+                controls: m.controls.clone(),
+                neg_controls: m.neg_controls.clone(),
+                power: m.power,
+            });
+        } else {
+            self.backend.u(target, theta, phi, lambda, m);
+        }
+    }
+
+    /// Apply (or, when recording, record) a leaf `gphase`.
+    fn emit_gphase(&mut self, gamma: f64, m: &GateModifiers) {
+        if let Some(buf) = self.recording.as_mut() {
+            buf.push(Leaf::Gphase {
+                gamma,
+                controls: m.controls.clone(),
+                neg_controls: m.neg_controls.clone(),
+                power: m.power,
+            });
+        } else {
+            self.backend.gphase(gamma, m);
+        }
+    }
+
+    /// Emit one recorded leaf, scaling its power by `factor` (1 for a
+    /// forward repeat, -1 to invert, or the exponent for a fractional
+    /// power) and merging the outer controls `eff` onto it.
+    fn emit_leaf(&mut self, leaf: &Leaf, factor: f64, eff: &GateModifiers) {
+        match leaf {
+            Leaf::U {
+                target,
+                theta,
+                phi,
+                lambda,
+                controls,
+                neg_controls,
+                power,
+            } => {
+                let m = GateModifiers {
+                    controls: merge(controls, &eff.controls),
+                    neg_controls: merge(neg_controls, &eff.neg_controls),
+                    power: power * factor,
+                };
+                self.emit_u(*target, *theta, *phi, *lambda, &m);
+            }
+            Leaf::Gphase {
+                gamma,
+                controls,
+                neg_controls,
+                power,
+            } => {
+                let m = GateModifiers {
+                    controls: merge(controls, &eff.controls),
+                    neg_controls: merge(neg_controls, &eff.neg_controls),
+                    power: power * factor,
+                };
+                self.emit_gphase(*gamma, &m);
+            }
+        }
+    }
+
+    /// Emit a flattened gate-body `trace` raised to the power `p`, merging
+    /// the outer controls `eff` onto every leaf.
+    ///
+    /// - integer `p`: repeat the trace `|p|` times (reversed + inverted
+    ///   when `p < 0`). Exact, since each leaf is exactly invertible.
+    /// - fractional `p`: only exact when at most one leaf acts on a qubit
+    ///   (a single `U`, or a relative phase, plus commuting global
+    ///   phases), where the power folds per-leaf. A fractional power of a
+    ///   genuinely composite body would need a dense matrix power and is
+    ///   rejected.
+    fn apply_transformed(&mut self, trace: Vec<Leaf>, p: f64, eff: &GateModifiers) -> Result<()> {
+        let rounded = p.round();
+        if (rounded - p).abs() < 1e-9 {
+            let k = rounded as i64;
+            let reps = k.unsigned_abs();
+            if k >= 0 {
+                for _ in 0..reps {
+                    for leaf in &trace {
+                        self.emit_leaf(leaf, 1.0, eff);
+                    }
+                }
+            } else {
+                for _ in 0..reps {
+                    for leaf in trace.iter().rev() {
+                        self.emit_leaf(leaf, -1.0, eff);
+                    }
+                }
+            }
+            Ok(())
+        } else {
+            if trace.iter().filter(|l| l.is_real()).count() > 1 {
+                return Err(VmError::Unsupported(
+                    "fractional power of a multi-qubit composite gate".into(),
+                ));
+            }
+            for leaf in &trace {
+                self.emit_leaf(leaf, p, eff);
+            }
+            Ok(())
         }
     }
 
@@ -671,6 +852,14 @@ fn broadcast_len(operands: &[Vec<u32>]) -> Result<usize> {
         }
     }
     Ok(n)
+}
+
+/// Concatenate two control lists (a leaf's own controls and the outer
+/// modifier context's).
+fn merge(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let mut v = a.to_vec();
+    v.extend_from_slice(b);
+    v
 }
 
 fn is_qubit_operand(op: &BcOperand) -> bool {

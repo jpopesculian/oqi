@@ -12,14 +12,17 @@
 
 use oqi_classical::Duration;
 
-/// Modifiers accumulated from `ctrl @` / `negctrl @` / `inv @` /
-/// `pow(k) @` on a gate call (and inherited from enclosing gate
-/// bodies). Control indices are global qubit indices.
+/// Modifiers on a single backend primitive call: the controls in scope
+/// plus a `power` to raise this one primitive to. Control indices are
+/// global qubit indices.
 ///
-/// `inv` is folded into `power` as a sign flip, and `pow(k)` as a
-/// product, so a single `power` captures both: this is exact for the
-/// built-in primitives (`U^k` via matrix power, `gphase(γ)^k =
-/// gphase(kγ)`).
+/// `power` carries `inv`/`pow` for the *individual* `U`/`gphase` reaching
+/// the backend, which is always exact (`U^k` via matrix power, `gphase(γ)^k
+/// = gphase(kγ)`). Composite-gate modifiers — where `inv` must reverse the
+/// body and `pow` must apply to the product rather than each factor — are
+/// resolved by the VM (it flattens the body and reverses/repeats the trace)
+/// before any leaf reaches the backend, so a backend never sees more than a
+/// per-primitive power.
 #[derive(Debug, Clone)]
 pub struct GateModifiers {
     pub controls: Vec<u32>,

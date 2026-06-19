@@ -225,6 +225,137 @@ fn mismatched_register_broadcast_is_rejected() {
     }
 }
 
+/// Final state-vector amplitudes as `(re, im)` pairs (no measurement, so
+/// the run is deterministic). Amplitudes ignore global phase.
+fn final_state(src: &str) -> Vec<(f64, f64)> {
+    let module = build(src);
+    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    vm.run().expect("run");
+    vm.backend().state().iter().map(|c| (c.re, c.im)).collect()
+}
+
+fn assert_states_eq(a: &[(f64, f64)], b: &[(f64, f64)]) {
+    assert_eq!(a.len(), b.len(), "state length");
+    for (i, (x, y)) in a.iter().zip(b).enumerate() {
+        assert!(
+            (x.0 - y.0).abs() < TOL && (x.1 - y.1).abs() < TOL,
+            "amp {i}: {x:?} vs {y:?}"
+        );
+    }
+}
+
+// A non-self-inverse composite with non-commuting factors, used by the
+// modifier tests below. Operator order is `rx(1.1)·cx·rz(0.7)·cx`.
+const COMPOSITE: &str = r#"
+    include "stdgates.inc";
+    gate g a, b { cx a, b; rz(0.7) b; cx a, b; rx(1.1) a; }
+    qubit[2] q;
+    h q[0];
+    rx(0.9) q[1];
+    cx q[0], q[1];
+"#;
+
+#[test]
+fn inv_of_composite_is_a_true_inverse() {
+    // `g; inv @ g` must return to the prepared state. A scalar-power fold
+    // (the old behavior) inverts the factors in the wrong order and fails
+    // for a non-commuting body like `g`.
+    let prepared = final_state(COMPOSITE);
+    let round_trip = final_state(&format!(
+        "{COMPOSITE}\ng q[0], q[1];\ninv @ g q[0], q[1];\n"
+    ));
+    assert_states_eq(&round_trip, &prepared);
+}
+
+#[test]
+fn inv_of_composite_matches_hand_reversed_body() {
+    // `inv @ g` ≡ the body run in reverse with each op inverted (cx is
+    // self-inverse, so `inv @ cx == cx`).
+    let via_modifier = final_state(&format!("{COMPOSITE}\ninv @ g q[0], q[1];\n"));
+    let hand_written = final_state(&format!(
+        "{COMPOSITE}\ninv @ rx(1.1) q[0]; cx q[0], q[1]; inv @ rz(0.7) q[1]; cx q[0], q[1];\n"
+    ));
+    assert_states_eq(&via_modifier, &hand_written);
+}
+
+#[test]
+fn integer_pow_of_composite_repeats_the_body() {
+    // pow(2) @ g ≡ g; g, and pow(-1) @ g ≡ inv @ g.
+    let squared = final_state(&format!("{COMPOSITE}\npow(2) @ g q[0], q[1];\n"));
+    let twice = final_state(&format!("{COMPOSITE}\ng q[0], q[1];\ng q[0], q[1];\n"));
+    assert_states_eq(&squared, &twice);
+
+    let pow_neg1 = final_state(&format!("{COMPOSITE}\npow(-1) @ g q[0], q[1];\n"));
+    let inv = final_state(&format!("{COMPOSITE}\ninv @ g q[0], q[1];\n"));
+    assert_states_eq(&pow_neg1, &inv);
+}
+
+#[test]
+fn odd_integer_pow_of_swap_is_swap() {
+    // swap = cx;cx;cx is self-inverse, so pow(3) @ swap ≡ swap.
+    let cubed = final_state(
+        r#"
+            include "stdgates.inc";
+            qubit[2] q;
+            h q[0];
+            pow(3) @ swap q[0], q[1];
+        "#,
+    );
+    let once = final_state(
+        r#"
+            include "stdgates.inc";
+            qubit[2] q;
+            h q[0];
+            swap q[0], q[1];
+        "#,
+    );
+    assert_states_eq(&cubed, &once);
+}
+
+#[test]
+fn fractional_pow_of_single_qubit_composite_still_works() {
+    // pow(0.5) @ z is `s` (one real leaf), and applying it twice equals z.
+    // This must keep working through the new trace path.
+    let via_pow = final_state(
+        r#"
+            include "stdgates.inc";
+            qubit q;
+            h q;
+            pow(0.5) @ z q;
+            pow(0.5) @ z q;
+        "#,
+    );
+    let via_z = final_state(
+        r#"
+            include "stdgates.inc";
+            qubit q;
+            h q;
+            z q;
+        "#,
+    );
+    assert_states_eq(&via_pow, &via_z);
+}
+
+#[test]
+fn fractional_pow_of_multi_qubit_composite_is_rejected() {
+    // sqrt(SWAP) is a genuine 2-qubit gate; it would need a dense matrix
+    // power, which is out of scope. It must error, not silently misbehave.
+    let module = build(
+        r#"
+            include "stdgates.inc";
+            qubit[2] q;
+            pow(0.5) @ swap q[0], q[1];
+        "#,
+    );
+    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    match vm.run() {
+        Err(VmError::Unsupported(_)) => {}
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}
+
 #[test]
 fn teleport_fixture_runs_end_to_end() {
     let src = include_str!("../../fixtures/qasm/teleport.qasm");

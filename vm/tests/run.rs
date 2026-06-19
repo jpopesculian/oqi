@@ -8,7 +8,7 @@ use oqi_compile::lower::compile_source;
 use oqi_compile::resolve::DefaultIncludeResolver;
 use oqi_compile::symbol::SymbolId;
 use oqi_compile::{cfg, qubits, ssa};
-use oqi_vm::{FnRegistry, NoExterns, StateVectorSim, Vm, VmError};
+use oqi_vm::{FnRegistry, NoExterns, StateVectorSim, Vm, VmError, VmErrorKind};
 
 /// Compile source straight through to a bytecode module.
 fn build(src: &str) -> BcModule {
@@ -223,7 +223,7 @@ fn mismatched_register_broadcast_is_rejected() {
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
     match vm.run() {
-        Err(VmError::BroadcastMismatch(lengths)) => assert_eq!(lengths, vec![2, 3]),
+        Err(VmError { kind: VmErrorKind::BroadcastMismatch(lengths), .. }) => assert_eq!(lengths, vec![2, 3]),
         other => panic!("expected BroadcastMismatch, got {other:?}"),
     }
 }
@@ -354,7 +354,7 @@ fn fractional_pow_of_multi_qubit_composite_is_rejected() {
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
     match vm.run() {
-        Err(VmError::Unsupported(_)) => {}
+        Err(VmError { kind: VmErrorKind::Unsupported(_), .. }) => {}
         other => panic!("expected Unsupported, got {other:?}"),
     }
 }
@@ -464,8 +464,25 @@ fn missing_input_is_rejected() {
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
     match vm.run_with_inputs(HashMap::new()) {
-        Err(VmError::MissingInput(_)) => {}
+        Err(VmError { kind: VmErrorKind::MissingInput(_), .. }) => {}
         other => panic!("expected MissingInput, got {other:?}"),
+    }
+}
+
+#[test]
+fn qubit_out_of_range_is_a_graceful_spanned_error() {
+    // A physical qubit `$0` with no allocated qubit memory must surface a
+    // diagnostic, not panic the simulator. The error carries the source
+    // span of the offending instruction.
+    let module = build("OPENQASM 3.0;\nU(0, 0, 0) $0;\n");
+    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    match vm.run() {
+        Err(VmError {
+            kind: VmErrorKind::QubitOutOfRange { qubit: 0, .. },
+            span,
+        }) => assert!(span.is_some(), "expected a source span on the error"),
+        other => panic!("expected QubitOutOfRange, got {other:?}"),
     }
 }
 
@@ -478,7 +495,7 @@ fn value_for_non_input_symbol_is_rejected() {
     let mut vm = Vm::new(&module, sim, NoExterns);
     let inputs = HashMap::from([(n, Value::int(1, iw(32))), (q, Value::int(0, iw(32)))]);
     match vm.run_with_inputs(inputs) {
-        Err(VmError::UnknownInput(_)) => {}
+        Err(VmError { kind: VmErrorKind::UnknownInput(_), .. }) => {}
         other => panic!("expected UnknownInput, got {other:?}"),
     }
 }

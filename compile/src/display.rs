@@ -141,7 +141,7 @@ impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ErrorKind::UndefinedName(name) => write!(f, "undefined name '{name}'"),
-            ErrorKind::DuplicateDefinition(name) => {
+            ErrorKind::DuplicateDefinition { name, .. } => {
                 write!(f, "duplicate definition of '{name}'")
             }
             ErrorKind::TypeMismatch { expected, got } => {

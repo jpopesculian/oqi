@@ -18,9 +18,10 @@ use oqi_compile::bytecode::{
 };
 use oqi_compile::sir::Intrinsic;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
+use oqi_lex::Span;
 
 use crate::backend::{GateModifiers, QuantumBackend};
-use crate::error::{Result, VmError};
+use crate::error::{Result, VmError, VmErrorKind};
 use crate::extern_fns::ExternProvider;
 
 /// The outcome of a run.
@@ -101,6 +102,9 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     /// When `Some`, leaf `U`/`gphase` calls are appended here instead of
     /// being applied to the backend (gate-body flattening for modifiers).
     recording: Option<Vec<Leaf>>,
+    /// Span of the instruction (or block) currently executing, used to
+    /// locate a runtime error in the source. Defaults to the empty sentinel.
+    current_span: Span,
 }
 
 impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
@@ -126,6 +130,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             sub_procs,
             measurements: Vec::new(),
             recording: None,
+            current_span: Span::default(),
         }
     }
 
@@ -139,7 +144,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// inputs. If the program declares any `input`, prefer
     /// [`Vm::run_with_inputs`] — running with an empty map errors on the
     /// first missing input.
-    pub fn run(&mut self) -> Result<RunResult> {
+    pub fn run(&mut self) -> std::result::Result<RunResult, VmError> {
         self.run_with_inputs(HashMap::new())
     }
 
@@ -148,20 +153,32 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// [`oqi_compile::bytecode::BcModule::symbols`]). Every declared
     /// input must be present and castable to its declared type; a value
     /// for a symbol that isn't a declared input is rejected.
-    pub fn run_with_inputs(&mut self, mut inputs: HashMap<SymbolId, Value>) -> Result<RunResult> {
+    pub fn run_with_inputs(
+        &mut self,
+        inputs: HashMap<SymbolId, Value>,
+    ) -> std::result::Result<RunResult, VmError> {
+        self.current_span = Span::default();
+        self.run_inner(inputs)
+            .map_err(|kind| VmError::new(kind).with_span(self.current_span))
+    }
+
+    /// The execution body, raising spanless [`VmErrorKind`]s. The span of the
+    /// instruction in flight is tracked in `self.current_span` and attached by
+    /// [`run_with_inputs`](Self::run_with_inputs).
+    fn run_inner(&mut self, mut inputs: HashMap<SymbolId, Value>) -> Result<RunResult> {
         let entry = self.module.entry;
         let mut regs = self.fresh_regs(entry);
 
         // Seed declared inputs; reject missing ones and type mismatches.
         let reg_types = &self.module.procedures[entry.0 as usize].register_types;
         for (sym, reg) in &self.module.inputs {
-            let value = inputs.remove(sym).ok_or(VmError::MissingInput(*sym))?;
+            let value = inputs.remove(sym).ok_or(VmErrorKind::MissingInput(*sym))?;
             let want = reg_types[reg.0 as usize];
             regs[reg.0 as usize] = Some(value.cast(want)?);
         }
         // Any leftover entries name symbols that aren't declared inputs.
         if let Some(sym) = inputs.keys().next() {
-            return Err(VmError::UnknownInput(*sym));
+            return Err(VmErrorKind::UnknownInput(*sym));
         }
 
         let mut frame = Frame {
@@ -199,10 +216,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 .blocks
                 .iter()
                 .find(|b| b.id == current)
-                .ok_or_else(|| VmError::Unsupported(format!("missing block bb{}", current.0)))?;
+                .ok_or_else(|| VmErrorKind::Unsupported(format!("missing block bb{}", current.0)))?;
             for instr in &block.instrs {
+                self.current_span = instr.span;
                 self.exec_op(&instr.op, frame)?;
             }
+            self.current_span = block.span;
             match &block.terminator {
                 BcTerminator::Goto(b) => current = *b,
                 BcTerminator::Branch {
@@ -228,7 +247,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     });
                 }
                 BcTerminator::End => return Ok(None),
-                BcTerminator::Unreachable => return Err(VmError::Unreachable),
+                BcTerminator::Unreachable => return Err(VmErrorKind::Unreachable),
             }
         }
     }
@@ -250,7 +269,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
         }
         default
-            .ok_or_else(|| VmError::Unsupported("switch with no matching case or default".into()))
+            .ok_or_else(|| VmErrorKind::Unsupported("switch with no matching case or default".into()))
     }
 
     fn exec_op(&mut self, op: &BcOp, frame: &mut Frame) -> Result<()> {
@@ -322,7 +341,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     .iter()
                     .map(|op| match self.eval(frame, op)? {
                         Value::Scalar(s) => Ok(s.into_value()),
-                        _ => Err(VmError::Type("array element must be scalar".into())),
+                        _ => Err(VmErrorKind::Type("array element must be scalar".into())),
                     })
                     .collect::<Result<_>>()?;
                 let arr = Array::new(prims, aty)?;
@@ -377,7 +396,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     Value::Scalar(s) => s.value().as_duration(),
                     _ => None,
                 }
-                .ok_or_else(|| VmError::Type("delay duration must be a duration".into()))?;
+                .ok_or_else(|| VmErrorKind::Type("delay duration must be a duration".into()))?;
                 let qs = self.qubit_list(frame, qubits)?;
                 self.backend.delay(&qs, dur);
                 Ok(())
@@ -398,7 +417,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             BcOp::Pragma { .. } | BcOp::Alias { .. } | BcOp::CalOpaque { .. } => Ok(()),
             BcOp::CalOpenPulse { .. } => Ok(()),
             BcOp::DurationOf { .. } => {
-                Err(VmError::Unsupported("durationof timing analysis".into()))
+                Err(VmErrorKind::Unsupported("durationof timing analysis".into()))
             }
         }
     }
@@ -438,20 +457,20 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     let ret = self.externs.call(&name, &vals)?;
                     if let Some(d) = dest {
                         let v = ret.ok_or_else(|| {
-                            VmError::Type(format!("extern `{name}` returned no value"))
+                            VmErrorKind::Type(format!("extern `{name}` returned no value"))
                         })?;
                         self.set(frame, d, v);
                     }
                     Ok(())
                 } else {
                     let proc_id = *self.sub_procs.get(s).ok_or_else(|| {
-                        VmError::Unsupported(format!("call to non-subroutine symbol s{}", s.0))
+                        VmErrorKind::Unsupported(format!("call to non-subroutine symbol s{}", s.0))
                     })?;
                     let mut child = self.bind_subroutine(frame, proc_id, args)?;
                     let ret = self.exec_proc(&mut child)?;
                     if let Some(d) = dest {
                         let v = ret.ok_or_else(|| {
-                            VmError::Type("subroutine returned no value for a value call".into())
+                            VmErrorKind::Type("subroutine returned no value for a value call".into())
                         })?;
                         self.set(frame, d, v);
                     }
@@ -475,7 +494,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             } else {
                 let v = self.eval(frame, arg)?;
                 let reg = proc.params.get(classical).ok_or_else(|| {
-                    VmError::Unsupported("more classical args than parameters".into())
+                    VmErrorKind::Unsupported("more classical args than parameters".into())
                 })?;
                 regs[reg.0 as usize] = Some(v);
                 classical += 1;
@@ -555,7 +574,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 let proc = &self.module.procedures[proc_id.0 as usize];
                 for (k, v) in arg_vals.iter().enumerate() {
                     let reg = proc.params.get(k).ok_or_else(|| {
-                        VmError::Unsupported("gate has fewer params than arguments".into())
+                        VmErrorKind::Unsupported("gate has fewer params than arguments".into())
                     })?;
                     regs[reg.0 as usize] = Some(v.clone());
                 }
@@ -619,7 +638,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     self.emit_gphase(gamma, &eff);
                     Ok(())
                 }
-                other => Err(VmError::UndefinedGate(other.to_string())),
+                other => Err(VmErrorKind::UndefinedGate(other.to_string())),
             }
         }
     }
@@ -723,7 +742,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             Ok(())
         } else {
             if trace.iter().filter(|l| l.is_real()).count() > 1 {
-                return Err(VmError::Unsupported(
+                return Err(VmErrorKind::Unsupported(
                     "fractional power of a multi-qubit composite gate".into(),
                 ));
             }
@@ -766,52 +785,64 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         match op {
             BcOperand::Reg(r) => frame.regs[r.0 as usize]
                 .clone()
-                .ok_or(VmError::UnsetRegister(r.0)),
+                .ok_or(VmErrorKind::UnsetRegister(r.0)),
             BcOperand::Const(c) => Ok(self.module.constants[c.0 as usize].clone()),
-            _ => Err(VmError::Type("expected a classical operand".into())),
+            _ => Err(VmErrorKind::Type("expected a classical operand".into())),
         }
     }
 
     fn array_ty(&self, frame: &Frame, dest: Reg) -> Result<ArrayTy> {
         match self.module.procedures[frame.proc.0 as usize].register_types[dest.0 as usize] {
             ValueTy::Array(aty) => Ok(aty),
-            _ => Err(VmError::Type("NewArray destination is not an array".into())),
+            _ => Err(VmErrorKind::Type("NewArray destination is not an array".into())),
         }
     }
 
-    /// Resolve a qubit operand to its global qubit indices.
+    /// Resolve a qubit operand to its global qubit indices, validating that
+    /// each is within the program's allocated qubit memory.
     fn qubits(&self, frame: &Frame, op: &BcOperand) -> Result<Vec<u32>> {
-        match op {
-            BcOperand::Qubit(i) => Ok(vec![*i]),
-            BcOperand::HardwareQubit(i) => Ok(vec![*i]),
-            BcOperand::QubitRegion(id) => Ok(self.region_indices(id.0)),
+        let resolved = match op {
+            BcOperand::Qubit(i) => vec![*i],
+            BcOperand::HardwareQubit(i) => vec![*i],
+            BcOperand::QubitRegion(id) => self.region_indices(id.0),
             BcOperand::QubitIndexed { region, index } => {
                 let idx = value_usize(&self.eval(frame, index)?)?;
                 self.region_indices(region.0)
                     .get(idx)
                     .copied()
                     .map(|q| vec![q])
-                    .ok_or_else(|| VmError::Type(format!("qubit index {idx} out of range")))
+                    .ok_or_else(|| VmErrorKind::Type(format!("qubit index {idx} out of range")))?
             }
             BcOperand::QubitParam { slot, index } => {
                 let bound = frame
                     .qubit_args
                     .get(*slot as usize)
-                    .ok_or_else(|| VmError::Unsupported("unbound qubit parameter".into()))?;
+                    .ok_or_else(|| VmErrorKind::Unsupported("unbound qubit parameter".into()))?;
                 match index {
-                    None => Ok(bound.clone()),
+                    None => bound.clone(),
                     Some(ix) => {
                         let i = value_usize(&self.eval(frame, ix)?)?;
                         bound
                             .get(i)
                             .copied()
                             .map(|q| vec![q])
-                            .ok_or_else(|| VmError::Type(format!("qubit index {i} out of range")))
+                            .ok_or_else(|| VmErrorKind::Type(format!("qubit index {i} out of range")))?
                     }
                 }
             }
-            _ => Err(VmError::Type("expected a qubit operand".into())),
+            _ => return Err(VmErrorKind::Type("expected a qubit operand".into())),
+        };
+
+        let num_qubits = self.module.qubits.num_qubits;
+        for &q in &resolved {
+            if q >= num_qubits {
+                return Err(VmErrorKind::QubitOutOfRange {
+                    qubit: q as usize,
+                    num_qubits: num_qubits as usize,
+                });
+            }
         }
+        Ok(resolved)
     }
 
     /// Resolve and flatten a list of qubit operands.
@@ -889,7 +920,7 @@ fn broadcast_len(operands: &[Vec<u32>]) -> Result<usize> {
         if n == 1 {
             n = qs.len();
         } else if n != qs.len() {
-            return Err(VmError::BroadcastMismatch(
+            return Err(VmErrorKind::BroadcastMismatch(
                 operands.iter().map(|q| q.len()).collect(),
             ));
         }
@@ -919,7 +950,7 @@ fn is_qubit_operand(op: &BcOperand) -> bool {
 fn scalar(v: &Value) -> Result<&Primitive> {
     match v {
         Value::Scalar(s) => Ok(s.value()),
-        _ => Err(VmError::Type("expected a scalar value".into())),
+        _ => Err(VmErrorKind::Type("expected a scalar value".into())),
     }
 }
 
@@ -930,20 +961,20 @@ fn value_bit(v: &Value) -> Result<bool> {
 fn value_f64(v: &Value) -> Result<f64> {
     scalar(v)?
         .as_float(FloatWidth::F64)
-        .ok_or_else(|| VmError::Type("expected a float-like value".into()))
+        .ok_or_else(|| VmErrorKind::Type("expected a float-like value".into()))
 }
 
 fn value_i128(v: &Value) -> Result<i128> {
     scalar(v)?
         .as_int(iw(128))
-        .ok_or_else(|| VmError::Type("expected an integer value".into()))
+        .ok_or_else(|| VmErrorKind::Type("expected an integer value".into()))
 }
 
 fn value_usize(v: &Value) -> Result<usize> {
     scalar(v)?
         .as_uint(iw(64))
         .map(|u| u as usize)
-        .ok_or_else(|| VmError::Type("expected an unsigned integer value".into()))
+        .ok_or_else(|| VmErrorKind::Type("expected an unsigned integer value".into()))
 }
 
 fn value_isize(v: &Value) -> Result<isize> {
@@ -955,12 +986,12 @@ fn eval_intrinsic(i: &Intrinsic, args: &[Value]) -> Result<Value> {
     let arg0 = || -> Result<Value> {
         args.first()
             .cloned()
-            .ok_or_else(|| VmError::Type("intrinsic missing argument".into()))
+            .ok_or_else(|| VmErrorKind::Type("intrinsic missing argument".into()))
     };
     let arg = |n: usize| -> Result<Value> {
         args.get(n)
             .cloned()
-            .ok_or_else(|| VmError::Type("intrinsic missing argument".into()))
+            .ok_or_else(|| VmErrorKind::Type("intrinsic missing argument".into()))
     };
     Ok(match i {
         Intrinsic::Sin => ops::Sin::checked_op(arg0()?)?,

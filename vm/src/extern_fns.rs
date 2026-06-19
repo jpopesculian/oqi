@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use oqi_classical::Value;
 
-use crate::error::{Result, VmError};
+use crate::error::{Result, VmErrorKind};
 
 /// Supplies implementations for the program's `extern` functions.
 pub trait ExternProvider {
@@ -23,7 +23,7 @@ pub struct NoExterns;
 
 impl ExternProvider for NoExterns {
     fn call(&mut self, name: &str, _args: &[Value]) -> Result<Option<Value>> {
-        Err(VmError::UnknownExtern(name.to_string()))
+        Err(VmErrorKind::UnknownExtern(name.to_string()))
     }
 }
 
@@ -55,7 +55,7 @@ impl ExternProvider for FnRegistry {
     fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>> {
         match self.fns.get_mut(name) {
             Some(f) => f(args),
-            None => Err(VmError::UnknownExtern(name.to_string())),
+            None => Err(VmErrorKind::UnknownExtern(name.to_string())),
         }
     }
 }

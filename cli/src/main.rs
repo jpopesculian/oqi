@@ -1,12 +1,9 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs;
-use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ariadne::{Label, Report, ReportKind, Source};
 use clap::{Parser, Subcommand};
 use oqi_compile::classical::{PrimitiveTy, Value, ValueTy};
 use oqi_compile::error::CompileError;
@@ -14,10 +11,8 @@ use oqi_compile::resolve::DefaultIncludeResolver;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
 use oqi_compile::{bytecode, cfg, qubits, ssa};
 use oqi_format::Config;
-use oqi_vm::{NoExterns, StateVectorSim, Vm, VmError};
+use oqi_vm::{NoExterns, StateVectorSim, Vm};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
-
-const DIAGNOSTIC_TAB_SIZE: usize = 4;
 
 #[derive(Parser)]
 #[command(name = "oqi")]
@@ -94,31 +89,7 @@ fn compile(path: &Path, dump: bool) -> ExitCode {
         match oqi_compile::lower::compile_source(&source, DefaultIncludeResolver, Some(path)) {
             Ok(p) => p,
             Err(e) => {
-                let diagnostic_path = e.path.as_deref().unwrap_or(path);
-                let diagnostic_source =
-                    match load_diagnostic_source(path, &source, e.path.as_deref()) {
-                        Ok(source) => source,
-                        Err(read_err) => {
-                            eprintln!(
-                                "{}: failed to read source for diagnostic: {read_err}",
-                                diagnostic_path.display()
-                            );
-                            eprintln!("{}: {}", diagnostic_path.display(), e);
-                            return ExitCode::FAILURE;
-                        }
-                    };
-                let (line, column) = e
-                    .span
-                    .doc_position(diagnostic_source.as_ref(), DIAGNOSTIC_TAB_SIZE);
-                let headline =
-                    format_diagnostic_message(diagnostic_path, line, column, &e.to_string());
-                emit_error_report(
-                    diagnostic_path,
-                    diagnostic_source.as_ref(),
-                    Range::from(e.span),
-                    &headline,
-                    &e.to_string(),
-                );
+                oqi_diagnostics::emit(&e, path, &source);
                 return ExitCode::FAILURE;
             }
         };
@@ -184,16 +155,8 @@ fn run(path: &Path, show_state: bool, input_specs: &[String]) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(VmError::MissingInput(sym)) => {
-            let name = &module.symbols.get(sym).name;
-            eprintln!(
-                "{}: missing input `{name}` (supply it with --input {name}=…)",
-                path.display()
-            );
-            ExitCode::FAILURE
-        }
         Err(e) => {
-            eprintln!("{}: runtime error: {e}", path.display());
+            oqi_diagnostics::emit(&e, path, &source);
             ExitCode::FAILURE
         }
     }
@@ -257,29 +220,7 @@ fn parse_inputs(
 
 /// Render a compiler diagnostic with source context and return failure.
 fn report_compile_error(path: &Path, source: &str, e: CompileError) -> ExitCode {
-    let diagnostic_path = e.path.as_deref().unwrap_or(path);
-    let diagnostic_source = match load_diagnostic_source(path, source, e.path.as_deref()) {
-        Ok(source) => source,
-        Err(read_err) => {
-            eprintln!(
-                "{}: failed to read source for diagnostic: {read_err}",
-                diagnostic_path.display()
-            );
-            eprintln!("{}: {}", diagnostic_path.display(), e);
-            return ExitCode::FAILURE;
-        }
-    };
-    let (line, column) = e
-        .span
-        .doc_position(diagnostic_source.as_ref(), DIAGNOSTIC_TAB_SIZE);
-    let headline = format_diagnostic_message(diagnostic_path, line, column, &e.to_string());
-    emit_error_report(
-        diagnostic_path,
-        diagnostic_source.as_ref(),
-        Range::from(e.span),
-        &headline,
-        &e.to_string(),
-    );
+    oqi_diagnostics::emit(&e, path, source);
     ExitCode::FAILURE
 }
 
@@ -305,9 +246,7 @@ fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {
         let formatted = match oqi_format::format(&source, config) {
             Ok(s) => s,
             Err(e) => {
-                let (line, column) = e.span.doc_position(&source, DIAGNOSTIC_TAB_SIZE);
-                let headline = format_diagnostic_message(path, line, column, &e.message);
-                emit_error_report(path, &source, Range::from(e.span), &headline, &e.message);
+                oqi_diagnostics::emit(&e, path, &source);
                 had_errors.store(true, Ordering::Relaxed);
                 return;
             }
@@ -326,35 +265,4 @@ fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
-}
-
-fn load_diagnostic_source<'a>(
-    root_path: &'a Path,
-    root_source: &'a str,
-    diagnostic_path: Option<&Path>,
-) -> std::io::Result<Cow<'a, str>> {
-    match diagnostic_path {
-        Some(path) if path != root_path => Ok(Cow::Owned(fs::read_to_string(path)?)),
-        _ => Ok(Cow::Borrowed(root_source)),
-    }
-}
-
-fn format_diagnostic_message(path: &Path, line: usize, column: usize, message: &str) -> String {
-    format!("{}:{line}:{column}: {message}", path.display())
-}
-
-fn emit_error_report(
-    path: &Path,
-    source: &str,
-    span: Range<usize>,
-    headline: &str,
-    label_message: &str,
-) {
-    let filename = path.display().to_string();
-    Report::build(ReportKind::Error, (&filename, span.clone()))
-        .with_message(headline)
-        .with_label(Label::new((&filename, span)).with_message(label_message))
-        .finish()
-        .eprint((&filename, Source::from(source)))
-        .ok();
 }

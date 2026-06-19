@@ -169,10 +169,13 @@ impl Resolver {
         span: Span,
     ) -> Result<SymbolId> {
         let current = self.lookup_stack.last().unwrap();
-        if current.contains_key(name) {
-            return Err(
-                CompileError::new(ErrorKind::DuplicateDefinition(name.to_string())).with_span(span),
-            );
+        if let Some(&prior_id) = current.get(name) {
+            let prior = self.symbols.get(prior_id).span;
+            return Err(CompileError::new(ErrorKind::DuplicateDefinition {
+                name: name.to_string(),
+                prior,
+            })
+            .with_span(span));
         }
         let scope = self.current_scope();
         let id = self.symbols.insert(name.to_string(), kind, ty, span, scope);
@@ -428,7 +431,14 @@ mod tests {
                 span(2, 3),
             )
             .unwrap_err();
-        assert!(matches!(err.kind, ErrorKind::DuplicateDefinition(ref n) if n == "x"));
+        let ErrorKind::DuplicateDefinition { name, prior } = &err.kind else {
+            panic!("expected DuplicateDefinition, got {:?}", err.kind);
+        };
+        assert_eq!(name, "x");
+        // The secondary label points back at the first declaration.
+        assert_eq!(*prior, span(0, 1));
+        // Primary ("redefined here") plus secondary ("first defined here").
+        assert_eq!(oqi_diagnostics::Diagnostic::labels(&err).len(), 2);
     }
 
     #[test]

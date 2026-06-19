@@ -889,7 +889,7 @@ fn duplicate_definition_rejected() {
     match compile_inline(src) {
         Err(e) => assert!(matches!(
             e.kind,
-            oqi_compile::error::ErrorKind::DuplicateDefinition(_)
+            oqi_compile::error::ErrorKind::DuplicateDefinition { .. }
         )),
         Ok(_) => panic!("expected DuplicateDefinition error"),
     }

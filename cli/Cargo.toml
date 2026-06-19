@@ -8,9 +8,9 @@ name = "oqi"
 path = "src/main.rs"
 
 [dependencies]
-ariadne = "0.6"
 clap = { version = "4", features = ["derive"] }
 oqi-compile = { path = "../compile" }
+oqi-diagnostics = { path = "../diagnostics" }
 oqi-format = { path = "../format" }
 oqi-vm = { path = "../vm" }
 rayon = "1"

@@ -412,9 +412,9 @@ dependencies = [
 name = "oqi-cli"
 version = "0.1.0"
 dependencies = [
- "ariadne",
  "clap",
  "oqi-compile",
+ "oqi-diagnostics",
  "oqi-format",
  "oqi-vm",
  "rayon",
@@ -427,12 +427,21 @@ dependencies = [
  "awint",
  "num-traits",
  "oqi-classical",
+ "oqi-diagnostics",
  "oqi-lex",
  "oqi-openpulse",
  "oqi-parse",
  "oqi-quantum",
  "postcard",
  "serde",
+]
+
+[[package]]
+name = "oqi-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "ariadne",
+ "oqi-lex",
 ]
 
 [[package]]
@@ -486,6 +495,8 @@ dependencies = [
  "num-complex",
  "oqi-classical",
  "oqi-compile",
+ "oqi-diagnostics",
+ "oqi-lex",
  "oqi-quantum",
 ]
 

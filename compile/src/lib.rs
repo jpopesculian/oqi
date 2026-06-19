@@ -1,6 +1,7 @@
 pub mod bytecode;
 pub mod cfg;
 pub mod classical;
+pub mod diagnostic;
 pub mod display;
 pub mod error;
 pub mod lower;

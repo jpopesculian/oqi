@@ -3,6 +3,7 @@ members = [
   "lex",
   "parse",
   "format",
+  "diagnostics",
   "compile",
   "cli",
   "classical",

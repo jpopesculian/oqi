@@ -11,13 +11,14 @@
 //! - an [`ExternProvider`] — host implementations of `extern` functions.
 
 pub mod backend;
+pub mod diagnostic;
 pub mod error;
 pub mod extern_fns;
 pub mod sim;
 pub mod vm;
 
 pub use backend::{GateModifiers, QuantumBackend};
-pub use error::{Result, VmError};
+pub use error::{Result, VmError, VmErrorKind};
 pub use extern_fns::{ExternProvider, FnRegistry, NoExterns};
 pub use sim::StateVectorSim;
 pub use vm::{RunResult, Vm};

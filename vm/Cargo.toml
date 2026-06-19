@@ -7,4 +7,6 @@ edition = "2024"
 oqi-compile = { path = "../compile" }
 oqi-classical = { path = "../classical" }
 oqi-quantum = { path = "../quantum" }
+oqi-lex = { path = "../lex" }
+oqi-diagnostics = { path = "../diagnostics" }
 num-complex = "0.4"

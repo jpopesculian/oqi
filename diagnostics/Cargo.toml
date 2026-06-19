@@ -1,0 +1,8 @@
+[package]
+name = "oqi-diagnostics"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+oqi-lex = { path = "../lex" }
+ariadne = "0.6"

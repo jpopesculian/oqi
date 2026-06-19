@@ -7,7 +7,7 @@ use crate::types::Type;
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
     UndefinedName(String),
-    DuplicateDefinition(String),
+    DuplicateDefinition { name: String, prior: Span },
     TypeMismatch { expected: Box<Type>, got: Box<Type> },
     NonConstantDesignator,
     NonConstantExpression,

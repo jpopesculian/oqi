@@ -136,6 +136,33 @@ mod tests {
     }
 
     #[test]
+    fn bare_subroutine_call_emits_call_not_gatecall() {
+        // `flip q;` invokes a `def` with bare gate-call syntax; it must lower
+        // to BcOp::Call (a subroutine call), never BcOp::GateCall.
+        let module = build_bytecode(
+            r#"
+                include "stdgates.inc";
+                def flip(qubit[2] qs) { x qs[0]; x qs[1]; }
+                qubit[2] q;
+                flip q;
+            "#,
+        );
+        let flip = module
+            .symbols
+            .iter()
+            .find(|s| s.name == "flip")
+            .expect("flip symbol")
+            .id;
+        let emits_call = all_ops(&module).any(|op| {
+            matches!(op, BcOp::Call { callee: BcCallTarget::Symbol(s), .. } if *s == flip)
+        });
+        assert!(emits_call, "bare `flip q;` should emit a Call to `flip`:\n{module}");
+        let emits_gatecall = all_ops(&module)
+            .any(|op| matches!(op, BcOp::GateCall { gate, .. } if *gate == flip));
+        assert!(!emits_gatecall, "bare `flip q;` must not emit a GateCall");
+    }
+
+    #[test]
     fn static_index_resolves_to_global_qubit() {
         let module = build_bytecode("qubit[3] a; qubit[2] b; reset b[1];");
         assert_eq!(module.qubits.num_qubits, 5);

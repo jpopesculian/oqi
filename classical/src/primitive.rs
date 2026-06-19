@@ -670,6 +670,25 @@ const fn resize_angle(v: u128, bw: IntWidth) -> u128 {
     v & mask
 }
 
+/// The right-aligned `bw`-bit turns numerator of a stored angle. Angles are
+/// stored left-aligned (`a.0 == q << (128 - bw)`), so this recovers `q`,
+/// letting an `angle[bw]` be bit-indexed/shifted like a `uint[bw]`.
+#[inline]
+pub(crate) fn angle_bits(a: Angle128, bw: u32) -> u128 {
+    if bw >= 128 { a.0 } else { a.0 >> (128 - bw) }
+}
+
+/// Inverse of [`angle_bits`]: re-store a `bw`-bit turns numerator as a
+/// left-aligned angle.
+#[inline]
+pub(crate) fn angle_from_bits(bits: u128, bw: u32) -> Angle128 {
+    if bw >= 128 {
+        turns::Angle(bits)
+    } else {
+        turns::Angle((bits & ((1u128 << bw) - 1)) << (128 - bw))
+    }
+}
+
 #[inline]
 fn radians_to_angle_bw(radians: f64, bw: IntWidth) -> u128 {
     use std::f64::consts::TAU;

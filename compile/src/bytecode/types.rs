@@ -326,6 +326,16 @@ pub enum BcOp {
         index: BcOperand,
         value: BcOperand,
     },
+    /// Whole-register kill+def for a slice target: `new = base;
+    /// new[indices] = value`. `value` is a multi-bit register whose bits
+    /// are written into `base` at the given (already-resolved) positions,
+    /// in order. Used for `reg[a:b] = ...` and discrete-set assignment.
+    StoreSlice {
+        new: Reg,
+        base: BcOperand,
+        indices: Vec<u32>,
+        value: BcOperand,
+    },
     NewArray {
         dest: Reg,
         items: Vec<BcOperand>,

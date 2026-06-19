@@ -168,6 +168,17 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             write!(f, "] = ")?;
             fmt_operand(f, value)
         }
+        BcOp::StoreSlice {
+            new,
+            base,
+            indices,
+            value,
+        } => {
+            write!(f, "{} = store_slice ", fmt_reg(*new))?;
+            fmt_operand(f, base)?;
+            write!(f, "{indices:?} = ")?;
+            fmt_operand(f, value)
+        }
         BcOp::NewArray { dest, items } => {
             write!(f, "{} = new_array [", fmt_reg(*dest))?;
             for (i, it) in items.iter().enumerate() {

@@ -7,7 +7,7 @@ use crate::scalar::Scalar;
 use crate::value::{Value, ValueTy};
 use crate::{
     Error, Result,
-    primitive::{Primitive, PrimitiveTy, resize_int},
+    primitive::{Primitive, PrimitiveTy, angle_bits, angle_from_bits, resize_int},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -399,6 +399,7 @@ impl Scalar {
             Primitive::Uint(v) => BitReg::from(*v),
             Primitive::BitReg(reg) => reg.clone(),
             Primitive::Int(v) => BitReg::from(*v as u128),
+            Primitive::Angle(a) => BitReg::from(angle_bits(*a, dim as u32)),
             _ => return Err(error()),
         };
 
@@ -448,6 +449,7 @@ impl Scalar {
             Primitive::Uint(v) => BitReg::from(*v),
             Primitive::BitReg(reg) => reg.clone(),
             Primitive::Int(v) => BitReg::from(*v as u128),
+            Primitive::Angle(a) => BitReg::from(angle_bits(*a, width)),
             _ => return Err(error()),
         };
 
@@ -503,6 +505,7 @@ impl Scalar {
                     .expect("self is Int so int_width must be Some");
                 Primitive::Int(resize_int(reg.as_u128() as i128, int_bw))
             }
+            Primitive::Angle(_) => Primitive::Angle(angle_from_bits(reg.as_u128(), width)),
             _ => return Err(error()),
         };
         *self = Scalar::new_unchecked(new_value, self.ty());
@@ -1637,6 +1640,31 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn angle_bit_index_set_and_get() {
+        // An angle[4] starts at numerator 0. Setting bit 0 makes the
+        // numerator 1 (stored left-aligned as 1 << 124); reads round-trip.
+        let mut v = Value::Scalar(Scalar::new_unchecked(
+            Primitive::Angle(turns::Angle(0)),
+            PrimitiveTy::Angle(iw(4)),
+        ));
+        let one_bit = Value::Scalar(Scalar::new_unchecked(Primitive::bit(true), PrimitiveTy::Bit));
+        v.set(&[Index::Item(0)], one_bit).unwrap();
+        match &v {
+            Value::Scalar(s) => match s.value() {
+                Primitive::Angle(a) => assert_eq!(a.0, 1u128 << 124),
+                _ => panic!("expected angle primitive"),
+            },
+            _ => panic!("expected scalar"),
+        }
+        let read = |i| match v.get(&[Index::Item(i)]).unwrap() {
+            Value::Scalar(s) => s.value().as_bit(),
+            _ => panic!("expected scalar"),
+        };
+        assert!(read(0), "bit 0 should read back set");
+        assert!(!read(1), "bit 1 should be unset");
     }
 
     #[test]

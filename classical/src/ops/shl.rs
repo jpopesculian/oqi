@@ -15,7 +15,10 @@ impl BinOp for Shl {
         rht: PrimitiveTy,
     ) -> Result<(PrimitiveTy, PrimitiveTy, PrimitiveTy)> {
         use PrimitiveTy::*;
-        if matches!((lht, rht), (Uint(_) | Int(_) | BitReg(_), Uint(_) | Int(_))) {
+        if matches!(
+            (lht, rht),
+            (Uint(_) | Int(_) | BitReg(_) | Angle(_), Uint(_) | Int(_))
+        ) {
             Ok((lht, rht, lht))
         } else {
             Err(unsupported_scalar_binop::<Self>(lht, rht))
@@ -39,6 +42,9 @@ impl BinOp for Shl {
             BitReg(a) => BitReg(a << amount),
             Uint(a) => Uint(*a << amount),
             Int(a) => Int(*a << amount),
+            // Angles are stored left-aligned, so shifting the raw bits left
+            // shifts the turns numerator; `resize` re-masks to the width.
+            Angle(a) => Angle(turns::Angle(a.0 << amount)),
             _ => return Err(unsupported_scalar_binop::<Self>(lhs.ty(), rhs.ty())),
         };
         Ok(Scalar::new_unchecked(result.resize(out), out))
@@ -138,9 +144,20 @@ mod tests {
     }
 
     #[test]
-    fn angle_shl_returns_none() {
-        let a = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Angle(iw(8))));
-        assert!(a.shl_(u_scalar(1, 8)).is_err());
+    fn angle_shl_doubles_numerator() {
+        // angle[4] with turns numerator 1 (stored left-aligned as 1 << 124).
+        // Shifting left by 1 doubles the numerator to 2.
+        let a = Value::Scalar(Scalar::new_unchecked(
+            Primitive::Angle(turns::Angle(1u128 << 124)),
+            Angle(iw(4)),
+        ));
+        match a.shl_(u_scalar(1, 8)).unwrap() {
+            Value::Scalar(s) => match s.value() {
+                Primitive::Angle(out) => assert_eq!(out.0, 2u128 << 124),
+                _ => panic!("expected angle primitive"),
+            },
+            _ => panic!("expected scalar"),
+        }
     }
 
     #[test]

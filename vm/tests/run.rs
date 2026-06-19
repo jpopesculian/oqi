@@ -367,6 +367,90 @@ fn teleport_fixture_runs_end_to_end() {
     assert_eq!(m.len(), 3, "expected 3 measurements, got {m:?}");
 }
 
+#[test]
+fn register_measurement_into_a_slice() {
+    // `measure q[0:3] -> ans[0:3]` measures a 4-qubit slice and stores the
+    // 4-bit result into a slice of a wider classical register. The store
+    // target is a slice, not a single element, so this exercises
+    // slice-assignment of a multi-bit value.
+    let outs = run_outputs(
+        r#"
+            include "stdgates.inc";
+            qubit[4] q;
+            x q[0];
+            x q[2];
+            bit[5] ans;
+            measure q[0:3] -> ans[0:3];
+        "#,
+    );
+    // q = 0b0101 over [0,1,2,3]; ans[4] stays 0. Bit registers print
+    // MSB-first, so ans reads "00101".
+    assert_eq!(outs, vec![("ans".to_string(), "\"00101\"".to_string())]);
+}
+
+#[test]
+fn angle_register_bit_indexing_and_shift() {
+    // An `angle[n]` is bit-indexable like `bit[n]`: assign into a bit via a
+    // measure target, shift left, assign again. The accumulated numerator
+    // 0b0011 = 3/16 turn = 3π/8.
+    let outs = run_outputs(
+        r#"
+            include "stdgates.inc";
+            qubit q;
+            angle[4] c;
+            x q;
+            measure q -> c[0];          // numerator 0b0001
+            c <<= 1;                    // 0b0010
+            reset q;
+            x q;
+            measure q -> c[0];          // 0b0011 = 3/16 turn
+        "#,
+    );
+    assert_eq!(outs, vec![("c".to_string(), "(3*π/8)".to_string())]);
+}
+
+#[test]
+fn bare_call_of_subroutine_executes_as_call() {
+    // `flip q;` is a `def` invoked with bare gate-call syntax (no parens).
+    // It must run as a subroutine call, flipping both qubits.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            def flip(qubit[2] qs) { x qs[0]; x qs[1]; }
+            qubit[2] q;
+            flip q;
+            bit[2] c = measure q;
+        "#,
+    );
+    assert_eq!(m, vec![(0, true), (1, true)]);
+}
+
+#[test]
+fn bare_call_of_subroutine_with_classical_then_qubit_args() {
+    // A bare-call passes classical args (in parens) before qubit operands;
+    // they must bind to the subroutine's params in declaration order.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            def maybe_flip(int[32] k, qubit[2] qs) {
+                if (k == 1) { x qs[0]; x qs[1]; }
+            }
+            qubit[2] q;
+            maybe_flip(1) q;
+            bit[2] c = measure q;
+        "#,
+    );
+    assert_eq!(m, vec![(0, true), (1, true)]);
+}
+
+#[test]
+fn ipe_fixture_runs_end_to_end() {
+    let src = include_str!("../../fixtures/qasm/ipe.qasm");
+    let m = run_measurements(src);
+    // The estimation loop runs n = 10 iterations, one measurement each.
+    assert_eq!(m.len(), 10, "expected 10 measurements, got {m:?}");
+}
+
 /// Run and return named outputs as `(name, displayed value)`, sorted by name.
 fn run_outputs(src: &str) -> Vec<(String, String)> {
     let module = build(src);

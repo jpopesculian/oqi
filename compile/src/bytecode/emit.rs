@@ -312,6 +312,34 @@ impl<'a> EmitCtx<'a> {
                 args,
                 qubits,
             }) => {
+                // A bare gate-call whose name resolves to a `def` (e.g.
+                // `hadamard_layer ancilla;`) is a subroutine call, not a gate.
+                // Redirect it to a `Call`, binding the classical args followed
+                // by the qubit operands (the order bare syntax always yields).
+                if self.symbols.get(*gate).kind == SymbolKind::Subroutine {
+                    if !modifiers.is_empty() {
+                        return Err(CompileError::new(ErrorKind::InvalidContext(
+                            "gate modifiers cannot be applied to a subroutine call".into(),
+                        ))
+                        .with_span(span));
+                    }
+                    let mut call_args: Vec<BcOperand> = args
+                        .iter()
+                        .map(|a| self.lower_expr_to_operand(a, instrs, reg_map))
+                        .collect::<Result<_>>()?;
+                    for q in qubits {
+                        call_args.push(self.lower_qubit_operand(q, instrs, reg_map, span)?);
+                    }
+                    instrs.push(BcInstr {
+                        op: BcOp::Call {
+                            dest: None,
+                            callee: BcCallTarget::Symbol(*gate),
+                            args: call_args,
+                        },
+                        span,
+                    });
+                    return Ok(());
+                }
                 let modifiers: Vec<BcGateModifier> = modifiers
                     .iter()
                     .map(|m| self.lower_gate_modifier(m, instrs, reg_map))
@@ -455,6 +483,26 @@ impl<'a> EmitCtx<'a> {
                 // Indexed store: read `old`, compute `new = old[index] = value`.
                 let base = BcOperand::Reg(self.reg_for(*old, reg_map));
                 let new_reg = self.reg_for(*new, reg_map);
+                // A slice or multi-element target (`reg[a:b] = ...`) writes a
+                // multi-bit value across several positions. Resolve the
+                // positions statically and emit a slice store; a single
+                // element keeps the scalar StoreElement path below.
+                if let Some(io) = indices.first().filter(|io| is_multi_index(io)) {
+                    if let Some(len) = self.symbol_bit_len(old.symbol) {
+                        let positions = qubits::resolve_static_index(io, len)?;
+                        let value = self.rvalue_to_operand(value, instrs, reg_map)?;
+                        instrs.push(BcInstr {
+                            op: BcOp::StoreSlice {
+                                new: new_reg,
+                                base,
+                                indices: positions.iter().map(|&i| i as u32).collect(),
+                                value,
+                            },
+                            span,
+                        });
+                        return Ok(());
+                    }
+                }
                 // OpenQASM supports multi-dim indexed assignment via
                 // multiple index ops; the bytecode currently flattens
                 // each as a separate StoreElement chained through a
@@ -842,6 +890,16 @@ impl<'a> EmitCtx<'a> {
         })
     }
 
+    /// Number of indexable bits of a declared bit-register symbol, used to
+    /// resolve negative and open-ended slice bounds. `None` for symbols that
+    /// aren't fixed-width bit registers.
+    fn symbol_bit_len(&self, sym: SymbolId) -> Option<usize> {
+        match self.symbols.get(sym).ty.value_ty()? {
+            ValueTy::Scalar(p) => p.bit_count().map(|w| w as usize),
+            _ => None,
+        }
+    }
+
     fn lower_gate_modifier(
         &mut self,
         m: &GateModifier<SsaExpr>,
@@ -1003,6 +1061,16 @@ impl<'a> EmitCtx<'a> {
         let id = StringId(self.strings.len() as u32);
         self.strings.push(s);
         id
+    }
+}
+
+/// True when an lvalue index selects more than one position — a range
+/// (`a:b`) or a multi-element discrete set — so the store target is a slice
+/// rather than a single element.
+fn is_multi_index(io: &IndexOp<SsaExpr>) -> bool {
+    match &io.kind {
+        IndexKind::Set(es) => es.len() > 1,
+        IndexKind::Items(items) => !matches!(items.as_slice(), [IndexItem::Single(_)]),
     }
 }
 

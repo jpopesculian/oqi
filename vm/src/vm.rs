@@ -335,6 +335,19 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 self.set(frame, *new, arr);
                 Ok(())
             }
+            BcOp::StoreSlice {
+                new,
+                base,
+                indices,
+                value,
+            } => {
+                let mut arr = self.eval(frame, base)?;
+                let value = self.eval(frame, value)?;
+                let sel = Index::Select(indices.iter().map(|&i| i as isize).collect());
+                arr.set(&[sel], value)?;
+                self.set(frame, *new, arr);
+                Ok(())
+            }
             BcOp::NewArray { dest, items } => {
                 let aty = self.array_ty(frame, *dest)?;
                 let prims: Vec<Primitive> = items

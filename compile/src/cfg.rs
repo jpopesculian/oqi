@@ -271,7 +271,7 @@ pub fn build_program(program: &sir::Program) -> Result<ProgramCfgs> {
             CalibrationBody::OpenPulse(stmts) => Ok(Some(build_body(
                 stmts.clone(),
                 CfgOwner::Calibration(i),
-                false,
+                c.return_ty.is_some(),
                 &program.symbols,
             )?)),
             CalibrationBody::Opaque(_) => Ok(None),

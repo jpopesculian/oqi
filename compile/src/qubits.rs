@@ -28,6 +28,15 @@ use crate::ssa::{SsaExpr, SsaExprKind};
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::Type;
 
+/// A runtime-bound qubit alias: its body-local bind slot and, when
+/// statically known, its length. `len` is `None` when the alias
+/// contains a runtime-valued range (its size is only known at run time).
+#[derive(Clone, Copy)]
+pub struct DynAlias {
+    pub slot: u32,
+    pub len: Option<usize>,
+}
+
 /// Static layout of all named quantum registers in global memory.
 pub struct QubitLayout {
     memory: QuantumMemory,
@@ -37,6 +46,12 @@ pub struct QubitLayout {
     /// Resolved qubit `let` aliases; populated during bytecode
     /// emission, in block order.
     aliases: HashMap<SymbolId, QuantumRegister>,
+    /// Runtime-bound qubit `let` aliases (built from non-constant index
+    /// expressions or derived from another dynamic alias); populated
+    /// during bytecode emission. References resolve to a
+    /// [`BcOperand::QubitAlias`](super::bytecode::BcOperand) slot bound
+    /// at run time by [`BcOp::AliasBind`](super::bytecode::BcOp).
+    dynamic_aliases: HashMap<SymbolId, DynAlias>,
     /// Gate qubit params and qubit-typed subroutine params, mapped to
     /// their positional slot (gate: position in the declared qubit
     /// list; subroutine: position in the full parameter list).
@@ -90,6 +105,7 @@ pub fn build_layout(program: &sir::Program) -> QubitLayout {
         memory,
         registers,
         aliases: HashMap::new(),
+        dynamic_aliases: HashMap::new(),
         param_slots,
         classical_params,
     }
@@ -120,6 +136,16 @@ impl QubitLayout {
 
     pub fn define_alias(&mut self, sym: SymbolId, reg: QuantumRegister) {
         self.aliases.insert(sym, reg);
+    }
+
+    /// Record a runtime-bound alias symbol and its bind slot.
+    pub fn define_dynamic_alias(&mut self, sym: SymbolId, slot: u32, len: Option<usize>) {
+        self.dynamic_aliases.insert(sym, DynAlias { slot, len });
+    }
+
+    /// The runtime-bound alias for `sym`, if it is one.
+    pub fn dynamic_alias_of(&self, sym: SymbolId) -> Option<DynAlias> {
+        self.dynamic_aliases.get(&sym).copied()
     }
 
     /// Global memory index of the qubit at logical position `local`.
@@ -278,10 +304,10 @@ pub fn resolve_static_index(io: &IndexOp<SsaExpr>, len: usize) -> Result<Vec<usi
     let idxs = match &io.kind {
         IndexKind::Set(es) => es
             .iter()
-            .map(|e| normalize(const_index(e)?, len))
+            .map(|e| normalize_index(const_index(e)?, len))
             .collect::<Result<Vec<_>>>()?,
         IndexKind::Items(items) => match items.as_slice() {
-            [IndexItem::Single(e)] => vec![normalize(const_index(e)?, len)?],
+            [IndexItem::Single(e)] => vec![normalize_index(const_index(e)?, len)?],
             [IndexItem::Range(r)] => expand_range(r, len)?,
             _ => {
                 return Err(CompileError::new(ErrorKind::Unsupported(
@@ -324,7 +350,7 @@ fn const_index(e: &SsaExpr) -> Result<i128> {
 }
 
 /// Map a possibly-negative index into `0..len`.
-fn normalize(idx: i128, len: usize) -> Result<usize> {
+pub fn normalize_index(idx: i128, len: usize) -> Result<usize> {
     let n = len as i128;
     let adjusted = if idx < 0 { idx + n } else { idx };
     if (0..n).contains(&adjusted) {
@@ -376,7 +402,7 @@ fn expand_range(r: &RangeExpr<SsaExpr>, len: usize) -> Result<Vec<usize>> {
     let mut out = Vec::new();
     let mut cur = start;
     while (step > 0 && cur <= end) || (step < 0 && cur >= end) {
-        out.push(normalize(cur, len)?);
+        out.push(normalize_index(cur, len)?);
         cur += step;
     }
     Ok(out)

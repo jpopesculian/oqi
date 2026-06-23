@@ -33,9 +33,9 @@ use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use super::phi_elim::deconstruct_phis;
 use super::regalloc::{RegMap, allocate_registers};
 use super::types::{
-    BcBlock, BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcProcedure,
-    BcSwitchLabels, BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner, QubitRegion,
-    QubitRegionId, QubitTable, Reg, StringId,
+    BcAliasSegment, BcBlock, BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand,
+    BcProcedure, BcSwitchLabels, BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner,
+    QubitRegion, QubitRegionId, QubitTable, Reg, StringId,
 };
 
 /// Entry point: lower an SSA program to bytecode against the global
@@ -99,6 +99,10 @@ struct EmitCtx<'a> {
     qubit_regions: Vec<QubitRegion>,
     /// Resolved ranges of each entry in `qubit_regions`, for dedup.
     region_index: HashMap<Vec<(u32, u32)>, QubitRegionId>,
+    /// Next free body-local slot for a runtime-bound qubit alias
+    /// (`BcOp::AliasBind`). Globally unique across the module; each frame
+    /// binds only the slots its body touches.
+    next_alias_slot: u32,
     procedures: Vec<BcProcedure>,
     constants: Vec<Value>,
     /// Postcard encoding of each entry in `constants`, for dedup.
@@ -111,6 +115,26 @@ struct EmitCtx<'a> {
     outputs: Vec<(SymbolId, Reg)>,
 }
 
+/// The base a runtime-alias operand indexes: a declared register /
+/// static alias, or another runtime-bound alias.
+enum AliasSrc {
+    Region {
+        reg: oqi_quantum::QuantumRegister,
+        origin: SymbolId,
+    },
+    Alias(qubits::DynAlias),
+}
+
+impl AliasSrc {
+    /// Statically known length of the base, if any.
+    fn len(&self) -> Option<usize> {
+        match self {
+            AliasSrc::Region { reg, .. } => Some(reg.len()),
+            AliasSrc::Alias(da) => da.len,
+        }
+    }
+}
+
 impl<'a> EmitCtx<'a> {
     fn new(symbols: &'a SymbolTable, layout: QubitLayout) -> Self {
         Self {
@@ -118,6 +142,7 @@ impl<'a> EmitCtx<'a> {
             layout,
             qubit_regions: Vec::new(),
             region_index: HashMap::new(),
+            next_alias_slot: 0,
             procedures: Vec::new(),
             constants: Vec::new(),
             const_index: HashMap::new(),
@@ -287,22 +312,37 @@ impl<'a> EmitCtx<'a> {
         let span = stmt.span;
         match &stmt.kind {
             SsaStmtKind::Alias(Alias { symbol, value }) => {
-                // Qubit aliases resolve into the layout and emit
-                // nothing; classical aliases keep their metadata op.
-                match self.layout.resolve_alias_value(value, self.symbols)? {
-                    Some(reg) => self.layout.define_alias(*symbol, reg),
-                    None => {
-                        let value = value
-                            .iter()
-                            .map(|e| self.lower_expr_to_operand(e, instrs, reg_map))
-                            .collect::<Result<_>>()?;
-                        instrs.push(BcInstr {
-                            op: BcOp::Alias {
-                                symbol: *symbol,
-                                value,
-                            },
-                            span,
-                        });
+                // An operand referencing another runtime-bound alias
+                // forces this alias to be runtime-bound too.
+                let uses_dynamic = value.iter().any(|e| {
+                    qubits::peel_index_chain(e)
+                        .is_some_and(|(s, _)| self.layout.dynamic_alias_of(s).is_some())
+                });
+                if uses_dynamic {
+                    self.lower_dynamic_alias(*symbol, value, instrs, reg_map, span)?;
+                } else {
+                    // Static qubit aliases resolve into the layout and
+                    // emit nothing; a non-constant index falls back to a
+                    // runtime bind; classical aliases keep their metadata op.
+                    match self.layout.resolve_alias_value(value, self.symbols) {
+                        Ok(Some(reg)) => self.layout.define_alias(*symbol, reg),
+                        Err(e) if matches!(e.kind, ErrorKind::NonConstantExpression) => {
+                            self.lower_dynamic_alias(*symbol, value, instrs, reg_map, span)?;
+                        }
+                        Err(e) => return Err(e),
+                        Ok(None) => {
+                            let value = value
+                                .iter()
+                                .map(|e| self.lower_expr_to_operand(e, instrs, reg_map))
+                                .collect::<Result<_>>()?;
+                            instrs.push(BcInstr {
+                                op: BcOp::Alias {
+                                    symbol: *symbol,
+                                    value,
+                                },
+                                span,
+                            });
+                        }
                     }
                 }
             }
@@ -626,9 +666,12 @@ impl<'a> EmitCtx<'a> {
                     CallTarget::Symbol(s) => BcCallTarget::Symbol(*s),
                     CallTarget::Intrinsic(i) => BcCallTarget::Intrinsic(i.clone()),
                 };
+                // A void call (statement position) yields no value, so it
+                // has no destination — mirroring the bare gate-call path.
+                let dest = e.ty.value_ty().is_some().then_some(dest);
                 instrs.push(BcInstr {
                     op: BcOp::Call {
-                        dest: Some(dest),
+                        dest,
                         callee,
                         args,
                     },
@@ -791,13 +834,50 @@ impl<'a> EmitCtx<'a> {
                                     Box::new(self.lower_expr_to_operand(e, instrs, reg_map)?);
                                 Ok(BcOperand::QubitIndexed { region, index })
                             }
-                            None => Err(CompileError::new(ErrorKind::Unsupported(
-                                "runtime-valued slice of a quantum register".into(),
-                            ))
-                            .with_span(io.span)),
+                            // Runtime multi-element slice: materialize a
+                            // transient alias and reference it by slot.
+                            None => {
+                                let src = AliasSrc::Region {
+                                    reg: reg.clone(),
+                                    origin: symbol,
+                                };
+                                let slot = self
+                                    .bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
+                                Ok(BcOperand::QubitAlias { slot, index: None })
+                            }
                         }
                     }
                     Err(e) => Err(e),
+                },
+                _ => Err(CompileError::new(ErrorKind::Unsupported(
+                    "multi-dimensional index on a quantum register".into(),
+                ))
+                .with_span(span)),
+            };
+        }
+
+        // Runtime-bound alias: resolved through its bind slot by the VM.
+        if let Some(da) = self.layout.dynamic_alias_of(symbol) {
+            return match indices {
+                [] => Ok(BcOperand::QubitAlias {
+                    slot: da.slot,
+                    index: None,
+                }),
+                [io] => match qubits::single_index_expr(io) {
+                    Some(e) => {
+                        let index = Box::new(self.alias_index_operand(&da, e, instrs, reg_map)?);
+                        Ok(BcOperand::QubitAlias {
+                            slot: da.slot,
+                            index: Some(index),
+                        })
+                    }
+                    // Runtime multi-element slice of an alias: re-bind it
+                    // through a transient alias slot.
+                    None => {
+                        let src = AliasSrc::Alias(da);
+                        let slot = self.bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
+                        Ok(BcOperand::QubitAlias { slot, index: None })
+                    }
                 },
                 _ => Err(CompileError::new(ErrorKind::Unsupported(
                     "multi-dimensional index on a quantum register".into(),
@@ -811,6 +891,253 @@ impl<'a> EmitCtx<'a> {
             self.symbols.get(symbol).name
         )))
         .with_span(span))
+    }
+
+    /// Lower a runtime-bound `let` alias to a [`BcOp::AliasBind`] and
+    /// register its slot/length for later [`BcOperand::QubitAlias`]
+    /// references. Each `++` operand becomes one or more segments.
+    fn lower_dynamic_alias(
+        &mut self,
+        alias_sym: SymbolId,
+        value: &[SsaExpr],
+        instrs: &mut Vec<BcInstr>,
+        reg_map: &mut RegMap,
+        span: Span,
+    ) -> Result<()> {
+        let slot = self.next_alias_slot;
+        self.next_alias_slot += 1;
+
+        let mut segments: Vec<BcAliasSegment> = Vec::new();
+        let mut total_len: Option<usize> = Some(0);
+        for expr in value {
+            let len = self.alias_operand_segments(expr, &mut segments, instrs, reg_map)?;
+            total_len = match (total_len, len) {
+                (Some(a), Some(b)) => Some(a + b),
+                _ => None,
+            };
+        }
+
+        instrs.push(BcInstr {
+            op: BcOp::AliasBind { slot, segments },
+            span,
+        });
+        self.layout
+            .define_dynamic_alias(alias_sym, slot, total_len);
+        Ok(())
+    }
+
+    /// Append the segment(s) for one `++` operand of a runtime alias,
+    /// returning its length (`None` if it contains a runtime range).
+    fn alias_operand_segments(
+        &mut self,
+        expr: &SsaExpr,
+        out: &mut Vec<BcAliasSegment>,
+        instrs: &mut Vec<BcInstr>,
+        reg_map: &mut RegMap,
+    ) -> Result<Option<usize>> {
+        if matches!(expr.kind, SsaExprKind::HardwareQubit(_)) {
+            return Err(CompileError::new(ErrorKind::Unsupported(
+                "physical qubits cannot be aliased".into(),
+            ))
+            .with_span(expr.span));
+        }
+        let Some((sym, ops)) = qubits::peel_index_chain(expr) else {
+            return Err(CompileError::new(ErrorKind::Unsupported(
+                "cannot mix quantum and classical operands in an alias".into(),
+            ))
+            .with_span(expr.span));
+        };
+        if self.layout.param_slot(sym).is_some() {
+            return Err(CompileError::new(ErrorKind::Unsupported(
+                "aliases of qubit parameters are not supported".into(),
+            ))
+            .with_span(expr.span));
+        }
+
+        // The base this operand indexes: a declared register / static
+        // alias, or another runtime-bound alias.
+        let src = if let Some(reg) = self.layout.register_of(sym) {
+            AliasSrc::Region {
+                reg: reg.clone(),
+                origin: sym,
+            }
+        } else if let Some(da) = self.layout.dynamic_alias_of(sym) {
+            AliasSrc::Alias(da)
+        } else {
+            return Err(CompileError::new(ErrorKind::Unsupported(format!(
+                "cannot resolve qubit reference `{}`",
+                self.symbols.get(sym).name
+            )))
+            .with_span(expr.span));
+        };
+
+        self.alias_segments_for(&src, &ops, out, instrs, reg_map, expr.span)
+    }
+
+    /// Build the alias segment(s) for one indexed qubit operand against
+    /// `src`. Shared by [`Self::alias_operand_segments`] (the `let`-alias
+    /// path) and [`Self::bind_transient_alias`] (inline runtime slices).
+    fn alias_segments_for(
+        &mut self,
+        src: &AliasSrc,
+        ops: &[&IndexOp<SsaExpr>],
+        out: &mut Vec<BcAliasSegment>,
+        instrs: &mut Vec<BcInstr>,
+        reg_map: &mut RegMap,
+        span: Span,
+    ) -> Result<Option<usize>> {
+        match ops {
+            [] => {
+                out.push(BcAliasSegment::Operand(self.alias_whole_operand(src)));
+                Ok(src.len())
+            }
+            [io] => match &io.kind {
+                IndexKind::Set(es) => {
+                    if es.is_empty() {
+                        return Err(CompileError::new(ErrorKind::InvalidContext(
+                            "a quantum register cannot be indexed by an empty index set".into(),
+                        ))
+                        .with_span(io.span));
+                    }
+                    for e in es {
+                        let op = self.alias_element_operand(src, e, instrs, reg_map)?;
+                        out.push(BcAliasSegment::Operand(op));
+                    }
+                    Ok(Some(es.len()))
+                }
+                IndexKind::Items(items) => match items.as_slice() {
+                    [IndexItem::Single(e)] => {
+                        let op = self.alias_element_operand(src, e, instrs, reg_map)?;
+                        out.push(BcAliasSegment::Operand(op));
+                        Ok(Some(1))
+                    }
+                    [IndexItem::Range(r)] => {
+                        let source = self.alias_whole_operand(src);
+                        let mut lower = |b: Option<&SsaExpr>| -> Result<Option<Box<BcOperand>>> {
+                            match b {
+                                Some(e) => Ok(Some(Box::new(
+                                    self.lower_expr_to_operand(e, instrs, reg_map)?,
+                                ))),
+                                None => Ok(None),
+                            }
+                        };
+                        let start = lower(r.start.as_deref())?;
+                        let step = lower(r.step.as_deref())?;
+                        let end = lower(r.end.as_deref())?;
+                        out.push(BcAliasSegment::Slice {
+                            source,
+                            start,
+                            step,
+                            end,
+                        });
+                        // Length depends on runtime bounds.
+                        Ok(None)
+                    }
+                    _ => Err(CompileError::new(ErrorKind::Unsupported(
+                        "multi-dimensional index on a quantum register".into(),
+                    ))
+                    .with_span(io.span)),
+                },
+            },
+            _ => Err(CompileError::new(ErrorKind::Unsupported(
+                "multi-dimensional index on a quantum register".into(),
+            ))
+            .with_span(span)),
+        }
+    }
+
+    /// Materialize a runtime multi-element slice (`q[{a, b}]`, `q[i:j]`)
+    /// used directly as an operand: allocate an anonymous alias slot, emit
+    /// its [`BcOp::AliasBind`], and return the slot. The caller wraps it in
+    /// a [`BcOperand::QubitAlias`].
+    fn bind_transient_alias(
+        &mut self,
+        src: &AliasSrc,
+        ops: &[&IndexOp<SsaExpr>],
+        instrs: &mut Vec<BcInstr>,
+        reg_map: &mut RegMap,
+        span: Span,
+    ) -> Result<u32> {
+        let slot = self.next_alias_slot;
+        self.next_alias_slot += 1;
+        let mut segments = Vec::new();
+        self.alias_segments_for(src, ops, &mut segments, instrs, reg_map, span)?;
+        instrs.push(BcInstr {
+            op: BcOp::AliasBind { slot, segments },
+            span,
+        });
+        Ok(slot)
+    }
+
+    /// The operand resolving to the whole base list of `src`.
+    fn alias_whole_operand(&mut self, src: &AliasSrc) -> BcOperand {
+        match src {
+            AliasSrc::Region { reg, origin } => {
+                BcOperand::QubitRegion(self.region_for(reg, Some(*origin)))
+            }
+            AliasSrc::Alias(da) => BcOperand::QubitAlias {
+                slot: da.slot,
+                index: None,
+            },
+        }
+    }
+
+    /// A single-qubit operand selecting element `e` of `src`.
+    fn alias_element_operand(
+        &mut self,
+        src: &AliasSrc,
+        e: &SsaExpr,
+        instrs: &mut Vec<BcInstr>,
+        reg_map: &mut RegMap,
+    ) -> Result<BcOperand> {
+        match src {
+            AliasSrc::Region { reg, origin } => match qubits::literal_index(e) {
+                Some(k) => {
+                    let local =
+                        qubits::normalize_index(k, reg.len()).map_err(|err| err.with_span(e.span))?;
+                    Ok(BcOperand::Qubit(self.must_global(reg, local)))
+                }
+                None => {
+                    let region = self.region_for(reg, Some(*origin));
+                    let index = Box::new(self.lower_expr_to_operand(e, instrs, reg_map)?);
+                    Ok(BcOperand::QubitIndexed { region, index })
+                }
+            },
+            AliasSrc::Alias(da) => {
+                let index = Box::new(self.alias_index_operand(da, e, instrs, reg_map)?);
+                Ok(BcOperand::QubitAlias {
+                    slot: da.slot,
+                    index: Some(index),
+                })
+            }
+        }
+    }
+
+    /// Lower a logical index into a runtime alias. A constant index is
+    /// normalized against the alias length when known (so negative
+    /// indices and bounds are resolved at compile time); otherwise it is
+    /// left for the VM to resolve and bounds-check.
+    fn alias_index_operand(
+        &mut self,
+        da: &qubits::DynAlias,
+        e: &SsaExpr,
+        instrs: &mut Vec<BcInstr>,
+        reg_map: &mut RegMap,
+    ) -> Result<BcOperand> {
+        match (qubits::literal_index(e), da.len) {
+            (Some(k), Some(len)) => {
+                let local =
+                    qubits::normalize_index(k, len).map_err(|err| err.with_span(e.span))?;
+                Ok(BcOperand::Const(
+                    self.intern_const(Value::int(local as i128, oqi_classical::iw(64))),
+                ))
+            }
+            (Some(k), None) if k < 0 => Err(CompileError::new(ErrorKind::Unsupported(
+                "negative index into a runtime-length alias".into(),
+            ))
+            .with_span(e.span)),
+            _ => self.lower_expr_to_operand(e, instrs, reg_map),
+        }
     }
 
     /// Whether `e` is a (possibly indexed) reference to a named qubit

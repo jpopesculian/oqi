@@ -4,8 +4,8 @@
 use std::fmt;
 
 use super::types::{
-    BcBlock, BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcSwitchLabels,
-    BcTerminator, BlockId, ConstId, ProcId, ProcOwner, Reg, StringId,
+    BcAliasSegment, BcBlock, BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand,
+    BcSwitchLabels, BcTerminator, BlockId, ConstId, ProcId, ProcOwner, Reg, StringId,
 };
 
 impl fmt::Display for BcModule {
@@ -292,6 +292,43 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             }
             Ok(())
         }
+        BcOp::AliasBind { slot, segments } => {
+            write!(f, "aliasbind qa{slot} = ")?;
+            for (i, seg) in segments.iter().enumerate() {
+                if i > 0 {
+                    write!(f, " ++ ")?;
+                }
+                fmt_alias_segment(f, seg)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn fmt_alias_segment(f: &mut fmt::Formatter<'_>, seg: &BcAliasSegment) -> fmt::Result {
+    match seg {
+        BcAliasSegment::Operand(op) => fmt_operand(f, op),
+        BcAliasSegment::Slice {
+            source,
+            start,
+            step,
+            end,
+        } => {
+            fmt_operand(f, source)?;
+            write!(f, "[")?;
+            if let Some(s) = start {
+                fmt_operand(f, s)?;
+            }
+            write!(f, ":")?;
+            if let Some(s) = step {
+                fmt_operand(f, s)?;
+                write!(f, ":")?;
+            }
+            if let Some(e) = end {
+                fmt_operand(f, e)?;
+            }
+            write!(f, "]")
+        }
     }
 }
 
@@ -384,6 +421,15 @@ fn fmt_operand(f: &mut fmt::Formatter<'_>, op: &BcOperand) -> fmt::Result {
         }
         BcOperand::QubitParam { slot, index } => {
             write!(f, "qp{slot}")?;
+            if let Some(idx) = index {
+                write!(f, "[")?;
+                fmt_operand(f, idx)?;
+                write!(f, "]")?;
+            }
+            Ok(())
+        }
+        BcOperand::QubitAlias { slot, index } => {
+            write!(f, "qa{slot}")?;
             if let Some(idx) = index {
                 write!(f, "[")?;
                 fmt_operand(f, idx)?;

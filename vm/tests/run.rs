@@ -490,6 +490,152 @@ fn ipe_fixture_runs_end_to_end() {
     assert_eq!(m.len(), 10, "expected 10 measurements, got {m:?}");
 }
 
+#[test]
+fn runtime_indexed_set_alias_in_loop() {
+    // `let bp = q[{2*i, 2*i+1}]` is a runtime-bound alias: each loop
+    // iteration aliases a different pair, set/CX it, and measure both.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            qubit[4] q;
+            bit[2] c;
+            for uint i in [0:1] {
+                let bp = q[{2*i, 2*i + 1}];
+                x bp[0];
+                cx bp[0], bp[1];
+                c[0] = measure bp[0];
+                c[1] = measure bp[1];
+            }
+        "#,
+    );
+    // Pairs (0,1) then (2,3), each driven to |11>.
+    assert_eq!(m, vec![(0, true), (1, true), (2, true), (3, true)]);
+}
+
+#[test]
+fn runtime_range_alias() {
+    // `let a = q[i:j]` with runtime bounds aliases q[1], q[2], q[3].
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            qubit[6] q;
+            uint i = 1;
+            uint j = 3;
+            let a = q[i:j];
+            x a[0];
+            x a[2];
+            bit c0 = measure a[0];
+            bit c1 = measure a[1];
+            bit c2 = measure a[2];
+        "#,
+    );
+    // a[0]=q[1] set, a[1]=q[2] ground, a[2]=q[3] set.
+    assert_eq!(m, vec![(1, true), (2, false), (3, true)]);
+}
+
+#[test]
+fn inline_runtime_indexed_set_operand() {
+    // A runtime-valued index set used directly as a gate operand, with no
+    // intervening `let` alias: `x q[{2*i, 2*i+1}]` broadcasts X over each pair.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            qubit[4] q;
+            bit[4] c;
+            for uint i in [0:1] {
+                x q[{2*i, 2*i + 1}];
+            }
+            c[0] = measure q[0];
+            c[1] = measure q[1];
+            c[2] = measure q[2];
+            c[3] = measure q[3];
+        "#,
+    );
+    assert_eq!(m, vec![(0, true), (1, true), (2, true), (3, true)]);
+}
+
+#[test]
+fn inline_runtime_range_operand() {
+    // A runtime-valued range used directly as a gate operand, no `let` alias.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            qubit[6] q;
+            uint i = 1;
+            uint j = 3;
+            x q[i:j];
+            bit c0 = measure q[1];
+            bit c1 = measure q[2];
+            bit c2 = measure q[3];
+        "#,
+    );
+    // q[1..=3] all flipped to |1>.
+    assert_eq!(m, vec![(1, true), (2, true), (3, true)]);
+}
+
+#[test]
+fn inline_set_index_of_runtime_alias() {
+    // A set index applied directly to a runtime-bound alias (`a` is dynamic
+    // because `q[i:j]` has runtime bounds) — exercises the alias-base path of
+    // the transient-alias lowering.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            qubit[6] q;
+            uint i = 1;
+            uint j = 4;
+            let a = q[i:j];
+            x a[{0, 2}];
+            bit c0 = measure q[1];
+            bit c1 = measure q[2];
+            bit c2 = measure q[3];
+        "#,
+    );
+    // a = [q1,q2,q3,q4]; a[{0,2}] = q1,q3 flipped; q2 stays |0>.
+    assert_eq!(m, vec![(1, true), (2, false), (3, true)]);
+}
+
+#[test]
+fn teleportation_preserves_a_phase_state() {
+    // Regression guard for the built-in `U` global-phase convention: a
+    // controlled gate (`cx = ctrl @ x`) must carry no spurious relative
+    // phase. Teleporting |+> and applying H must yield |0> deterministically
+    // — a Z error on the teleported qubit (the old bug) would give |1>.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            qubit[3] q;
+            bit out;
+            reset q[0]; h q[0];                              // input |+>
+            reset q[1]; reset q[2]; h q[1]; cx q[1], q[2];   // Bell pair
+            cx q[0], q[1];
+            h q[0];
+            bit[2] pf;
+            pf[0] = measure q[0];
+            pf[1] = measure q[1];
+            if (pf[0]==1) z q[2];
+            if (pf[1]==1) x q[2];
+            h q[2];
+            out = measure q[2];
+        "#,
+    );
+    // The final measurement (on q[2]) must be 0 regardless of the random
+    // intermediate outcomes.
+    assert_eq!(m.last().map(|&(q, b)| (q, b)), Some((2, false)));
+}
+
+#[test]
+fn varteleport_fixture_runs_end_to_end() {
+    // Exercises a `teleport` subroutine called over inline runtime-indexed
+    // qubit args (`q[2*i - 1]`, `q[{2*i, 2*i + 1}]`) inside a loop.
+    let src = include_str!("../../fixtures/qasm/varteleport.qasm");
+    let m = run_measurements(src);
+    // hop 0 (2 measurements) + 9 loop hops (2 each) + 1 final = 21. The final
+    // bit is probabilistic (reflects the prepared input state), so only the
+    // count is asserted.
+    assert_eq!(m.len(), 21, "expected 21 measurements, got {m:?}");
+}
+
 /// Run and return named outputs as `(name, displayed value)`, sorted by name.
 fn run_outputs(src: &str) -> Vec<(String, String)> {
     let module = build(src);

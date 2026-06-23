@@ -39,7 +39,7 @@ pub struct BcVersion {
 }
 
 impl BcVersion {
-    pub const CURRENT: BcVersion = BcVersion { major: 0, minor: 3 };
+    pub const CURRENT: BcVersion = BcVersion { major: 0, minor: 4 };
 }
 
 /// Global quantum memory: every named register is statically allocated
@@ -165,6 +165,30 @@ pub enum BcOperand {
     QubitParam {
         slot: u32,
         index: Option<Box<BcOperand>>,
+    },
+    /// Body-local runtime alias, bound by [`BcOp::AliasBind`]. The VM
+    /// maps the logical `index` through the bound qubit list at run time;
+    /// `index: None` refers to the whole alias.
+    QubitAlias {
+        slot: u32,
+        index: Option<Box<BcOperand>>,
+    },
+}
+
+/// One piece of a runtime-bound qubit alias value (see [`BcOp::AliasBind`]).
+#[derive(Clone, Serialize, Deserialize)]
+pub enum BcAliasSegment {
+    /// Append the qubit(s) this operand resolves to via the VM's qubit
+    /// resolution (single qubit, whole region, runtime index, …).
+    Operand(BcOperand),
+    /// Append a runtime slice `source[start : step : end]` of `source`'s
+    /// qubit list, following OpenQASM range semantics (defaults: start 0,
+    /// step 1, end len-1; negative indices count from the end).
+    Slice {
+        source: BcOperand,
+        start: Option<Box<BcOperand>>,
+        step: Option<Box<BcOperand>>,
+        end: Option<Box<BcOperand>>,
     },
 }
 
@@ -396,6 +420,12 @@ pub enum BcOp {
     Alias {
         symbol: SymbolId,
         value: Vec<BcOperand>,
+    },
+    /// Bind a body-local qubit alias `slot` to the concatenation of the
+    /// resolved `segments`, for later [`BcOperand::QubitAlias`] references.
+    AliasBind {
+        slot: u32,
+        segments: Vec<BcAliasSegment>,
     },
 }
 

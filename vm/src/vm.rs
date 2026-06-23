@@ -13,8 +13,8 @@ use oqi_classical::{
     ValueTy, iw, ops,
 };
 use oqi_compile::bytecode::{
-    BcCallTarget, BcGateModifier, BcModule, BcOp, BcOperand, BcSwitchLabels, BcTerminator, BlockId,
-    ProcId, ProcOwner, Reg,
+    BcAliasSegment, BcCallTarget, BcGateModifier, BcModule, BcOp, BcOperand, BcSwitchLabels,
+    BcTerminator, BlockId, ProcId, ProcOwner, Reg,
 };
 use oqi_compile::sir::Intrinsic;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
@@ -45,6 +45,9 @@ struct Frame {
     /// Bound qubit parameters, indexed by slot; each slot holds the
     /// resolved global qubit indices for that parameter.
     qubit_args: Vec<Vec<u32>>,
+    /// Runtime-bound qubit aliases, keyed by bind slot; populated by
+    /// [`BcOp::AliasBind`](oqi_compile::bytecode::BcOp) as the body runs.
+    aliases: HashMap<u32, Vec<u32>>,
     /// Modifier context (controls / power) inherited by gate calls in
     /// this body.
     mods: GateModifiers,
@@ -185,6 +188,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             proc: entry,
             regs,
             qubit_args: Vec::new(),
+            aliases: HashMap::new(),
             mods: GateModifiers::none(),
         };
         self.exec_proc(&mut frame)?;
@@ -422,9 +426,36 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     proc: *body,
                     regs: self.fresh_regs(*body),
                     qubit_args: Vec::new(),
+                    aliases: HashMap::new(),
                     mods: GateModifiers::none(),
                 };
                 self.exec_proc(&mut child)?;
+                Ok(())
+            }
+            BcOp::AliasBind { slot, segments } => {
+                let mut resolved: Vec<u32> = Vec::new();
+                for seg in segments {
+                    match seg {
+                        BcAliasSegment::Operand(op) => resolved.extend(self.qubits(frame, op)?),
+                        BcAliasSegment::Slice {
+                            source,
+                            start,
+                            step,
+                            end,
+                        } => {
+                            let base = self.qubits(frame, source)?;
+                            let sliced = self.slice_indices(
+                                frame,
+                                &base,
+                                start.as_deref(),
+                                step.as_deref(),
+                                end.as_deref(),
+                            )?;
+                            resolved.extend(sliced);
+                        }
+                    }
+                }
+                frame.aliases.insert(*slot, resolved);
                 Ok(())
             }
             BcOp::Pragma { .. } | BcOp::Alias { .. } | BcOp::CalOpaque { .. } => Ok(()),
@@ -517,6 +548,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             proc: proc_id,
             regs,
             qubit_args,
+            aliases: HashMap::new(),
             mods: GateModifiers::none(),
         })
     }
@@ -607,6 +639,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         proc: proc_id,
                         regs,
                         qubit_args,
+                        aliases: HashMap::new(),
                         mods: eff.clone(),
                     };
                     self.exec_proc(&mut child)?;
@@ -620,6 +653,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         proc: proc_id,
                         regs,
                         qubit_args,
+                        aliases: HashMap::new(),
                         mods: GateModifiers::none(),
                     };
                     let prev = self.recording.take();
@@ -843,6 +877,23 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     }
                 }
             }
+            BcOperand::QubitAlias { slot, index } => {
+                let bound = frame
+                    .aliases
+                    .get(slot)
+                    .ok_or_else(|| VmErrorKind::Unsupported("unbound qubit alias".into()))?;
+                match index {
+                    None => bound.clone(),
+                    Some(ix) => {
+                        let i = value_usize(&self.eval(frame, ix)?)?;
+                        bound
+                            .get(i)
+                            .copied()
+                            .map(|q| vec![q])
+                            .ok_or_else(|| VmErrorKind::Type(format!("qubit index {i} out of range")))?
+                    }
+                }
+            }
             _ => return Err(VmErrorKind::Type("expected a qubit operand".into())),
         };
 
@@ -873,6 +924,50 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             out.extend(*s..*e);
         }
         out
+    }
+
+    /// Apply OpenQASM range semantics `base[start : step : end]` at run
+    /// time (docs/types.rst): inclusive bounds, defaults start 0 / step 1
+    /// / end len-1, negative indices counting from the end. Used to bind
+    /// runtime-valued alias slices ([`BcAliasSegment::Slice`]).
+    fn slice_indices(
+        &self,
+        frame: &Frame,
+        base: &[u32],
+        start: Option<&BcOperand>,
+        step: Option<&BcOperand>,
+        end: Option<&BcOperand>,
+    ) -> Result<Vec<u32>> {
+        let len = base.len() as i128;
+        let step = match step {
+            Some(op) => value_i128(&self.eval(frame, op)?)?,
+            None => 1,
+        };
+        if step == 0 {
+            return Err(VmErrorKind::Type("range step must be non-zero".into()));
+        }
+        let start = match start {
+            Some(op) => value_i128(&self.eval(frame, op)?)?,
+            None if step > 0 => 0,
+            None => len - 1,
+        };
+        let end = match end {
+            Some(op) => value_i128(&self.eval(frame, op)?)?,
+            None if step > 0 => len - 1,
+            None => 0,
+        };
+
+        let mut out = Vec::new();
+        let mut cur = start;
+        while (step > 0 && cur <= end) || (step < 0 && cur >= end) {
+            let adj = if cur < 0 { cur + len } else { cur };
+            if !(0..len).contains(&adj) {
+                return Err(VmErrorKind::Type(format!("qubit index {cur} out of range")));
+            }
+            out.push(base[adj as usize]);
+            cur += step;
+        }
+        Ok(out)
     }
 
     /// A fresh register file for `proc`, with every register set to its
@@ -957,6 +1052,7 @@ fn is_qubit_operand(op: &BcOperand) -> bool {
             | BcOperand::QubitRegion(_)
             | BcOperand::QubitIndexed { .. }
             | BcOperand::QubitParam { .. }
+            | BcOperand::QubitAlias { .. }
     )
 }
 

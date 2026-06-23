@@ -319,16 +319,46 @@ mod tests {
     }
 
     #[test]
-    fn runtime_shaped_alias_is_rejected() {
-        let err =
-            match try_build_bytecode("input uint[32] i; qubit[4] q; let bp = q[{i}]; reset bp;") {
-                Err(e) => e,
-                Ok(_) => panic!("runtime-shaped alias should be rejected"),
-            };
-        assert!(matches!(
-            err.kind,
-            crate::error::ErrorKind::NonConstantExpression
-        ));
+    fn runtime_indexed_alias_emits_aliasbind_and_qubit_alias() {
+        // A `let` over a runtime index set binds a slot at run time
+        // (BcOp::AliasBind) and references resolve to BcOperand::QubitAlias.
+        let module = build_bytecode(
+            "input uint[32] i; qubit[8] q; let bp = q[{2*i, 2*i + 1}]; reset bp; reset bp[1];",
+        );
+        let bind = all_ops(&module).any(|op| {
+            matches!(op, BcOp::AliasBind { slot: 0, segments } if segments.len() == 2)
+        });
+        assert!(bind, "runtime alias should emit AliasBind:\n{module}");
+        let whole = all_ops(&module).any(|op| {
+            matches!(
+                op,
+                BcOp::Reset {
+                    qubit: BcOperand::QubitAlias {
+                        slot: 0,
+                        index: None
+                    }
+                }
+            )
+        });
+        assert!(whole, "`reset bp` should use QubitAlias slot 0:\n{module}");
+        let indexed = all_ops(&module).any(|op| {
+            matches!(
+                op,
+                BcOp::Reset {
+                    qubit: BcOperand::QubitAlias {
+                        slot: 0,
+                        index: Some(_)
+                    }
+                }
+            )
+        });
+        assert!(indexed, "`reset bp[1]` should index QubitAlias:\n{module}");
+        // Static aliases must still resolve at compile time (no AliasBind).
+        let static_mod = build_bytecode("qubit[4] q; let a = q[1:2]; reset a;");
+        assert!(
+            !all_ops(&static_mod).any(|op| matches!(op, BcOp::AliasBind { .. })),
+            "static alias should not emit AliasBind:\n{static_mod}"
+        );
     }
 
     #[test]

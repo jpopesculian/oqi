@@ -177,10 +177,17 @@ impl<F: Float> Unitary<F> {
         let two = F::one() + F::one();
         let c = (self.theta / two).cos();
         let s = (self.theta / two).sin();
-        let m00 = Complex::new(c, F::zero());
-        let m01 = -Complex::from_polar(s, self.lambda);
-        let m10 = Complex::from_polar(s, self.phi);
-        let m11 = Complex::from_polar(c, self.phi + self.lambda);
+        // OpenQASM's built-in `U` carries a global phase of e^{iθ/2}
+        // relative to the bare Bloch/ZYZ form (docs/gates.rst:304). It is
+        // unobservable for an uncontrolled gate, but becomes a *relative*
+        // phase once `U` is controlled — e.g. `cx = ctrl @ x` where
+        // `x = U(π,0,π); gphase(-π/2)`. Omitting it makes every controlled
+        // standard-library gate wrong by a phase, so it must live here.
+        let gp = Complex::from_polar(F::one(), self.theta / two);
+        let m00 = gp * Complex::new(c, F::zero());
+        let m01 = gp * -Complex::from_polar(s, self.lambda);
+        let m10 = gp * Complex::from_polar(s, self.phi);
+        let m11 = gp * Complex::from_polar(c, self.phi + self.lambda);
         [[m00, m01], [m10, m11]]
     }
 }
@@ -470,6 +477,23 @@ mod tests {
         a.len() == b.len() && a.iter().zip(b).all(|(x, y)| close(*x, *y))
     }
 
+    /// Compare `actual` to an `ideal` state up to a single global phase.
+    /// The built-in `U` matches each standard gate only up to e^{iθ/2}
+    /// (docs/gates.rst), so uncontrolled-gate states are equal to the
+    /// textbook result modulo an unobservable global phase.
+    fn states_close_up_to_phase(actual: &[Complex<f64>], ideal: &[Complex<f64>]) -> bool {
+        if actual.len() != ideal.len() {
+            return false;
+        }
+        let phase = ideal
+            .iter()
+            .zip(actual)
+            .find(|(b, _)| b.norm() > 1e-9)
+            .map(|(b, a)| a / b)
+            .unwrap_or(Complex::new(1.0, 0.0));
+        ideal.iter().zip(actual).all(|(b, a)| close(*a, phase * b))
+    }
+
     fn pauli_x() -> Unitary<f64> {
         Unitary::new(std::f64::consts::PI, 0.0, std::f64::consts::PI)
     }
@@ -492,10 +516,13 @@ mod tests {
 
     #[test]
     fn unitary_pauli_x_matrix() {
+        // `U(π, 0, π)` is Pauli-X times the built-in `U`'s e^{iθ/2} global
+        // phase, i.e. e^{iπ/2}·X = i·X (docs/gates.rst). The standard
+        // library recovers a phaseless `x` with a trailing `gphase(-π/2)`.
         let m = pauli_x().matrix();
         assert!(close(m[0][0], Complex::zero()));
-        assert!(close(m[0][1], Complex::new(1.0, 0.0)));
-        assert!(close(m[1][0], Complex::new(1.0, 0.0)));
+        assert!(close(m[0][1], Complex::new(0.0, 1.0)));
+        assert!(close(m[1][0], Complex::new(0.0, 1.0)));
         assert!(close(m[1][1], Complex::zero()));
     }
 
@@ -509,7 +536,7 @@ mod tests {
             Complex::zero(),
             Complex::zero(),
         ];
-        assert!(states_close(sv.state(), &expected));
+        assert!(states_close_up_to_phase(sv.state(), &expected));
     }
 
     #[test]
@@ -518,7 +545,7 @@ mod tests {
         sv.apply_unitary(&hadamard(), 0);
         sv.apply_unitary(&hadamard(), 0);
         let expected = [Complex::new(1.0, 0.0), Complex::zero()];
-        assert!(states_close(sv.state(), &expected));
+        assert!(states_close_up_to_phase(sv.state(), &expected));
     }
 
     #[test]
@@ -536,7 +563,7 @@ mod tests {
         sv.apply(&Gate::new(pauli_x()).pow(0.5), 0);
         sv.apply(&Gate::new(pauli_x()).pow(0.5), 0);
         let expected = [Complex::zero(), Complex::new(1.0, 0.0)];
-        assert!(states_close(sv.state(), &expected));
+        assert!(states_close_up_to_phase(sv.state(), &expected));
     }
 
     #[test]
@@ -546,7 +573,7 @@ mod tests {
         sv.apply(&Gate::new(pauli_x()).ctrl(0), 1);
         let mut expected = [Complex::zero(); 4];
         expected[3] = Complex::new(1.0, 0.0);
-        assert!(states_close(sv.state(), &expected));
+        assert!(states_close_up_to_phase(sv.state(), &expected));
     }
 
     #[test]
@@ -564,7 +591,7 @@ mod tests {
         sv.apply(&Gate::new(pauli_x()).neg_ctrl(0), 1);
         let mut expected = [Complex::zero(); 4];
         expected[2] = Complex::new(1.0, 0.0);
-        assert!(states_close(sv.state(), &expected));
+        assert!(states_close_up_to_phase(sv.state(), &expected));
     }
 
     #[test]

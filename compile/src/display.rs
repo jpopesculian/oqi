@@ -36,6 +36,16 @@ impl fmt::Display for Type {
         match self {
             Type::Void => write!(f, "void"),
             Type::Classical(ty) => write!(f, "{ty}"),
+            Type::Unsized(u) => write!(
+                f,
+                "{}",
+                match u {
+                    crate::types::UnsizedType::Int => "int",
+                    crate::types::UnsizedType::Uint => "uint",
+                    crate::types::UnsizedType::Angle => "angle",
+                    crate::types::UnsizedType::Float => "float",
+                }
+            ),
             Type::Stretch => write!(f, "stretch"),
             Type::Qubit => write!(f, "qubit"),
             Type::QubitReg(n) => write!(f, "qubit[{n}]"),

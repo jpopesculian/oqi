@@ -27,7 +27,7 @@ use crate::scope::ScopeKind;
 use crate::sir;
 use crate::symbol::{SymbolId, SymbolKind};
 use crate::types::{
-    CompileOptions, Type, eval_const_expr, eval_designator, parse_bitstring_literal,
+    CompileOptions, Type, UnsizedType, eval_const_expr, eval_designator, parse_bitstring_literal,
     parse_float_literal, parse_imag_literal, parse_int_literal, parse_timing_literal,
     resolve_array_ref_type, resolve_old_style_type, resolve_qubit_type, resolve_scalar_type,
     resolve_type,
@@ -657,7 +657,7 @@ impl Lowerer {
                     ast::ExprOrMeasure::Measure(_) => unreachable!(),
                 };
                 let sir_value = match compound_to_bin_op(op) {
-                    None => Box::new(coerce_literal(rhs_expr, &self.lvalue_type(&lv))),
+                    None => Box::new(collapse_to(rhs_expr, &self.lvalue_type(&lv))),
                     Some(bin_op) => {
                         let left = self.lower_indexed_ident_to_expr(target)?;
                         let ty = left.ty.clone();
@@ -721,10 +721,10 @@ impl Lowerer {
                         let var_sym = this.resolver.declare(
                             var.name,
                             SymbolKind::LoopVar,
-                            var_ty,
+                            var_ty.clone(),
                             var.span,
                         )?;
-                        let sir_iterable = this.lower_for_iterable(iterable)?;
+                        let sir_iterable = this.lower_for_iterable(iterable, &var_ty)?;
                         let body_stmts = match body.as_ref() {
                             ast::StmtOrScope::Stmt(s) => this.lower_stmt(s)?,
                             ast::StmtOrScope::Scope(sc) => {
@@ -984,24 +984,23 @@ impl Lowerer {
 
             ast::Expr::IntLiteral(s, enc, _) => {
                 let int = parse_int_literal(s, *enc).with_span(span)?;
-                let ty = Type::Classical(ValueTy::int(self.resolver.options().system_width.iw()));
+                // Unsized: the literal adopts the width of its surrounding
+                // sized context, falling back to the system width if it never
+                // meets one (see `Type::value_ty`).
                 Ok(sir::Expr {
                     kind: sir::ExprKind::Literal(Primitive::int(int)),
-                    ty,
+                    ty: Type::Unsized(UnsizedType::Int),
                     span,
                 })
             }
 
-            ast::Expr::FloatLiteral(s, _) => {
-                let fw = self.resolver.options().system_width.fw();
-                Ok(sir::Expr {
-                    kind: sir::ExprKind::Literal(Primitive::float(
-                        parse_float_literal(s).with_span(span)?,
-                    )),
-                    ty: Type::Classical(ValueTy::float(fw)),
-                    span,
-                })
-            }
+            ast::Expr::FloatLiteral(s, _) => Ok(sir::Expr {
+                kind: sir::ExprKind::Literal(Primitive::float(
+                    parse_float_literal(s).with_span(span)?,
+                )),
+                ty: Type::Unsized(UnsizedType::Float),
+                span,
+            }),
 
             ast::Expr::ImagLiteral(s, _) => {
                 let fw = self.resolver.options().system_width.fw();
@@ -1045,6 +1044,15 @@ impl Lowerer {
                 let l = self.lower_expr(left)?;
                 let r = self.lower_expr(right)?;
                 let sir_op = map_bin_op(op);
+                // A same-family unsized operand collapses to the other (sized)
+                // operand's type, so the op runs at a single concrete width
+                // (e.g. `v + 1` with `v: uint[8]` stays uint[8]). Shifts are
+                // excluded: their RHS is an independent shift count.
+                let (l, r) = if matches!(sir_op, sir::BinOp::Shl | sir::BinOp::Shr) {
+                    (l, r)
+                } else {
+                    collapse_binary_operands(l, r)
+                };
                 let ty = binary_result_type(&sir_op, &l.ty, &r.ty, span)?;
                 Ok(sir::Expr {
                     kind: sir::ExprKind::Binary(sir::Binary {
@@ -1104,7 +1112,7 @@ impl Lowerer {
                                 span,
                             },
                         );
-                        *arg = coerce_literal(taken, pty);
+                        *arg = collapse_to(taken, pty);
                     }
                 }
                 let ty = self.call_result_type(&callee, &sir_args).with_span(span)?;
@@ -1120,7 +1128,12 @@ impl Lowerer {
 
             ast::Expr::Cast { ty, operand, .. } => {
                 let target_ty = resolve_type(ty, self.resolver.symbols(), self.resolver.options())?;
-                let inner = self.lower_expr(operand)?;
+                let mut inner = self.lower_expr(operand)?;
+                // An unsized literal operand collapses to the cast's target
+                // width first, so `bit[8](5)` becomes an equal-width cast.
+                if inner.ty.unsized_ty().is_some() {
+                    inner = collapse_to(inner, &target_ty);
+                }
                 validate_cast(&inner.ty, &target_ty, span)?;
                 let result_ty = target_ty.clone();
                 Ok(sir::Expr {
@@ -1410,7 +1423,7 @@ impl Lowerer {
             Some(ast::ExprOrMeasure::Expr(e)) => {
                 let e = self.lower_expr(e)?;
                 let target_ty = self.resolver.symbols().get(symbol).ty.clone();
-                let e = coerce_literal(e, &target_ty);
+                let e = collapse_to(e, &target_ty);
                 Ok(vec![sir::Stmt {
                     kind: sir::StmtKind::Assignment(sir::Assignment {
                         target: sir::LValue::Var(symbol),
@@ -1470,31 +1483,30 @@ impl Lowerer {
             .collect()
     }
 
-    fn lower_for_iterable(&mut self, it: &ast::ForIterable<'_>) -> Result<sir::ForIterable> {
+    fn lower_for_iterable(
+        &mut self,
+        it: &ast::ForIterable<'_>,
+        var_ty: &Type,
+    ) -> Result<sir::ForIterable> {
+        // The loop counter has the declared `var_ty`, so its range bounds /
+        // set members collapse to that width — otherwise an unsized literal
+        // bound (e.g. `0` in `for uint[32] i in [0:n]`) would leak its carrier
+        // width into the counter.
+        let bound = |this: &mut Self, e: &ast::Expr<'_>| -> Result<Box<sir::Expr>> {
+            Ok(Box::new(collapse_to(this.lower_expr(e)?, var_ty)))
+        };
         match it {
             ast::ForIterable::Set(exprs, _) => {
                 let items = exprs
                     .iter()
-                    .map(|e| self.lower_expr(e))
+                    .map(|e| Ok(*bound(self, e)?))
                     .collect::<Result<_>>()?;
                 Ok(sir::ForIterable::Set(items))
             }
             ast::ForIterable::Range(range, _) => Ok(sir::ForIterable::Range {
-                start: range
-                    .start
-                    .as_ref()
-                    .map(|e| self.lower_expr(e).map(Box::new))
-                    .transpose()?,
-                step: range
-                    .step
-                    .as_ref()
-                    .map(|e| self.lower_expr(e).map(Box::new))
-                    .transpose()?,
-                end: range
-                    .end
-                    .as_ref()
-                    .map(|e| self.lower_expr(e).map(Box::new))
-                    .transpose()?,
+                start: range.start.as_ref().map(|e| bound(self, e)).transpose()?,
+                step: range.step.as_ref().map(|e| bound(self, e)).transpose()?,
+                end: range.end.as_ref().map(|e| bound(self, e)).transpose()?,
             }),
             ast::ForIterable::Expr(e) => Ok(sir::ForIterable::Expr(Box::new(self.lower_expr(e)?))),
         }
@@ -2069,23 +2081,75 @@ fn unary_result_type(op: &sir::UnOp, operand: &Type) -> Type {
         })
 }
 
-fn coerce_literal(expr: sir::Expr, target: &Type) -> sir::Expr {
-    let sir::ExprKind::Literal(prim) = &expr.kind else {
-        return expr;
+/// Collapse a same-family unsized operand of a binary op to the other,
+/// concrete operand's type. Cross-family pairs (e.g. an unsized float with a
+/// sized int) and unsized∘unsized are left alone — the carrier width and
+/// normal promotion handle them.
+fn collapse_binary_operands(l: sir::Expr, r: sir::Expr) -> (sir::Expr, sir::Expr) {
+    match (l.ty.unsized_ty().is_some(), r.ty.unsized_ty().is_some()) {
+        (true, false) if same_family(&l.ty, &r.ty) => {
+            let target = r.ty.clone();
+            (collapse_to(l, &target), r)
+        }
+        (false, true) if same_family(&l.ty, &r.ty) => {
+            let target = l.ty.clone();
+            (l, collapse_to(r, &target))
+        }
+        _ => (l, r),
+    }
+}
+
+/// Whether two types are in the same broad numeric family (int-like, float-like,
+/// or angle), comparing via their (carrier) scalar types.
+fn same_family(a: &Type, b: &Type) -> bool {
+    use crate::classical::PrimitiveTy::*;
+    let family = |t: &Type| {
+        t.scalar_ty().map(|p| match p {
+            Bit | Bool | Int(_) | Uint(_) | BitReg(_) => 0u8,
+            Float(_) | Complex(_) => 1,
+            Angle(_) => 2,
+            Duration => 3,
+        })
     };
-    let (Some(from), Some(to)) = (expr.ty.scalar_ty(), target.scalar_ty()) else {
-        return expr;
+    matches!((family(a), family(b)), (Some(x), Some(y)) if x == y)
+}
+
+/// Collapse a literal expression to a target type's scalar width. An *unsized*
+/// literal adopts the target width directly (value conversion, no equal-width
+/// check — an unsized literal can take any width), which is how it "collapses
+/// to the sized type it meets". A *concrete* literal is re-cast exactly as the
+/// old `coerce_literal` did. Non-literals and non-scalar targets pass through.
+fn collapse_to(expr: sir::Expr, target: &Type) -> sir::Expr {
+    let sir::Expr { kind, ty, span } = expr;
+    let prim = match kind {
+        sir::ExprKind::Literal(p) => p,
+        other => return sir::Expr { kind: other, ty, span },
+    };
+    let rebuild = |prim, ty| sir::Expr {
+        kind: sir::ExprKind::Literal(prim),
+        ty,
+        span,
+    };
+    let Some(to) = target.scalar_ty() else {
+        return rebuild(prim, ty);
+    };
+    if ty.unsized_ty().is_some() {
+        return match prim.clone().as_ty(to) {
+            Ok(v) => rebuild(v, Type::from(to)),
+            // No value conversion exists (e.g. int -> angle): leave the literal
+            // at its carrier type and let the surrounding context handle it.
+            Err(_) => rebuild(prim, ty),
+        };
+    }
+    let Some(from) = ty.scalar_ty() else {
+        return rebuild(prim, ty);
     };
     if from == to {
-        return expr;
+        return rebuild(prim, ty);
     }
-    let Ok(casted) = Scalar::new(prim.clone(), from).and_then(|s| s.cast(to)) else {
-        return expr;
-    };
-    sir::Expr {
-        kind: sir::ExprKind::Literal(casted.into_value()),
-        ty: Type::from(to),
-        span: expr.span,
+    match Scalar::new(prim.clone(), from).and_then(|s| s.cast(to)) {
+        Ok(casted) => rebuild(casted.into_value(), Type::from(to)),
+        Err(_) => rebuild(prim, ty),
     }
 }
 
@@ -2333,6 +2397,47 @@ mod tests {
             ty,
             span: oqi_lex::span(0, 0),
         }
+    }
+
+    #[test]
+    fn unsized_int_literal_collapses_to_target_width() {
+        // A bare integer literal lowers to an unsized type and adopts the
+        // target's width on collapse — including narrowing to a bit register.
+        let lit = sir::Expr {
+            kind: sir::ExprKind::Literal(Primitive::int(5)),
+            ty: Type::Unsized(UnsizedType::Int),
+            span: oqi_lex::span(0, 0),
+        };
+        let to_u8 = collapse_to(lit.clone(), &Type::from(PrimitiveTy::Uint(iw(8))));
+        assert_eq!(to_u8.ty, Type::from(PrimitiveTy::Uint(iw(8))));
+
+        let to_bits = collapse_to(lit, &Type::from(PrimitiveTy::BitReg(4)));
+        assert_eq!(to_bits.ty, Type::from(PrimitiveTy::BitReg(4)));
+        match to_bits.kind {
+            sir::ExprKind::Literal(Primitive::BitReg(r)) => assert_eq!(r.as_u128(), 5),
+            _ => panic!("expected a bit register literal"),
+        }
+    }
+
+    #[test]
+    fn for_loop_bound_collapses_to_loop_var_width() {
+        // The synthesized counter is fed from range bounds that must adopt the
+        // loop variable's declared width, not the literal's carrier width.
+        let program = compile_inline("for uint[32] i in [0:3] { }").expect("compile");
+        let for_stmt = program
+            .body
+            .iter()
+            .find_map(|s| match &s.kind {
+                sir::StmtKind::For(f) => Some(f),
+                _ => None,
+            })
+            .expect("a for statement");
+        let sir::ForIterable::Range { start, end, .. } = &for_stmt.iterable else {
+            panic!("expected a range iterable");
+        };
+        let want = Type::from(PrimitiveTy::Uint(iw(32)));
+        assert_eq!(start.as_ref().expect("start").ty, want);
+        assert_eq!(end.as_ref().expect("end").ty, want);
     }
 
     #[test]

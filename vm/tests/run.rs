@@ -444,6 +444,45 @@ fn bare_call_of_subroutine_with_classical_then_qubit_args() {
 }
 
 #[test]
+fn bit_cast_of_loop_var_sum_runs() {
+    // `bit[32](row + col)` where row/col are `uint[32]` loop vars. The range
+    // bounds are integer literals that must collapse to the loop var's width,
+    // so `row + col` stays uint[32] and the equal-width bit-cast succeeds.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            qubit q;
+            for uint[32] row in [0:1] {
+                for uint[32] col in [0:1] {
+                    bit[32] s = bit[32](row + col);
+                    if (s[0] == 1) { x q; }
+                }
+            }
+            bit c = measure q;
+        "#,
+    );
+    // row+col is odd in 2 of 4 iterations → x applied twice → back to |0>.
+    assert_eq!(m, vec![(0, false)]);
+}
+
+#[test]
+fn bit_cast_of_sized_var_plus_literal_runs() {
+    // Covers the sized-var + unsized-literal binary-operand collapse:
+    // `v + 1` must collapse the literal to v's width so the cast is equal-width.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            qubit q;
+            uint[8] v = 4;
+            bit[8] b = bit[8](v + 1);   // 5 -> "00000101"
+            if (b[0] == 1) { x q; }
+            bit c = measure q;
+        "#,
+    );
+    assert_eq!(m, vec![(0, true)]);
+}
+
+#[test]
 fn ipe_fixture_runs_end_to_end() {
     let src = include_str!("../../fixtures/qasm/ipe.qasm");
     let m = run_measurements(src);

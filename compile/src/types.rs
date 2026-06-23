@@ -17,11 +17,26 @@ use crate::symbol::SymbolTable;
 
 pub use crate::classical::FloatWidth;
 
+/// An integer-like or float literal whose width is not yet fixed. Lives only
+/// in the compiler: it collapses to a concrete sized type the moment it meets
+/// one (a cast, an assignment, a loop variable, a sized binary operand), so it
+/// never reaches the bytecode/VM. An *un*collapsed value falls back to the
+/// historical carrier width via [`Type::value_ty`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnsizedType {
+    Int,
+    Uint,
+    Angle,
+    Float,
+}
+
 /// Fully resolved type — no expression designators, no lifetimes.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Type {
     Void,
     Classical(ValueTy),
+    /// A literal whose width collapses to its surrounding sized type.
+    Unsized(UnsizedType),
     Stretch,
     /// Single `qubit`.
     Qubit,
@@ -38,6 +53,23 @@ impl Type {
         match self {
             Type::Classical(ty) => Some(*ty),
             Type::Stretch => Some(ValueTy::Scalar(PrimitiveTy::Duration)),
+            // Carrier widths for an uncollapsed literal — the historical
+            // defaults, so a value that never meets a sized type behaves
+            // exactly as it did before unsized literals existed.
+            Type::Unsized(u) => Some(ValueTy::Scalar(match u {
+                UnsizedType::Int => PrimitiveTy::Int(iw(64)),
+                UnsizedType::Uint => PrimitiveTy::Uint(iw(64)),
+                UnsizedType::Angle => PrimitiveTy::Angle(iw(64)),
+                UnsizedType::Float => PrimitiveTy::Float(FloatWidth::F64),
+            })),
+            _ => None,
+        }
+    }
+
+    /// True for an unsized literal type that should collapse to context.
+    pub fn unsized_ty(&self) -> Option<UnsizedType> {
+        match self {
+            Type::Unsized(u) => Some(*u),
             _ => None,
         }
     }

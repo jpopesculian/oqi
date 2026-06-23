@@ -1,4 +1,5 @@
 /target
 __pycache__
 
-.claude
+.claude/settings.local.json
+CLAUDE.local.md

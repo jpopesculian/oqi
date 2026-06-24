@@ -739,20 +739,15 @@ fn missing_input_is_rejected() {
 }
 
 #[test]
-fn qubit_out_of_range_is_a_graceful_spanned_error() {
-    // A physical qubit `$0` with no allocated qubit memory must surface a
-    // diagnostic, not panic the simulator. The error carries the source
-    // span of the offending instruction.
+fn physical_qubit_program_sizes_its_register() {
+    // A program that operates on a physical qubit `$0` and declares no
+    // `qubit` registers must size the simulator to cover it, not fail
+    // with an out-of-range error.
     let module = build("OPENQASM 3.0;\nU(0, 0, 0) $0;\n");
+    assert_eq!(module.qubits.num_qubits, 1);
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
-    match vm.run() {
-        Err(VmError {
-            kind: VmErrorKind::QubitOutOfRange { qubit: 0, .. },
-            span,
-        }) => assert!(span.is_some(), "expected a source span on the error"),
-        other => panic!("expected QubitOutOfRange, got {other:?}"),
-    }
+    vm.run().expect("physical-qubit program should run");
 }
 
 #[test]
@@ -767,4 +762,22 @@ fn value_for_non_input_symbol_is_rejected() {
         Err(VmError { kind: VmErrorKind::UnknownInput(_), .. }) => {}
         other => panic!("expected UnknownInput, got {other:?}"),
     }
+}
+
+#[test]
+fn physical_qubits_size_the_register() {
+    // A program that uses only hardware qubits (`$n`) and declares no
+    // `qubit` registers must still allocate enough simulator memory to
+    // cover the highest physical index it touches.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            x $0;
+            x $2;
+            bit c0 = measure $0;
+            bit c1 = measure $1;
+            bit c2 = measure $2;
+        "#,
+    );
+    assert_eq!(m, vec![(0, true), (1, false), (2, true)]);
 }

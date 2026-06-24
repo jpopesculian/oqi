@@ -67,7 +67,12 @@ pub fn emit(
         constants: ctx.constants,
         strings: ctx.strings,
         qubits: QubitTable {
-            num_qubits: ctx.layout.num_qubits() as u32,
+            // Physical qubits map directly to global indices, so the
+            // register must cover both declared memory and the highest
+            // `$n` touched (the latter dominates in hardware-level
+            // programs that declare no `qubit` registers at all).
+            num_qubits: (ctx.layout.num_qubits() as u32)
+                .max(ctx.max_hardware_qubit.map_or(0, |n| n + 1)),
             regions: ctx.qubit_regions,
         },
         procedures: ctx.procedures,
@@ -113,6 +118,11 @@ struct EmitCtx<'a> {
     inputs: Vec<(SymbolId, Reg)>,
     /// Named program outputs, resolved while emitting the top-level body.
     outputs: Vec<(SymbolId, Reg)>,
+    /// Highest physical qubit index (`$n`) referenced anywhere in the
+    /// module, if any. Physical qubits map directly to global memory
+    /// indices, so the simulator must be sized to cover the maximum one
+    /// even when no `qubit` registers are declared.
+    max_hardware_qubit: Option<u32>,
 }
 
 /// The base a runtime-alias operand indexes: a declared register /
@@ -149,7 +159,15 @@ impl<'a> EmitCtx<'a> {
             strings: Vec::new(),
             inputs: Vec::new(),
             outputs: Vec::new(),
+            max_hardware_qubit: None,
         }
+    }
+
+    /// Build a hardware-qubit operand, recording its index so the
+    /// global memory can be sized to include it.
+    fn hw_qubit(&mut self, n: u32) -> BcOperand {
+        self.max_hardware_qubit = Some(self.max_hardware_qubit.map_or(n, |m| m.max(n)));
+        BcOperand::HardwareQubit(n)
     }
 
     /// Emit a top-level CFG (or a recursive nested one); return its
@@ -741,7 +759,7 @@ impl<'a> EmitCtx<'a> {
                     None => BcOperand::Reg(self.reg_for(*v, reg_map)),
                 }
             }
-            SsaExprKind::HardwareQubit(n) => BcOperand::HardwareQubit(*n as u32),
+            SsaExprKind::HardwareQubit(n) => self.hw_qubit(*n as u32),
             // Anything else: spill into a synthetic temp register.
             _ => {
                 let ty =
@@ -765,7 +783,7 @@ impl<'a> EmitCtx<'a> {
             QubitOperand::Indexed { symbol, indices } => {
                 self.resolve_qubit_ref(*symbol, indices, instrs, reg_map, span)
             }
-            QubitOperand::Hardware(n) => Ok(BcOperand::HardwareQubit(*n as u32)),
+            QubitOperand::Hardware(n) => Ok(self.hw_qubit(*n as u32)),
         }
     }
 
@@ -1262,7 +1280,7 @@ impl<'a> EmitCtx<'a> {
                 qubits
                     .first()
                     .map(|q| self.lower_qubit_operand(q, instrs, reg_map, m.span))
-                    .unwrap_or(Ok(BcOperand::HardwareQubit(0)))
+                    .unwrap_or_else(|| Ok(self.hw_qubit(0)))
             }
         }
     }

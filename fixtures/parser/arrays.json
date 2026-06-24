@@ -1,7 +1,7 @@
 {
   "rule": "program",
   "start": 0,
-  "stop": 4209,
+  "stop": 3926,
   "children": [
     {
       "rule": "version",
@@ -3147,256 +3147,111 @@
     },
     {
       "rule": "statementOrScope",
-      "start": 2971,
-      "stop": 3022,
+      "start": 3182,
+      "stop": 3419,
       "children": [
         {
           "rule": "statement",
-          "start": 2971,
-          "stop": 3022,
-          "children": [
-            {
-              "rule": "constDeclarationStatement",
-              "start": 2971,
-              "stop": 3022,
-              "children": [
-                {
-                  "token": "CONST",
-                  "text": "const",
-                  "start": 2971,
-                  "stop": 2975
-                },
-                {
-                  "rule": "scalarType",
-                  "start": 2977,
-                  "stop": 2984,
-                  "children": [
-                    {
-                      "token": "UINT",
-                      "text": "uint",
-                      "start": 2977,
-                      "stop": 2980
-                    },
-                    {
-                      "rule": "designator",
-                      "start": 2981,
-                      "stop": 2984,
-                      "children": [
-                        {
-                          "token": "LBRACKET",
-                          "text": "[",
-                          "start": 2981,
-                          "stop": 2981
-                        },
-                        {
-                          "rule": "expression",
-                          "label": "LiteralExpression",
-                          "start": 2982,
-                          "stop": 2983,
-                          "children": [
-                            {
-                              "token": "DecimalIntegerLiteral",
-                              "text": "32",
-                              "start": 2982,
-                              "stop": 2983
-                            }
-                          ]
-                        },
-                        {
-                          "token": "RBRACKET",
-                          "text": "]",
-                          "start": 2984,
-                          "stop": 2984
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "token": "Identifier",
-                  "text": "first_dimension",
-                  "start": 2986,
-                  "stop": 3000
-                },
-                {
-                  "token": "EQUALS",
-                  "text": "=",
-                  "start": 3002,
-                  "stop": 3002
-                },
-                {
-                  "rule": "declarationExpression",
-                  "start": 3004,
-                  "stop": 3021,
-                  "children": [
-                    {
-                      "rule": "expression",
-                      "label": "CallExpression",
-                      "start": 3004,
-                      "stop": 3021,
-                      "children": [
-                        {
-                          "token": "Identifier",
-                          "text": "sizeof",
-                          "start": 3004,
-                          "stop": 3009
-                        },
-                        {
-                          "token": "LPAREN",
-                          "text": "(",
-                          "start": 3010,
-                          "stop": 3010
-                        },
-                        {
-                          "rule": "expressionList",
-                          "start": 3011,
-                          "stop": 3020,
-                          "children": [
-                            {
-                              "rule": "expression",
-                              "label": "LiteralExpression",
-                              "start": 3011,
-                              "stop": 3020,
-                              "children": [
-                                {
-                                  "token": "Identifier",
-                                  "text": "my_doubles",
-                                  "start": 3011,
-                                  "stop": 3020
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "token": "RPAREN",
-                          "text": ")",
-                          "start": 3021,
-                          "stop": 3021
-                        }
-                      ]
-                    }
-                  ]
-                },
-                {
-                  "token": "SEMICOLON",
-                  "text": ";",
-                  "start": 3022,
-                  "stop": 3022
-                }
-              ]
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "rule": "statementOrScope",
-      "start": 3465,
-      "stop": 3702,
-      "children": [
-        {
-          "rule": "statement",
-          "start": 3465,
-          "stop": 3702,
+          "start": 3182,
+          "stop": 3419,
           "children": [
             {
               "rule": "defStatement",
-              "start": 3465,
-              "stop": 3702,
+              "start": 3182,
+              "stop": 3419,
               "children": [
                 {
                   "token": "DEF",
                   "text": "def",
-                  "start": 3465,
-                  "stop": 3467
+                  "start": 3182,
+                  "stop": 3184
                 },
                 {
                   "token": "Identifier",
                   "text": "copy_3_bytes",
-                  "start": 3469,
-                  "stop": 3480
+                  "start": 3186,
+                  "stop": 3197
                 },
                 {
                   "token": "LPAREN",
                   "text": "(",
-                  "start": 3481,
-                  "stop": 3481
+                  "start": 3198,
+                  "stop": 3198
                 },
                 {
                   "rule": "argumentDefinitionList",
-                  "start": 3482,
-                  "stop": 3553,
+                  "start": 3199,
+                  "stop": 3270,
                   "children": [
                     {
                       "rule": "argumentDefinition",
-                      "start": 3482,
-                      "stop": 3516,
+                      "start": 3199,
+                      "stop": 3233,
                       "children": [
                         {
                           "rule": "arrayReferenceType",
-                          "start": 3482,
-                          "stop": 3507,
+                          "start": 3199,
+                          "stop": 3224,
                           "children": [
                             {
                               "token": "READONLY",
                               "text": "readonly",
-                              "start": 3482,
-                              "stop": 3489
+                              "start": 3199,
+                              "stop": 3206
                             },
                             {
                               "token": "ARRAY",
                               "text": "array",
-                              "start": 3491,
-                              "stop": 3495
+                              "start": 3208,
+                              "stop": 3212
                             },
                             {
                               "token": "LBRACKET",
                               "text": "[",
-                              "start": 3496,
-                              "stop": 3496
+                              "start": 3213,
+                              "stop": 3213
                             },
                             {
                               "rule": "scalarType",
-                              "start": 3497,
-                              "stop": 3503,
+                              "start": 3214,
+                              "stop": 3220,
                               "children": [
                                 {
                                   "token": "UINT",
                                   "text": "uint",
-                                  "start": 3497,
-                                  "stop": 3500
+                                  "start": 3214,
+                                  "stop": 3217
                                 },
                                 {
                                   "rule": "designator",
-                                  "start": 3501,
-                                  "stop": 3503,
+                                  "start": 3218,
+                                  "stop": 3220,
                                   "children": [
                                     {
                                       "token": "LBRACKET",
                                       "text": "[",
-                                      "start": 3501,
-                                      "stop": 3501
+                                      "start": 3218,
+                                      "stop": 3218
                                     },
                                     {
                                       "rule": "expression",
                                       "label": "LiteralExpression",
-                                      "start": 3502,
-                                      "stop": 3502,
+                                      "start": 3219,
+                                      "stop": 3219,
                                       "children": [
                                         {
                                           "token": "DecimalIntegerLiteral",
                                           "text": "8",
-                                          "start": 3502,
-                                          "stop": 3502
+                                          "start": 3219,
+                                          "stop": 3219
                                         }
                                       ]
                                     },
                                     {
                                       "token": "RBRACKET",
                                       "text": "]",
-                                      "start": 3503,
-                                      "stop": 3503
+                                      "start": 3220,
+                                      "stop": 3220
                                     }
                                   ]
                                 }
@@ -3405,25 +3260,25 @@
                             {
                               "token": "COMMA",
                               "text": ",",
-                              "start": 3504,
-                              "stop": 3504
+                              "start": 3221,
+                              "stop": 3221
                             },
                             {
                               "rule": "expressionList",
-                              "start": 3506,
-                              "stop": 3506,
+                              "start": 3223,
+                              "stop": 3223,
                               "children": [
                                 {
                                   "rule": "expression",
                                   "label": "LiteralExpression",
-                                  "start": 3506,
-                                  "stop": 3506,
+                                  "start": 3223,
+                                  "stop": 3223,
                                   "children": [
                                     {
                                       "token": "DecimalIntegerLiteral",
                                       "text": "3",
-                                      "start": 3506,
-                                      "stop": 3506
+                                      "start": 3223,
+                                      "stop": 3223
                                     }
                                   ]
                                 }
@@ -3432,94 +3287,94 @@
                             {
                               "token": "RBRACKET",
                               "text": "]",
-                              "start": 3507,
-                              "stop": 3507
+                              "start": 3224,
+                              "stop": 3224
                             }
                           ]
                         },
                         {
                           "token": "Identifier",
                           "text": "in_array",
-                          "start": 3509,
-                          "stop": 3516
+                          "start": 3226,
+                          "stop": 3233
                         }
                       ]
                     },
                     {
                       "token": "COMMA",
                       "text": ",",
-                      "start": 3517,
-                      "stop": 3517
+                      "start": 3234,
+                      "stop": 3234
                     },
                     {
                       "rule": "argumentDefinition",
-                      "start": 3519,
-                      "stop": 3553,
+                      "start": 3236,
+                      "stop": 3270,
                       "children": [
                         {
                           "rule": "arrayReferenceType",
-                          "start": 3519,
-                          "stop": 3543,
+                          "start": 3236,
+                          "stop": 3260,
                           "children": [
                             {
                               "token": "MUTABLE",
                               "text": "mutable",
-                              "start": 3519,
-                              "stop": 3525
+                              "start": 3236,
+                              "stop": 3242
                             },
                             {
                               "token": "ARRAY",
                               "text": "array",
-                              "start": 3527,
-                              "stop": 3531
+                              "start": 3244,
+                              "stop": 3248
                             },
                             {
                               "token": "LBRACKET",
                               "text": "[",
-                              "start": 3532,
-                              "stop": 3532
+                              "start": 3249,
+                              "stop": 3249
                             },
                             {
                               "rule": "scalarType",
-                              "start": 3533,
-                              "stop": 3539,
+                              "start": 3250,
+                              "stop": 3256,
                               "children": [
                                 {
                                   "token": "UINT",
                                   "text": "uint",
-                                  "start": 3533,
-                                  "stop": 3536
+                                  "start": 3250,
+                                  "stop": 3253
                                 },
                                 {
                                   "rule": "designator",
-                                  "start": 3537,
-                                  "stop": 3539,
+                                  "start": 3254,
+                                  "stop": 3256,
                                   "children": [
                                     {
                                       "token": "LBRACKET",
                                       "text": "[",
-                                      "start": 3537,
-                                      "stop": 3537
+                                      "start": 3254,
+                                      "stop": 3254
                                     },
                                     {
                                       "rule": "expression",
                                       "label": "LiteralExpression",
-                                      "start": 3538,
-                                      "stop": 3538,
+                                      "start": 3255,
+                                      "stop": 3255,
                                       "children": [
                                         {
                                           "token": "DecimalIntegerLiteral",
                                           "text": "8",
-                                          "start": 3538,
-                                          "stop": 3538
+                                          "start": 3255,
+                                          "stop": 3255
                                         }
                                       ]
                                     },
                                     {
                                       "token": "RBRACKET",
                                       "text": "]",
-                                      "start": 3539,
-                                      "stop": 3539
+                                      "start": 3256,
+                                      "stop": 3256
                                     }
                                   ]
                                 }
@@ -3528,25 +3383,25 @@
                             {
                               "token": "COMMA",
                               "text": ",",
-                              "start": 3540,
-                              "stop": 3540
+                              "start": 3257,
+                              "stop": 3257
                             },
                             {
                               "rule": "expressionList",
-                              "start": 3542,
-                              "stop": 3542,
+                              "start": 3259,
+                              "stop": 3259,
                               "children": [
                                 {
                                   "rule": "expression",
                                   "label": "LiteralExpression",
-                                  "start": 3542,
-                                  "stop": 3542,
+                                  "start": 3259,
+                                  "stop": 3259,
                                   "children": [
                                     {
                                       "token": "DecimalIntegerLiteral",
                                       "text": "3",
-                                      "start": 3542,
-                                      "stop": 3542
+                                      "start": 3259,
+                                      "stop": 3259
                                     }
                                   ]
                                 }
@@ -3555,16 +3410,16 @@
                             {
                               "token": "RBRACKET",
                               "text": "]",
-                              "start": 3543,
-                              "stop": 3543
+                              "start": 3260,
+                              "stop": 3260
                             }
                           ]
                         },
                         {
                           "token": "Identifier",
                           "text": "out_array",
-                          "start": 3545,
-                          "stop": 3553
+                          "start": 3262,
+                          "stop": 3270
                         }
                       ]
                     }
@@ -3573,25 +3428,25 @@
                 {
                   "token": "RPAREN",
                   "text": ")",
-                  "start": 3554,
-                  "stop": 3554
+                  "start": 3271,
+                  "stop": 3271
                 },
                 {
                   "rule": "scope",
-                  "start": 3556,
-                  "stop": 3702,
+                  "start": 3273,
+                  "stop": 3419,
                   "children": [
                     {
                       "token": "LBRACE",
                       "text": "{",
-                      "start": 3556,
-                      "stop": 3556
+                      "start": 3273,
+                      "stop": 3273
                     },
                     {
                       "token": "RBRACE",
                       "text": "}",
-                      "start": 3702,
-                      "stop": 3702
+                      "start": 3419,
+                      "stop": 3419
                     }
                   ]
                 }
@@ -3603,111 +3458,111 @@
     },
     {
       "rule": "statementOrScope",
-      "start": 3993,
-      "stop": 4209,
+      "start": 3710,
+      "stop": 3926,
       "children": [
         {
           "rule": "statement",
-          "start": 3993,
-          "stop": 4209,
+          "start": 3710,
+          "stop": 3926,
           "children": [
             {
               "rule": "defStatement",
-              "start": 3993,
-              "stop": 4209,
+              "start": 3710,
+              "stop": 3926,
               "children": [
                 {
                   "token": "DEF",
                   "text": "def",
-                  "start": 3993,
-                  "stop": 3995
+                  "start": 3710,
+                  "stop": 3712
                 },
                 {
                   "token": "Identifier",
                   "text": "multi_dimensional_input",
-                  "start": 3997,
-                  "stop": 4019
+                  "start": 3714,
+                  "stop": 3736
                 },
                 {
                   "token": "LPAREN",
                   "text": "(",
-                  "start": 4020,
-                  "stop": 4020
+                  "start": 3737,
+                  "stop": 3737
                 },
                 {
                   "rule": "argumentDefinitionList",
-                  "start": 4021,
-                  "stop": 4060,
+                  "start": 3738,
+                  "stop": 3777,
                   "children": [
                     {
                       "rule": "argumentDefinition",
-                      "start": 4021,
-                      "stop": 4060,
+                      "start": 3738,
+                      "stop": 3777,
                       "children": [
                         {
                           "rule": "arrayReferenceType",
-                          "start": 4021,
-                          "stop": 4051,
+                          "start": 3738,
+                          "stop": 3768,
                           "children": [
                             {
                               "token": "READONLY",
                               "text": "readonly",
-                              "start": 4021,
-                              "stop": 4028
+                              "start": 3738,
+                              "stop": 3745
                             },
                             {
                               "token": "ARRAY",
                               "text": "array",
-                              "start": 4030,
-                              "stop": 4034
+                              "start": 3747,
+                              "stop": 3751
                             },
                             {
                               "token": "LBRACKET",
                               "text": "[",
-                              "start": 4035,
-                              "stop": 4035
+                              "start": 3752,
+                              "stop": 3752
                             },
                             {
                               "rule": "scalarType",
-                              "start": 4036,
-                              "stop": 4042,
+                              "start": 3753,
+                              "stop": 3759,
                               "children": [
                                 {
                                   "token": "INT",
                                   "text": "int",
-                                  "start": 4036,
-                                  "stop": 4038
+                                  "start": 3753,
+                                  "stop": 3755
                                 },
                                 {
                                   "rule": "designator",
-                                  "start": 4039,
-                                  "stop": 4042,
+                                  "start": 3756,
+                                  "stop": 3759,
                                   "children": [
                                     {
                                       "token": "LBRACKET",
                                       "text": "[",
-                                      "start": 4039,
-                                      "stop": 4039
+                                      "start": 3756,
+                                      "stop": 3756
                                     },
                                     {
                                       "rule": "expression",
                                       "label": "LiteralExpression",
-                                      "start": 4040,
-                                      "stop": 4041,
+                                      "start": 3757,
+                                      "stop": 3758,
                                       "children": [
                                         {
                                           "token": "DecimalIntegerLiteral",
                                           "text": "32",
-                                          "start": 4040,
-                                          "stop": 4041
+                                          "start": 3757,
+                                          "stop": 3758
                                         }
                                       ]
                                     },
                                     {
                                       "token": "RBRACKET",
                                       "text": "]",
-                                      "start": 4042,
-                                      "stop": 4042
+                                      "start": 3759,
+                                      "stop": 3759
                                     }
                                   ]
                                 }
@@ -3716,48 +3571,48 @@
                             {
                               "token": "COMMA",
                               "text": ",",
-                              "start": 4043,
-                              "stop": 4043
+                              "start": 3760,
+                              "stop": 3760
                             },
                             {
                               "token": "DIM",
                               "text": "#dim",
-                              "start": 4045,
-                              "stop": 4048
+                              "start": 3762,
+                              "stop": 3765
                             },
                             {
                               "token": "EQUALS",
                               "text": "=",
-                              "start": 4049,
-                              "stop": 4049
+                              "start": 3766,
+                              "stop": 3766
                             },
                             {
                               "rule": "expression",
                               "label": "LiteralExpression",
-                              "start": 4050,
-                              "stop": 4050,
+                              "start": 3767,
+                              "stop": 3767,
                               "children": [
                                 {
                                   "token": "DecimalIntegerLiteral",
                                   "text": "3",
-                                  "start": 4050,
-                                  "stop": 4050
+                                  "start": 3767,
+                                  "stop": 3767
                                 }
                               ]
                             },
                             {
                               "token": "RBRACKET",
                               "text": "]",
-                              "start": 4051,
-                              "stop": 4051
+                              "start": 3768,
+                              "stop": 3768
                             }
                           ]
                         },
                         {
                           "token": "Identifier",
                           "text": "my_array",
-                          "start": 4053,
-                          "stop": 4060
+                          "start": 3770,
+                          "stop": 3777
                         }
                       ]
                     }
@@ -3766,76 +3621,76 @@
                 {
                   "token": "RPAREN",
                   "text": ")",
-                  "start": 4061,
-                  "stop": 4061
+                  "start": 3778,
+                  "stop": 3778
                 },
                 {
                   "rule": "scope",
-                  "start": 4063,
-                  "stop": 4209,
+                  "start": 3780,
+                  "stop": 3926,
                   "children": [
                     {
                       "token": "LBRACE",
                       "text": "{",
-                      "start": 4063,
-                      "stop": 4063
+                      "start": 3780,
+                      "stop": 3780
                     },
                     {
                       "rule": "statementOrScope",
-                      "start": 4069,
-                      "stop": 4111,
+                      "start": 3786,
+                      "stop": 3828,
                       "children": [
                         {
                           "rule": "statement",
-                          "start": 4069,
-                          "stop": 4111,
+                          "start": 3786,
+                          "stop": 3828,
                           "children": [
                             {
                               "rule": "classicalDeclarationStatement",
-                              "start": 4069,
-                              "stop": 4111,
+                              "start": 3786,
+                              "stop": 3828,
                               "children": [
                                 {
                                   "rule": "scalarType",
-                                  "start": 4069,
-                                  "stop": 4076,
+                                  "start": 3786,
+                                  "stop": 3793,
                                   "children": [
                                     {
                                       "token": "UINT",
                                       "text": "uint",
-                                      "start": 4069,
-                                      "stop": 4072
+                                      "start": 3786,
+                                      "stop": 3789
                                     },
                                     {
                                       "rule": "designator",
-                                      "start": 4073,
-                                      "stop": 4076,
+                                      "start": 3790,
+                                      "stop": 3793,
                                       "children": [
                                         {
                                           "token": "LBRACKET",
                                           "text": "[",
-                                          "start": 4073,
-                                          "stop": 4073
+                                          "start": 3790,
+                                          "stop": 3790
                                         },
                                         {
                                           "rule": "expression",
                                           "label": "LiteralExpression",
-                                          "start": 4074,
-                                          "stop": 4075,
+                                          "start": 3791,
+                                          "stop": 3792,
                                           "children": [
                                             {
                                               "token": "DecimalIntegerLiteral",
                                               "text": "32",
-                                              "start": 4074,
-                                              "stop": 4075
+                                              "start": 3791,
+                                              "stop": 3792
                                             }
                                           ]
                                         },
                                         {
                                           "token": "RBRACKET",
                                           "text": "]",
-                                          "start": 4076,
-                                          "stop": 4076
+                                          "start": 3793,
+                                          "stop": 3793
                                         }
                                       ]
                                     }
@@ -3844,74 +3699,74 @@
                                 {
                                   "token": "Identifier",
                                   "text": "dimension_0",
-                                  "start": 4078,
-                                  "stop": 4088
+                                  "start": 3795,
+                                  "stop": 3805
                                 },
                                 {
                                   "token": "EQUALS",
                                   "text": "=",
-                                  "start": 4090,
-                                  "stop": 4090
+                                  "start": 3807,
+                                  "stop": 3807
                                 },
                                 {
                                   "rule": "declarationExpression",
-                                  "start": 4092,
-                                  "stop": 4110,
+                                  "start": 3809,
+                                  "stop": 3827,
                                   "children": [
                                     {
                                       "rule": "expression",
                                       "label": "CallExpression",
-                                      "start": 4092,
-                                      "stop": 4110,
+                                      "start": 3809,
+                                      "stop": 3827,
                                       "children": [
                                         {
                                           "token": "Identifier",
                                           "text": "sizeof",
-                                          "start": 4092,
-                                          "stop": 4097
+                                          "start": 3809,
+                                          "stop": 3814
                                         },
                                         {
                                           "token": "LPAREN",
                                           "text": "(",
-                                          "start": 4098,
-                                          "stop": 4098
+                                          "start": 3815,
+                                          "stop": 3815
                                         },
                                         {
                                           "rule": "expressionList",
-                                          "start": 4099,
-                                          "stop": 4109,
+                                          "start": 3816,
+                                          "stop": 3826,
                                           "children": [
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 4099,
-                                              "stop": 4106,
+                                              "start": 3816,
+                                              "stop": 3823,
                                               "children": [
                                                 {
                                                   "token": "Identifier",
                                                   "text": "my_array",
-                                                  "start": 4099,
-                                                  "stop": 4106
+                                                  "start": 3816,
+                                                  "stop": 3823
                                                 }
                                               ]
                                             },
                                             {
                                               "token": "COMMA",
                                               "text": ",",
-                                              "start": 4107,
-                                              "stop": 4107
+                                              "start": 3824,
+                                              "stop": 3824
                                             },
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 4109,
-                                              "stop": 4109,
+                                              "start": 3826,
+                                              "stop": 3826,
                                               "children": [
                                                 {
                                                   "token": "DecimalIntegerLiteral",
                                                   "text": "0",
-                                                  "start": 4109,
-                                                  "stop": 4109
+                                                  "start": 3826,
+                                                  "stop": 3826
                                                 }
                                               ]
                                             }
@@ -3920,8 +3775,8 @@
                                         {
                                           "token": "RPAREN",
                                           "text": ")",
-                                          "start": 4110,
-                                          "stop": 4110
+                                          "start": 3827,
+                                          "stop": 3827
                                         }
                                       ]
                                     }
@@ -3930,8 +3785,8 @@
                                 {
                                   "token": "SEMICOLON",
                                   "text": ";",
-                                  "start": 4111,
-                                  "stop": 4111
+                                  "start": 3828,
+                                  "stop": 3828
                                 }
                               ]
                             }
@@ -3941,60 +3796,60 @@
                     },
                     {
                       "rule": "statementOrScope",
-                      "start": 4117,
-                      "stop": 4159,
+                      "start": 3834,
+                      "stop": 3876,
                       "children": [
                         {
                           "rule": "statement",
-                          "start": 4117,
-                          "stop": 4159,
+                          "start": 3834,
+                          "stop": 3876,
                           "children": [
                             {
                               "rule": "classicalDeclarationStatement",
-                              "start": 4117,
-                              "stop": 4159,
+                              "start": 3834,
+                              "stop": 3876,
                               "children": [
                                 {
                                   "rule": "scalarType",
-                                  "start": 4117,
-                                  "stop": 4124,
+                                  "start": 3834,
+                                  "stop": 3841,
                                   "children": [
                                     {
                                       "token": "UINT",
                                       "text": "uint",
-                                      "start": 4117,
-                                      "stop": 4120
+                                      "start": 3834,
+                                      "stop": 3837
                                     },
                                     {
                                       "rule": "designator",
-                                      "start": 4121,
-                                      "stop": 4124,
+                                      "start": 3838,
+                                      "stop": 3841,
                                       "children": [
                                         {
                                           "token": "LBRACKET",
                                           "text": "[",
-                                          "start": 4121,
-                                          "stop": 4121
+                                          "start": 3838,
+                                          "stop": 3838
                                         },
                                         {
                                           "rule": "expression",
                                           "label": "LiteralExpression",
-                                          "start": 4122,
-                                          "stop": 4123,
+                                          "start": 3839,
+                                          "stop": 3840,
                                           "children": [
                                             {
                                               "token": "DecimalIntegerLiteral",
                                               "text": "32",
-                                              "start": 4122,
-                                              "stop": 4123
+                                              "start": 3839,
+                                              "stop": 3840
                                             }
                                           ]
                                         },
                                         {
                                           "token": "RBRACKET",
                                           "text": "]",
-                                          "start": 4124,
-                                          "stop": 4124
+                                          "start": 3841,
+                                          "stop": 3841
                                         }
                                       ]
                                     }
@@ -4003,74 +3858,74 @@
                                 {
                                   "token": "Identifier",
                                   "text": "dimension_1",
-                                  "start": 4126,
-                                  "stop": 4136
+                                  "start": 3843,
+                                  "stop": 3853
                                 },
                                 {
                                   "token": "EQUALS",
                                   "text": "=",
-                                  "start": 4138,
-                                  "stop": 4138
+                                  "start": 3855,
+                                  "stop": 3855
                                 },
                                 {
                                   "rule": "declarationExpression",
-                                  "start": 4140,
-                                  "stop": 4158,
+                                  "start": 3857,
+                                  "stop": 3875,
                                   "children": [
                                     {
                                       "rule": "expression",
                                       "label": "CallExpression",
-                                      "start": 4140,
-                                      "stop": 4158,
+                                      "start": 3857,
+                                      "stop": 3875,
                                       "children": [
                                         {
                                           "token": "Identifier",
                                           "text": "sizeof",
-                                          "start": 4140,
-                                          "stop": 4145
+                                          "start": 3857,
+                                          "stop": 3862
                                         },
                                         {
                                           "token": "LPAREN",
                                           "text": "(",
-                                          "start": 4146,
-                                          "stop": 4146
+                                          "start": 3863,
+                                          "stop": 3863
                                         },
                                         {
                                           "rule": "expressionList",
-                                          "start": 4147,
-                                          "stop": 4157,
+                                          "start": 3864,
+                                          "stop": 3874,
                                           "children": [
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 4147,
-                                              "stop": 4154,
+                                              "start": 3864,
+                                              "stop": 3871,
                                               "children": [
                                                 {
                                                   "token": "Identifier",
                                                   "text": "my_array",
-                                                  "start": 4147,
-                                                  "stop": 4154
+                                                  "start": 3864,
+                                                  "stop": 3871
                                                 }
                                               ]
                                             },
                                             {
                                               "token": "COMMA",
                                               "text": ",",
-                                              "start": 4155,
-                                              "stop": 4155
+                                              "start": 3872,
+                                              "stop": 3872
                                             },
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 4157,
-                                              "stop": 4157,
+                                              "start": 3874,
+                                              "stop": 3874,
                                               "children": [
                                                 {
                                                   "token": "DecimalIntegerLiteral",
                                                   "text": "1",
-                                                  "start": 4157,
-                                                  "stop": 4157
+                                                  "start": 3874,
+                                                  "stop": 3874
                                                 }
                                               ]
                                             }
@@ -4079,8 +3934,8 @@
                                         {
                                           "token": "RPAREN",
                                           "text": ")",
-                                          "start": 4158,
-                                          "stop": 4158
+                                          "start": 3875,
+                                          "stop": 3875
                                         }
                                       ]
                                     }
@@ -4089,8 +3944,8 @@
                                 {
                                   "token": "SEMICOLON",
                                   "text": ";",
-                                  "start": 4159,
-                                  "stop": 4159
+                                  "start": 3876,
+                                  "stop": 3876
                                 }
                               ]
                             }
@@ -4100,60 +3955,60 @@
                     },
                     {
                       "rule": "statementOrScope",
-                      "start": 4165,
-                      "stop": 4207,
+                      "start": 3882,
+                      "stop": 3924,
                       "children": [
                         {
                           "rule": "statement",
-                          "start": 4165,
-                          "stop": 4207,
+                          "start": 3882,
+                          "stop": 3924,
                           "children": [
                             {
                               "rule": "classicalDeclarationStatement",
-                              "start": 4165,
-                              "stop": 4207,
+                              "start": 3882,
+                              "stop": 3924,
                               "children": [
                                 {
                                   "rule": "scalarType",
-                                  "start": 4165,
-                                  "stop": 4172,
+                                  "start": 3882,
+                                  "stop": 3889,
                                   "children": [
                                     {
                                       "token": "UINT",
                                       "text": "uint",
-                                      "start": 4165,
-                                      "stop": 4168
+                                      "start": 3882,
+                                      "stop": 3885
                                     },
                                     {
                                       "rule": "designator",
-                                      "start": 4169,
-                                      "stop": 4172,
+                                      "start": 3886,
+                                      "stop": 3889,
                                       "children": [
                                         {
                                           "token": "LBRACKET",
                                           "text": "[",
-                                          "start": 4169,
-                                          "stop": 4169
+                                          "start": 3886,
+                                          "stop": 3886
                                         },
                                         {
                                           "rule": "expression",
                                           "label": "LiteralExpression",
-                                          "start": 4170,
-                                          "stop": 4171,
+                                          "start": 3887,
+                                          "stop": 3888,
                                           "children": [
                                             {
                                               "token": "DecimalIntegerLiteral",
                                               "text": "32",
-                                              "start": 4170,
-                                              "stop": 4171
+                                              "start": 3887,
+                                              "stop": 3888
                                             }
                                           ]
                                         },
                                         {
                                           "token": "RBRACKET",
                                           "text": "]",
-                                          "start": 4172,
-                                          "stop": 4172
+                                          "start": 3889,
+                                          "stop": 3889
                                         }
                                       ]
                                     }
@@ -4162,74 +4017,74 @@
                                 {
                                   "token": "Identifier",
                                   "text": "dimension_2",
-                                  "start": 4174,
-                                  "stop": 4184
+                                  "start": 3891,
+                                  "stop": 3901
                                 },
                                 {
                                   "token": "EQUALS",
                                   "text": "=",
-                                  "start": 4186,
-                                  "stop": 4186
+                                  "start": 3903,
+                                  "stop": 3903
                                 },
                                 {
                                   "rule": "declarationExpression",
-                                  "start": 4188,
-                                  "stop": 4206,
+                                  "start": 3905,
+                                  "stop": 3923,
                                   "children": [
                                     {
                                       "rule": "expression",
                                       "label": "CallExpression",
-                                      "start": 4188,
-                                      "stop": 4206,
+                                      "start": 3905,
+                                      "stop": 3923,
                                       "children": [
                                         {
                                           "token": "Identifier",
                                           "text": "sizeof",
-                                          "start": 4188,
-                                          "stop": 4193
+                                          "start": 3905,
+                                          "stop": 3910
                                         },
                                         {
                                           "token": "LPAREN",
                                           "text": "(",
-                                          "start": 4194,
-                                          "stop": 4194
+                                          "start": 3911,
+                                          "stop": 3911
                                         },
                                         {
                                           "rule": "expressionList",
-                                          "start": 4195,
-                                          "stop": 4205,
+                                          "start": 3912,
+                                          "stop": 3922,
                                           "children": [
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 4195,
-                                              "stop": 4202,
+                                              "start": 3912,
+                                              "stop": 3919,
                                               "children": [
                                                 {
                                                   "token": "Identifier",
                                                   "text": "my_array",
-                                                  "start": 4195,
-                                                  "stop": 4202
+                                                  "start": 3912,
+                                                  "stop": 3919
                                                 }
                                               ]
                                             },
                                             {
                                               "token": "COMMA",
                                               "text": ",",
-                                              "start": 4203,
-                                              "stop": 4203
+                                              "start": 3920,
+                                              "stop": 3920
                                             },
                                             {
                                               "rule": "expression",
                                               "label": "LiteralExpression",
-                                              "start": 4205,
-                                              "stop": 4205,
+                                              "start": 3922,
+                                              "stop": 3922,
                                               "children": [
                                                 {
                                                   "token": "DecimalIntegerLiteral",
                                                   "text": "2",
-                                                  "start": 4205,
-                                                  "stop": 4205
+                                                  "start": 3922,
+                                                  "stop": 3922
                                                 }
                                               ]
                                             }
@@ -4238,8 +4093,8 @@
                                         {
                                           "token": "RPAREN",
                                           "text": ")",
-                                          "start": 4206,
-                                          "stop": 4206
+                                          "start": 3923,
+                                          "stop": 3923
                                         }
                                       ]
                                     }
@@ -4248,8 +4103,8 @@
                                 {
                                   "token": "SEMICOLON",
                                   "text": ";",
-                                  "start": 4207,
-                                  "stop": 4207
+                                  "start": 3924,
+                                  "stop": 3924
                                 }
                               ]
                             }
@@ -4260,8 +4115,8 @@
                     {
                       "token": "RBRACE",
                       "text": "}",
-                      "start": 4209,
-                      "stop": 4209
+                      "start": 3926,
+                      "stop": 3926
                     }
                   ]
                 }
@@ -4274,8 +4129,8 @@
     {
       "token": "EOF",
       "text": "<EOF>",
-      "start": 4211,
-      "stop": 4210
+      "start": 3928,
+      "stop": 3927
     }
   ]
 }

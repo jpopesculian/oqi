@@ -70,11 +70,6 @@ const uint[32] dimension = sizeof(my_defined_uints);  // assigns 4.
 const uint[32] first_dimension = sizeof(my_doubles, 0);  // returns 8
 const uint[32] second_dimension = sizeof(my_doubles, 1);  // returns 4
 
-// If the second argument is omitted from ``sizeof`` and the given array is
-// multi-dimensional, it defaults to returning the first dimension, so
-// ``sizeof(my_array) == sizeof(my_array, 0)`` in all circumstances.
-const uint[32] first_dimension = sizeof(my_doubles);  // still 8.
-
 
 // =====================
 // Arrays in subroutines

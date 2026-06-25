@@ -986,6 +986,20 @@ mod tests {
     }
 
     #[test]
+    fn array_ref_displays_indexed_sub_array() {
+        // An ArrayRef produced by indexing must display the sub-array it
+        // refers to, not its whole backing store.
+        let val = arr(&[1, 2, 3, 4], shape![2, 2]);
+        let row0 = val.get(&[Index::Item(0)]).unwrap();
+        assert!(matches!(row0, Value::ArrayRef(_)));
+        assert_eq!(row0.to_string(), "{1, 2}");
+
+        let val3 = arr(&[1, 2, 3, 4, 5, 6], shape![3, 2]);
+        let row1 = val3.get(&[Index::Item(1)]).unwrap();
+        assert_eq!(row1.to_string(), "{3, 4}");
+    }
+
+    #[test]
     fn get_two_items_returns_scalar() {
         let val = arr(&[0, 1, 2, 3, 4, 5], shape![2, 3]);
         let result = val.get(&[Index::Item(0), Index::Item(2)]).unwrap();

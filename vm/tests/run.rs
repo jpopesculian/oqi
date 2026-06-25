@@ -261,6 +261,25 @@ fn multi_dim_element_write() {
 }
 
 #[test]
+fn sub_array_read_displays_the_row() {
+    // `r = m[0]` reads a row of a 2-D array. The result is an array view that
+    // must display as the row it refers to, not the whole base array.
+    let outs = run_outputs(
+        r#"
+            array[int[32], 2, 2] m = { {1, 2}, {3, 4} };
+            array[int[32], 2] r = m[0];
+        "#,
+    );
+    assert_eq!(
+        outs,
+        vec![
+            ("m".to_string(), "{{1, 2}, {3, 4}}".to_string()),
+            ("r".to_string(), "{1, 2}".to_string())
+        ]
+    );
+}
+
+#[test]
 fn equal_length_register_broadcast() {
     // `x q` over a 3-qubit register flips all three; `cx a, b` over two
     // equal-length registers zips pairwise. All end up |1>.

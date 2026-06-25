@@ -92,7 +92,9 @@ impl From<Array> for ArrayRef {
 
 impl fmt::Display for ArrayRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.array().borrow().map_err(|_| fmt::Error)?)
+        // An ArrayRef carries indices into a larger backing array; show the
+        // sub-array it refers to, not the whole store.
+        write!(f, "{}", self.to_owned().map_err(|_| fmt::Error)?)
     }
 }
 

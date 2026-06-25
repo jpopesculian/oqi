@@ -1935,8 +1935,8 @@
     "channel": 0
   },
   {
-    "type": "MINUS",
-    "text": "-",
+    "type": "PERCENT",
+    "text": "%",
     "line": 51,
     "column": 19,
     "start": 1627,
@@ -1945,7 +1945,7 @@
   },
   {
     "type": "DecimalIntegerLiteral",
-    "text": "1",
+    "text": "4",
     "line": 51,
     "column": 21,
     "start": 1629,

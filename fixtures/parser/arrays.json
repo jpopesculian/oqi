@@ -2279,7 +2279,7 @@
                         },
                         {
                           "rule": "expression",
-                          "label": "AdditiveExpression",
+                          "label": "MultiplicativeExpression",
                           "start": 1625,
                           "stop": 1629,
                           "children": [
@@ -2298,8 +2298,8 @@
                               ]
                             },
                             {
-                              "token": "MINUS",
-                              "text": "-",
+                              "token": "PERCENT",
+                              "text": "%",
                               "start": 1627,
                               "stop": 1627
                             },
@@ -2311,7 +2311,7 @@
                               "children": [
                                 {
                                   "token": "DecimalIntegerLiteral",
-                                  "text": "1",
+                                  "text": "4",
                                   "start": 1629,
                                   "stop": 1629
                                 }

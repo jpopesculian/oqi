@@ -48,7 +48,7 @@ my_defined_uints[1] = 5;
 my_defined_floats[3, 0] = -0.45;
 
 // In both, the indices can be (non-constant) expressions.
-my_defined_uints[a - 1] = a + 1;
+my_defined_uints[a % 4] = a + 1;
 
 // Assignments can also be done using an array, or array slice, on the left-hand
 // side, provided the right-hand side evaluates to an array of exactly the same

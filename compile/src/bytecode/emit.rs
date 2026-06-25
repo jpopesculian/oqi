@@ -541,10 +541,30 @@ impl<'a> EmitCtx<'a> {
                 // Indexed store: read `old`, compute `new = old[index] = value`.
                 let base = BcOperand::Reg(self.reg_for(*old, reg_map));
                 let new_reg = self.reg_for(*new, reg_map);
+                // Element store `a[i, j, …] = v`: every index op selects a
+                // single position, so resolve one operand per dimension and
+                // write the element directly. Covers ordinary 1-D indexing
+                // and multi-dimensional `a[i, j]`.
+                if !indices.is_empty() && indices.iter().all(index_op_is_all_single) {
+                    let mut idx = Vec::new();
+                    for io in indices {
+                        idx.extend(self.lower_index_op_to_operands(io, instrs, reg_map)?);
+                    }
+                    let value = self.rvalue_to_operand(value, instrs, reg_map)?;
+                    instrs.push(BcInstr {
+                        op: BcOp::StoreElement {
+                            new: new_reg,
+                            base,
+                            indices: idx,
+                            value,
+                        },
+                        span,
+                    });
+                    return Ok(());
+                }
                 // A slice or multi-element target (`reg[a:b] = ...`) writes a
                 // multi-bit value across several positions. Resolve the
-                // positions statically and emit a slice store; a single
-                // element keeps the scalar StoreElement path below.
+                // positions statically and emit a slice store.
                 if let Some(io) = indices.first().filter(|io| is_multi_index(io)) {
                     if let Some(len) = self.symbol_bit_len(old.symbol) {
                         let positions = qubits::resolve_static_index(io, len)?;
@@ -561,10 +581,8 @@ impl<'a> EmitCtx<'a> {
                         return Ok(());
                     }
                 }
-                // OpenQASM supports multi-dim indexed assignment via
-                // multiple index ops; the bytecode currently flattens
-                // each as a separate StoreElement chained through a
-                // single new register. v1: only the first dim.
+                // Fallback: collapse a slice index to its first element
+                // (v1 single-dimension behavior).
                 let index = if let Some(io) = indices.first() {
                     self.lower_index_op_to_operand(io, instrs, reg_map)?
                 } else {
@@ -575,7 +593,7 @@ impl<'a> EmitCtx<'a> {
                     op: BcOp::StoreElement {
                         new: new_reg,
                         base,
-                        index,
+                        indices: vec![index],
                         value,
                     },
                     span,
@@ -669,9 +687,9 @@ impl<'a> EmitCtx<'a> {
             }
             SsaExprKind::Index(Index { base, index }) => {
                 let base = self.lower_expr_to_operand(base, instrs, reg_map)?;
-                let index = self.lower_index_op_to_operand(index, instrs, reg_map)?;
+                let indices = self.lower_index_op_to_operands(index, instrs, reg_map)?;
                 instrs.push(BcInstr {
-                    op: BcOp::LoadElement { dest, base, index },
+                    op: BcOp::LoadElement { dest, base, indices },
                     span,
                 });
             }
@@ -696,12 +714,13 @@ impl<'a> EmitCtx<'a> {
                     span,
                 });
             }
-            SsaExprKind::ArrayLiteral(arr) => {
-                let items = arr
-                    .items
-                    .iter()
-                    .map(|x| self.lower_expr_to_operand(x, instrs, reg_map))
-                    .collect::<Result<_>>()?;
+            SsaExprKind::ArrayLiteral(_) => {
+                // Flatten nested literals (multi-dimensional arrays) into a
+                // single flat list of scalar leaves; `NewArray` builds the
+                // array from the flat values against the destination's full
+                // shape (see `oqi_classical::Array::new`).
+                let mut items = Vec::new();
+                self.collect_array_literal_leaves(e, &mut items, instrs, reg_map)?;
                 instrs.push(BcInstr {
                     op: BcOp::NewArray { dest, items },
                     span,
@@ -770,6 +789,28 @@ impl<'a> EmitCtx<'a> {
                 BcOperand::Reg(temp)
             }
         })
+    }
+
+    /// Recursively collect the scalar-leaf operands of a (possibly nested)
+    /// array literal in row-major order. Nested `ArrayLiteral`s are descended
+    /// into rather than spilled to temporaries, so a multi-dimensional literal
+    /// becomes one flat operand list matching its element count.
+    fn collect_array_literal_leaves(
+        &mut self,
+        e: &SsaExpr,
+        items: &mut Vec<BcOperand>,
+        instrs: &mut Vec<BcInstr>,
+        reg_map: &mut RegMap,
+    ) -> Result<()> {
+        match &e.kind {
+            SsaExprKind::ArrayLiteral(arr) => {
+                for item in &arr.items {
+                    self.collect_array_literal_leaves(item, items, instrs, reg_map)?;
+                }
+            }
+            _ => items.push(self.lower_expr_to_operand(e, instrs, reg_map)?),
+        }
+        Ok(())
     }
 
     fn lower_qubit_operand(
@@ -1197,6 +1238,31 @@ impl<'a> EmitCtx<'a> {
         id
     }
 
+    /// Lower an index op to one operand per indexed dimension. An
+    /// all-single multi-dimensional index (`a[i, j]`) yields one operand
+    /// each; anything else collapses to a single operand (see
+    /// [`Self::lower_index_op_to_operand`]).
+    fn lower_index_op_to_operands(
+        &mut self,
+        io: &IndexOp<SsaExpr>,
+        instrs: &mut Vec<BcInstr>,
+        reg_map: &mut RegMap,
+    ) -> Result<Vec<BcOperand>> {
+        if let IndexKind::Items(items) = &io.kind
+            && items.len() > 1
+            && items.iter().all(|it| matches!(it, IndexItem::Single(_)))
+        {
+            let mut out = Vec::with_capacity(items.len());
+            for it in items {
+                if let IndexItem::Single(e) = it {
+                    out.push(self.lower_expr_to_operand(e, instrs, reg_map)?);
+                }
+            }
+            return Ok(out);
+        }
+        Ok(vec![self.lower_index_op_to_operand(io, instrs, reg_map)?])
+    }
+
     fn lower_index_op_to_operand(
         &mut self,
         io: &IndexOp<SsaExpr>,
@@ -1417,6 +1483,14 @@ fn is_multi_index(io: &IndexOp<SsaExpr>) -> bool {
         IndexKind::Set(es) => es.len() > 1,
         IndexKind::Items(items) => !matches!(items.as_slice(), [IndexItem::Single(_)]),
     }
+}
+
+/// True when every item of an `Items` index op selects a single position
+/// (`a[i]` or the multi-dimensional `a[i, j]`), so the access targets one
+/// element rather than a slice.
+fn index_op_is_all_single(io: &IndexOp<SsaExpr>) -> bool {
+    matches!(&io.kind, IndexKind::Items(items)
+        if !items.is_empty() && items.iter().all(|it| matches!(it, IndexItem::Single(_))))
 }
 
 fn primitive_to_value(p: crate::classical::Primitive, ty: &crate::types::Type) -> Value {

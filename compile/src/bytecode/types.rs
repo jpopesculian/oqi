@@ -336,18 +336,22 @@ pub enum BcOp {
         dest: Reg,
         src: BcOperand,
     },
+    /// Element read `dest = base[i0, i1, …]`. `indices` holds one operand
+    /// per indexed dimension (a single entry for ordinary 1-D indexing,
+    /// several for a multi-dimensional access like `arr[i, j]`).
     LoadElement {
         dest: Reg,
         base: BcOperand,
-        index: BcOperand,
+        indices: Vec<BcOperand>,
     },
-    /// Whole-array kill+def: `new = base; new[index] = value`. Reads
+    /// Whole-array kill+def: `new = base; new[i0, i1, …] = value`. Reads
     /// the entire array via `base`, produces a fresh `new` register
-    /// after the partial update.
+    /// after the partial update. `indices` holds one operand per indexed
+    /// dimension (see [`BcOp::LoadElement`]).
     StoreElement {
         new: Reg,
         base: BcOperand,
-        index: BcOperand,
+        indices: Vec<BcOperand>,
         value: BcOperand,
     },
     /// Whole-register kill+def for a slice target: `new = base;

@@ -319,23 +319,23 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 self.set(frame, *dest, v);
                 Ok(())
             }
-            BcOp::LoadElement { dest, base, index } => {
+            BcOp::LoadElement { dest, base, indices } => {
                 let base = self.eval(frame, base)?;
-                let i = value_isize(&self.eval(frame, index)?)?;
-                let v = base.get(&[Index::Item(i)])?;
+                let idx = self.eval_index_items(frame, indices)?;
+                let v = base.get(&idx)?;
                 self.set(frame, *dest, v);
                 Ok(())
             }
             BcOp::StoreElement {
                 new,
                 base,
-                index,
+                indices,
                 value,
             } => {
                 let mut arr = self.eval(frame, base)?;
-                let i = value_isize(&self.eval(frame, index)?)?;
+                let idx = self.eval_index_items(frame, indices)?;
                 let value = self.eval(frame, value)?;
-                arr.set(&[Index::Item(i)], value)?;
+                arr.set(&idx, value)?;
                 self.set(frame, *new, arr);
                 Ok(())
             }
@@ -825,6 +825,15 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 
     fn set(&self, frame: &mut Frame, reg: Reg, value: Value) {
         frame.regs[reg.0 as usize] = Some(value);
+    }
+
+    /// Evaluate per-dimension index operands into `Index::Item`s for an
+    /// element load/store (`a[i, j, …]`).
+    fn eval_index_items(&self, frame: &Frame, indices: &[BcOperand]) -> Result<Vec<Index>> {
+        indices
+            .iter()
+            .map(|op| Ok(Index::Item(value_isize(&self.eval(frame, op)?)?)))
+            .collect()
     }
 
     /// Resolve a classical operand to a value.

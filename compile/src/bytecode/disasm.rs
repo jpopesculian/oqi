@@ -148,24 +148,21 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             write!(f, "{} = move ", fmt_reg(*dest))?;
             fmt_operand(f, src)
         }
-        BcOp::LoadElement { dest, base, index } => {
+        BcOp::LoadElement { dest, base, indices } => {
             write!(f, "{} = load_elem ", fmt_reg(*dest))?;
             fmt_operand(f, base)?;
-            write!(f, "[")?;
-            fmt_operand(f, index)?;
-            write!(f, "]")
+            fmt_index_list(f, indices)
         }
         BcOp::StoreElement {
             new,
             base,
-            index,
+            indices,
             value,
         } => {
             write!(f, "{} = store_elem ", fmt_reg(*new))?;
             fmt_operand(f, base)?;
-            write!(f, "[")?;
-            fmt_operand(f, index)?;
-            write!(f, "] = ")?;
+            fmt_index_list(f, indices)?;
+            write!(f, " = ")?;
             fmt_operand(f, value)
         }
         BcOp::StoreSlice {
@@ -405,6 +402,18 @@ fn fmt_bin(
 fn fmt_un(f: &mut fmt::Formatter<'_>, name: &str, dest: &Reg, src: &BcOperand) -> fmt::Result {
     write!(f, "{} = {} ", fmt_reg(*dest), name)?;
     fmt_operand(f, src)
+}
+
+/// Render `[i0, i1, …]` for an element access's per-dimension indices.
+fn fmt_index_list(f: &mut fmt::Formatter<'_>, indices: &[BcOperand]) -> fmt::Result {
+    write!(f, "[")?;
+    for (i, idx) in indices.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        fmt_operand(f, idx)?;
+    }
+    write!(f, "]")
 }
 
 fn fmt_operand(f: &mut fmt::Formatter<'_>, op: &BcOperand) -> fmt::Result {

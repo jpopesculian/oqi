@@ -212,6 +212,55 @@ fn sizeof_on_unspecified_length_array_ref_is_runtime() {
 }
 
 #[test]
+fn multi_dim_array_literal_initializes() {
+    // A nested (multi-dimensional) array literal flattens to one `NewArray`
+    // against the destination's full shape, producing the right values.
+    let outs = run_outputs("array[int[32], 2, 3] m = { {1, 2, 3}, {4, 5, 6} };");
+    assert_eq!(
+        outs,
+        vec![("m".to_string(), "{{1, 2, 3}, {4, 5, 6}}".to_string())]
+    );
+}
+
+#[test]
+fn multi_dim_element_read() {
+    // `m[i, j]` reads a single element across both dimensions, not just the
+    // first index.
+    let outs = run_outputs(
+        r#"
+            array[int[32], 2, 3] m = { {1, 2, 3}, {4, 5, 6} };
+            output int[32] a;
+            output int[32] b;
+            a = m[1, 0];
+            b = m[0, 2];
+        "#,
+    );
+    assert_eq!(
+        outs,
+        vec![
+            ("a".to_string(), "4".to_string()),
+            ("b".to_string(), "3".to_string())
+        ]
+    );
+}
+
+#[test]
+fn multi_dim_element_write() {
+    // `m[i, j] = v` updates exactly one element across both dimensions.
+    let outs = run_outputs(
+        r#"
+            array[int[32], 2, 3] m = { {1, 2, 3}, {4, 5, 6} };
+            m[1, 2] = 99;
+            m[0, 0] = 7;
+        "#,
+    );
+    assert_eq!(
+        outs,
+        vec![("m".to_string(), "{{7, 2, 3}, {4, 5, 99}}".to_string())]
+    );
+}
+
+#[test]
 fn equal_length_register_broadcast() {
     // `x q` over a 3-qubit register flips all three; `cx a, b` over two
     // equal-length registers zips pairwise. All end up |1>.
@@ -799,3 +848,4 @@ fn physical_qubits_size_the_register() {
     );
     assert_eq!(m, vec![(0, true), (1, false), (2, true)]);
 }
+

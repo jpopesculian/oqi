@@ -4,6 +4,7 @@ use num_complex::Complex;
 use oqi_quantum::{Gate, StateVector, Unitary};
 
 use crate::backend::{GateModifiers, QuantumBackend};
+use crate::error::{VmError, VmErrorKind};
 
 /// A small, seedable xorshift64* PRNG. Avoids a `rand` dependency and
 /// keeps runs reproducible.
@@ -42,16 +43,40 @@ pub struct StateVectorSim {
 
 impl StateVectorSim {
     /// A fresh simulator with `num_qubits` qubits in |0…0⟩, default seed.
+    ///
+    /// Panics if the state vector can't be allocated; use
+    /// [`try_new`](Self::try_new) to handle that gracefully.
     pub fn new(num_qubits: u32) -> Self {
         Self::with_seed(num_qubits, 0x2545F4914F6CDD1D)
     }
 
     /// A fresh simulator with an explicit RNG seed (for reproducibility).
+    /// Panics if the state vector can't be allocated.
     pub fn with_seed(num_qubits: u32, seed: u64) -> Self {
-        StateVectorSim {
-            state: StateVector::zero(num_qubits as usize),
+        Self::try_with_seed(num_qubits, seed).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// A fresh simulator with the default seed, or a
+    /// [`VmErrorKind::TooManyQubits`] error if its state vector can't be
+    /// allocated.
+    pub fn try_new(num_qubits: u32) -> std::result::Result<Self, VmError> {
+        Self::try_with_seed(num_qubits, 0x2545F4914F6CDD1D)
+    }
+
+    /// A fresh simulator with an explicit seed, or a
+    /// [`VmErrorKind::TooManyQubits`] error if the `2^num_qubits`-amplitude
+    /// state vector can't be allocated (it uses a fallible allocation, so an
+    /// oversized circuit fails gracefully instead of aborting).
+    pub fn try_with_seed(num_qubits: u32, seed: u64) -> std::result::Result<Self, VmError> {
+        let state = StateVector::try_zero(num_qubits as usize).ok_or_else(|| {
+            VmError::new(VmErrorKind::TooManyQubits {
+                requested: num_qubits,
+            })
+        })?;
+        Ok(StateVectorSim {
+            state,
             rng: Rng::new(seed),
-        }
+        })
     }
 
     /// The current amplitudes (global phase unresolved).

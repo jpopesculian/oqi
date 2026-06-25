@@ -289,15 +289,28 @@ pub struct StateVector<F> {
 }
 
 impl<F: Float> StateVector<F> {
-    pub fn zero(size: usize) -> Self {
-        let len = 1usize << size;
-        let mut state = vec![Complex::zero(); len];
+    /// Allocate the |0…0⟩ state for `size` qubits, or `None` if its
+    /// `2^size`-amplitude vector cannot be allocated — either the length
+    /// overflows `usize` or the allocator can't satisfy the request. This
+    /// lets callers fail gracefully on oversized circuits instead of
+    /// aborting the process on an infallible allocation.
+    pub fn try_zero(size: usize) -> Option<Self> {
+        let len = 1usize.checked_shl(size as u32)?;
+        let mut state: Vec<Complex<F>> = Vec::new();
+        state.try_reserve_exact(len).ok()?;
+        state.resize(len, Complex::zero());
         state[0] = Complex::one();
-        Self {
+        Some(Self {
             state,
             size,
             global_phase: F::zero(),
-        }
+        })
+    }
+
+    /// Like [`try_zero`](Self::try_zero) but panics if the state vector
+    /// cannot be allocated.
+    pub fn zero(size: usize) -> Self {
+        Self::try_zero(size).expect("state vector allocation")
     }
 
     pub fn size(&self) -> usize {

@@ -179,15 +179,13 @@ fn gate_without_stdgates_is_undefined() {
 }
 
 #[test]
-fn msd_undeclared_success() {
-    // msd.qasm assigns to 'success' without declaring it
-    match compile_fixture("msd.qasm") {
-        Err(e) => assert!(matches!(
-            e.kind,
-            oqi_compile::error::ErrorKind::UndefinedName(_)
-        )),
-        Ok(_) => panic!("expected error"),
-    }
+fn msd() {
+    // Magic-state distillation: a large program exercising qubit-parameter
+    // slicing, aliasing, and runtime-indexed slices in subroutines. It needs
+    // 44 qubits, so it cannot run on the state-vector simulator, but it must
+    // compile cleanly. (`UndefinedName` is covered by
+    // `gate_without_stdgates_is_undefined`.)
+    compile_fixture("msd.qasm").expect("should compile");
 }
 
 // ── Focused regression tests ─────────────────────────────────────────

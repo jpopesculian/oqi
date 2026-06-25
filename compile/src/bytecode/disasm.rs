@@ -437,6 +437,9 @@ fn fmt_operand(f: &mut fmt::Formatter<'_>, op: &BcOperand) -> fmt::Result {
             }
             Ok(())
         }
+        BcOperand::QubitParamSlice { slot, positions } => {
+            write!(f, "qp{slot}{positions:?}")
+        }
         BcOperand::QubitAlias { slot, index } => {
             write!(f, "qa{slot}")?;
             if let Some(idx) = index {

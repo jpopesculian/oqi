@@ -178,6 +178,75 @@ fn subroutine_call_with_argument_and_return() {
 }
 
 #[test]
+fn qubit_param_slice_in_subroutine() {
+    // A static slice / discrete set of a qubit subroutine parameter selects
+    // the corresponding bound qubits. `q[0:1]` covers qubits 0 and 1; `q[{0,2}]`
+    // and `q[3:3]` select individual positions.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            def flip_range(qubit[3] q) { x q[0:1]; }
+            qubit[3] r;
+            flip_range(r);
+            bit[3] c = measure r;
+        "#,
+    );
+    assert_eq!(m, vec![(0, true), (1, true), (2, false)]);
+
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            def flip_set(qubit[4] q) { x q[{0, 2}]; x q[3:3]; }
+            qubit[4] r;
+            flip_set(r);
+            bit[4] c = measure r;
+        "#,
+    );
+    assert_eq!(m, vec![(0, true), (1, false), (2, true), (3, true)]);
+}
+
+#[test]
+fn qubit_param_alias_in_subroutine() {
+    // `let` aliases built from slices of a qubit parameter resolve against the
+    // qubits bound at call time: `lo = q[0:1]`, `hi = q[2:3]`.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            def op(qubit[4] q) {
+                let lo = q[0:1];
+                let hi = q[2:3];
+                x lo;        // flips q[0], q[1]
+                x hi[1];     // flips q[3]
+            }
+            qubit[4] r;
+            op(r);
+            bit[4] c = measure r;
+        "#,
+    );
+    assert_eq!(m, vec![(0, true), (1, true), (2, false), (3, true)]);
+}
+
+#[test]
+fn qubit_param_runtime_slice_in_subroutine() {
+    // A slice of a qubit parameter with runtime bounds (`q[i:i+1]`) is bound to
+    // the parameter's qubits at run time. With i=1 the inclusive range 1:2
+    // covers qubits 1 and 2.
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            def op(qubit[5] q, int[32] i) { x q[i : i + 1]; }
+            qubit[5] r;
+            op(r, 1);
+            bit[5] c = measure r;
+        "#,
+    );
+    assert_eq!(
+        m,
+        vec![(0, false), (1, true), (2, true), (3, false), (4, false)]
+    );
+}
+
+#[test]
 fn intrinsic_call_is_evaluated() {
     // popcount(7) == 3 routes through BcCallTarget::Intrinsic.
     let m = run_measurements(
@@ -730,6 +799,38 @@ fn varteleport_fixture_runs_end_to_end() {
     // bit is probabilistic (reflects the prepared input state), so only the
     // count is asserted.
     assert_eq!(m.len(), 21, "expected 21 measurements, got {m:?}");
+}
+
+#[test]
+fn oversized_qubit_count_is_a_graceful_error() {
+    // A program needing more qubits than the state-vector simulator can hold
+    // must surface a TooManyQubits error via the fallible allocation, not
+    // abort the process. 50 qubits is 2^54 bytes — unallocatable anywhere.
+    assert!(matches!(
+        StateVectorSim::try_new(50),
+        Err(VmError {
+            kind: VmErrorKind::TooManyQubits { .. },
+            ..
+        })
+    ));
+    // A small register allocates fine.
+    assert!(StateVectorSim::try_new(1).is_ok());
+}
+
+#[test]
+fn msd_fixture_compiles_but_exceeds_simulator_capacity() {
+    // msd.qasm compiles (exercising qubit-parameter slicing/aliasing/runtime
+    // slices) but declares 44 qubits, which the state-vector simulator can't
+    // hold — it must fail gracefully, not abort the allocator.
+    let module = build(include_str!("../../fixtures/qasm/msd.qasm"));
+    match StateVectorSim::try_new(module.qubits.num_qubits) {
+        Err(VmError {
+            kind: VmErrorKind::TooManyQubits { requested, .. },
+            ..
+        }) => assert_eq!(requested, 44),
+        Err(other) => panic!("expected TooManyQubits, got {other:?}"),
+        Ok(_) => panic!("expected TooManyQubits for a 44-qubit program"),
+    }
 }
 
 /// Run and return named outputs as `(name, displayed value)`, sorted by name.

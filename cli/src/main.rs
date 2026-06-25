@@ -135,7 +135,13 @@ fn run(path: &Path, show_state: bool, input_specs: &[String]) -> ExitCode {
         }
     };
 
-    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let sim = match StateVectorSim::try_new(module.qubits.num_qubits) {
+        Ok(s) => s,
+        Err(e) => {
+            oqi_diagnostics::emit(&e, path, &source);
+            return ExitCode::FAILURE;
+        }
+    };
     let mut vm = Vm::new(&module, sim, NoExterns);
     match vm.run_with_inputs(inputs) {
         Ok(result) => {

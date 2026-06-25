@@ -45,7 +45,7 @@ def distill(qubit[10] magic, qubit[3] scratch) -> bool {
   cy magic[4], scratch[1];
   temp = ymeasure(magic[4]);
   if(temp==1) { ry(-pi / 2) scratch[1]; }
-  cz scratch[3], scratch[2];
+  cz scratch[1], scratch[2];
   cy magic[5], scratch[1];
   temp = ymeasure(magic[5]);
   if(temp==0) { ry(pi / 2) scratch[1]; }
@@ -77,14 +77,14 @@ def distill(qubit[10] magic, qubit[3] scratch) -> bool {
   cx scratch[1], magic[0];
   h scratch[1];
   checks = measure scratch;
-  success = ~(bool(checks[0]) | bool(checks[1]) | bool(checks[2]));
+  bool success = !(bool(checks[0]) || bool(checks[1]) || bool(checks[2]));
   return success;
 }
 
 // Repeat level-0 distillation until success
 def rus_level_0(qubit[10] magic, qubit[3] scratch) {
   bool success;
-  while(~success) {
+  while(!success) {
     reset magic;
     ry(pi / 4) magic;
     success = distill(magic, scratch);
@@ -102,8 +102,8 @@ def rus_level_0(qubit[10] magic, qubit[3] scratch) {
  */
 def distill_and_buffer(int[32] num, qubit[33] work, qubit[buffer_size] buffer) {
   int[32] index;
-  bit success_0;
-  bit success_1;
+  bool success_0;
+  bool success_1;
   let magic_lvl0 = work[0: 9];
   let magic_lvl1_0 = work[10: 19];
   let magic_lvl1_1 = work[20: 29];

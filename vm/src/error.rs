@@ -30,6 +30,10 @@ pub enum VmErrorKind {
     Classical(oqi_classical::Error),
     /// A resolved qubit index fell outside the backend's register.
     QubitOutOfRange { qubit: usize, num_qubits: usize },
+    /// The program's state vector can't be allocated (e.g. the CPU
+    /// state-vector simulator's exponential memory cost outran available
+    /// memory or the addressable limit).
+    TooManyQubits { requested: u32 },
     /// Execution reached a block marked unreachable.
     Unreachable,
 }
@@ -60,6 +64,11 @@ impl fmt::Display for VmErrorKind {
             VmErrorKind::QubitOutOfRange { qubit, num_qubits } => write!(
                 f,
                 "qubit index {qubit} is out of range (the program allocates {num_qubits} qubit(s))"
+            ),
+            VmErrorKind::TooManyQubits { requested } => write!(
+                f,
+                "program requires {requested} qubits; its state vector \
+                 (2^{requested} complex amplitudes) cannot be allocated"
             ),
             VmErrorKind::Unreachable => write!(f, "reached an unreachable block"),
         }

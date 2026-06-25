@@ -886,6 +886,20 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     }
                 }
             }
+            BcOperand::QubitParamSlice { slot, positions } => {
+                let bound = frame
+                    .qubit_args
+                    .get(*slot as usize)
+                    .ok_or_else(|| VmErrorKind::Unsupported("unbound qubit parameter".into()))?;
+                positions
+                    .iter()
+                    .map(|&p| {
+                        bound.get(p as usize).copied().ok_or_else(|| {
+                            VmErrorKind::Type(format!("qubit index {p} out of range"))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?
+            }
             BcOperand::QubitAlias { slot, index } => {
                 let bound = frame
                     .aliases
@@ -1061,6 +1075,7 @@ fn is_qubit_operand(op: &BcOperand) -> bool {
             | BcOperand::QubitRegion(_)
             | BcOperand::QubitIndexed { .. }
             | BcOperand::QubitParam { .. }
+            | BcOperand::QubitParamSlice { .. }
             | BcOperand::QubitAlias { .. }
     )
 }

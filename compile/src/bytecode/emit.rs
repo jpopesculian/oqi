@@ -133,6 +133,12 @@ enum AliasSrc {
         origin: SymbolId,
     },
     Alias(qubits::DynAlias),
+    /// A qubit subroutine parameter, bound to a qubit list at call time and
+    /// resolved at run time via [`BcOperand::QubitParam`].
+    Param {
+        slot: u32,
+        len: Option<usize>,
+    },
 }
 
 impl AliasSrc {
@@ -141,6 +147,7 @@ impl AliasSrc {
         match self {
             AliasSrc::Region { reg, .. } => Some(reg.len()),
             AliasSrc::Alias(da) => da.len,
+            AliasSrc::Param { len, .. } => *len,
         }
     }
 }
@@ -330,11 +337,14 @@ impl<'a> EmitCtx<'a> {
         let span = stmt.span;
         match &stmt.kind {
             SsaStmtKind::Alias(Alias { symbol, value }) => {
-                // An operand referencing another runtime-bound alias
-                // forces this alias to be runtime-bound too.
+                // An operand referencing another runtime-bound alias or a
+                // qubit parameter forces this alias to be runtime-bound too
+                // (parameters are only bound to concrete qubits at call time).
                 let uses_dynamic = value.iter().any(|e| {
-                    qubits::peel_index_chain(e)
-                        .is_some_and(|(s, _)| self.layout.dynamic_alias_of(s).is_some())
+                    qubits::peel_index_chain(e).is_some_and(|(s, _)| {
+                        self.layout.dynamic_alias_of(s).is_some()
+                            || self.layout.param_slot(s).is_some()
+                    })
                 });
                 if uses_dynamic {
                     self.lower_dynamic_alias(*symbol, value, instrs, reg_map, span)?;
@@ -851,10 +861,37 @@ impl<'a> EmitCtx<'a> {
                             index: Some(index),
                         })
                     }
-                    None => Err(CompileError::new(ErrorKind::Unsupported(
-                        "slices of qubit parameters are not supported".into(),
-                    ))
-                    .with_span(io.span)),
+                    None => {
+                        let len = self.qubit_param_len(symbol).ok_or_else(|| {
+                            CompileError::new(ErrorKind::Unsupported(
+                                "slice of a non-register qubit parameter".into(),
+                            ))
+                            .with_span(io.span)
+                        })?;
+                        match qubits::resolve_static_index(io, len) {
+                            // Static slice / discrete set: resolve positions
+                            // against the declared length at compile time.
+                            Ok(positions) => Ok(BcOperand::QubitParamSlice {
+                                slot,
+                                positions: positions.iter().map(|&p| p as u32).collect(),
+                            }),
+                            // Runtime slice bounds: materialize a transient
+                            // alias bound to the parameter's qubits at run time.
+                            Err(e) if matches!(e.kind, ErrorKind::NonConstantExpression) => {
+                                let src = AliasSrc::Param {
+                                    slot,
+                                    len: Some(len),
+                                };
+                                let alias = self
+                                    .bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
+                                Ok(BcOperand::QubitAlias {
+                                    slot: alias,
+                                    index: None,
+                                })
+                            }
+                            Err(e) => Err(e.with_span(io.span)),
+                        }
+                    }
                 },
                 _ => Err(CompileError::new(ErrorKind::Unsupported(
                     "multi-dimensional index on a quantum register".into(),
@@ -952,6 +989,16 @@ impl<'a> EmitCtx<'a> {
         .with_span(span))
     }
 
+    /// Declared length of a qubit parameter (`qubit q` → 1, `qubit[n]` → n),
+    /// used to resolve static slice bounds. `None` for non-qubit symbols.
+    fn qubit_param_len(&self, symbol: SymbolId) -> Option<usize> {
+        match self.symbols.get(symbol).ty {
+            crate::types::Type::Qubit => Some(1),
+            crate::types::Type::QubitReg(n) => Some(n),
+            _ => None,
+        }
+    }
+
     /// Lower a runtime-bound `let` alias to a [`BcOp::AliasBind`] and
     /// register its slot/length for later [`BcOperand::QubitAlias`]
     /// references. Each `++` operand becomes one or more segments.
@@ -1006,16 +1053,15 @@ impl<'a> EmitCtx<'a> {
             ))
             .with_span(expr.span));
         };
-        if self.layout.param_slot(sym).is_some() {
-            return Err(CompileError::new(ErrorKind::Unsupported(
-                "aliases of qubit parameters are not supported".into(),
-            ))
-            .with_span(expr.span));
-        }
-
-        // The base this operand indexes: a declared register / static
-        // alias, or another runtime-bound alias.
-        let src = if let Some(reg) = self.layout.register_of(sym) {
+        // The base this operand indexes: a qubit parameter (bound at call
+        // time), a declared register / static alias, or another runtime-bound
+        // alias.
+        let src = if let Some(slot) = self.layout.param_slot(sym) {
+            AliasSrc::Param {
+                slot,
+                len: self.qubit_param_len(sym),
+            }
+        } else if let Some(reg) = self.layout.register_of(sym) {
             AliasSrc::Region {
                 reg: reg.clone(),
                 origin: sym,
@@ -1138,6 +1184,10 @@ impl<'a> EmitCtx<'a> {
                 slot: da.slot,
                 index: None,
             },
+            AliasSrc::Param { slot, .. } => BcOperand::QubitParam {
+                slot: *slot,
+                index: None,
+            },
         }
     }
 
@@ -1167,6 +1217,22 @@ impl<'a> EmitCtx<'a> {
                 Ok(BcOperand::QubitAlias {
                     slot: da.slot,
                     index: Some(index),
+                })
+            }
+            AliasSrc::Param { slot, len } => {
+                let index = match (qubits::literal_index(e), len) {
+                    (Some(k), Some(n)) => {
+                        let local =
+                            qubits::normalize_index(k, *n).map_err(|err| err.with_span(e.span))?;
+                        BcOperand::Const(
+                            self.intern_const(Value::int(local as i128, oqi_classical::iw(64))),
+                        )
+                    }
+                    _ => self.lower_expr_to_operand(e, instrs, reg_map)?,
+                };
+                Ok(BcOperand::QubitParam {
+                    slot: *slot,
+                    index: Some(Box::new(index)),
                 })
             }
         }

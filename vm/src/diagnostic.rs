@@ -20,6 +20,7 @@ impl Diagnostic for VmError {
             VmErrorKind::Classical(_) => 9,
             VmErrorKind::QubitOutOfRange { .. } => 10,
             VmErrorKind::Unreachable => 11,
+            VmErrorKind::TooManyQubits { .. } => 12,
         };
         Code::runtime(num)
     }
@@ -41,6 +42,7 @@ impl Diagnostic for VmError {
             VmErrorKind::Classical(_) => "classical error",
             VmErrorKind::QubitOutOfRange { .. } => "qubit out of range",
             VmErrorKind::Unreachable => "unreachable",
+            VmErrorKind::TooManyQubits { .. } => "too many qubits",
         };
         vec![DiagLabel::primary(self.span.unwrap_or_default(), pointer)]
     }

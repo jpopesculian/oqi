@@ -166,6 +166,14 @@ pub enum BcOperand {
         slot: u32,
         index: Option<Box<BcOperand>>,
     },
+    /// A statically-resolved slice/selection of a qubit parameter: the
+    /// listed local positions into the bound qubit list, in order (e.g.
+    /// `scratch[0:1]` → `[0, 1]`). Used for ranges and discrete index sets
+    /// whose bounds are compile-time constants.
+    QubitParamSlice {
+        slot: u32,
+        positions: Vec<u32>,
+    },
     /// Body-local runtime alias, bound by [`BcOp::AliasBind`]. The VM
     /// maps the logical `index` through the bound qubit list at run time;
     /// `index: None` refers to the whole alias.

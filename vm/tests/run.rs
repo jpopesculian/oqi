@@ -194,6 +194,24 @@ fn intrinsic_call_is_evaluated() {
 }
 
 #[test]
+fn sizeof_on_unspecified_length_array_ref_is_runtime() {
+    // `sizeof(a, dim)` on a `#dim` (unspecified-length) array reference is not
+    // a compile-time constant; the dimension is read at run time from the
+    // concrete array the subroutine receives.
+    let outs = run_outputs(
+        r#"
+            def dims(readonly array[int[32], #dim=3] a) -> uint[32] {
+                return sizeof(a, 1);
+            }
+            array[int[32], 2, 3, 4] data;
+            output uint[32] d;
+            d = dims(data);
+        "#,
+    );
+    assert_eq!(outs, vec![("d".to_string(), "3".to_string())]);
+}
+
+#[test]
 fn equal_length_register_broadcast() {
     // `x q` over a 3-qubit register flips all three; `cx a, b` over two
     // equal-length registers zips pairwise. All end up |1>.

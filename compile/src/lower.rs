@@ -2256,7 +2256,10 @@ fn intrinsic_result_type(
                             dim.ty
                         ))));
                     };
-                    if value_ty.size(dim).is_none() {
+                    // For unspecified-length array refs the concrete sizes
+                    // aren't known until run time, but the rank is — validate
+                    // the literal dimension against the rank instead.
+                    if dim > value_ty.sizeof_rank().unwrap_or(0) {
                         return Err(CompileError::new(ErrorKind::Unsupported(format!(
                             "intrinsic `{intrinsic}` does not support dimension {dim} for argument type `{value_ty}`"
                         ))));

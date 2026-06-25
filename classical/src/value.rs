@@ -192,6 +192,19 @@ impl ValueTy {
         }
     }
 
+    /// The queryable rank of a `sizeof`-able type, or `None` for types
+    /// that `sizeof` does not accept. A dimension `dim` is valid iff
+    /// `dim <= rank`. Unlike [`size`](Self::size), this is known even for
+    /// unspecified-length array references (`array[T, #dim = N]`), whose
+    /// concrete dimension sizes only arrive at run time.
+    pub fn sizeof_rank(&self) -> Option<usize> {
+        match self {
+            ValueTy::Scalar(ty) => ty.bit_count().map(|_| 0),
+            ValueTy::Array(ty) => Some(ty.shape().dim().get()),
+            ValueTy::ArrayRef(ty) => Some(ty.shape().dim().get()),
+        }
+    }
+
     pub fn size(&self, dim: usize) -> Option<usize> {
         match self {
             ValueTy::Scalar(ty) if dim == 0 => ty.bit_count().map(|bw| bw as usize),

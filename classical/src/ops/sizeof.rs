@@ -81,7 +81,7 @@ impl UnOp for Sizeof {
     }
 
     fn return_ty(arg: ValueTy) -> Result<ValueTy> {
-        if arg.size(0).is_some() {
+        if arg.sizeof_rank().is_some() {
             Ok(ValueTy::Scalar(SIZEOF_OUT_TY))
         } else {
             Err(Error::unsupported_unop(Self::NAME, arg, Self::IS_FUNC))
@@ -156,14 +156,20 @@ mod tests {
     }
 
     #[test]
-    fn sizeof_rank_only_array_ref_is_rejected() {
+    fn sizeof_rank_only_array_ref_is_accepted() {
+        // An unspecified-length array reference (`array[T, #dim = N]`) has a
+        // known rank; `sizeof` type-checks to `uint` and is resolved at run
+        // time against the concrete array passed in.
         let array_ref_ty = ArrayRefTy::new(
             Uint(iw(8)),
             crate::ArrayRefShape::Dim(crate::adim(2)),
             RefAccess::Readonly,
         );
 
-        assert!(Sizeof::return_ty(ValueTy::ArrayRef(array_ref_ty)).is_err());
+        assert_eq!(
+            Sizeof::return_ty(ValueTy::ArrayRef(array_ref_ty)).unwrap(),
+            ValueTy::Scalar(SIZEOF_OUT_TY)
+        );
     }
 
     #[test]

@@ -116,7 +116,7 @@ impl BinOp for SizeofDim {
     }
 
     fn return_ty(lhs: ValueTy, rhs: ValueTy) -> Result<ValueTy> {
-        if lhs.size(0).is_none() {
+        if lhs.sizeof_rank().is_none() {
             return Err(Error::unsupported_binop(
                 Self::NAME,
                 lhs,
@@ -221,5 +221,26 @@ mod tests {
         let angle = Value::Scalar(Scalar::new_unchecked(Primitive::uint(1_u128), Angle(iw(8))));
 
         assert!(array.sizeof_dim_(angle).is_err());
+    }
+
+    #[test]
+    fn sizeof_dim_rank_only_array_ref_type_is_accepted() {
+        // An unspecified-length array reference type-checks to `uint`; the
+        // concrete dimension is read at run time from the array passed in.
+        use crate::array_ref::{ArrayRefTy, RefAccess};
+        let array_ref_ty = ArrayRefTy::new(
+            Uint(iw(8)),
+            crate::ArrayRefShape::Dim(crate::adim(3)),
+            RefAccess::Readonly,
+        );
+
+        assert_eq!(
+            SizeofDim::return_ty(
+                ValueTy::ArrayRef(array_ref_ty),
+                ValueTy::Scalar(SIZEOF_DIM_TY)
+            )
+            .unwrap(),
+            ValueTy::Scalar(SIZEOF_OUT_TY)
+        );
     }
 }

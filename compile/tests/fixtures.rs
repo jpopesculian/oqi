@@ -29,6 +29,13 @@ fn teleport() {
 }
 
 #[test]
+fn arrays() {
+    // Exercises `sizeof` in both forms, including on an unspecified-length
+    // (`#dim`) array reference inside a subroutine.
+    compile_fixture("arrays.qasm").expect("should compile");
+}
+
+#[test]
 fn adder() {
     let p = compile_fixture("adder.qasm").expect("should compile");
     assert!(!p.gates.is_empty());

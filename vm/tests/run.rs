@@ -454,6 +454,16 @@ fn teleport_fixture_runs_end_to_end() {
 }
 
 #[test]
+fn cphase_fixture_runs_end_to_end() {
+    // cphase.qasm defines CX and a controlled-phase gate from primitives and
+    // applies cphase to |00>; a phase gate leaves the computational basis
+    // unchanged, so both qubits measure 0.
+    let src = include_str!("../../fixtures/qasm/cphase.qasm");
+    let m = run_measurements(src);
+    assert_eq!(m, vec![(0, false), (1, false)]);
+}
+
+#[test]
 fn register_measurement_into_a_slice() {
     // `measure q[0:3] -> ans[0:3]` measures a 4-qubit slice and stores the
     // 4-bit result into a slice of a wider classical register. The store

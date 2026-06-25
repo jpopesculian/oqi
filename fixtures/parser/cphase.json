@@ -1,207 +1,173 @@
 {
   "rule": "program",
-  "start": 0,
-  "stop": 131,
+  "start": 151,
+  "stop": 359,
   "children": [
     {
       "rule": "statementOrScope",
-      "start": 0,
-      "stop": 105,
+      "start": 151,
+      "stop": 190,
       "children": [
         {
           "rule": "statement",
-          "start": 0,
-          "stop": 105,
+          "start": 151,
+          "stop": 190,
           "children": [
             {
               "rule": "gateStatement",
-              "start": 0,
-              "stop": 105,
+              "start": 151,
+              "stop": 190,
               "children": [
                 {
                   "token": "GATE",
                   "text": "gate",
-                  "start": 0,
-                  "stop": 3
+                  "start": 151,
+                  "stop": 154
                 },
                 {
                   "token": "Identifier",
-                  "text": "cphase",
-                  "start": 5,
-                  "stop": 10
-                },
-                {
-                  "token": "LPAREN",
-                  "text": "(",
-                  "start": 11,
-                  "stop": 11
+                  "text": "CX",
+                  "start": 156,
+                  "stop": 157
                 },
                 {
                   "rule": "identifierList",
-                  "start": 12,
-                  "stop": 12,
-                  "children": [
-                    {
-                      "token": "Identifier",
-                      "text": "θ",
-                      "start": 12,
-                      "stop": 12
-                    }
-                  ]
-                },
-                {
-                  "token": "RPAREN",
-                  "text": ")",
-                  "start": 13,
-                  "stop": 13
-                },
-                {
-                  "rule": "identifierList",
-                  "start": 15,
-                  "stop": 18,
+                  "start": 159,
+                  "stop": 162,
                   "children": [
                     {
                       "token": "Identifier",
                       "text": "a",
-                      "start": 15,
-                      "stop": 15
+                      "start": 159,
+                      "stop": 159
                     },
                     {
                       "token": "COMMA",
                       "text": ",",
-                      "start": 16,
-                      "stop": 16
+                      "start": 160,
+                      "stop": 160
                     },
                     {
                       "token": "Identifier",
                       "text": "b",
-                      "start": 18,
-                      "stop": 18
+                      "start": 162,
+                      "stop": 162
                     }
                   ]
                 },
                 {
                   "rule": "scope",
-                  "start": 20,
-                  "stop": 105,
+                  "start": 164,
+                  "stop": 190,
                   "children": [
                     {
                       "token": "LBRACE",
                       "text": "{",
-                      "start": 20,
-                      "stop": 20
+                      "start": 164,
+                      "stop": 164
                     },
                     {
                       "rule": "statementOrScope",
-                      "start": 24,
-                      "stop": 40,
+                      "start": 166,
+                      "stop": 188,
                       "children": [
                         {
                           "rule": "statement",
-                          "start": 24,
-                          "stop": 40,
+                          "start": 166,
+                          "stop": 188,
                           "children": [
                             {
                               "rule": "gateCallStatement",
-                              "start": 24,
-                              "stop": 40,
+                              "start": 166,
+                              "stop": 188,
                               "children": [
+                                {
+                                  "rule": "gateModifier",
+                                  "start": 166,
+                                  "stop": 171,
+                                  "children": [
+                                    {
+                                      "token": "CTRL",
+                                      "text": "ctrl",
+                                      "start": 166,
+                                      "stop": 169
+                                    },
+                                    {
+                                      "token": "AT",
+                                      "text": "@",
+                                      "start": 171,
+                                      "stop": 171
+                                    }
+                                  ]
+                                },
                                 {
                                   "token": "Identifier",
                                   "text": "U",
-                                  "start": 24,
-                                  "stop": 24
+                                  "start": 173,
+                                  "stop": 173
                                 },
                                 {
                                   "token": "LPAREN",
                                   "text": "(",
-                                  "start": 25,
-                                  "stop": 25
+                                  "start": 174,
+                                  "stop": 174
                                 },
                                 {
                                   "rule": "expressionList",
-                                  "start": 26,
-                                  "stop": 36,
+                                  "start": 175,
+                                  "stop": 181,
                                   "children": [
                                     {
                                       "rule": "expression",
                                       "label": "LiteralExpression",
-                                      "start": 26,
-                                      "stop": 26,
+                                      "start": 175,
+                                      "stop": 175,
                                       "children": [
                                         {
-                                          "token": "DecimalIntegerLiteral",
-                                          "text": "0",
-                                          "start": 26,
-                                          "stop": 26
+                                          "token": "Identifier",
+                                          "text": "π",
+                                          "start": 175,
+                                          "stop": 175
                                         }
                                       ]
                                     },
                                     {
                                       "token": "COMMA",
                                       "text": ",",
-                                      "start": 27,
-                                      "stop": 27
+                                      "start": 176,
+                                      "stop": 176
                                     },
                                     {
                                       "rule": "expression",
                                       "label": "LiteralExpression",
-                                      "start": 29,
-                                      "stop": 29,
+                                      "start": 178,
+                                      "stop": 178,
                                       "children": [
                                         {
                                           "token": "DecimalIntegerLiteral",
                                           "text": "0",
-                                          "start": 29,
-                                          "stop": 29
+                                          "start": 178,
+                                          "stop": 178
                                         }
                                       ]
                                     },
                                     {
                                       "token": "COMMA",
                                       "text": ",",
-                                      "start": 30,
-                                      "stop": 30
+                                      "start": 179,
+                                      "stop": 179
                                     },
                                     {
                                       "rule": "expression",
-                                      "label": "MultiplicativeExpression",
-                                      "start": 32,
-                                      "stop": 36,
+                                      "label": "LiteralExpression",
+                                      "start": 181,
+                                      "stop": 181,
                                       "children": [
                                         {
-                                          "rule": "expression",
-                                          "label": "LiteralExpression",
-                                          "start": 32,
-                                          "stop": 32,
-                                          "children": [
-                                            {
-                                              "token": "Identifier",
-                                              "text": "θ",
-                                              "start": 32,
-                                              "stop": 32
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "token": "SLASH",
-                                          "text": "/",
-                                          "start": 34,
-                                          "stop": 34
-                                        },
-                                        {
-                                          "rule": "expression",
-                                          "label": "LiteralExpression",
-                                          "start": 36,
-                                          "stop": 36,
-                                          "children": [
-                                            {
-                                              "token": "DecimalIntegerLiteral",
-                                              "text": "2",
-                                              "start": 36,
-                                              "stop": 36
-                                            }
-                                          ]
+                                          "token": "Identifier",
+                                          "text": "π",
+                                          "start": 181,
+                                          "stop": 181
                                         }
                                       ]
                                     }
@@ -210,89 +176,29 @@
                                 {
                                   "token": "RPAREN",
                                   "text": ")",
-                                  "start": 37,
-                                  "stop": 37
+                                  "start": 182,
+                                  "stop": 182
                                 },
                                 {
                                   "rule": "gateOperandList",
-                                  "start": 39,
-                                  "stop": 39,
+                                  "start": 184,
+                                  "stop": 187,
                                   "children": [
                                     {
                                       "rule": "gateOperand",
-                                      "start": 39,
-                                      "stop": 39,
+                                      "start": 184,
+                                      "stop": 184,
                                       "children": [
                                         {
                                           "rule": "indexedIdentifier",
-                                          "start": 39,
-                                          "stop": 39,
+                                          "start": 184,
+                                          "stop": 184,
                                           "children": [
                                             {
                                               "token": "Identifier",
                                               "text": "a",
-                                              "start": 39,
-                                              "stop": 39
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "token": "SEMICOLON",
-                                  "text": ";",
-                                  "start": 40,
-                                  "stop": 40
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "rule": "statementOrScope",
-                      "start": 44,
-                      "stop": 51,
-                      "children": [
-                        {
-                          "rule": "statement",
-                          "start": 44,
-                          "stop": 51,
-                          "children": [
-                            {
-                              "rule": "gateCallStatement",
-                              "start": 44,
-                              "stop": 51,
-                              "children": [
-                                {
-                                  "token": "Identifier",
-                                  "text": "CX",
-                                  "start": 44,
-                                  "stop": 45
-                                },
-                                {
-                                  "rule": "gateOperandList",
-                                  "start": 47,
-                                  "stop": 50,
-                                  "children": [
-                                    {
-                                      "rule": "gateOperand",
-                                      "start": 47,
-                                      "stop": 47,
-                                      "children": [
-                                        {
-                                          "rule": "indexedIdentifier",
-                                          "start": 47,
-                                          "stop": 47,
-                                          "children": [
-                                            {
-                                              "token": "Identifier",
-                                              "text": "a",
-                                              "start": 47,
-                                              "stop": 47
+                                              "start": 184,
+                                              "stop": 184
                                             }
                                           ]
                                         }
@@ -301,24 +207,24 @@
                                     {
                                       "token": "COMMA",
                                       "text": ",",
-                                      "start": 48,
-                                      "stop": 48
+                                      "start": 185,
+                                      "stop": 185
                                     },
                                     {
                                       "rule": "gateOperand",
-                                      "start": 50,
-                                      "stop": 50,
+                                      "start": 187,
+                                      "stop": 187,
                                       "children": [
                                         {
                                           "rule": "indexedIdentifier",
-                                          "start": 50,
-                                          "stop": 50,
+                                          "start": 187,
+                                          "stop": 187,
                                           "children": [
                                             {
                                               "token": "Identifier",
                                               "text": "b",
-                                              "start": 50,
-                                              "stop": 50
+                                              "start": 187,
+                                              "stop": 187
                                             }
                                           ]
                                         }
@@ -329,430 +235,8 @@
                                 {
                                   "token": "SEMICOLON",
                                   "text": ";",
-                                  "start": 51,
-                                  "stop": 51
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "rule": "statementOrScope",
-                      "start": 55,
-                      "stop": 72,
-                      "children": [
-                        {
-                          "rule": "statement",
-                          "start": 55,
-                          "stop": 72,
-                          "children": [
-                            {
-                              "rule": "gateCallStatement",
-                              "start": 55,
-                              "stop": 72,
-                              "children": [
-                                {
-                                  "token": "Identifier",
-                                  "text": "U",
-                                  "start": 55,
-                                  "stop": 55
-                                },
-                                {
-                                  "token": "LPAREN",
-                                  "text": "(",
-                                  "start": 56,
-                                  "stop": 56
-                                },
-                                {
-                                  "rule": "expressionList",
-                                  "start": 57,
-                                  "stop": 68,
-                                  "children": [
-                                    {
-                                      "rule": "expression",
-                                      "label": "LiteralExpression",
-                                      "start": 57,
-                                      "stop": 57,
-                                      "children": [
-                                        {
-                                          "token": "DecimalIntegerLiteral",
-                                          "text": "0",
-                                          "start": 57,
-                                          "stop": 57
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "token": "COMMA",
-                                      "text": ",",
-                                      "start": 58,
-                                      "stop": 58
-                                    },
-                                    {
-                                      "rule": "expression",
-                                      "label": "LiteralExpression",
-                                      "start": 60,
-                                      "stop": 60,
-                                      "children": [
-                                        {
-                                          "token": "DecimalIntegerLiteral",
-                                          "text": "0",
-                                          "start": 60,
-                                          "stop": 60
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "token": "COMMA",
-                                      "text": ",",
-                                      "start": 61,
-                                      "stop": 61
-                                    },
-                                    {
-                                      "rule": "expression",
-                                      "label": "MultiplicativeExpression",
-                                      "start": 63,
-                                      "stop": 68,
-                                      "children": [
-                                        {
-                                          "rule": "expression",
-                                          "label": "UnaryExpression",
-                                          "start": 63,
-                                          "stop": 64,
-                                          "children": [
-                                            {
-                                              "token": "MINUS",
-                                              "text": "-",
-                                              "start": 63,
-                                              "stop": 63
-                                            },
-                                            {
-                                              "rule": "expression",
-                                              "label": "LiteralExpression",
-                                              "start": 64,
-                                              "stop": 64,
-                                              "children": [
-                                                {
-                                                  "token": "Identifier",
-                                                  "text": "θ",
-                                                  "start": 64,
-                                                  "stop": 64
-                                                }
-                                              ]
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "token": "SLASH",
-                                          "text": "/",
-                                          "start": 66,
-                                          "stop": 66
-                                        },
-                                        {
-                                          "rule": "expression",
-                                          "label": "LiteralExpression",
-                                          "start": 68,
-                                          "stop": 68,
-                                          "children": [
-                                            {
-                                              "token": "DecimalIntegerLiteral",
-                                              "text": "2",
-                                              "start": 68,
-                                              "stop": 68
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "token": "RPAREN",
-                                  "text": ")",
-                                  "start": 69,
-                                  "stop": 69
-                                },
-                                {
-                                  "rule": "gateOperandList",
-                                  "start": 71,
-                                  "stop": 71,
-                                  "children": [
-                                    {
-                                      "rule": "gateOperand",
-                                      "start": 71,
-                                      "stop": 71,
-                                      "children": [
-                                        {
-                                          "rule": "indexedIdentifier",
-                                          "start": 71,
-                                          "stop": 71,
-                                          "children": [
-                                            {
-                                              "token": "Identifier",
-                                              "text": "b",
-                                              "start": 71,
-                                              "stop": 71
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "token": "SEMICOLON",
-                                  "text": ";",
-                                  "start": 72,
-                                  "stop": 72
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "rule": "statementOrScope",
-                      "start": 76,
-                      "stop": 83,
-                      "children": [
-                        {
-                          "rule": "statement",
-                          "start": 76,
-                          "stop": 83,
-                          "children": [
-                            {
-                              "rule": "gateCallStatement",
-                              "start": 76,
-                              "stop": 83,
-                              "children": [
-                                {
-                                  "token": "Identifier",
-                                  "text": "CX",
-                                  "start": 76,
-                                  "stop": 77
-                                },
-                                {
-                                  "rule": "gateOperandList",
-                                  "start": 79,
-                                  "stop": 82,
-                                  "children": [
-                                    {
-                                      "rule": "gateOperand",
-                                      "start": 79,
-                                      "stop": 79,
-                                      "children": [
-                                        {
-                                          "rule": "indexedIdentifier",
-                                          "start": 79,
-                                          "stop": 79,
-                                          "children": [
-                                            {
-                                              "token": "Identifier",
-                                              "text": "a",
-                                              "start": 79,
-                                              "stop": 79
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "token": "COMMA",
-                                      "text": ",",
-                                      "start": 80,
-                                      "stop": 80
-                                    },
-                                    {
-                                      "rule": "gateOperand",
-                                      "start": 82,
-                                      "stop": 82,
-                                      "children": [
-                                        {
-                                          "rule": "indexedIdentifier",
-                                          "start": 82,
-                                          "stop": 82,
-                                          "children": [
-                                            {
-                                              "token": "Identifier",
-                                              "text": "b",
-                                              "start": 82,
-                                              "stop": 82
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "token": "SEMICOLON",
-                                  "text": ";",
-                                  "start": 83,
-                                  "stop": 83
-                                }
-                              ]
-                            }
-                          ]
-                        }
-                      ]
-                    },
-                    {
-                      "rule": "statementOrScope",
-                      "start": 87,
-                      "stop": 103,
-                      "children": [
-                        {
-                          "rule": "statement",
-                          "start": 87,
-                          "stop": 103,
-                          "children": [
-                            {
-                              "rule": "gateCallStatement",
-                              "start": 87,
-                              "stop": 103,
-                              "children": [
-                                {
-                                  "token": "Identifier",
-                                  "text": "U",
-                                  "start": 87,
-                                  "stop": 87
-                                },
-                                {
-                                  "token": "LPAREN",
-                                  "text": "(",
-                                  "start": 88,
-                                  "stop": 88
-                                },
-                                {
-                                  "rule": "expressionList",
-                                  "start": 89,
-                                  "stop": 99,
-                                  "children": [
-                                    {
-                                      "rule": "expression",
-                                      "label": "LiteralExpression",
-                                      "start": 89,
-                                      "stop": 89,
-                                      "children": [
-                                        {
-                                          "token": "DecimalIntegerLiteral",
-                                          "text": "0",
-                                          "start": 89,
-                                          "stop": 89
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "token": "COMMA",
-                                      "text": ",",
-                                      "start": 90,
-                                      "stop": 90
-                                    },
-                                    {
-                                      "rule": "expression",
-                                      "label": "LiteralExpression",
-                                      "start": 92,
-                                      "stop": 92,
-                                      "children": [
-                                        {
-                                          "token": "DecimalIntegerLiteral",
-                                          "text": "0",
-                                          "start": 92,
-                                          "stop": 92
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "token": "COMMA",
-                                      "text": ",",
-                                      "start": 93,
-                                      "stop": 93
-                                    },
-                                    {
-                                      "rule": "expression",
-                                      "label": "MultiplicativeExpression",
-                                      "start": 95,
-                                      "stop": 99,
-                                      "children": [
-                                        {
-                                          "rule": "expression",
-                                          "label": "LiteralExpression",
-                                          "start": 95,
-                                          "stop": 95,
-                                          "children": [
-                                            {
-                                              "token": "Identifier",
-                                              "text": "θ",
-                                              "start": 95,
-                                              "stop": 95
-                                            }
-                                          ]
-                                        },
-                                        {
-                                          "token": "SLASH",
-                                          "text": "/",
-                                          "start": 97,
-                                          "stop": 97
-                                        },
-                                        {
-                                          "rule": "expression",
-                                          "label": "LiteralExpression",
-                                          "start": 99,
-                                          "stop": 99,
-                                          "children": [
-                                            {
-                                              "token": "DecimalIntegerLiteral",
-                                              "text": "2",
-                                              "start": 99,
-                                              "stop": 99
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "token": "RPAREN",
-                                  "text": ")",
-                                  "start": 100,
-                                  "stop": 100
-                                },
-                                {
-                                  "rule": "gateOperandList",
-                                  "start": 102,
-                                  "stop": 102,
-                                  "children": [
-                                    {
-                                      "rule": "gateOperand",
-                                      "start": 102,
-                                      "stop": 102,
-                                      "children": [
-                                        {
-                                          "rule": "indexedIdentifier",
-                                          "start": 102,
-                                          "stop": 102,
-                                          "children": [
-                                            {
-                                              "token": "Identifier",
-                                              "text": "b",
-                                              "start": 102,
-                                              "stop": 102
-                                            }
-                                          ]
-                                        }
-                                      ]
-                                    }
-                                  ]
-                                },
-                                {
-                                  "token": "SEMICOLON",
-                                  "text": ";",
-                                  "start": 103,
-                                  "stop": 103
+                                  "start": 188,
+                                  "stop": 188
                                 }
                               ]
                             }
@@ -763,8 +247,8 @@
                     {
                       "token": "RBRACE",
                       "text": "}",
-                      "start": 105,
-                      "stop": 105
+                      "start": 190,
+                      "stop": 190
                     }
                   ]
                 }
@@ -776,73 +260,923 @@
     },
     {
       "rule": "statementOrScope",
-      "start": 107,
-      "stop": 131,
+      "start": 193,
+      "stop": 298,
       "children": [
         {
           "rule": "statement",
-          "start": 107,
-          "stop": 131,
+          "start": 193,
+          "stop": 298,
           "children": [
             {
-              "rule": "gateCallStatement",
-              "start": 107,
-              "stop": 131,
+              "rule": "gateStatement",
+              "start": 193,
+              "stop": 298,
               "children": [
+                {
+                  "token": "GATE",
+                  "text": "gate",
+                  "start": 193,
+                  "stop": 196
+                },
                 {
                   "token": "Identifier",
                   "text": "cphase",
-                  "start": 107,
-                  "stop": 112
+                  "start": 198,
+                  "stop": 203
                 },
                 {
                   "token": "LPAREN",
                   "text": "(",
-                  "start": 113,
-                  "stop": 113
+                  "start": 204,
+                  "stop": 204
+                },
+                {
+                  "rule": "identifierList",
+                  "start": 205,
+                  "stop": 205,
+                  "children": [
+                    {
+                      "token": "Identifier",
+                      "text": "θ",
+                      "start": 205,
+                      "stop": 205
+                    }
+                  ]
+                },
+                {
+                  "token": "RPAREN",
+                  "text": ")",
+                  "start": 206,
+                  "stop": 206
+                },
+                {
+                  "rule": "identifierList",
+                  "start": 208,
+                  "stop": 211,
+                  "children": [
+                    {
+                      "token": "Identifier",
+                      "text": "a",
+                      "start": 208,
+                      "stop": 208
+                    },
+                    {
+                      "token": "COMMA",
+                      "text": ",",
+                      "start": 209,
+                      "stop": 209
+                    },
+                    {
+                      "token": "Identifier",
+                      "text": "b",
+                      "start": 211,
+                      "stop": 211
+                    }
+                  ]
+                },
+                {
+                  "rule": "scope",
+                  "start": 213,
+                  "stop": 298,
+                  "children": [
+                    {
+                      "token": "LBRACE",
+                      "text": "{",
+                      "start": 213,
+                      "stop": 213
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 217,
+                      "stop": 233,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 217,
+                          "stop": 233,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 217,
+                              "stop": 233,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "U",
+                                  "start": 217,
+                                  "stop": 217
+                                },
+                                {
+                                  "token": "LPAREN",
+                                  "text": "(",
+                                  "start": 218,
+                                  "stop": 218
+                                },
+                                {
+                                  "rule": "expressionList",
+                                  "start": 219,
+                                  "stop": 229,
+                                  "children": [
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 219,
+                                      "stop": 219,
+                                      "children": [
+                                        {
+                                          "token": "DecimalIntegerLiteral",
+                                          "text": "0",
+                                          "start": 219,
+                                          "stop": 219
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "COMMA",
+                                      "text": ",",
+                                      "start": 220,
+                                      "stop": 220
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 222,
+                                      "stop": 222,
+                                      "children": [
+                                        {
+                                          "token": "DecimalIntegerLiteral",
+                                          "text": "0",
+                                          "start": 222,
+                                          "stop": 222
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "COMMA",
+                                      "text": ",",
+                                      "start": 223,
+                                      "stop": 223
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "MultiplicativeExpression",
+                                      "start": 225,
+                                      "stop": 229,
+                                      "children": [
+                                        {
+                                          "rule": "expression",
+                                          "label": "LiteralExpression",
+                                          "start": 225,
+                                          "stop": 225,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "θ",
+                                              "start": 225,
+                                              "stop": 225
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "token": "SLASH",
+                                          "text": "/",
+                                          "start": 227,
+                                          "stop": 227
+                                        },
+                                        {
+                                          "rule": "expression",
+                                          "label": "LiteralExpression",
+                                          "start": 229,
+                                          "stop": 229,
+                                          "children": [
+                                            {
+                                              "token": "DecimalIntegerLiteral",
+                                              "text": "2",
+                                              "start": 229,
+                                              "stop": 229
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "RPAREN",
+                                  "text": ")",
+                                  "start": 230,
+                                  "stop": 230
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 232,
+                                  "stop": 232,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 232,
+                                      "stop": 232,
+                                      "children": [
+                                        {
+                                          "rule": "indexedIdentifier",
+                                          "start": 232,
+                                          "stop": 232,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "a",
+                                              "start": 232,
+                                              "stop": 232
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 233,
+                                  "stop": 233
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 237,
+                      "stop": 244,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 237,
+                          "stop": 244,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 237,
+                              "stop": 244,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "CX",
+                                  "start": 237,
+                                  "stop": 238
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 240,
+                                  "stop": 243,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 240,
+                                      "stop": 240,
+                                      "children": [
+                                        {
+                                          "rule": "indexedIdentifier",
+                                          "start": 240,
+                                          "stop": 240,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "a",
+                                              "start": 240,
+                                              "stop": 240
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "COMMA",
+                                      "text": ",",
+                                      "start": 241,
+                                      "stop": 241
+                                    },
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 243,
+                                      "stop": 243,
+                                      "children": [
+                                        {
+                                          "rule": "indexedIdentifier",
+                                          "start": 243,
+                                          "stop": 243,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "b",
+                                              "start": 243,
+                                              "stop": 243
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 244,
+                                  "stop": 244
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 248,
+                      "stop": 265,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 248,
+                          "stop": 265,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 248,
+                              "stop": 265,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "U",
+                                  "start": 248,
+                                  "stop": 248
+                                },
+                                {
+                                  "token": "LPAREN",
+                                  "text": "(",
+                                  "start": 249,
+                                  "stop": 249
+                                },
+                                {
+                                  "rule": "expressionList",
+                                  "start": 250,
+                                  "stop": 261,
+                                  "children": [
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 250,
+                                      "stop": 250,
+                                      "children": [
+                                        {
+                                          "token": "DecimalIntegerLiteral",
+                                          "text": "0",
+                                          "start": 250,
+                                          "stop": 250
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "COMMA",
+                                      "text": ",",
+                                      "start": 251,
+                                      "stop": 251
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 253,
+                                      "stop": 253,
+                                      "children": [
+                                        {
+                                          "token": "DecimalIntegerLiteral",
+                                          "text": "0",
+                                          "start": 253,
+                                          "stop": 253
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "COMMA",
+                                      "text": ",",
+                                      "start": 254,
+                                      "stop": 254
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "MultiplicativeExpression",
+                                      "start": 256,
+                                      "stop": 261,
+                                      "children": [
+                                        {
+                                          "rule": "expression",
+                                          "label": "UnaryExpression",
+                                          "start": 256,
+                                          "stop": 257,
+                                          "children": [
+                                            {
+                                              "token": "MINUS",
+                                              "text": "-",
+                                              "start": 256,
+                                              "stop": 256
+                                            },
+                                            {
+                                              "rule": "expression",
+                                              "label": "LiteralExpression",
+                                              "start": 257,
+                                              "stop": 257,
+                                              "children": [
+                                                {
+                                                  "token": "Identifier",
+                                                  "text": "θ",
+                                                  "start": 257,
+                                                  "stop": 257
+                                                }
+                                              ]
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "token": "SLASH",
+                                          "text": "/",
+                                          "start": 259,
+                                          "stop": 259
+                                        },
+                                        {
+                                          "rule": "expression",
+                                          "label": "LiteralExpression",
+                                          "start": 261,
+                                          "stop": 261,
+                                          "children": [
+                                            {
+                                              "token": "DecimalIntegerLiteral",
+                                              "text": "2",
+                                              "start": 261,
+                                              "stop": 261
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "RPAREN",
+                                  "text": ")",
+                                  "start": 262,
+                                  "stop": 262
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 264,
+                                  "stop": 264,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 264,
+                                      "stop": 264,
+                                      "children": [
+                                        {
+                                          "rule": "indexedIdentifier",
+                                          "start": 264,
+                                          "stop": 264,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "b",
+                                              "start": 264,
+                                              "stop": 264
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 265,
+                                  "stop": 265
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 269,
+                      "stop": 276,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 269,
+                          "stop": 276,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 269,
+                              "stop": 276,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "CX",
+                                  "start": 269,
+                                  "stop": 270
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 272,
+                                  "stop": 275,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 272,
+                                      "stop": 272,
+                                      "children": [
+                                        {
+                                          "rule": "indexedIdentifier",
+                                          "start": 272,
+                                          "stop": 272,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "a",
+                                              "start": 272,
+                                              "stop": 272
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "COMMA",
+                                      "text": ",",
+                                      "start": 273,
+                                      "stop": 273
+                                    },
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 275,
+                                      "stop": 275,
+                                      "children": [
+                                        {
+                                          "rule": "indexedIdentifier",
+                                          "start": 275,
+                                          "stop": 275,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "b",
+                                              "start": 275,
+                                              "stop": 275
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 276,
+                                  "stop": 276
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "rule": "statementOrScope",
+                      "start": 280,
+                      "stop": 296,
+                      "children": [
+                        {
+                          "rule": "statement",
+                          "start": 280,
+                          "stop": 296,
+                          "children": [
+                            {
+                              "rule": "gateCallStatement",
+                              "start": 280,
+                              "stop": 296,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "U",
+                                  "start": 280,
+                                  "stop": 280
+                                },
+                                {
+                                  "token": "LPAREN",
+                                  "text": "(",
+                                  "start": 281,
+                                  "stop": 281
+                                },
+                                {
+                                  "rule": "expressionList",
+                                  "start": 282,
+                                  "stop": 292,
+                                  "children": [
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 282,
+                                      "stop": 282,
+                                      "children": [
+                                        {
+                                          "token": "DecimalIntegerLiteral",
+                                          "text": "0",
+                                          "start": 282,
+                                          "stop": 282
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "COMMA",
+                                      "text": ",",
+                                      "start": 283,
+                                      "stop": 283
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "LiteralExpression",
+                                      "start": 285,
+                                      "stop": 285,
+                                      "children": [
+                                        {
+                                          "token": "DecimalIntegerLiteral",
+                                          "text": "0",
+                                          "start": 285,
+                                          "stop": 285
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "token": "COMMA",
+                                      "text": ",",
+                                      "start": 286,
+                                      "stop": 286
+                                    },
+                                    {
+                                      "rule": "expression",
+                                      "label": "MultiplicativeExpression",
+                                      "start": 288,
+                                      "stop": 292,
+                                      "children": [
+                                        {
+                                          "rule": "expression",
+                                          "label": "LiteralExpression",
+                                          "start": 288,
+                                          "stop": 288,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "θ",
+                                              "start": 288,
+                                              "stop": 288
+                                            }
+                                          ]
+                                        },
+                                        {
+                                          "token": "SLASH",
+                                          "text": "/",
+                                          "start": 290,
+                                          "stop": 290
+                                        },
+                                        {
+                                          "rule": "expression",
+                                          "label": "LiteralExpression",
+                                          "start": 292,
+                                          "stop": 292,
+                                          "children": [
+                                            {
+                                              "token": "DecimalIntegerLiteral",
+                                              "text": "2",
+                                              "start": 292,
+                                              "stop": 292
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "RPAREN",
+                                  "text": ")",
+                                  "start": 293,
+                                  "stop": 293
+                                },
+                                {
+                                  "rule": "gateOperandList",
+                                  "start": 295,
+                                  "stop": 295,
+                                  "children": [
+                                    {
+                                      "rule": "gateOperand",
+                                      "start": 295,
+                                      "stop": 295,
+                                      "children": [
+                                        {
+                                          "rule": "indexedIdentifier",
+                                          "start": 295,
+                                          "stop": 295,
+                                          "children": [
+                                            {
+                                              "token": "Identifier",
+                                              "text": "b",
+                                              "start": 295,
+                                              "stop": 295
+                                            }
+                                          ]
+                                        }
+                                      ]
+                                    }
+                                  ]
+                                },
+                                {
+                                  "token": "SEMICOLON",
+                                  "text": ";",
+                                  "start": 296,
+                                  "stop": 296
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "token": "RBRACE",
+                      "text": "}",
+                      "start": 298,
+                      "stop": 298
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 301,
+      "stop": 311,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 301,
+          "stop": 311,
+          "children": [
+            {
+              "rule": "quantumDeclarationStatement",
+              "start": 301,
+              "stop": 311,
+              "children": [
+                {
+                  "rule": "qubitType",
+                  "start": 301,
+                  "stop": 308,
+                  "children": [
+                    {
+                      "token": "QUBIT",
+                      "text": "qubit",
+                      "start": 301,
+                      "stop": 305
+                    },
+                    {
+                      "rule": "designator",
+                      "start": 306,
+                      "stop": 308,
+                      "children": [
+                        {
+                          "token": "LBRACKET",
+                          "text": "[",
+                          "start": 306,
+                          "stop": 306
+                        },
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 307,
+                          "stop": 307,
+                          "children": [
+                            {
+                              "token": "DecimalIntegerLiteral",
+                              "text": "2",
+                              "start": 307,
+                              "stop": 307
+                            }
+                          ]
+                        },
+                        {
+                          "token": "RBRACKET",
+                          "text": "]",
+                          "start": 308,
+                          "stop": 308
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "Identifier",
+                  "text": "q",
+                  "start": 310,
+                  "stop": 310
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 311,
+                  "stop": 311
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 313,
+      "stop": 337,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 313,
+          "stop": 337,
+          "children": [
+            {
+              "rule": "gateCallStatement",
+              "start": 313,
+              "stop": 337,
+              "children": [
+                {
+                  "token": "Identifier",
+                  "text": "cphase",
+                  "start": 313,
+                  "stop": 318
+                },
+                {
+                  "token": "LPAREN",
+                  "text": "(",
+                  "start": 319,
+                  "stop": 319
                 },
                 {
                   "rule": "expressionList",
-                  "start": 114,
-                  "stop": 118,
+                  "start": 320,
+                  "stop": 324,
                   "children": [
                     {
                       "rule": "expression",
                       "label": "MultiplicativeExpression",
-                      "start": 114,
-                      "stop": 118,
+                      "start": 320,
+                      "stop": 324,
                       "children": [
                         {
                           "rule": "expression",
                           "label": "LiteralExpression",
-                          "start": 114,
-                          "stop": 114,
+                          "start": 320,
+                          "stop": 320,
                           "children": [
                             {
                               "token": "Identifier",
                               "text": "π",
-                              "start": 114,
-                              "stop": 114
+                              "start": 320,
+                              "stop": 320
                             }
                           ]
                         },
                         {
                           "token": "SLASH",
                           "text": "/",
-                          "start": 116,
-                          "stop": 116
+                          "start": 322,
+                          "stop": 322
                         },
                         {
                           "rule": "expression",
                           "label": "LiteralExpression",
-                          "start": 118,
-                          "stop": 118,
+                          "start": 324,
+                          "stop": 324,
                           "children": [
                             {
                               "token": "DecimalIntegerLiteral",
                               "text": "2",
-                              "start": 118,
-                              "stop": 118
+                              "start": 324,
+                              "stop": 324
                             }
                           ]
                         }
@@ -853,60 +1187,60 @@
                 {
                   "token": "RPAREN",
                   "text": ")",
-                  "start": 119,
-                  "stop": 119
+                  "start": 325,
+                  "stop": 325
                 },
                 {
                   "rule": "gateOperandList",
-                  "start": 121,
-                  "stop": 130,
+                  "start": 327,
+                  "stop": 336,
                   "children": [
                     {
                       "rule": "gateOperand",
-                      "start": 121,
-                      "stop": 124,
+                      "start": 327,
+                      "stop": 330,
                       "children": [
                         {
                           "rule": "indexedIdentifier",
-                          "start": 121,
-                          "stop": 124,
+                          "start": 327,
+                          "stop": 330,
                           "children": [
                             {
                               "token": "Identifier",
                               "text": "q",
-                              "start": 121,
-                              "stop": 121
+                              "start": 327,
+                              "stop": 327
                             },
                             {
                               "rule": "indexOperator",
-                              "start": 122,
-                              "stop": 124,
+                              "start": 328,
+                              "stop": 330,
                               "children": [
                                 {
                                   "token": "LBRACKET",
                                   "text": "[",
-                                  "start": 122,
-                                  "stop": 122
+                                  "start": 328,
+                                  "stop": 328
                                 },
                                 {
                                   "rule": "expression",
                                   "label": "LiteralExpression",
-                                  "start": 123,
-                                  "stop": 123,
+                                  "start": 329,
+                                  "stop": 329,
                                   "children": [
                                     {
                                       "token": "DecimalIntegerLiteral",
                                       "text": "0",
-                                      "start": 123,
-                                      "stop": 123
+                                      "start": 329,
+                                      "stop": 329
                                     }
                                   ]
                                 },
                                 {
                                   "token": "RBRACKET",
                                   "text": "]",
-                                  "start": 124,
-                                  "stop": 124
+                                  "start": 330,
+                                  "stop": 330
                                 }
                               ]
                             }
@@ -917,55 +1251,55 @@
                     {
                       "token": "COMMA",
                       "text": ",",
-                      "start": 125,
-                      "stop": 125
+                      "start": 331,
+                      "stop": 331
                     },
                     {
                       "rule": "gateOperand",
-                      "start": 127,
-                      "stop": 130,
+                      "start": 333,
+                      "stop": 336,
                       "children": [
                         {
                           "rule": "indexedIdentifier",
-                          "start": 127,
-                          "stop": 130,
+                          "start": 333,
+                          "stop": 336,
                           "children": [
                             {
                               "token": "Identifier",
                               "text": "q",
-                              "start": 127,
-                              "stop": 127
+                              "start": 333,
+                              "stop": 333
                             },
                             {
                               "rule": "indexOperator",
-                              "start": 128,
-                              "stop": 130,
+                              "start": 334,
+                              "stop": 336,
                               "children": [
                                 {
                                   "token": "LBRACKET",
                                   "text": "[",
-                                  "start": 128,
-                                  "stop": 128
+                                  "start": 334,
+                                  "stop": 334
                                 },
                                 {
                                   "rule": "expression",
                                   "label": "LiteralExpression",
-                                  "start": 129,
-                                  "stop": 129,
+                                  "start": 335,
+                                  "stop": 335,
                                   "children": [
                                     {
                                       "token": "DecimalIntegerLiteral",
                                       "text": "1",
-                                      "start": 129,
-                                      "stop": 129
+                                      "start": 335,
+                                      "stop": 335
                                     }
                                   ]
                                 },
                                 {
                                   "token": "RBRACKET",
                                   "text": "]",
-                                  "start": 130,
-                                  "stop": 130
+                                  "start": 336,
+                                  "stop": 336
                                 }
                               ]
                             }
@@ -978,8 +1312,133 @@
                 {
                   "token": "SEMICOLON",
                   "text": ";",
-                  "start": 131,
-                  "stop": 131
+                  "start": 337,
+                  "stop": 337
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "rule": "statementOrScope",
+      "start": 339,
+      "stop": 359,
+      "children": [
+        {
+          "rule": "statement",
+          "start": 339,
+          "stop": 359,
+          "children": [
+            {
+              "rule": "classicalDeclarationStatement",
+              "start": 339,
+              "stop": 359,
+              "children": [
+                {
+                  "rule": "scalarType",
+                  "start": 339,
+                  "stop": 344,
+                  "children": [
+                    {
+                      "token": "BIT",
+                      "text": "bit",
+                      "start": 339,
+                      "stop": 341
+                    },
+                    {
+                      "rule": "designator",
+                      "start": 342,
+                      "stop": 344,
+                      "children": [
+                        {
+                          "token": "LBRACKET",
+                          "text": "[",
+                          "start": 342,
+                          "stop": 342
+                        },
+                        {
+                          "rule": "expression",
+                          "label": "LiteralExpression",
+                          "start": 343,
+                          "stop": 343,
+                          "children": [
+                            {
+                              "token": "DecimalIntegerLiteral",
+                              "text": "2",
+                              "start": 343,
+                              "stop": 343
+                            }
+                          ]
+                        },
+                        {
+                          "token": "RBRACKET",
+                          "text": "]",
+                          "start": 344,
+                          "stop": 344
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "Identifier",
+                  "text": "c",
+                  "start": 346,
+                  "stop": 346
+                },
+                {
+                  "token": "EQUALS",
+                  "text": "=",
+                  "start": 348,
+                  "stop": 348
+                },
+                {
+                  "rule": "declarationExpression",
+                  "start": 350,
+                  "stop": 358,
+                  "children": [
+                    {
+                      "rule": "measureExpression",
+                      "start": 350,
+                      "stop": 358,
+                      "children": [
+                        {
+                          "token": "MEASURE",
+                          "text": "measure",
+                          "start": 350,
+                          "stop": 356
+                        },
+                        {
+                          "rule": "gateOperand",
+                          "start": 358,
+                          "stop": 358,
+                          "children": [
+                            {
+                              "rule": "indexedIdentifier",
+                              "start": 358,
+                              "stop": 358,
+                              "children": [
+                                {
+                                  "token": "Identifier",
+                                  "text": "q",
+                                  "start": 358,
+                                  "stop": 358
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                },
+                {
+                  "token": "SEMICOLON",
+                  "text": ";",
+                  "start": 359,
+                  "stop": 359
                 }
               ]
             }
@@ -990,8 +1449,8 @@
     {
       "token": "EOF",
       "text": "<EOF>",
-      "start": 133,
-      "stop": 132
+      "start": 361,
+      "stop": 360
     }
   ]
 }

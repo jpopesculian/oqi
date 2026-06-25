@@ -36,6 +36,13 @@ fn arrays() {
 }
 
 #[test]
+fn cphase() {
+    // Self-contained gate-definition example: defines CX and a controlled-phase
+    // gate from built-in primitives, then applies it.
+    compile_fixture("cphase.qasm").expect("should compile");
+}
+
+#[test]
 fn adder() {
     let p = compile_fixture("adder.qasm").expect("should compile");
     assert!(!p.gates.is_empty());
@@ -157,9 +164,12 @@ fn rb() {
 // ── Fixtures that fail with expected errors ──────────────────────────
 
 #[test]
-fn cphase_no_stdgates() {
-    // cphase.qasm uses CX without including stdgates.inc
-    match compile_fixture("cphase.qasm") {
+fn gate_without_stdgates_is_undefined() {
+    // A standard-library gate (e.g. `cx`) used without `include "stdgates.inc"`
+    // is an undefined name. (cphase.qasm itself is now a self-contained working
+    // example — it defines the gates it uses — so this checks the error path
+    // directly.)
+    match compile_inline("qubit[2] q;\ncx q[0], q[1];\n") {
         Err(e) => assert!(matches!(
             e.kind,
             oqi_compile::error::ErrorKind::UndefinedName(_)

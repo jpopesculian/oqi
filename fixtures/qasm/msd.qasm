@@ -1,10 +1,14 @@
 /*
- * Magic state distillation and computation
+ * Magic state distillation (serialized form).
+ *
+ * A serialized rewrite of the two-level 10:2 distillation from
+ * arXiv:1811.00566. Instead of running the two second-level distillation
+ * chains in parallel on separate registers, they run one after another on the
+ * same `magic` and `level1` registers. That holds the simultaneous qubit count
+ * at 23 (vs 44 for the parallel form) so the state vector fits in memory,
+ * though the full circuit is still expensive to simulate.
  */
 include "stdgates.inc";
-
-const int[32] buffer_size = 6;  // size of magic state buffer
-
 // Y-basis measurement
 def ymeasure(qubit q) -> bit {
   s q;
@@ -91,81 +95,33 @@ def rus_level_0(qubit[10] magic, qubit[3] scratch) {
   }
 }
 
-/*
- * Run two levels of 10:2 magic state distillation.
- * Both levels have two distillations running in parallel.
- * The output pairs from the first level are separated and
- * input to different second levels distillation circuits
- * because a failure in a first level circuit can lead to
- * errors on both outputs.
- * Put the requested even number of copies into the buffer.
- */
-def distill_and_buffer(int[32] num, qubit[33] work, qubit[buffer_size] buffer) {
-  int[32] index;
-  bool success_0;
-  bool success_1;
-  let magic_lvl0 = work[0: 9];
-  let magic_lvl1_0 = work[10: 19];
-  let magic_lvl1_1 = work[20: 29];
-  let scratch = work[30: 32];
+qubit[10] magic;     // level-0 working register, reused every round
+qubit[10] level1;    // accumulates level-0 outputs, then the level-1 input
+qubit[3] scratch;    // distillation scratch, reused
+bit[2] c;            // computation results
 
-  // Run first-level circuits until 10 successes,
-  // storing the outputs for use in the second level
-  for uint i in [0: 9] {
-    rus_level_0 magic_lvl0, scratch;
-    swap magic_lvl0[0], magic_lvl1_0[i];
-    swap magic_lvl0[1], magic_lvl1_1[i];
-  }
+reset magic;
+reset level1;
+reset scratch;
 
-  // Run two second level circuits simultaneously
-  success_0 = distill(magic_lvl1_0, scratch);
-  success_1 = distill(magic_lvl1_1, scratch);
+// Run the two second-level chains serially on the shared registers.
+for uint chain in [0:1] {
+  // Fill the level-1 input register with ten level-0 outputs.
+  for uint i in [0:9] {
+    rus_level_0 magic, scratch;
+    swap magic[0], level1[i];
+  }
+  // Second-level distillation.
+  bool ok = distill(level1, scratch);
 
-  // Move usable magic states into the buffer register
-  if(success_0 && index < buffer_size) {
-    swap magic_lvl1_0[0: 1], buffer[index: index + 1];
-    index += 2;
+  // Consume one distilled |H> state to apply a T gate to a computation qubit
+  // (reusing magic[chain], free now that the level-0 work is done).
+  reset magic[chain];
+  h magic[chain];
+  if (ok) {
+    cy level1[0], magic[chain];
+    bit outcome = ymeasure(level1[0]);
+    if (outcome == 1) ry(pi / 2) magic[chain];
   }
-  if(success_1 && index < buffer_size) {
-    swap magic_lvl1_1[0: 1], buffer[index: index + 1];
-    index += 2;
-  }
+  c[chain] = measure magic[chain];
 }
-
-// Apply Ry(pi/4) to a qubit by consuming a magic state
-// from the magic state buffer at address "addr"
-def Ty(int[32] addr, qubit q, qubit[buffer_size] buffer) {
-  bit outcome;
-  cy buffer[addr], q;
-  outcome = ymeasure(buffer[addr]);
-  if(outcome == 1) ry(pi / 2) q;
-}
-
-qubit[33] workspace;
-qubit[buffer_size] buffer;
-
-qubit[5] q;
-bit[5] c;
-int[32] address;
-
-// initialize
-reset workspace;
-reset buffer;
-reset q;
-
-distill_and_buffer(buffer_size) workspace, buffer;
-
-// Consume magic states to apply some gates ...
-h q[0];
-cx q[0], q[1];
-Ty(address) q[0], buffer;
-address += 1;
-cx q[0], q[1];
-Ty(address) q[1], buffer;
-address += 1;
-
-// In principle each Ty gate can execute as soon as the magic
-// state is available at the address in the buffer register.
-
-// We can continue alternating state distillation and computation
-// to refill and empty a circular buffer.

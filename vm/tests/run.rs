@@ -789,7 +789,10 @@ fn teleportation_preserves_a_phase_state() {
     assert_eq!(m.last().map(|&(q, b)| (q, b)), Some((2, false)));
 }
 
+// Ignored by default (~20s): a 21-qubit state vector. Run with
+// `cargo test -p oqi-vm -- --ignored`.
 #[test]
+#[ignore = "slow: 21-qubit state vector (~20s)"]
 fn varteleport_fixture_runs_end_to_end() {
     // Exercises a `teleport` subroutine called over inline runtime-indexed
     // qubit args (`q[2*i - 1]`, `q[{2*i, 2*i + 1}]`) inside a loop.
@@ -799,6 +802,20 @@ fn varteleport_fixture_runs_end_to_end() {
     // bit is probabilistic (reflects the prepared input state), so only the
     // count is asserted.
     assert_eq!(m.len(), 21, "expected 21 measurements, got {m:?}");
+}
+
+// Ignored by default (very slow): the serialized two-level distillation runs
+// ~50 distill circuits on a 23-qubit state vector (minutes in release, longer
+// in debug). Run explicitly with `cargo test -p oqi-vm -- --ignored`.
+#[test]
+#[ignore = "very slow: serialized two-level magic-state distillation (23 qubits)"]
+fn msd_fixture_runs_end_to_end() {
+    let src = include_str!("../../fixtures/qasm/msd.qasm");
+    let m = run_measurements(src);
+    // The number of measurements is nondeterministic (repeat-until-success
+    // distillation loops); just confirm it ran to completion, ending with the
+    // two computation-qubit measurements.
+    assert!(m.len() >= 2, "expected msd to complete with measurements");
 }
 
 #[test]
@@ -815,22 +832,6 @@ fn oversized_qubit_count_is_a_graceful_error() {
     ));
     // A small register allocates fine.
     assert!(StateVectorSim::try_new(1).is_ok());
-}
-
-#[test]
-fn msd_fixture_compiles_but_exceeds_simulator_capacity() {
-    // msd.qasm compiles (exercising qubit-parameter slicing/aliasing/runtime
-    // slices) but declares 44 qubits, which the state-vector simulator can't
-    // hold — it must fail gracefully, not abort the allocator.
-    let module = build(include_str!("../../fixtures/qasm/msd.qasm"));
-    match StateVectorSim::try_new(module.qubits.num_qubits) {
-        Err(VmError {
-            kind: VmErrorKind::TooManyQubits { requested, .. },
-            ..
-        }) => assert_eq!(requested, 44),
-        Err(other) => panic!("expected TooManyQubits, got {other:?}"),
-        Ok(_) => panic!("expected TooManyQubits for a 44-qubit program"),
-    }
 }
 
 /// Run and return named outputs as `(name, displayed value)`, sorted by name.

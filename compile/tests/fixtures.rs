@@ -180,11 +180,10 @@ fn gate_without_stdgates_is_undefined() {
 
 #[test]
 fn msd() {
-    // Magic-state distillation: a large program exercising qubit-parameter
-    // slicing, aliasing, and runtime-indexed slices in subroutines. It needs
-    // 44 qubits, so it cannot run on the state-vector simulator, but it must
-    // compile cleanly. (`UndefinedName` is covered by
-    // `gate_without_stdgates_is_undefined`.)
+    // Magic-state distillation (serialized form): exercises qubit-parameter
+    // slicing, aliasing, and runtime-indexed slices in subroutines. It fits in
+    // 23 qubits but is expensive to simulate, so it's compile-tested only.
+    // (`UndefinedName` is covered by `gate_without_stdgates_is_undefined`.)
     compile_fixture("msd.qasm").expect("should compile");
 }
 

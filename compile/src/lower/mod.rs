@@ -33,9 +33,11 @@ use crate::types::{
     resolve_type,
 };
 use crate::{
-    classical::{ArrayTy, Primitive, PrimitiveTy, Scalar, Value, ValueTy, ashape, iw},
+    classical::{ArrayTy, Primitive, Scalar, Value, ValueTy, ashape, iw},
     types::SystemWidth,
 };
+
+mod gate;
 
 // ── Public API ──────────────────────────────────────────────────────────
 
@@ -1547,165 +1549,6 @@ impl Lowerer {
         }
     }
 
-    // ── Gate body validation ────────────────────────────────────────────
-
-    fn lower_gate_body(&mut self, scope: &ast::Scope<'_>) -> Result<sir::GateBody> {
-        let mut stmts = Vec::new();
-        for item in &scope.body {
-            self.lower_gate_item(item, &mut stmts)?;
-        }
-        Ok(sir::GateBody { body: stmts })
-    }
-
-    /// Lower one gate-body item, unrolling `for` loops and rejecting
-    /// branching. Appends only `GateCall`/`Barrier` statements to `out`.
-    fn lower_gate_item(
-        &mut self,
-        item: &ast::StmtOrScope<'_>,
-        out: &mut Vec<sir::Stmt>,
-    ) -> Result<()> {
-        match item {
-            ast::StmtOrScope::Scope(scope) => {
-                self.with_scope(ScopeKind::Anonymous, scope.span, |this| {
-                    for it in &scope.body {
-                        this.lower_gate_item(it, out)?;
-                    }
-                    Ok(())
-                })
-            }
-            ast::StmtOrScope::Stmt(stmt) => self.lower_gate_stmt(stmt, out),
-        }
-    }
-
-    fn lower_gate_stmt(&mut self, stmt: &ast::Stmt<'_>, out: &mut Vec<sir::Stmt>) -> Result<()> {
-        match &stmt.kind {
-            ast::StmtKind::For {
-                ty,
-                var,
-                iterable,
-                body,
-            } => self.unroll_gate_for(ty, var, iterable, body, out),
-            ast::StmtKind::If { .. }
-            | ast::StmtKind::While { .. }
-            | ast::StmtKind::Switch { .. } => Err(CompileError::new(ErrorKind::InvalidGateBody(
-                "branching is not allowed in a gate body".into(),
-            ))
-            .with_span(stmt.span)),
-            _ => {
-                let lowered = self.lower_stmt(stmt)?;
-                for s in &lowered {
-                    validate_gate_stmt(s)?;
-                }
-                out.extend(lowered);
-                Ok(())
-            }
-        }
-    }
-
-    /// Fully unroll a `for` loop in a gate body. The loop variable is bound
-    /// as a `const` of its declared value, so index/angle expressions in the
-    /// body (`q[i+1]`, `ry(theta * i)`) resolve to concrete values.
-    fn unroll_gate_for(
-        &mut self,
-        ty: &ast::ScalarType<'_>,
-        var: &ast::Ident<'_>,
-        iterable: &ast::ForIterable<'_>,
-        body: &ast::StmtOrScope<'_>,
-        out: &mut Vec<sir::Stmt>,
-    ) -> Result<()> {
-        let var_ty = resolve_scalar_type(ty, self.resolver.symbols(), self.resolver.options())?;
-        let values = self.gate_for_values(iterable)?;
-        let body_span = match body {
-            ast::StmtOrScope::Stmt(s) => s.span,
-            ast::StmtOrScope::Scope(sc) => sc.span,
-        };
-        for v in values {
-            let cv = gate_loop_value(&var_ty, v);
-            self.with_scope(ScopeKind::For, body_span, |this| {
-                let var_sym =
-                    this.resolver
-                        .declare(var.name, SymbolKind::Const, var_ty.clone(), var.span)?;
-                this.resolver.symbols_mut().set_const_value(var_sym, cv);
-                this.lower_gate_item(body, out)
-            })?;
-        }
-        Ok(())
-    }
-
-    /// Evaluate the iterable of a gate-body `for` loop to a concrete sequence
-    /// of integers. Range semantics mirror the CFG builder: `start` defaults
-    /// to 0, `step` to 1, and `end` is inclusive.
-    fn gate_for_values(&self, it: &ast::ForIterable<'_>) -> Result<Vec<i128>> {
-        match it {
-            ast::ForIterable::Range(range, span) => {
-                let start = match &range.start {
-                    Some(e) => self.gate_const_int(e)?,
-                    None => 0,
-                };
-                let step = match &range.step {
-                    Some(e) => self.gate_const_int(e)?,
-                    None => 1,
-                };
-                let end = match &range.end {
-                    Some(e) => self.gate_const_int(e)?,
-                    None => {
-                        return Err(CompileError::new(ErrorKind::InvalidGateBody(
-                            "range for-loop in a gate body requires an explicit end".into(),
-                        ))
-                        .with_span(*span));
-                    }
-                };
-                if step == 0 {
-                    return Err(CompileError::new(ErrorKind::InvalidGateBody(
-                        "for-loop range step must be non-zero".into(),
-                    ))
-                    .with_span(*span));
-                }
-                let mut values = Vec::new();
-                let mut i = start;
-                if step > 0 {
-                    while i <= end {
-                        values.push(i);
-                        i += step;
-                    }
-                } else {
-                    while i >= end {
-                        values.push(i);
-                        i += step;
-                    }
-                }
-                Ok(values)
-            }
-            ast::ForIterable::Set(exprs, _) => {
-                exprs.iter().map(|e| self.gate_const_int(e)).collect()
-            }
-            ast::ForIterable::Expr(e) => Err(CompileError::new(ErrorKind::InvalidGateBody(
-                "iterating a general expression in a gate body is not supported".into(),
-            ))
-            .with_span(e.span())),
-        }
-    }
-
-    /// Evaluate `e` to a compile-time constant integer, for use as a
-    /// gate-body loop bound. Errors if `e` is not a constant integer.
-    fn gate_const_int(&self, e: &ast::Expr<'_>) -> Result<i128> {
-        let err = || {
-            CompileError::new(ErrorKind::InvalidGateBody(
-                "loop bounds in a gate body must be compile-time constant integers".into(),
-            ))
-            .with_span(e.span())
-        };
-        let Value::Scalar(s) = eval_const_expr(e, self.resolver.symbols(), self.resolver.options())
-            .map_err(|_| err())?
-        else {
-            return Err(err());
-        };
-        s.cast(PrimitiveTy::Int(iw(128)))
-            .ok()
-            .and_then(|s| s.value().as_int(iw(128)))
-            .ok_or_else(err)
-    }
-
     // ── Subroutine param lowering ───────────────────────────────────────
 
     fn lower_arg_defs(&mut self, params: &[ast::ArgDef<'_>]) -> Result<Vec<sir::SubroutineParam>> {
@@ -1823,28 +1666,6 @@ impl Lowerer {
 }
 
 // ── Free functions ──────────────────────────────────────────────────────
-
-/// Build the `const_value` bound to an unrolled loop variable. Stored at the
-/// variable's declared type when the integer fits, otherwise as a 128-bit int.
-fn gate_loop_value(var_ty: &Type, v: i128) -> Value {
-    let base = Value::int(v, iw(128));
-    match var_ty.value_ty() {
-        Some(vt) => base.clone().cast(vt).unwrap_or(base),
-        None => base,
-    }
-}
-
-/// After unrolling and branch rejection, a gate body contains only gate calls
-/// and barriers. This is a defense-in-depth check on the lowered statements.
-fn validate_gate_stmt(stmt: &sir::Stmt) -> Result<()> {
-    match &stmt.kind {
-        sir::StmtKind::GateCall(_) | sir::StmtKind::Barrier(_) => Ok(()),
-        _ => Err(CompileError::new(ErrorKind::InvalidGateBody(
-            "statement not allowed in gate body".into(),
-        ))
-        .with_span(stmt.span)),
-    }
-}
 
 fn parse_hardware_qubit(s: &str, span: oqi_lex::Span) -> Result<usize> {
     s.strip_prefix('$')
@@ -2123,7 +1944,13 @@ fn collapse_to(expr: sir::Expr, target: &Type) -> sir::Expr {
     let sir::Expr { kind, ty, span } = expr;
     let prim = match kind {
         sir::ExprKind::Literal(p) => p,
-        other => return sir::Expr { kind: other, ty, span },
+        other => {
+            return sir::Expr {
+                kind: other,
+                ty,
+                span,
+            };
+        }
     };
     let rebuild = |prim, ty| sir::Expr {
         kind: sir::ExprKind::Literal(prim),
@@ -2358,6 +2185,7 @@ fn validate_cast(from: &Type, to: &Type, span: oqi_lex::Span) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::classical::PrimitiveTy;
     use crate::resolve::DefaultIncludeResolver;
     use crate::symbol::SymbolKind;
     use crate::types::FloatWidth;
@@ -2478,7 +2306,7 @@ mod tests {
 
     #[test]
     fn compile_teleport() {
-        let source = include_str!("../../fixtures/qasm/teleport.qasm");
+        let source = include_str!("../../../fixtures/qasm/teleport.qasm");
         let program = compile_inline(source).expect("teleport should compile");
 
         assert_eq!(program.version.as_deref(), Some("3"));
@@ -2504,7 +2332,7 @@ mod tests {
 
     #[test]
     fn compile_adder() {
-        let source = include_str!("../../fixtures/qasm/adder.qasm");
+        let source = include_str!("../../../fixtures/qasm/adder.qasm");
         let program = compile_inline(source).expect("adder should compile");
 
         // Custom gates: majority and unmaj
@@ -2534,7 +2362,7 @@ mod tests {
     #[test]
     fn compile_stdgates() {
         // Compile stdgates content standalone (U is pre-seeded by Resolver)
-        let source = include_str!("./stdgates.inc");
+        let source = include_str!("../stdgates.inc");
         let program = compile_inline(source).expect("stdgates should compile");
 
         // Should have 30+ gate declarations
@@ -3055,7 +2883,7 @@ mod tests {
 
     #[test]
     fn type_teleport_condition_is_bool() {
-        let source = include_str!("../../fixtures/qasm/teleport.qasm");
+        let source = include_str!("../../../fixtures/qasm/teleport.qasm");
         let program = compile_inline(source).expect("teleport should compile");
         // Find an if-statement and check its condition type
         let if_stmt = program
@@ -3075,7 +2903,7 @@ mod tests {
     #[test]
     fn type_adder_cast_is_bool() {
         // adder.qasm uses bool(a_in[i]) - verify cast produces Bool
-        let source = include_str!("../../fixtures/qasm/adder.qasm");
+        let source = include_str!("../../../fixtures/qasm/adder.qasm");
         let program = compile_inline(source).expect("adder should compile");
         // Find a for loop with if(bool(...))
         let for_stmt = program

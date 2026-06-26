@@ -150,13 +150,13 @@ impl QubitLayout {
 
     /// Global memory index of the qubit at logical position `local`.
     pub fn global_index(&self, reg: &QuantumRegister, local: usize) -> Option<usize> {
-        self.memory.get(reg).get(local)
+        reg.global_index_of(local)
     }
 
     /// Global index ranges of `reg`, with adjacent ranges merged.
     pub fn global_ranges(&self, reg: &QuantumRegister) -> Vec<(u32, u32)> {
         let mut out: Vec<(u32, u32)> = Vec::new();
-        for r in self.memory.get(reg).ranges() {
+        for r in reg.ranges() {
             if r.is_empty() {
                 continue;
             }
@@ -197,7 +197,7 @@ impl QubitLayout {
         // "A register cannot be concatenated with any part of itself"
         // (docs/types.rst) — reject overlapping global indices.
         let mut seen = HashSet::new();
-        for g in self.memory.get(&combined).iter() {
+        for g in combined.iter() {
             if !seen.insert(g) {
                 return Err(CompileError::new(ErrorKind::InvalidContext(
                     "a quantum register cannot be concatenated with any part of itself".into(),

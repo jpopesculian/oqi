@@ -3,11 +3,14 @@ use std::ops::Range;
 use num_complex::Complex;
 use num_traits::{Float, One, Zero};
 
-pub type Id = usize;
-
+/// Allocator for the single flat global quantum memory. OpenQASM qubits
+/// are all statically allocated, in declaration order, and never freed or
+/// relocated, so allocation is just a bump of a running cursor: each
+/// [`alloc`](Self::alloc) hands out the next contiguous span of global
+/// indices.
 #[derive(Debug, Clone, Default)]
 pub struct QuantumMemory {
-    allocations: Vec<(Id, usize)>,
+    size: usize,
 }
 
 impl QuantumMemory {
@@ -15,46 +18,31 @@ impl QuantumMemory {
         Self::default()
     }
 
-    pub fn allocations(&self) -> &[(Id, usize)] {
-        &self.allocations
-    }
-
+    /// Total number of qubits allocated so far.
     pub fn size(&self) -> usize {
-        self.allocations.iter().map(|(_, size)| size).sum()
+        self.size
     }
 
+    /// Allocate `size` fresh qubits and return them as a contiguous
+    /// register over global indices.
+    #[allow(clippy::single_range_in_vec_init)]
     pub fn alloc(&mut self, size: usize) -> QuantumRegister {
-        let id = self.allocations.len();
-        self.allocations.push((id, size));
+        let start = self.size;
+        self.size += size;
         QuantumRegister {
-            parts: vec![(id, 0..size)],
+            ranges: vec![start..start + size],
         }
-    }
-
-    pub fn get(&self, register: &QuantumRegister) -> QuantumMemorySlice {
-        let ranges = register
-            .parts
-            .iter()
-            .map(|(id, range)| {
-                let offset = self.offset_of(*id);
-                (offset + range.start)..(offset + range.end)
-            })
-            .collect();
-        QuantumMemorySlice { ranges }
-    }
-
-    fn offset_of(&self, id: Id) -> usize {
-        self.allocations
-            .iter()
-            .take_while(|(i, _)| *i != id)
-            .map(|(_, size)| size)
-            .sum()
     }
 }
 
+/// A logical quantum register: an ordered list of half-open ranges of
+/// **global** qubit indices. A plain declaration is one contiguous range;
+/// slicing, discrete selection, and `++` concatenation build registers
+/// with several ranges. Because indices are already global, a register is
+/// directly usable by the simulator with no further resolution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct QuantumRegister {
-    parts: Vec<(Id, Range<usize>)>,
+    ranges: Vec<Range<usize>>,
 }
 
 impl QuantumRegister {
@@ -62,57 +50,7 @@ impl QuantumRegister {
         Self::default()
     }
 
-    pub fn parts(&self) -> &[(Id, Range<usize>)] {
-        &self.parts
-    }
-
-    pub fn len(&self) -> usize {
-        self.parts.iter().map(|(_, r)| r.len()).sum()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.parts.iter().all(|(_, r)| r.is_empty())
-    }
-
-    pub fn slice(&self, range: Range<usize>) -> QuantumRegister {
-        assert!(range.start <= range.end, "slice start exceeds end");
-        assert!(range.end <= self.len(), "slice end exceeds register length");
-
-        let mut parts = Vec::new();
-        let mut skip = range.start;
-        let mut remaining = range.end - range.start;
-
-        for (id, part) in &self.parts {
-            if remaining == 0 {
-                break;
-            }
-            let part_len = part.len();
-            if skip >= part_len {
-                skip -= part_len;
-                continue;
-            }
-            let take = remaining.min(part_len - skip);
-            let start = part.start + skip;
-            parts.push((*id, start..(start + take)));
-            remaining -= take;
-            skip = 0;
-        }
-
-        QuantumRegister { parts }
-    }
-
-    pub fn concat(mut self, other: Self) -> Self {
-        self.parts.extend(other.parts);
-        self
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct QuantumMemorySlice {
-    ranges: Vec<Range<usize>>,
-}
-
-impl QuantumMemorySlice {
+    /// The global index ranges making up this register, in logical order.
     pub fn ranges(&self) -> &[Range<usize>] {
         &self.ranges
     }
@@ -125,11 +63,41 @@ impl QuantumMemorySlice {
         self.ranges.iter().all(|r| r.is_empty())
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
-        self.ranges.iter().cloned().flatten()
+    /// The register covering logical positions `range` of this one.
+    pub fn slice(&self, range: Range<usize>) -> QuantumRegister {
+        assert!(range.start <= range.end, "slice start exceeds end");
+        assert!(range.end <= self.len(), "slice end exceeds register length");
+
+        let mut ranges = Vec::new();
+        let mut skip = range.start;
+        let mut remaining = range.end - range.start;
+
+        for part in &self.ranges {
+            if remaining == 0 {
+                break;
+            }
+            let part_len = part.len();
+            if skip >= part_len {
+                skip -= part_len;
+                continue;
+            }
+            let take = remaining.min(part_len - skip);
+            let start = part.start + skip;
+            ranges.push(start..(start + take));
+            remaining -= take;
+            skip = 0;
+        }
+
+        QuantumRegister { ranges }
     }
 
-    pub fn get(&self, mut idx: usize) -> Option<usize> {
+    pub fn concat(mut self, other: Self) -> Self {
+        self.ranges.extend(other.ranges);
+        self
+    }
+
+    /// Global index of the qubit at logical position `idx`.
+    pub fn global_index_of(&self, mut idx: usize) -> Option<usize> {
         for range in &self.ranges {
             let n = range.len();
             if idx < n {
@@ -139,22 +107,9 @@ impl QuantumMemorySlice {
         }
         None
     }
-}
 
-impl IntoIterator for QuantumMemorySlice {
-    type Item = usize;
-    type IntoIter = std::iter::Flatten<std::vec::IntoIter<Range<usize>>>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.ranges.into_iter().flatten()
-    }
-}
-
-impl<'a> IntoIterator for &'a QuantumMemorySlice {
-    type Item = usize;
-    type IntoIter = std::iter::Flatten<std::iter::Cloned<std::slice::Iter<'a, Range<usize>>>>;
-
-    fn into_iter(self) -> Self::IntoIter {
+    /// Iterate the register's global qubit indices in logical order.
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.ranges.iter().cloned().flatten()
     }
 }
@@ -390,94 +345,96 @@ mod tests {
     use super::*;
 
     #[test]
-    fn alloc_returns_register_with_single_part() {
+    #[allow(clippy::single_range_in_vec_init)]
+    fn alloc_returns_register_with_single_range() {
         let mut mem = QuantumMemory::new();
         let reg = mem.alloc(3);
-        assert_eq!(reg.parts(), &[(0, 0..3)]);
+        assert_eq!(reg.ranges(), &[0..3]);
         assert_eq!(reg.len(), 3);
     }
 
     #[test]
-    fn allocations_are_tracked() {
+    #[allow(clippy::single_range_in_vec_init)]
+    fn allocations_advance_the_global_cursor() {
         let mut mem = QuantumMemory::new();
-        let _ = mem.alloc(3);
-        let _ = mem.alloc(2);
-        assert_eq!(mem.allocations(), &[(0, 3), (1, 2)]);
+        let a = mem.alloc(3);
+        let b = mem.alloc(2);
+        assert_eq!(a.ranges(), &[0..3]);
+        assert_eq!(b.ranges(), &[3..5]);
         assert_eq!(mem.size(), 5);
     }
 
     #[test]
     #[allow(clippy::single_range_in_vec_init)]
-    fn get_maps_to_global_ranges() {
+    fn registers_carry_global_ranges() {
         let mut mem = QuantumMemory::new();
         let a = mem.alloc(3);
         let b = mem.alloc(2);
         let c = mem.alloc(4);
 
-        assert_eq!(mem.get(&a).ranges(), &[0..3]);
-        assert_eq!(mem.get(&b).ranges(), &[3..5]);
-        assert_eq!(mem.get(&c).ranges(), &[5..9]);
+        assert_eq!(a.ranges(), &[0..3]);
+        assert_eq!(b.ranges(), &[3..5]);
+        assert_eq!(c.ranges(), &[5..9]);
     }
 
     #[test]
-    fn slice_within_single_part() {
+    #[allow(clippy::single_range_in_vec_init)]
+    fn slice_within_single_range() {
         let mut mem = QuantumMemory::new();
         let reg = mem.alloc(5);
         let s = reg.slice(1..4);
-        assert_eq!(s.parts(), &[(0, 1..4)]);
+        assert_eq!(s.ranges(), &[1..4]);
     }
 
     #[test]
-    fn slice_spans_multiple_parts() {
+    fn slice_spans_multiple_ranges() {
         let mut mem = QuantumMemory::new();
         let a = mem.alloc(3);
         let b = mem.alloc(4);
         let joined = a.concat(b);
         let s = joined.slice(2..6);
-        assert_eq!(s.parts(), &[(0, 2..3), (1, 0..3)]);
+        assert_eq!(s.ranges(), &[2..3, 3..6]);
     }
 
     #[test]
-    fn concat_appends_parts() {
+    fn concat_appends_ranges() {
         let mut mem = QuantumMemory::new();
         let a = mem.alloc(2);
         let b = mem.alloc(3);
         let joined = a.concat(b);
-        assert_eq!(joined.parts(), &[(0, 0..2), (1, 0..3)]);
+        assert_eq!(joined.ranges(), &[0..2, 2..5]);
         assert_eq!(joined.len(), 5);
     }
 
     #[test]
-    fn slice_of_concat_maps_to_expected_global_indices() {
+    fn slice_of_concat_yields_expected_global_indices() {
         let mut mem = QuantumMemory::new();
         let a = mem.alloc(3);
         let b = mem.alloc(4);
         let joined = a.concat(b);
-        let slice = mem.get(&joined.slice(2..6));
-        let indices: Vec<usize> = slice.iter().collect();
+        let indices: Vec<usize> = joined.slice(2..6).iter().collect();
         assert_eq!(indices, vec![2, 3, 4, 5]);
     }
 
     #[test]
-    fn memory_slice_iter_yields_global_indices() {
+    fn register_iter_yields_global_indices() {
         let mut mem = QuantumMemory::new();
         let _ = mem.alloc(3);
         let b = mem.alloc(2);
-        let slice = mem.get(&b);
-        let indices: Vec<usize> = slice.iter().collect();
+        let indices: Vec<usize> = b.iter().collect();
         assert_eq!(indices, vec![3, 4]);
     }
 
     #[test]
-    fn memory_slice_get_returns_global_index() {
+    fn global_index_of_returns_global_index() {
         let mut mem = QuantumMemory::new();
         let a = mem.alloc(3);
         let b = mem.alloc(4);
-        let slice = mem.get(&a.concat(b));
-        assert_eq!(slice.get(0), Some(0));
-        assert_eq!(slice.get(3), Some(3));
-        assert_eq!(slice.get(6), Some(6));
-        assert_eq!(slice.get(7), None);
+        let reg = a.concat(b);
+        assert_eq!(reg.global_index_of(0), Some(0));
+        assert_eq!(reg.global_index_of(3), Some(3));
+        assert_eq!(reg.global_index_of(6), Some(6));
+        assert_eq!(reg.global_index_of(7), None);
     }
 
     const TOL: f64 = 1e-10;

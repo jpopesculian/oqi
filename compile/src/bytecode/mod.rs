@@ -153,12 +153,15 @@ mod tests {
             .find(|s| s.name == "flip")
             .expect("flip symbol")
             .id;
-        let emits_call = all_ops(&module).any(|op| {
-            matches!(op, BcOp::Call { callee: BcCallTarget::Symbol(s), .. } if *s == flip)
-        });
-        assert!(emits_call, "bare `flip q;` should emit a Call to `flip`:\n{module}");
-        let emits_gatecall = all_ops(&module)
-            .any(|op| matches!(op, BcOp::GateCall { gate, .. } if *gate == flip));
+        let emits_call = all_ops(&module).any(
+            |op| matches!(op, BcOp::Call { callee: BcCallTarget::Symbol(s), .. } if *s == flip),
+        );
+        assert!(
+            emits_call,
+            "bare `flip q;` should emit a Call to `flip`:\n{module}"
+        );
+        let emits_gatecall =
+            all_ops(&module).any(|op| matches!(op, BcOp::GateCall { gate, .. } if *gate == flip));
         assert!(!emits_gatecall, "bare `flip q;` must not emit a GateCall");
     }
 
@@ -184,7 +187,7 @@ mod tests {
         let region = all_ops(&module)
             .find_map(|op| match op {
                 BcOp::Reset {
-                    qubit: BcOperand::QubitRegion(id),
+                    qubit: BcOperand::Whole(QubitSource::Region(id)),
                 } => Some(*id),
                 _ => None,
             })
@@ -198,7 +201,7 @@ mod tests {
         let region = all_ops(&module)
             .find_map(|op| match op {
                 BcOp::Reset {
-                    qubit: BcOperand::QubitRegion(id),
+                    qubit: BcOperand::Whole(QubitSource::Region(id)),
                 } => Some(*id),
                 _ => None,
             })
@@ -207,20 +210,20 @@ mod tests {
     }
 
     #[test]
-    fn runtime_index_uses_qubit_indexed() {
+    fn runtime_index_uses_index_operand() {
         let module = build_bytecode("input uint[32] i; qubit[3] a; reset a[i];");
         let found = all_ops(&module).any(|op| {
             matches!(
                 op,
                 BcOp::Reset {
-                    qubit: BcOperand::QubitIndexed { .. },
+                    qubit: BcOperand::Index {
+                        source: QubitSource::Region(_),
+                        ..
+                    },
                 }
             )
         });
-        assert!(
-            found,
-            "runtime index should lower to QubitIndexed:\n{module}"
-        );
+        assert!(found, "runtime index should lower to Index:\n{module}");
     }
 
     #[test]
@@ -260,30 +263,34 @@ mod tests {
                 f(1, b);
             "#,
         );
-        // The body references its qubit param positionally.
+        // The body references its qubit param by its dense qubit slot
+        // (slot 0: the only qubit param, after the classical `n`).
         let body_ok = all_ops(&module).any(|op| {
             matches!(
                 op,
                 BcOp::Reset {
-                    qubit: BcOperand::QubitParam {
-                        slot: 1,
-                        index: Some(_),
+                    qubit: BcOperand::Index {
+                        source: QubitSource::Slot(0),
+                        ..
                     },
                 }
             )
         });
-        assert!(body_ok, "body should use QubitParam slot 1:\n{module}");
+        assert!(body_ok, "body should index qubit slot 0:\n{module}");
         // The call site passes a resolved global region.
         let call_ok = all_ops(&module).any(|op| match op {
             BcOp::Call { args, .. } => {
                 matches!(
                     args.as_slice(),
-                    [BcOperand::Const(_), BcOperand::QubitRegion(_)]
+                    [
+                        BcOperand::Const(_),
+                        BcOperand::Whole(QubitSource::Region(_))
+                    ]
                 )
             }
             _ => false,
         });
-        assert!(call_ok, "call should pass [Const, QubitRegion]:\n{module}");
+        assert!(call_ok, "call should pass [Const, region]:\n{module}");
     }
 
     #[test]
@@ -299,16 +306,12 @@ mod tests {
             "#,
         );
         let body_ok = all_ops(&module).any(|op| match op {
-            BcOp::GateCall { qubits, .. } => matches!(
-                qubits.as_slice(),
-                [BcOperand::QubitParam {
-                    slot: 0,
-                    index: None,
-                }]
-            ),
+            BcOp::GateCall { qubits, .. } => {
+                matches!(qubits.as_slice(), [BcOperand::Whole(QubitSource::Slot(0))])
+            }
             _ => false,
         });
-        assert!(body_ok, "gate body should use QubitParam slot 0:\n{module}");
+        assert!(body_ok, "gate body should use qubit slot 0:\n{module}");
         let call_ok = all_ops(&module).any(|op| match op {
             BcOp::GateCall { qubits, .. } => {
                 matches!(qubits.as_slice(), [BcOperand::Qubit(0)])
@@ -325,34 +328,33 @@ mod tests {
         let module = build_bytecode(
             "input uint[32] i; qubit[8] q; let bp = q[{2*i, 2*i + 1}]; reset bp; reset bp[1];",
         );
-        let bind = all_ops(&module).any(|op| {
-            matches!(op, BcOp::AliasBind { slot: 0, segments } if segments.len() == 2)
-        });
+        let bind = all_ops(&module)
+            .any(|op| matches!(op, BcOp::AliasBind { slot: 0, segments } if segments.len() == 2));
         assert!(bind, "runtime alias should emit AliasBind:\n{module}");
         let whole = all_ops(&module).any(|op| {
             matches!(
                 op,
                 BcOp::Reset {
-                    qubit: BcOperand::QubitAlias {
-                        slot: 0,
-                        index: None
-                    }
+                    qubit: BcOperand::Whole(QubitSource::Slot(0))
                 }
             )
         });
-        assert!(whole, "`reset bp` should use QubitAlias slot 0:\n{module}");
+        assert!(whole, "`reset bp` should use qubit slot 0:\n{module}");
         let indexed = all_ops(&module).any(|op| {
             matches!(
                 op,
                 BcOp::Reset {
-                    qubit: BcOperand::QubitAlias {
-                        slot: 0,
-                        index: Some(_)
+                    qubit: BcOperand::Index {
+                        source: QubitSource::Slot(0),
+                        ..
                     }
                 }
             )
         });
-        assert!(indexed, "`reset bp[1]` should index QubitAlias:\n{module}");
+        assert!(
+            indexed,
+            "`reset bp[1]` should index qubit slot 0:\n{module}"
+        );
         // Static aliases must still resolve at compile time (no AliasBind).
         let static_mod = build_bytecode("qubit[4] q; let a = q[1:2]; reset a;");
         assert!(

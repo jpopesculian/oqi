@@ -8,9 +8,9 @@
 //!
 //! Qubit references are lowered through the [`QubitLayout`]: named
 //! registers and resolved `let` aliases become global quantum memory
-//! references ([`BcOperand::Qubit`] / [`BcOperand::QubitRegion`] /
-//! [`BcOperand::QubitIndexed`]); gate and subroutine qubit parameters
-//! become positional [`BcOperand::QubitParam`]s bound at call time.
+//! references ([`BcOperand::Qubit`] or a [`QubitSource::Region`]); gate
+//! and subroutine qubit parameters and runtime aliases become frame-local
+//! [`QubitSource::Slot`]s bound at call time / by `BcOp::AliasBind`.
 
 use std::collections::HashMap;
 
@@ -35,7 +35,7 @@ use super::regalloc::{RegMap, allocate_registers};
 use super::types::{
     BcAliasSegment, BcBlock, BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand,
     BcProcedure, BcSwitchLabels, BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner,
-    QubitRegion, QubitRegionId, QubitTable, Reg, StringId,
+    QubitRegion, QubitRegionId, QubitSource, QubitTable, Reg, StringId,
 };
 
 /// Entry point: lower an SSA program to bytecode against the global
@@ -104,10 +104,11 @@ struct EmitCtx<'a> {
     qubit_regions: Vec<QubitRegion>,
     /// Resolved ranges of each entry in `qubit_regions`, for dedup.
     region_index: HashMap<Vec<(u32, u32)>, QubitRegionId>,
-    /// Next free body-local slot for a runtime-bound qubit alias
-    /// (`BcOp::AliasBind`). Globally unique across the module; each frame
-    /// binds only the slots its body touches.
-    next_alias_slot: u32,
+    /// Next free frame-local qubit slot for a runtime-bound alias
+    /// (`BcOp::AliasBind`) in the procedure currently being emitted.
+    /// Seeded to the procedure's qubit-parameter count and saved/restored
+    /// across nested procedures (see [`Self::emit_proc`]).
+    alias_slot: u32,
     procedures: Vec<BcProcedure>,
     constants: Vec<Value>,
     /// Postcard encoding of each entry in `constants`, for dedup.
@@ -159,7 +160,7 @@ impl<'a> EmitCtx<'a> {
             layout,
             qubit_regions: Vec::new(),
             region_index: HashMap::new(),
-            next_alias_slot: 0,
+            alias_slot: 0,
             procedures: Vec::new(),
             constants: Vec::new(),
             const_index: HashMap::new(),
@@ -189,6 +190,7 @@ impl<'a> EmitCtx<'a> {
             owner: owner.clone(),
             register_types: Vec::new(),
             params: Vec::new(),
+            num_qubit_slots: 0,
             blocks: Vec::new(),
             entry: BlockId(0),
         });
@@ -215,16 +217,32 @@ impl<'a> EmitCtx<'a> {
             self.outputs = self.collect_outputs(&cfg, &reg_map);
         }
 
+        // Qubit slots: parameters occupy `[0, n_qubit_params)`; runtime
+        // aliases bound in this body take the slots after them. The
+        // cursor is per-procedure, saved/restored so nested bodies (Box /
+        // Cal / DurationOf, emitted recursively while emitting a block)
+        // don't disturb this one's numbering.
+        let param_base = match &owner {
+            ProcOwner::Gate(s) | ProcOwner::Subroutine(s) => self.layout.qubit_param_count(*s),
+            _ => 0,
+        };
+        let saved_alias_slot = self.alias_slot;
+        self.alias_slot = param_base;
+
         let blocks: Vec<BcBlock> = cfg
             .blocks
             .iter()
             .map(|b| self.emit_block(b, &mut reg_map))
             .collect::<Result<_>>()?;
 
+        let num_qubit_slots = self.alias_slot;
+        self.alias_slot = saved_alias_slot;
+
         Ok(BcProcedure {
             owner,
             register_types: reg_map.types,
             params,
+            num_qubit_slots,
             blocks,
             entry: BlockId(cfg.entry.0 as u32),
         })
@@ -699,7 +717,11 @@ impl<'a> EmitCtx<'a> {
                 let base = self.lower_expr_to_operand(base, instrs, reg_map)?;
                 let indices = self.lower_index_op_to_operands(index, instrs, reg_map)?;
                 instrs.push(BcInstr {
-                    op: BcOp::LoadElement { dest, base, indices },
+                    op: BcOp::LoadElement {
+                        dest,
+                        base,
+                        indices,
+                    },
                     span,
                 });
             }
@@ -716,11 +738,7 @@ impl<'a> EmitCtx<'a> {
                 // has no destination — mirroring the bare gate-call path.
                 let dest = e.ty.value_ty().is_some().then_some(dest);
                 instrs.push(BcInstr {
-                    op: BcOp::Call {
-                        dest,
-                        callee,
-                        args,
-                    },
+                    op: BcOp::Call { dest, callee, args },
                     span,
                 });
             }
@@ -852,13 +870,13 @@ impl<'a> EmitCtx<'a> {
         // Gate / subroutine qubit parameter: bound at call time.
         if let Some(slot) = self.layout.param_slot(symbol) {
             return match indices {
-                [] => Ok(BcOperand::QubitParam { slot, index: None }),
+                [] => Ok(BcOperand::Whole(QubitSource::Slot(slot))),
                 [io] => match qubits::single_index_expr(io) {
                     Some(e) => {
                         let index = Box::new(self.lower_expr_to_operand(e, instrs, reg_map)?);
-                        Ok(BcOperand::QubitParam {
-                            slot,
-                            index: Some(index),
+                        Ok(BcOperand::Index {
+                            source: QubitSource::Slot(slot),
+                            index,
                         })
                     }
                     None => {
@@ -871,8 +889,8 @@ impl<'a> EmitCtx<'a> {
                         match qubits::resolve_static_index(io, len) {
                             // Static slice / discrete set: resolve positions
                             // against the declared length at compile time.
-                            Ok(positions) => Ok(BcOperand::QubitParamSlice {
-                                slot,
+                            Ok(positions) => Ok(BcOperand::Select {
+                                source: QubitSource::Slot(slot),
                                 positions: positions.iter().map(|&p| p as u32).collect(),
                             }),
                             // Runtime slice bounds: materialize a transient
@@ -882,12 +900,9 @@ impl<'a> EmitCtx<'a> {
                                     slot,
                                     len: Some(len),
                                 };
-                                let alias = self
-                                    .bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
-                                Ok(BcOperand::QubitAlias {
-                                    slot: alias,
-                                    index: None,
-                                })
+                                let alias =
+                                    self.bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
+                                Ok(BcOperand::Whole(QubitSource::Slot(alias)))
                             }
                             Err(e) => Err(e.with_span(io.span)),
                         }
@@ -908,7 +923,9 @@ impl<'a> EmitCtx<'a> {
                     if reg.len() == 1 {
                         Ok(BcOperand::Qubit(self.must_global(&reg, 0)))
                     } else {
-                        Ok(BcOperand::QubitRegion(self.region_for(&reg, Some(symbol))))
+                        Ok(BcOperand::Whole(QubitSource::Region(
+                            self.region_for(&reg, Some(symbol)),
+                        )))
                     }
                 }
                 [io] => match qubits::resolve_static_index(io, reg.len()) {
@@ -917,7 +934,9 @@ impl<'a> EmitCtx<'a> {
                             Ok(BcOperand::Qubit(self.must_global(&reg, *only)))
                         } else {
                             let sub = qubits::select(&reg, &idxs);
-                            Ok(BcOperand::QubitRegion(self.region_for(&sub, Some(symbol))))
+                            Ok(BcOperand::Whole(QubitSource::Region(
+                                self.region_for(&sub, Some(symbol)),
+                            )))
                         }
                     }
                     // Runtime single index: the VM maps the logical
@@ -928,7 +947,10 @@ impl<'a> EmitCtx<'a> {
                                 let region = self.region_for(&reg, Some(symbol));
                                 let index =
                                     Box::new(self.lower_expr_to_operand(e, instrs, reg_map)?);
-                                Ok(BcOperand::QubitIndexed { region, index })
+                                Ok(BcOperand::Index {
+                                    source: QubitSource::Region(region),
+                                    index,
+                                })
                             }
                             // Runtime multi-element slice: materialize a
                             // transient alias and reference it by slot.
@@ -937,9 +959,9 @@ impl<'a> EmitCtx<'a> {
                                     reg: reg.clone(),
                                     origin: symbol,
                                 };
-                                let slot = self
-                                    .bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
-                                Ok(BcOperand::QubitAlias { slot, index: None })
+                                let slot =
+                                    self.bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
+                                Ok(BcOperand::Whole(QubitSource::Slot(slot)))
                             }
                         }
                     }
@@ -955,16 +977,13 @@ impl<'a> EmitCtx<'a> {
         // Runtime-bound alias: resolved through its bind slot by the VM.
         if let Some(da) = self.layout.dynamic_alias_of(symbol) {
             return match indices {
-                [] => Ok(BcOperand::QubitAlias {
-                    slot: da.slot,
-                    index: None,
-                }),
+                [] => Ok(BcOperand::Whole(QubitSource::Slot(da.slot))),
                 [io] => match qubits::single_index_expr(io) {
                     Some(e) => {
                         let index = Box::new(self.alias_index_operand(&da, e, instrs, reg_map)?);
-                        Ok(BcOperand::QubitAlias {
-                            slot: da.slot,
-                            index: Some(index),
+                        Ok(BcOperand::Index {
+                            source: QubitSource::Slot(da.slot),
+                            index,
                         })
                     }
                     // Runtime multi-element slice of an alias: re-bind it
@@ -972,7 +991,7 @@ impl<'a> EmitCtx<'a> {
                     None => {
                         let src = AliasSrc::Alias(da);
                         let slot = self.bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
-                        Ok(BcOperand::QubitAlias { slot, index: None })
+                        Ok(BcOperand::Whole(QubitSource::Slot(slot)))
                     }
                 },
                 _ => Err(CompileError::new(ErrorKind::Unsupported(
@@ -1010,8 +1029,8 @@ impl<'a> EmitCtx<'a> {
         reg_map: &mut RegMap,
         span: Span,
     ) -> Result<()> {
-        let slot = self.next_alias_slot;
-        self.next_alias_slot += 1;
+        let slot = self.alias_slot;
+        self.alias_slot += 1;
 
         let mut segments: Vec<BcAliasSegment> = Vec::new();
         let mut total_len: Option<usize> = Some(0);
@@ -1027,8 +1046,7 @@ impl<'a> EmitCtx<'a> {
             op: BcOp::AliasBind { slot, segments },
             span,
         });
-        self.layout
-            .define_dynamic_alias(alias_sym, slot, total_len);
+        self.layout.define_dynamic_alias(alias_sym, slot, total_len);
         Ok(())
     }
 
@@ -1163,8 +1181,8 @@ impl<'a> EmitCtx<'a> {
         reg_map: &mut RegMap,
         span: Span,
     ) -> Result<u32> {
-        let slot = self.next_alias_slot;
-        self.next_alias_slot += 1;
+        let slot = self.alias_slot;
+        self.alias_slot += 1;
         let mut segments = Vec::new();
         self.alias_segments_for(src, ops, &mut segments, instrs, reg_map, span)?;
         instrs.push(BcInstr {
@@ -1176,19 +1194,14 @@ impl<'a> EmitCtx<'a> {
 
     /// The operand resolving to the whole base list of `src`.
     fn alias_whole_operand(&mut self, src: &AliasSrc) -> BcOperand {
-        match src {
+        let source = match src {
             AliasSrc::Region { reg, origin } => {
-                BcOperand::QubitRegion(self.region_for(reg, Some(*origin)))
+                QubitSource::Region(self.region_for(reg, Some(*origin)))
             }
-            AliasSrc::Alias(da) => BcOperand::QubitAlias {
-                slot: da.slot,
-                index: None,
-            },
-            AliasSrc::Param { slot, .. } => BcOperand::QubitParam {
-                slot: *slot,
-                index: None,
-            },
-        }
+            AliasSrc::Alias(da) => QubitSource::Slot(da.slot),
+            AliasSrc::Param { slot, .. } => QubitSource::Slot(*slot),
+        };
+        BcOperand::Whole(source)
     }
 
     /// A single-qubit operand selecting element `e` of `src`.
@@ -1202,21 +1215,24 @@ impl<'a> EmitCtx<'a> {
         match src {
             AliasSrc::Region { reg, origin } => match qubits::literal_index(e) {
                 Some(k) => {
-                    let local =
-                        qubits::normalize_index(k, reg.len()).map_err(|err| err.with_span(e.span))?;
+                    let local = qubits::normalize_index(k, reg.len())
+                        .map_err(|err| err.with_span(e.span))?;
                     Ok(BcOperand::Qubit(self.must_global(reg, local)))
                 }
                 None => {
                     let region = self.region_for(reg, Some(*origin));
                     let index = Box::new(self.lower_expr_to_operand(e, instrs, reg_map)?);
-                    Ok(BcOperand::QubitIndexed { region, index })
+                    Ok(BcOperand::Index {
+                        source: QubitSource::Region(region),
+                        index,
+                    })
                 }
             },
             AliasSrc::Alias(da) => {
                 let index = Box::new(self.alias_index_operand(da, e, instrs, reg_map)?);
-                Ok(BcOperand::QubitAlias {
-                    slot: da.slot,
-                    index: Some(index),
+                Ok(BcOperand::Index {
+                    source: QubitSource::Slot(da.slot),
+                    index,
                 })
             }
             AliasSrc::Param { slot, len } => {
@@ -1230,9 +1246,9 @@ impl<'a> EmitCtx<'a> {
                     }
                     _ => self.lower_expr_to_operand(e, instrs, reg_map)?,
                 };
-                Ok(BcOperand::QubitParam {
-                    slot: *slot,
-                    index: Some(Box::new(index)),
+                Ok(BcOperand::Index {
+                    source: QubitSource::Slot(*slot),
+                    index: Box::new(index),
                 })
             }
         }
@@ -1251,11 +1267,11 @@ impl<'a> EmitCtx<'a> {
     ) -> Result<BcOperand> {
         match (qubits::literal_index(e), da.len) {
             (Some(k), Some(len)) => {
-                let local =
-                    qubits::normalize_index(k, len).map_err(|err| err.with_span(e.span))?;
-                Ok(BcOperand::Const(
-                    self.intern_const(Value::int(local as i128, oqi_classical::iw(64))),
-                ))
+                let local = qubits::normalize_index(k, len).map_err(|err| err.with_span(e.span))?;
+                Ok(BcOperand::Const(self.intern_const(Value::int(
+                    local as i128,
+                    oqi_classical::iw(64),
+                ))))
             }
             (Some(k), None) if k < 0 => Err(CompileError::new(ErrorKind::Unsupported(
                 "negative index into a runtime-length alias".into(),

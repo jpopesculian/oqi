@@ -5,7 +5,7 @@ use std::fmt;
 
 use super::types::{
     BcAliasSegment, BcBlock, BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand,
-    BcSwitchLabels, BcTerminator, BlockId, ConstId, ProcId, ProcOwner, Reg, StringId,
+    BcSwitchLabels, BcTerminator, BlockId, ConstId, ProcId, ProcOwner, QubitSource, Reg, StringId,
 };
 
 impl fmt::Display for BcModule {
@@ -148,7 +148,11 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             write!(f, "{} = move ", fmt_reg(*dest))?;
             fmt_operand(f, src)
         }
-        BcOp::LoadElement { dest, base, indices } => {
+        BcOp::LoadElement {
+            dest,
+            base,
+            indices,
+        } => {
             write!(f, "{} = load_elem ", fmt_reg(*dest))?;
             fmt_operand(f, base)?;
             fmt_index_list(f, indices)
@@ -422,33 +426,26 @@ fn fmt_operand(f: &mut fmt::Formatter<'_>, op: &BcOperand) -> fmt::Result {
         BcOperand::Const(c) => write!(f, "{}", fmt_const(*c)),
         BcOperand::HardwareQubit(n) => write!(f, "${n}"),
         BcOperand::Qubit(n) => write!(f, "q@{n}"),
-        BcOperand::QubitRegion(id) => write!(f, "qr{}", id.0),
-        BcOperand::QubitIndexed { region, index } => {
-            write!(f, "qr{}[", region.0)?;
+        BcOperand::Whole(source) => fmt_qubit_source(f, source),
+        BcOperand::Select { source, positions } => {
+            fmt_qubit_source(f, source)?;
+            write!(f, "{positions:?}")
+        }
+        BcOperand::Index { source, index } => {
+            fmt_qubit_source(f, source)?;
+            write!(f, "[")?;
             fmt_operand(f, index)?;
             write!(f, "]")
         }
-        BcOperand::QubitParam { slot, index } => {
-            write!(f, "qp{slot}")?;
-            if let Some(idx) = index {
-                write!(f, "[")?;
-                fmt_operand(f, idx)?;
-                write!(f, "]")?;
-            }
-            Ok(())
-        }
-        BcOperand::QubitParamSlice { slot, positions } => {
-            write!(f, "qp{slot}{positions:?}")
-        }
-        BcOperand::QubitAlias { slot, index } => {
-            write!(f, "qa{slot}")?;
-            if let Some(idx) = index {
-                write!(f, "[")?;
-                fmt_operand(f, idx)?;
-                write!(f, "]")?;
-            }
-            Ok(())
-        }
+    }
+}
+
+/// Render a qubit source: `qr{n}` for a global memory region, `qs{n}`
+/// for a frame-local qubit slot (parameter or runtime alias).
+fn fmt_qubit_source(f: &mut fmt::Formatter<'_>, source: &QubitSource) -> fmt::Result {
+    match source {
+        QubitSource::Region(id) => write!(f, "qr{}", id.0),
+        QubitSource::Slot(s) => write!(f, "qs{s}"),
     }
 }
 

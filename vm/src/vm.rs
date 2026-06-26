@@ -14,7 +14,7 @@ use oqi_classical::{
 };
 use oqi_compile::bytecode::{
     BcAliasSegment, BcCallTarget, BcGateModifier, BcModule, BcOp, BcOperand, BcSwitchLabels,
-    BcTerminator, BlockId, ProcId, ProcOwner, Reg,
+    BcTerminator, BlockId, ProcId, ProcOwner, QubitSource, Reg,
 };
 use oqi_compile::sir::Intrinsic;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
@@ -42,12 +42,12 @@ struct Frame {
     proc: ProcId,
     /// Register file, indexed by [`Reg`].
     regs: Vec<Option<Value>>,
-    /// Bound qubit parameters, indexed by slot; each slot holds the
-    /// resolved global qubit indices for that parameter.
-    qubit_args: Vec<Vec<u32>>,
-    /// Runtime-bound qubit aliases, keyed by bind slot; populated by
-    /// [`BcOp::AliasBind`](oqi_compile::bytecode::BcOp) as the body runs.
-    aliases: HashMap<u32, Vec<u32>>,
+    /// Frame-local qubit slots, indexed by slot id (size
+    /// `BcProcedure::num_qubit_slots`). Slots `[0, n_qubit_params)` hold
+    /// the bound qubit parameters; the rest hold runtime aliases,
+    /// populated by [`BcOp::AliasBind`](oqi_compile::bytecode::BcOp) as
+    /// the body runs. Each slot holds resolved global qubit indices.
+    slots: Vec<Vec<u32>>,
     /// Modifier context (controls / power) inherited by gate calls in
     /// this body.
     mods: GateModifiers,
@@ -187,8 +187,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         let mut frame = Frame {
             proc: entry,
             regs,
-            qubit_args: Vec::new(),
-            aliases: HashMap::new(),
+            slots: self.fresh_slots(entry),
             mods: GateModifiers::none(),
         };
         self.exec_proc(&mut frame)?;
@@ -220,7 +219,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 .blocks
                 .iter()
                 .find(|b| b.id == current)
-                .ok_or_else(|| VmErrorKind::Unsupported(format!("missing block bb{}", current.0)))?;
+                .ok_or_else(|| {
+                    VmErrorKind::Unsupported(format!("missing block bb{}", current.0))
+                })?;
             for instr in &block.instrs {
                 self.current_span = instr.span;
                 self.exec_op(&instr.op, frame)?;
@@ -272,8 +273,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 }
             }
         }
-        default
-            .ok_or_else(|| VmErrorKind::Unsupported("switch with no matching case or default".into()))
+        default.ok_or_else(|| {
+            VmErrorKind::Unsupported("switch with no matching case or default".into())
+        })
     }
 
     fn exec_op(&mut self, op: &BcOp, frame: &mut Frame) -> Result<()> {
@@ -319,7 +321,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 self.set(frame, *dest, v);
                 Ok(())
             }
-            BcOp::LoadElement { dest, base, indices } => {
+            BcOp::LoadElement {
+                dest,
+                base,
+                indices,
+            } => {
                 let base = self.eval(frame, base)?;
                 let idx = self.eval_index_items(frame, indices)?;
                 let v = base.get(&idx)?;
@@ -425,8 +431,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 let mut child = Frame {
                     proc: *body,
                     regs: self.fresh_regs(*body),
-                    qubit_args: Vec::new(),
-                    aliases: HashMap::new(),
+                    slots: self.fresh_slots(*body),
                     mods: GateModifiers::none(),
                 };
                 self.exec_proc(&mut child)?;
@@ -455,14 +460,18 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         }
                     }
                 }
-                frame.aliases.insert(*slot, resolved);
+                *frame
+                    .slots
+                    .get_mut(*slot as usize)
+                    .ok_or_else(|| VmErrorKind::Unsupported("alias slot out of range".into()))? =
+                    resolved;
                 Ok(())
             }
             BcOp::Pragma { .. } | BcOp::Alias { .. } | BcOp::CalOpaque { .. } => Ok(()),
             BcOp::CalOpenPulse { .. } => Ok(()),
-            BcOp::DurationOf { .. } => {
-                Err(VmErrorKind::Unsupported("durationof timing analysis".into()))
-            }
+            BcOp::DurationOf { .. } => Err(VmErrorKind::Unsupported(
+                "durationof timing analysis".into(),
+            )),
         }
     }
 
@@ -514,7 +523,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     let ret = self.exec_proc(&mut child)?;
                     if let Some(d) = dest {
                         let v = ret.ok_or_else(|| {
-                            VmErrorKind::Type("subroutine returned no value for a value call".into())
+                            VmErrorKind::Type(
+                                "subroutine returned no value for a value call".into(),
+                            )
                         })?;
                         self.set(frame, d, v);
                     }
@@ -530,11 +541,15 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     fn bind_subroutine(&self, frame: &Frame, proc_id: ProcId, args: &[BcOperand]) -> Result<Frame> {
         let proc = &self.module.procedures[proc_id.0 as usize];
         let mut regs = self.fresh_regs(proc_id);
-        let mut qubit_args: Vec<Vec<u32>> = vec![Vec::new(); args.len()];
+        let mut slots = self.fresh_slots(proc_id);
+        // Qubit args fill dense qubit slots `[0, n)`; classical args go to
+        // the procedure's parameter registers, both in declaration order.
+        let mut qslot = 0usize;
         let mut classical = 0usize;
-        for (slot, arg) in args.iter().enumerate() {
+        for arg in args {
             if is_qubit_operand(arg) {
-                qubit_args[slot] = self.qubits(frame, arg)?;
+                slots[qslot] = self.qubits(frame, arg)?;
+                qslot += 1;
             } else {
                 let v = self.eval(frame, arg)?;
                 let reg = proc.params.get(classical).ok_or_else(|| {
@@ -547,8 +562,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         Ok(Frame {
             proc: proc_id,
             regs,
-            qubit_args,
-            aliases: HashMap::new(),
+            slots,
             mods: GateModifiers::none(),
         })
     }
@@ -623,23 +637,21 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     })?;
                     regs[reg.0 as usize] = Some(v.clone());
                 }
-                let qubit_args: Vec<Vec<u32>> = resolved
-                    .iter()
-                    .map(|qs| {
-                        // Singletons repeat; registers (validated equal to
-                        // `bcast`) are indexed by the broadcast position.
-                        let idx = if qs.len() == 1 { 0 } else { j };
-                        vec![qs[idx]]
-                    })
-                    .collect();
+                // Bind the gate's qubit params into slots `[0, n)`.
+                // Singletons repeat; registers (validated equal to `bcast`)
+                // are indexed by the broadcast position.
+                let mut slots = self.fresh_slots(proc_id);
+                for (s, qs) in resolved.iter().enumerate() {
+                    let idx = if qs.len() == 1 { 0 } else { j };
+                    slots[s] = vec![qs[idx]];
+                }
                 if eff.power == 1.0 {
                     // No `inv`/`pow`: recurse, propagating controls. `ctrl`
                     // distributes over a sequence, so this is exact.
                     let mut child = Frame {
                         proc: proc_id,
                         regs,
-                        qubit_args,
-                        aliases: HashMap::new(),
+                        slots,
                         mods: eff.clone(),
                     };
                     self.exec_proc(&mut child)?;
@@ -652,8 +664,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     let mut child = Frame {
                         proc: proc_id,
                         regs,
-                        qubit_args,
-                        aliases: HashMap::new(),
+                        slots,
                         mods: GateModifiers::none(),
                     };
                     let prev = self.recording.take();
@@ -850,7 +861,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     fn array_ty(&self, frame: &Frame, dest: Reg) -> Result<ArrayTy> {
         match self.module.procedures[frame.proc.0 as usize].register_types[dest.0 as usize] {
             ValueTy::Array(aty) => Ok(aty),
-            _ => Err(VmErrorKind::Type("NewArray destination is not an array".into())),
+            _ => Err(VmErrorKind::Type(
+                "NewArray destination is not an array".into(),
+            )),
         }
     }
 
@@ -860,37 +873,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         let resolved = match op {
             BcOperand::Qubit(i) => vec![*i],
             BcOperand::HardwareQubit(i) => vec![*i],
-            BcOperand::QubitRegion(id) => self.region_indices(id.0),
-            BcOperand::QubitIndexed { region, index } => {
-                let idx = value_usize(&self.eval(frame, index)?)?;
-                self.region_indices(region.0)
-                    .get(idx)
-                    .copied()
-                    .map(|q| vec![q])
-                    .ok_or_else(|| VmErrorKind::Type(format!("qubit index {idx} out of range")))?
-            }
-            BcOperand::QubitParam { slot, index } => {
-                let bound = frame
-                    .qubit_args
-                    .get(*slot as usize)
-                    .ok_or_else(|| VmErrorKind::Unsupported("unbound qubit parameter".into()))?;
-                match index {
-                    None => bound.clone(),
-                    Some(ix) => {
-                        let i = value_usize(&self.eval(frame, ix)?)?;
-                        bound
-                            .get(i)
-                            .copied()
-                            .map(|q| vec![q])
-                            .ok_or_else(|| VmErrorKind::Type(format!("qubit index {i} out of range")))?
-                    }
-                }
-            }
-            BcOperand::QubitParamSlice { slot, positions } => {
-                let bound = frame
-                    .qubit_args
-                    .get(*slot as usize)
-                    .ok_or_else(|| VmErrorKind::Unsupported("unbound qubit parameter".into()))?;
+            BcOperand::Whole(source) => self.source_list(frame, source)?,
+            BcOperand::Select { source, positions } => {
+                let bound = self.source_list(frame, source)?;
                 positions
                     .iter()
                     .map(|&p| {
@@ -900,22 +885,14 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     })
                     .collect::<Result<Vec<_>>>()?
             }
-            BcOperand::QubitAlias { slot, index } => {
-                let bound = frame
-                    .aliases
-                    .get(slot)
-                    .ok_or_else(|| VmErrorKind::Unsupported("unbound qubit alias".into()))?;
-                match index {
-                    None => bound.clone(),
-                    Some(ix) => {
-                        let i = value_usize(&self.eval(frame, ix)?)?;
-                        bound
-                            .get(i)
-                            .copied()
-                            .map(|q| vec![q])
-                            .ok_or_else(|| VmErrorKind::Type(format!("qubit index {i} out of range")))?
-                    }
-                }
+            BcOperand::Index { source, index } => {
+                let bound = self.source_list(frame, source)?;
+                let i = value_usize(&self.eval(frame, index)?)?;
+                bound
+                    .get(i)
+                    .copied()
+                    .map(|q| vec![q])
+                    .ok_or_else(|| VmErrorKind::Type(format!("qubit index {i} out of range")))?
             }
             _ => return Err(VmErrorKind::Type("expected a qubit operand".into())),
         };
@@ -930,6 +907,19 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
         }
         Ok(resolved)
+    }
+
+    /// The global qubit indices of a [`QubitSource`]: a region of global
+    /// memory, or a frame-local slot (bound parameter or runtime alias).
+    fn source_list(&self, frame: &Frame, source: &QubitSource) -> Result<Vec<u32>> {
+        match source {
+            QubitSource::Region(id) => Ok(self.region_indices(id.0)),
+            QubitSource::Slot(s) => frame
+                .slots
+                .get(*s as usize)
+                .cloned()
+                .ok_or_else(|| VmErrorKind::Unsupported("unbound qubit slot".into())),
+        }
     }
 
     /// Resolve and flatten a list of qubit operands.
@@ -1004,6 +994,13 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             .map(|ty| zero_value(*ty))
             .collect()
     }
+
+    /// An empty qubit-slot vector sized to `proc`'s slot count. Parameter
+    /// slots are filled by the caller; alias slots are filled by
+    /// [`BcOp::AliasBind`] as the body runs.
+    fn fresh_slots(&self, proc: ProcId) -> Vec<Vec<u32>> {
+        vec![Vec::new(); self.module.procedures[proc.0 as usize].num_qubit_slots as usize]
+    }
 }
 
 // ── Free helpers ──────────────────────────────────────────────────────
@@ -1072,11 +1069,9 @@ fn is_qubit_operand(op: &BcOperand) -> bool {
         op,
         BcOperand::Qubit(_)
             | BcOperand::HardwareQubit(_)
-            | BcOperand::QubitRegion(_)
-            | BcOperand::QubitIndexed { .. }
-            | BcOperand::QubitParam { .. }
-            | BcOperand::QubitParamSlice { .. }
-            | BcOperand::QubitAlias { .. }
+            | BcOperand::Whole(_)
+            | BcOperand::Select { .. }
+            | BcOperand::Index { .. }
     )
 }
 

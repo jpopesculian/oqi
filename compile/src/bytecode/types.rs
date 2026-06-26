@@ -39,7 +39,7 @@ pub struct BcVersion {
 }
 
 impl BcVersion {
-    pub const CURRENT: BcVersion = BcVersion { major: 0, minor: 4 };
+    pub const CURRENT: BcVersion = BcVersion { major: 1, minor: 0 };
 }
 
 /// Global quantum memory: every named register is statically allocated
@@ -100,9 +100,14 @@ pub struct BcProcedure {
     /// parameters (top-level, box/cal/durationof bodies). The calling
     /// convention: a caller binds its positional classical arguments to
     /// these registers before entering the body. Qubit parameters are
-    /// addressed separately as positional [`BcOperand::QubitParam`]
-    /// slots, not registers, so they never appear here.
+    /// addressed separately as frame-local qubit slots
+    /// ([`QubitSource::Slot`]), not registers, so they never appear here.
     pub params: Vec<Reg>,
+    /// Size of this procedure's frame-local qubit-slot vector: the number
+    /// of qubit parameters plus the number of runtime aliases its body
+    /// binds. The VM pre-sizes the slot vector to this. Parameters occupy
+    /// `[0, n_qubit_params)`; aliases occupy the rest.
+    pub num_qubit_slots: u32,
     pub blocks: Vec<BcBlock>,
     pub entry: BlockId,
 }
@@ -137,6 +142,20 @@ pub struct BcInstr {
 
 // ── Operands ─────────────────────────────────────────────────────────
 
+/// The base an indexable qubit operand selects from: a region of global
+/// quantum memory, or a call/`AliasBind`-bound slot of the enclosing
+/// frame.
+#[derive(Clone, Serialize, Deserialize)]
+pub enum QubitSource {
+    /// A region of global quantum memory (declared register, resolved
+    /// alias, or static slice) — see [`QubitTable::regions`].
+    Region(QubitRegionId),
+    /// A frame-local qubit slot. Slots `[0, n_qubit_params)` are the
+    /// gate/subroutine's qubit parameters, bound positionally at call
+    /// time; the rest are runtime aliases bound by [`BcOp::AliasBind`].
+    Slot(u32),
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub enum BcOperand {
     /// Classical SSA register.
@@ -147,39 +166,23 @@ pub enum BcOperand {
     /// physical namespace, distinct from global quantum memory.
     HardwareQubit(u32),
     /// Statically resolved single qubit: an index into global quantum
-    /// memory.
+    /// memory. The hot path for ordinary single-qubit operands.
     Qubit(u32),
-    /// A whole region of global quantum memory (declared register,
-    /// resolved alias, or static slice).
-    QubitRegion(QubitRegionId),
-    /// Runtime-indexed register: the VM maps the logical `index`
-    /// through the region's ranges at execution time.
-    QubitIndexed {
-        region: QubitRegionId,
-        index: Box<BcOperand>,
-    },
-    /// Qubit parameter of the enclosing gate/subroutine body, bound at
-    /// call time. For gates the slot is the position in the declared
-    /// qubit list (after any `ctrl @` controls); for subroutines it is
-    /// the position in the full parameter list.
-    QubitParam {
-        slot: u32,
-        index: Option<Box<BcOperand>>,
-    },
-    /// A statically-resolved slice/selection of a qubit parameter: the
-    /// listed local positions into the bound qubit list, in order (e.g.
-    /// `scratch[0:1]` → `[0, 1]`). Used for ranges and discrete index sets
-    /// whose bounds are compile-time constants.
-    QubitParamSlice {
-        slot: u32,
+    /// The whole qubit list of a [`QubitSource`] (a region, a bound
+    /// parameter, or a runtime alias).
+    Whole(QubitSource),
+    /// A statically-resolved sub-selection of `source`'s qubit list: the
+    /// listed local positions, in order (e.g. `scratch[0:1]` → `[0, 1]`).
+    /// Used for ranges and discrete index sets with compile-time bounds.
+    Select {
+        source: QubitSource,
         positions: Vec<u32>,
     },
-    /// Body-local runtime alias, bound by [`BcOp::AliasBind`]. The VM
-    /// maps the logical `index` through the bound qubit list at run time;
-    /// `index: None` refers to the whole alias.
-    QubitAlias {
-        slot: u32,
-        index: Option<Box<BcOperand>>,
+    /// A runtime single-qubit index into `source`'s qubit list: the VM
+    /// evaluates `index` and maps it through the list at execution time.
+    Index {
+        source: QubitSource,
+        index: Box<BcOperand>,
     },
 }
 

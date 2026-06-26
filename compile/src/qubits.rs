@@ -60,6 +60,10 @@ pub struct QubitLayout {
     /// gate/subroutine symbol, in declaration order. Used by the
     /// bytecode emitter to record the calling convention.
     classical_params: HashMap<SymbolId, Vec<SymbolId>>,
+    /// Number of qubit parameters of each gate/subroutine. Qubit
+    /// parameters occupy frame-local slots `[0, count)`; runtime aliases
+    /// in the body are allocated slots after them.
+    qubit_param_count: HashMap<SymbolId, u32>,
 }
 
 /// Allocate every global qubit declaration into a fresh global memory
@@ -81,6 +85,7 @@ pub fn build_layout(program: &sir::Program) -> QubitLayout {
 
     let mut param_slots = HashMap::new();
     let mut classical_params = HashMap::new();
+    let mut qubit_param_count = HashMap::new();
     for gate in &program.gates {
         for (slot, q) in gate.qubits.iter().enumerate() {
             param_slots.insert(*q, slot as u32);
@@ -88,17 +93,23 @@ pub fn build_layout(program: &sir::Program) -> QubitLayout {
         // Every declared gate parameter is classical (gates take only
         // qubits and classical angle-like params).
         classical_params.insert(gate.symbol, gate.params.clone());
+        qubit_param_count.insert(gate.symbol, gate.qubits.len() as u32);
     }
     for sub in &program.subroutines {
         let mut classical = Vec::new();
-        for (slot, p) in sub.params.iter().enumerate() {
+        // Qubit params get dense slots `[0, n)` (classical params go to
+        // registers, not slots), so the layout matches gates.
+        let mut qslot = 0u32;
+        for p in &sub.params {
             if matches!(p.passing, ParamPassing::QubitRef) {
-                param_slots.insert(p.symbol, slot as u32);
+                param_slots.insert(p.symbol, qslot);
+                qslot += 1;
             } else {
                 classical.push(p.symbol);
             }
         }
         classical_params.insert(sub.symbol, classical);
+        qubit_param_count.insert(sub.symbol, qslot);
     }
 
     QubitLayout {
@@ -108,6 +119,7 @@ pub fn build_layout(program: &sir::Program) -> QubitLayout {
         dynamic_aliases: HashMap::new(),
         param_slots,
         classical_params,
+        qubit_param_count,
     }
 }
 
@@ -125,6 +137,13 @@ impl QubitLayout {
     /// Positional slot of a gate/subroutine qubit parameter.
     pub fn param_slot(&self, sym: SymbolId) -> Option<u32> {
         self.param_slots.get(&sym).copied()
+    }
+
+    /// Number of qubit parameters of a gate/subroutine symbol (0 for
+    /// anything else). Runtime aliases in its body are slotted after
+    /// these.
+    pub fn qubit_param_count(&self, sym: SymbolId) -> u32 {
+        self.qubit_param_count.get(&sym).copied().unwrap_or(0)
     }
 
     /// Classical parameters of a gate/subroutine, in declaration order.
@@ -565,9 +584,13 @@ mod tests {
         let gate = &p.gates[0];
         assert_eq!(l.param_slot(gate.qubits[0]), Some(0));
         assert_eq!(l.param_slot(gate.qubits[1]), Some(1));
+        assert_eq!(l.qubit_param_count(gate.symbol), 2);
         let sub = &p.subroutines[0];
+        // Qubit params get dense slots: classical `n` is skipped, so the
+        // qubit param `d` is slot 0.
         assert_eq!(l.param_slot(sub.params[0].symbol), None);
-        assert_eq!(l.param_slot(sub.params[1].symbol), Some(1));
+        assert_eq!(l.param_slot(sub.params[1].symbol), Some(0));
+        assert_eq!(l.qubit_param_count(sub.symbol), 1);
     }
 
     #[test]

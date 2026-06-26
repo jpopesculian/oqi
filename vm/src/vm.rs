@@ -101,6 +101,9 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     externs: E,
     gate_procs: HashMap<SymbolId, ProcId>,
     sub_procs: HashMap<SymbolId, ProcId>,
+    /// Per-procedure block-id → position-in-`blocks` lookup (`u32::MAX` =
+    /// absent), built once in [`Vm::new`] to avoid a linear scan per jump.
+    block_pos: Vec<Vec<u32>>,
     measurements: Vec<(u32, bool)>,
     /// When `Some`, leaf `U`/`gphase` calls are appended here instead of
     /// being applied to the backend (gate-body flattening for modifiers).
@@ -125,12 +128,28 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 _ => {}
             }
         }
+        // Per-procedure block-id → position lookup, so the block-walking
+        // loop indexes directly instead of scanning `blocks` on every
+        // jump. `u32::MAX` marks an absent id.
+        let block_pos: Vec<Vec<u32>> = module
+            .procedures
+            .iter()
+            .map(|proc| {
+                let max_id = proc.blocks.iter().map(|b| b.id.0).max().unwrap_or(0);
+                let mut pos = vec![u32::MAX; max_id as usize + 1];
+                for (i, b) in proc.blocks.iter().enumerate() {
+                    pos[b.id.0 as usize] = i as u32;
+                }
+                pos
+            })
+            .collect();
         Vm {
             module,
             backend,
             externs,
             gate_procs,
             sub_procs,
+            block_pos,
             measurements: Vec::new(),
             recording: None,
             current_span: Span::default(),
@@ -215,13 +234,17 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         let proc = &module.procedures[frame.proc.0 as usize];
         let mut current = proc.entry;
         loop {
-            let block = proc
-                .blocks
-                .iter()
-                .find(|b| b.id == current)
-                .ok_or_else(|| {
-                    VmErrorKind::Unsupported(format!("missing block bb{}", current.0))
-                })?;
+            let pos = self.block_pos[frame.proc.0 as usize]
+                .get(current.0 as usize)
+                .copied()
+                .unwrap_or(u32::MAX);
+            if pos == u32::MAX {
+                return Err(VmErrorKind::Unsupported(format!(
+                    "missing block bb{}",
+                    current.0
+                )));
+            }
+            let block = &proc.blocks[pos as usize];
             for instr in &block.instrs {
                 self.current_span = instr.span;
                 self.exec_op(&instr.op, frame)?;

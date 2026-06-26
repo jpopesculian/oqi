@@ -11,7 +11,7 @@ use oqi_compile::resolve::DefaultIncludeResolver;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
 use oqi_compile::{bytecode, cfg, qubits, ssa};
 use oqi_format::Config;
-use oqi_vm::{NoExterns, QuantumBackend, StateVectorSim, Vm};
+use oqi_vm::{NoExterns, QuantumBackend, SimdSim, StateVectorSim, Vm};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 /// Amplitude precision for the simulator backend.
@@ -30,6 +30,10 @@ enum BackendKind {
     Scalar,
     /// Multi-threaded (rayon) CPU state-vector simulator.
     Rayon,
+    /// SIMD-vectorized (single-threaded) CPU state-vector simulator.
+    Simd,
+    /// SIMD-vectorized, multi-threaded (rayon) CPU state-vector simulator.
+    RayonSimd,
 }
 
 #[derive(Parser)]
@@ -217,12 +221,19 @@ fn build_backend(
     precision: Precision,
     num_qubits: u32,
 ) -> Result<Box<dyn QuantumBackend>, oqi_vm::VmError> {
-    let par = matches!(backend, BackendKind::Rayon);
-    let sim: Box<dyn QuantumBackend> = match precision {
-        Precision::F64 => Box::new(
+    let simd = matches!(backend, BackendKind::Simd | BackendKind::RayonSimd);
+    let par = matches!(backend, BackendKind::Rayon | BackendKind::RayonSimd);
+    let sim: Box<dyn QuantumBackend> = match (simd, precision) {
+        (true, Precision::F64) => {
+            Box::new(SimdSim::<f64>::try_zeroed(num_qubits, DEFAULT_SEED)?.with_parallel(par))
+        }
+        (true, Precision::F32) => {
+            Box::new(SimdSim::<f32>::try_zeroed(num_qubits, DEFAULT_SEED)?.with_parallel(par))
+        }
+        (false, Precision::F64) => Box::new(
             StateVectorSim::<f64>::try_zeroed(num_qubits, DEFAULT_SEED)?.with_parallel(par),
         ),
-        Precision::F32 => Box::new(
+        (false, Precision::F32) => Box::new(
             StateVectorSim::<f32>::try_zeroed(num_qubits, DEFAULT_SEED)?.with_parallel(par),
         ),
     };

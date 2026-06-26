@@ -8,13 +8,13 @@ use crate::backend::{GateModifiers, QuantumBackend};
 use crate::error::{VmError, VmErrorKind};
 
 /// A small, seedable xorshift64* PRNG. Avoids a `rand` dependency and
-/// keeps runs reproducible.
-struct Rng {
+/// keeps runs reproducible. Shared by the CPU backends.
+pub(crate) struct Rng {
     state: u64,
 }
 
 impl Rng {
-    fn new(seed: u64) -> Self {
+    pub(crate) fn new(seed: u64) -> Self {
         // xorshift requires a non-zero state.
         Rng {
             state: if seed == 0 { 0x9E3779B97F4A7C15 } else { seed },
@@ -31,7 +31,7 @@ impl Rng {
     }
 
     /// Uniform in [0, 1).
-    fn next_f64(&mut self) -> f64 {
+    pub(crate) fn next_f64(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 }
@@ -237,11 +237,14 @@ impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
     }
 
     fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
+        // Resolve the tracked global phase so the snapshot is physically
+        // faithful and matches other backends' conventions.
+        let phase = Complex::from_polar(1.0, self.state.global_phase().to_f64().unwrap());
         Some(
             self.state
                 .state()
                 .iter()
-                .map(|a| Complex::new(a.re.to_f64().unwrap(), a.im.to_f64().unwrap()))
+                .map(|a| Complex::new(a.re.to_f64().unwrap(), a.im.to_f64().unwrap()) * phase)
                 .collect(),
         )
     }

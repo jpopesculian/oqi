@@ -10,6 +10,7 @@
 //! Implementations: [`crate::sim::StateVectorSim`] (CPU simulator). A
 //! GPU simulator or hardware provider would implement the same trait.
 
+use num_complex::Complex;
 use oqi_classical::Duration;
 
 /// Modifiers on a single backend primitive call: the controls in scope
@@ -69,4 +70,45 @@ pub trait QuantumBackend {
 
     /// An idle delay on `qubits`. No effect on state in the MVP.
     fn delay(&mut self, _qubits: &[u32], _duration: Duration) {}
+
+    /// Snapshot the full amplitude vector as `f64` (global phase
+    /// unresolved), or `None` for backends without an addressable state
+    /// vector (e.g. hardware). Used for `--state` printing and tests; this
+    /// keeps the trait object-safe regardless of a backend's internal
+    /// amplitude precision.
+    fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
+        None
+    }
+}
+
+/// Forward a boxed backend so the VM can be driven by a runtime-selected
+/// backend (`Box<dyn QuantumBackend>`) without monomorphizing per choice.
+impl QuantumBackend for Box<dyn QuantumBackend> {
+    fn u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, modifiers: &GateModifiers) {
+        (**self).u(target, theta, phi, lambda, modifiers);
+    }
+
+    fn gphase(&mut self, gamma: f64, modifiers: &GateModifiers) {
+        (**self).gphase(gamma, modifiers);
+    }
+
+    fn measure(&mut self, qubit: u32) -> bool {
+        (**self).measure(qubit)
+    }
+
+    fn reset(&mut self, qubit: u32) {
+        (**self).reset(qubit);
+    }
+
+    fn barrier(&mut self, qubits: &[u32]) {
+        (**self).barrier(qubits);
+    }
+
+    fn delay(&mut self, qubits: &[u32], duration: Duration) {
+        (**self).delay(qubits, duration);
+    }
+
+    fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
+        (**self).amplitudes()
+    }
 }

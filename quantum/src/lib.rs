@@ -340,6 +340,57 @@ impl<F: Float> StateVector<F> {
     }
 }
 
+#[cfg(feature = "parallel")]
+impl<F: Float + Send + Sync> StateVector<F> {
+    /// Rayon-parallel equivalent of [`apply`](Self::apply).
+    ///
+    /// The amplitudes split into independent contiguous blocks of length
+    /// `2·target_bit`: within a block, the first half (target bit clear)
+    /// pairs element-wise with the second half (target bit set). Blocks
+    /// have no cross-dependencies, so they run in parallel. Control masks
+    /// are tested against the global index of each clear-target element.
+    pub fn par_apply(&mut self, gate: &Gate<F>, target: usize) {
+        use rayon::prelude::*;
+
+        assert!(target < self.size, "target qubit out of range");
+        assert!(
+            !gate.controls.contains(&target) && !gate.neg_controls.contains(&target),
+            "target qubit overlaps a control",
+        );
+        for &c in &gate.controls {
+            assert!(c < self.size, "control qubit out of range");
+        }
+        for &c in &gate.neg_controls {
+            assert!(c < self.size, "neg_control qubit out of range");
+        }
+
+        let m = gate.matrix();
+        let target_bit = 1usize << target;
+        let controls = &gate.controls;
+        let neg_controls = &gate.neg_controls;
+
+        self.state
+            .par_chunks_mut(2 * target_bit)
+            .enumerate()
+            .for_each(|(block, chunk)| {
+                let base = block * 2 * target_bit;
+                for k in 0..target_bit {
+                    let i = base + k;
+                    if controls.iter().any(|&c| i & (1usize << c) == 0) {
+                        continue;
+                    }
+                    if neg_controls.iter().any(|&c| i & (1usize << c) != 0) {
+                        continue;
+                    }
+                    let a = chunk[k];
+                    let b = chunk[target_bit + k];
+                    chunk[k] = m[0][0] * a + m[0][1] * b;
+                    chunk[target_bit + k] = m[1][0] * a + m[1][1] * b;
+                }
+            });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,5 +641,39 @@ mod tests {
         sv.gphase(0.3);
         sv.apply_unitary(&pauli_x(), 0);
         assert!((sv.global_phase() - 0.3).abs() < TOL);
+    }
+
+    /// Build a non-trivial 4-qubit state by spreading amplitudes with
+    /// Hadamards, for use as a parallel/serial comparison fixture.
+    #[cfg(feature = "parallel")]
+    fn spread_state() -> StateVector<f64> {
+        let mut sv: StateVector<f64> = StateVector::zero(4);
+        for q in 0..4 {
+            sv.apply_unitary(&hadamard(), q);
+        }
+        sv
+    }
+
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn par_apply_matches_apply_for_each_target() {
+        // A controlled gate on every (control, target) pair must give the
+        // same state whether applied serially or in parallel.
+        for target in 0..4 {
+            for control in 0..4 {
+                if control == target {
+                    continue;
+                }
+                let gate = Gate::new(hadamard()).ctrl(control);
+                let mut serial = spread_state();
+                let mut parallel = spread_state();
+                serial.apply(&gate, target);
+                parallel.par_apply(&gate, target);
+                assert!(
+                    states_close(serial.state(), parallel.state()),
+                    "mismatch for control {control}, target {target}",
+                );
+            }
+        }
     }
 }

@@ -378,7 +378,10 @@ fn mismatched_register_broadcast_is_rejected() {
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
     match vm.run() {
-        Err(VmError { kind: VmErrorKind::BroadcastMismatch(lengths), .. }) => assert_eq!(lengths, vec![2, 3]),
+        Err(VmError {
+            kind: VmErrorKind::BroadcastMismatch(lengths),
+            ..
+        }) => assert_eq!(lengths, vec![2, 3]),
         other => panic!("expected BroadcastMismatch, got {other:?}"),
     }
 }
@@ -509,7 +512,10 @@ fn fractional_pow_of_multi_qubit_composite_is_rejected() {
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
     match vm.run() {
-        Err(VmError { kind: VmErrorKind::Unsupported(_), .. }) => {}
+        Err(VmError {
+            kind: VmErrorKind::Unsupported(_),
+            ..
+        }) => {}
         other => panic!("expected Unsupported, got {other:?}"),
     }
 }
@@ -931,7 +937,10 @@ fn missing_input_is_rejected() {
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
     match vm.run_with_inputs(HashMap::new()) {
-        Err(VmError { kind: VmErrorKind::MissingInput(_), .. }) => {}
+        Err(VmError {
+            kind: VmErrorKind::MissingInput(_),
+            ..
+        }) => {}
         other => panic!("expected MissingInput, got {other:?}"),
     }
 }
@@ -957,7 +966,10 @@ fn value_for_non_input_symbol_is_rejected() {
     let mut vm = Vm::new(&module, sim, NoExterns);
     let inputs = HashMap::from([(n, Value::int(1, iw(32))), (q, Value::int(0, iw(32)))]);
     match vm.run_with_inputs(inputs) {
-        Err(VmError { kind: VmErrorKind::UnknownInput(_), .. }) => {}
+        Err(VmError {
+            kind: VmErrorKind::UnknownInput(_),
+            ..
+        }) => {}
         other => panic!("expected UnknownInput, got {other:?}"),
     }
 }
@@ -979,4 +991,3 @@ fn physical_qubits_size_the_register() {
     );
     assert_eq!(m, vec![(0, true), (1, false), (2, true)]);
 }
-

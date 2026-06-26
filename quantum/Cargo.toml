@@ -6,3 +6,8 @@ edition = "2024"
 [dependencies]
 num-complex = "0.4"
 num-traits = "0.2"
+rayon = { version = "1", optional = true }
+
+[features]
+default = ["parallel"]
+parallel = ["dep:rayon"]

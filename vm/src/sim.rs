@@ -1,6 +1,7 @@
 //! A CPU state-vector simulator backend.
 
 use num_complex::Complex;
+use num_traits::Float;
 use oqi_quantum::{Gate, StateVector, Unitary};
 
 use crate::backend::{GateModifiers, QuantumBackend};
@@ -35,14 +36,94 @@ impl Rng {
     }
 }
 
-/// State-vector simulator over `f64` amplitudes.
-pub struct StateVectorSim {
-    state: StateVector<f64>,
+/// State-vector simulator over `Complex<F>` amplitudes (`F` = `f64` by
+/// default; instantiate `StateVectorSim<f32>` for single precision).
+///
+/// Gate angles always arrive as `f64` and are cast to `F` internally;
+/// measurement probabilities are accumulated in `f64` regardless of `F`
+/// for numerical stability.
+pub struct StateVectorSim<F = f64> {
+    state: StateVector<F>,
     rng: Rng,
+    /// Apply gates with the rayon-parallel kernel (no effect when the
+    /// `parallel` feature is disabled).
+    parallel: bool,
 }
 
-impl StateVectorSim {
-    /// A fresh simulator with `num_qubits` qubits in |0…0⟩, default seed.
+impl<F: Float + Send + Sync> StateVectorSim<F> {
+    /// A fresh simulator with an explicit seed, or a
+    /// [`VmErrorKind::TooManyQubits`] error if the `2^num_qubits`-amplitude
+    /// state vector can't be allocated (it uses a fallible allocation, so an
+    /// oversized circuit fails gracefully instead of aborting).
+    pub fn try_zeroed(num_qubits: u32, seed: u64) -> std::result::Result<Self, VmError> {
+        let state = StateVector::try_zero(num_qubits as usize).ok_or_else(|| {
+            VmError::new(VmErrorKind::TooManyQubits {
+                requested: num_qubits,
+            })
+        })?;
+        Ok(StateVectorSim {
+            state,
+            rng: Rng::new(seed),
+            parallel: false,
+        })
+    }
+
+    /// Enable (or disable) the rayon-parallel gate kernel.
+    pub fn with_parallel(mut self, parallel: bool) -> Self {
+        self.parallel = parallel;
+        self
+    }
+
+    /// The current amplitudes (global phase unresolved).
+    pub fn state(&self) -> &[Complex<F>] {
+        self.state.state()
+    }
+
+    /// Apply a gate, dispatching to the parallel kernel when enabled.
+    fn apply_gate(&mut self, gate: &Gate<F>, target: usize) {
+        if self.parallel {
+            #[cfg(feature = "parallel")]
+            {
+                self.state.par_apply(gate, target);
+                return;
+            }
+        }
+        self.state.apply(gate, target);
+    }
+
+    /// Cast an `f64` gate angle to the amplitude precision `F`.
+    fn cast(x: f64) -> F {
+        F::from(x).expect("gate angle representable in amplitude precision")
+    }
+
+    /// Build a [`Gate`] from a unitary plus the controls/power in `m`.
+    fn gate(&self, u: Unitary<F>, m: &GateModifiers) -> Gate<F> {
+        let mut g = Gate::new(u);
+        for &c in &m.controls {
+            g = g.ctrl(c as usize);
+        }
+        for &c in &m.neg_controls {
+            g = g.neg_ctrl(c as usize);
+        }
+        if m.power != 1.0 {
+            g = g.pow(Self::cast(m.power));
+        }
+        g
+    }
+
+    fn apply_x(&mut self, target: u32) {
+        // U(π, 0, π) is exactly Pauli-X (no spurious phase).
+        let x = Unitary::new(
+            Self::cast(std::f64::consts::PI),
+            F::zero(),
+            Self::cast(std::f64::consts::PI),
+        );
+        self.apply_gate(&Gate::new(x), target as usize);
+    }
+}
+
+impl StateVectorSim<f64> {
+    /// A fresh `f64` simulator with `num_qubits` qubits in |0…0⟩, default seed.
     ///
     /// Panics if the state vector can't be allocated; use
     /// [`try_new`](Self::try_new) to handle that gracefully.
@@ -63,58 +144,23 @@ impl StateVectorSim {
         Self::try_with_seed(num_qubits, 0x2545F4914F6CDD1D)
     }
 
-    /// A fresh simulator with an explicit seed, or a
-    /// [`VmErrorKind::TooManyQubits`] error if the `2^num_qubits`-amplitude
-    /// state vector can't be allocated (it uses a fallible allocation, so an
-    /// oversized circuit fails gracefully instead of aborting).
+    /// A fresh `f64` simulator with an explicit seed, or a
+    /// [`VmErrorKind::TooManyQubits`] error if it can't be allocated.
     pub fn try_with_seed(num_qubits: u32, seed: u64) -> std::result::Result<Self, VmError> {
-        let state = StateVector::try_zero(num_qubits as usize).ok_or_else(|| {
-            VmError::new(VmErrorKind::TooManyQubits {
-                requested: num_qubits,
-            })
-        })?;
-        Ok(StateVectorSim {
-            state,
-            rng: Rng::new(seed),
-        })
-    }
-
-    /// The current amplitudes (global phase unresolved).
-    pub fn state(&self) -> &[Complex<f64>] {
-        self.state.state()
-    }
-
-    /// Build a [`Gate`] from a unitary plus the controls/power in `m`.
-    fn gate(&self, u: Unitary<f64>, m: &GateModifiers) -> Gate<f64> {
-        let mut g = Gate::new(u);
-        for &c in &m.controls {
-            g = g.ctrl(c as usize);
-        }
-        for &c in &m.neg_controls {
-            g = g.neg_ctrl(c as usize);
-        }
-        if m.power != 1.0 {
-            g = g.pow(m.power);
-        }
-        g
-    }
-
-    fn apply_x(&mut self, target: u32) {
-        // U(π, 0, π) is exactly Pauli-X (no spurious phase).
-        let x = Unitary::new(std::f64::consts::PI, 0.0, std::f64::consts::PI);
-        self.state.apply(&Gate::new(x), target as usize);
+        Self::try_zeroed(num_qubits, seed)
     }
 }
 
-impl QuantumBackend for StateVectorSim {
+impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
     fn u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
-        let g = self.gate(Unitary::new(theta, phi, lambda), m);
-        self.state.apply(&g, target as usize);
+        let u = Unitary::new(Self::cast(theta), Self::cast(phi), Self::cast(lambda));
+        let g = self.gate(u, m);
+        self.apply_gate(&g, target as usize);
     }
 
     fn gphase(&mut self, gamma: f64, m: &GateModifiers) {
         // gphase scales linearly with power: gphase(γ)^k = gphase(kγ).
-        let g = gamma * m.power;
+        let g = Self::cast(gamma * m.power);
 
         if m.controls.is_empty() && m.neg_controls.is_empty() {
             self.state.gphase(g);
@@ -133,7 +179,7 @@ impl QuantumBackend for StateVectorSim {
             None => (neg_controls.pop().expect("at least one control"), true),
         };
 
-        let mut gate = Gate::new(Unitary::new(0.0, 0.0, g));
+        let mut gate = Gate::new(Unitary::new(F::zero(), F::zero(), g));
         for c in controls {
             gate = gate.ctrl(c as usize);
         }
@@ -143,10 +189,10 @@ impl QuantumBackend for StateVectorSim {
 
         if neg_target {
             self.apply_x(target);
-            self.state.apply(&gate, target as usize);
+            self.apply_gate(&gate, target as usize);
             self.apply_x(target);
         } else {
-            self.state.apply(&gate, target as usize);
+            self.apply_gate(&gate, target as usize);
         }
     }
 
@@ -155,11 +201,12 @@ impl QuantumBackend for StateVectorSim {
         let amps = self.state.state();
 
         // P(outcome = 1) = Σ |amp_i|² over states with this bit set.
+        // Accumulated in f64 even for f32 amplitudes, for stability.
         let p_one: f64 = amps
             .iter()
             .enumerate()
             .filter(|(i, _)| i & bit != 0)
-            .map(|(_, a)| a.norm_sqr())
+            .map(|(_, a)| a.norm_sqr().to_f64().unwrap())
             .sum();
 
         let outcome = self.rng.next_f64() < p_one;
@@ -167,16 +214,17 @@ impl QuantumBackend for StateVectorSim {
         // Collapse: zero the non-matching half and renormalize.
         let norm = if outcome { p_one } else { 1.0 - p_one };
         let scale = if norm > 0.0 {
-            1.0 / norm.sqrt()
+            Self::cast(1.0 / norm.sqrt())
         } else {
             // Degenerate (numerically zero) outcome: leave as-is.
-            0.0
+            F::zero()
         };
+        let zero = Complex::new(F::zero(), F::zero());
         for (i, a) in self.state.state_mut().iter_mut().enumerate() {
             if (i & bit != 0) == outcome {
-                *a *= scale;
+                *a = *a * scale;
             } else {
-                *a = Complex::new(0.0, 0.0);
+                *a = zero;
             }
         }
         outcome
@@ -186,5 +234,15 @@ impl QuantumBackend for StateVectorSim {
         if self.measure(qubit) {
             self.apply_x(qubit);
         }
+    }
+
+    fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
+        Some(
+            self.state
+                .state()
+                .iter()
+                .map(|a| Complex::new(a.re.to_f64().unwrap(), a.im.to_f64().unwrap()))
+                .collect(),
+        )
     }
 }

@@ -486,6 +486,7 @@ version = "0.1.0"
 dependencies = [
  "num-complex",
  "num-traits",
+ "rayon",
 ]
 
 [[package]]
@@ -493,6 +494,7 @@ name = "oqi-vm"
 version = "0.1.0"
 dependencies = [
  "num-complex",
+ "num-traits",
  "oqi-classical",
  "oqi-compile",
  "oqi-diagnostics",

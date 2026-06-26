@@ -53,7 +53,9 @@ impl Diagnostic for VmError {
                 vec!["supply it with `--input NAME=VALUE`".into()]
             }
             VmErrorKind::UnknownExtern(name) => {
-                vec![format!("no implementation is registered for extern `{name}`")]
+                vec![format!(
+                    "no implementation is registered for extern `{name}`"
+                )]
             }
             _ => Vec::new(),
         }

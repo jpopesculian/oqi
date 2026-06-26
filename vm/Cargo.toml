@@ -10,3 +10,8 @@ oqi-quantum = { path = "../quantum" }
 oqi-lex = { path = "../lex" }
 oqi-diagnostics = { path = "../diagnostics" }
 num-complex = "0.4"
+num-traits = "0.2"
+
+[features]
+default = ["parallel"]
+parallel = ["oqi-quantum/parallel"]

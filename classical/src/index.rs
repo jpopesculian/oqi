@@ -1664,7 +1664,10 @@ mod tests {
             Primitive::Angle(turns::Angle(0)),
             PrimitiveTy::Angle(iw(4)),
         ));
-        let one_bit = Value::Scalar(Scalar::new_unchecked(Primitive::bit(true), PrimitiveTy::Bit));
+        let one_bit = Value::Scalar(Scalar::new_unchecked(
+            Primitive::bit(true),
+            PrimitiveTy::Bit,
+        ));
         v.set(&[Index::Item(0)], one_bit).unwrap();
         match &v {
             Value::Scalar(s) => match s.value() {

@@ -180,7 +180,13 @@ fn has_location(span: Span) -> bool {
     span.start != 0 || span.end != 0
 }
 
-fn render(diag: &dyn Diagnostic, root_path: &Path, root_source: &str, color: bool, w: &mut impl Write) {
+fn render(
+    diag: &dyn Diagnostic,
+    root_path: &Path,
+    root_source: &str,
+    color: bool,
+    w: &mut impl Write,
+) {
     let diagnostic_path = diag.path().unwrap_or(root_path);
     let source: Cow<str> = if diagnostic_path != root_path {
         match std::fs::read_to_string(diagnostic_path) {
@@ -207,7 +213,9 @@ fn render(diag: &dyn Diagnostic, root_path: &Path, root_source: &str, color: boo
         return;
     };
 
-    let (line, column) = primary.span.doc_position(source.as_ref(), DIAGNOSTIC_TAB_SIZE);
+    let (line, column) = primary
+        .span
+        .doc_position(source.as_ref(), DIAGNOSTIC_TAB_SIZE);
     let filename = diagnostic_path.display().to_string();
     let headline = format!("{filename}:{line}:{column}: {}", diag.message());
 
@@ -217,8 +225,9 @@ fn render(diag: &dyn Diagnostic, root_path: &Path, root_source: &str, color: boo
         .with_message(headline);
 
     for label in &labels {
-        report = report
-            .with_label(Label::new((&filename, Range::from(label.span))).with_message(&label.message));
+        report = report.with_label(
+            Label::new((&filename, Range::from(label.span))).with_message(&label.message),
+        );
     }
 
     let notes = diag.notes();
@@ -289,8 +298,14 @@ mod tests {
         let source = "x;\n      x;\n";
         let out = render_to_string(&Fake, Path::new("test.qasm"), source);
         assert!(out.contains("C0002"), "missing code:\n{out}");
-        assert!(out.contains("duplicate definition"), "missing primary label:\n{out}");
-        assert!(out.contains("first defined here"), "missing secondary label:\n{out}");
+        assert!(
+            out.contains("duplicate definition"),
+            "missing primary label:\n{out}"
+        );
+        assert!(
+            out.contains("first defined here"),
+            "missing secondary label:\n{out}"
+        );
         assert!(
             out.contains("a name may only be defined once per scope"),
             "missing note:\n{out}"

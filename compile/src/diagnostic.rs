@@ -39,9 +39,7 @@ impl Diagnostic for CompileError {
             ErrorKind::UndefinedName(_) => "not found in this scope",
             ErrorKind::DuplicateDefinition { .. } => "redefined here",
             ErrorKind::TypeMismatch { .. } => "type mismatch",
-            ErrorKind::NonConstantDesignator | ErrorKind::NonConstantExpression => {
-                "not a constant"
-            }
+            ErrorKind::NonConstantDesignator | ErrorKind::NonConstantExpression => "not a constant",
             ErrorKind::InvalidWidth(_) => "invalid width",
             ErrorKind::IncludeNotFound(_) => "include not found",
             ErrorKind::IncludeCycle(_) => "include cycle",

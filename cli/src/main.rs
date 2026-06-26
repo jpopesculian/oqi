@@ -4,15 +4,33 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use oqi_compile::classical::{PrimitiveTy, Value, ValueTy};
 use oqi_compile::error::CompileError;
 use oqi_compile::resolve::DefaultIncludeResolver;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
 use oqi_compile::{bytecode, cfg, qubits, ssa};
 use oqi_format::Config;
-use oqi_vm::{NoExterns, StateVectorSim, Vm};
+use oqi_vm::{NoExterns, QuantumBackend, StateVectorSim, Vm};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+
+/// Amplitude precision for the simulator backend.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum Precision {
+    /// Double precision (default).
+    F64,
+    /// Single precision (half the memory, often faster).
+    F32,
+}
+
+/// Which quantum execution backend to run on.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BackendKind {
+    /// Single-threaded scalar CPU state-vector simulator.
+    Scalar,
+    /// Multi-threaded (rayon) CPU state-vector simulator.
+    Rayon,
+}
 
 #[derive(Parser)]
 #[command(name = "oqi")]
@@ -42,6 +60,14 @@ enum Command {
         #[arg(long)]
         state: bool,
 
+        /// Quantum execution backend
+        #[arg(long, value_enum, default_value_t = BackendKind::Scalar)]
+        backend: BackendKind,
+
+        /// Amplitude precision
+        #[arg(long, value_enum, default_value_t = Precision::F64)]
+        precision: Precision,
+
         /// Supply a value for a declared input (repeatable)
         #[arg(long = "input", value_name = "NAME=VALUE")]
         input: Vec<String>,
@@ -67,7 +93,13 @@ fn main() -> ExitCode {
 
     match cli.command {
         Command::Compile { path, dump } => compile(&path, dump),
-        Command::Run { path, state, input } => run(&path, state, &input),
+        Command::Run {
+            path,
+            state,
+            backend,
+            precision,
+            input,
+        } => run(&path, state, backend, precision, &input),
         Command::Fmt {
             compact,
             stdout,
@@ -101,7 +133,13 @@ fn compile(path: &Path, dump: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(path: &Path, show_state: bool, input_specs: &[String]) -> ExitCode {
+fn run(
+    path: &Path,
+    show_state: bool,
+    backend: BackendKind,
+    precision: Precision,
+    input_specs: &[String],
+) -> ExitCode {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -135,7 +173,7 @@ fn run(path: &Path, show_state: bool, input_specs: &[String]) -> ExitCode {
         }
     };
 
-    let sim = match StateVectorSim::try_new(module.qubits.num_qubits) {
+    let sim = match build_backend(backend, precision, module.qubits.num_qubits) {
         Ok(s) => s,
         Err(e) => {
             oqi_diagnostics::emit(&e, path, &source);
@@ -153,9 +191,11 @@ fn run(path: &Path, show_state: bool, input_specs: &[String]) -> ExitCode {
             }
             if show_state {
                 let width = module.qubits.num_qubits as usize;
-                for (i, amp) in vm.backend().state().iter().enumerate() {
-                    if amp.norm() > 1e-12 {
-                        println!("|{i:0width$b}> = {amp}");
+                if let Some(amps) = vm.backend().amplitudes() {
+                    for (i, amp) in amps.iter().enumerate() {
+                        if amp.norm() > 1e-12 {
+                            println!("|{i:0width$b}> = {amp}");
+                        }
                     }
                 }
             }
@@ -166,6 +206,27 @@ fn run(path: &Path, show_state: bool, input_specs: &[String]) -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Default RNG seed (matches `StateVectorSim::new`).
+const DEFAULT_SEED: u64 = 0x2545F4914F6CDD1D;
+
+/// Construct the runtime-selected backend as a boxed trait object.
+fn build_backend(
+    backend: BackendKind,
+    precision: Precision,
+    num_qubits: u32,
+) -> Result<Box<dyn QuantumBackend>, oqi_vm::VmError> {
+    let par = matches!(backend, BackendKind::Rayon);
+    let sim: Box<dyn QuantumBackend> = match precision {
+        Precision::F64 => Box::new(
+            StateVectorSim::<f64>::try_zeroed(num_qubits, DEFAULT_SEED)?.with_parallel(par),
+        ),
+        Precision::F32 => Box::new(
+            StateVectorSim::<f32>::try_zeroed(num_qubits, DEFAULT_SEED)?.with_parallel(par),
+        ),
+    };
+    Ok(sim)
 }
 
 /// Parse `--input NAME=VALUE` specs into a symbol-keyed value map,

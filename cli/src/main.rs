@@ -11,7 +11,7 @@ use oqi_compile::resolve::DefaultIncludeResolver;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
 use oqi_compile::{bytecode, cfg, qubits, ssa};
 use oqi_format::Config;
-use oqi_vm::{NoExterns, QuantumBackend, SimdSim, StateVectorSim, Vm};
+use oqi_vm::{AutoSim, NoExterns, QuantumBackend, SimdSim, StateVectorSim, Vm};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 /// Amplitude precision for the simulator backend.
@@ -37,6 +37,9 @@ enum BackendKind {
     /// WebGPU (wgpu) state-vector simulator (single precision; needs the
     /// `gpu` build feature and a working GPU adapter).
     Gpu,
+    /// Auto-routing: stabilizer (Clifford) tableau, falling back to the
+    /// state-vector sim on the first non-Clifford gate.
+    Auto,
 }
 
 #[derive(Parser)]
@@ -234,6 +237,11 @@ fn build_backend(
     precision: Precision,
     num_qubits: u32,
 ) -> Result<Box<dyn QuantumBackend>, oqi_vm::VmError> {
+    // Auto-routing is exact (stabilizer tableau); precision is irrelevant
+    // until it falls back, which uses f64.
+    if matches!(backend, BackendKind::Auto) {
+        return Ok(Box::new(AutoSim::new(num_qubits)));
+    }
     let simd = matches!(backend, BackendKind::Simd | BackendKind::RayonSimd);
     let par = matches!(backend, BackendKind::Rayon | BackendKind::RayonSimd);
     let sim: Box<dyn QuantumBackend> = match (simd, precision) {

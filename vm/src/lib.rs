@@ -10,6 +10,7 @@
 //!   decomposes the standard library to these (or to `extern` calls).
 //! - an [`ExternProvider`] — host implementations of `extern` functions.
 
+pub mod auto;
 pub mod backend;
 pub mod diagnostic;
 pub mod error;
@@ -18,8 +19,10 @@ pub mod extern_fns;
 pub mod gpu;
 pub mod sim;
 pub mod sim_simd;
+pub(crate) mod stabilizer;
 pub mod vm;
 
+pub use auto::AutoSim;
 pub use backend::{GateModifiers, QuantumBackend};
 pub use error::{Result, VmError, VmErrorKind};
 pub use extern_fns::{ExternProvider, FnRegistry, NoExterns};

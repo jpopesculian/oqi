@@ -8,7 +8,7 @@ use oqi_compile::lower::compile_source;
 use oqi_compile::resolve::DefaultIncludeResolver;
 use oqi_compile::symbol::SymbolId;
 use oqi_compile::{cfg, qubits, ssa};
-use oqi_vm::{FnRegistry, NoExterns, StateVectorSim, Vm, VmError, VmErrorKind};
+use oqi_vm::{AutoSim, FnRegistry, NoExterns, StateVectorSim, Vm, VmError, VmErrorKind};
 
 /// Drive an async VM call to completion on a shared multi-threaded tokio
 /// runtime (the VM is async now; tests are sync). `block_on` runs the future
@@ -54,6 +54,45 @@ fn classical_arithmetic_drives_a_branch() {
         "#,
     );
     assert_eq!(m, vec![(0, true)]);
+}
+
+#[test]
+fn auto_backend_runs_clifford_with_control_flow() {
+    // HZH = X, so q measures 1 deterministically — exercises the stabilizer
+    // backend end-to-end through the VM (gates + measurement).
+    let module = build(
+        r#"
+            include "stdgates.inc";
+            qubit q;
+            h q; z q; h q;
+            bit c = measure q;
+        "#,
+    );
+    let mut vm = Vm::new(&module, AutoSim::new(module.qubits.num_qubits), NoExterns);
+    let m = block_on(vm.run()).expect("run").measurements;
+    assert_eq!(m, vec![(0, true)]);
+}
+
+#[test]
+fn auto_backend_scales_to_200_qubits() {
+    // A 200-qubit GHZ is impossible for a state vector (2²⁰⁰ amplitudes) but
+    // trivial for the stabilizer tableau. All measured bits must agree.
+    let n = 200u32;
+    let mut src = String::from("include \"stdgates.inc\";\nqubit[200] q;\nh q[0];\n");
+    for i in 0..n - 1 {
+        src.push_str(&format!("cx q[{i}], q[{}];\n", i + 1));
+    }
+    src.push_str("bit[200] c = measure q;\n");
+
+    let module = build(&src);
+    let mut vm = Vm::new(&module, AutoSim::new(module.qubits.num_qubits), NoExterns);
+    let m = block_on(vm.run()).expect("run").measurements;
+    assert_eq!(m.len(), 200);
+    let first = m[0].1;
+    assert!(
+        m.iter().all(|&(_, b)| b == first),
+        "GHZ outcomes not all equal"
+    );
 }
 
 #[test]

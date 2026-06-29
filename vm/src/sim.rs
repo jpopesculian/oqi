@@ -121,6 +121,35 @@ impl<F: Float + Send + Sync> StateVectorSim<F> {
         );
         self.apply_gate(&Gate::new(x), target as usize);
     }
+
+    /// Collapse `qubit` onto a *forced* `outcome` and renormalize — the
+    /// projection half of [`measure`](Self::measure) with no RNG. Used to
+    /// replay a recorded measurement deterministically (e.g. when the
+    /// auto-routing backend converts a stabilizer state to a state vector).
+    pub fn project(&mut self, qubit: u32, outcome: bool) {
+        let bit = 1usize << qubit;
+        let norm: f64 = self
+            .state
+            .state()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| (i & bit != 0) == outcome)
+            .map(|(_, a)| a.norm_sqr().to_f64().unwrap())
+            .sum();
+        let scale = if norm > 0.0 {
+            Self::cast(1.0 / norm.sqrt())
+        } else {
+            F::zero()
+        };
+        let zero = Complex::new(F::zero(), F::zero());
+        for (i, a) in self.state.state_mut().iter_mut().enumerate() {
+            if (i & bit != 0) == outcome {
+                *a = *a * scale;
+            } else {
+                *a = zero;
+            }
+        }
+    }
 }
 
 impl StateVectorSim<f64> {

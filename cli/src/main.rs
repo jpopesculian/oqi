@@ -34,6 +34,9 @@ enum BackendKind {
     Simd,
     /// SIMD-vectorized, multi-threaded (rayon) CPU state-vector simulator.
     RayonSimd,
+    /// WebGPU (wgpu) state-vector simulator (single precision; needs the
+    /// `gpu` build feature and a working GPU adapter).
+    Gpu,
 }
 
 #[derive(Parser)]
@@ -92,7 +95,8 @@ enum Command {
     },
 }
 
-fn main() -> ExitCode {
+#[tokio::main(flavor = "multi_thread")]
+async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
@@ -103,7 +107,7 @@ fn main() -> ExitCode {
             backend,
             precision,
             input,
-        } => run(&path, state, backend, precision, &input),
+        } => run(&path, state, backend, precision, &input).await,
         Command::Fmt {
             compact,
             stdout,
@@ -137,7 +141,7 @@ fn compile(path: &Path, dump: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run(
+async fn run(
     path: &Path,
     show_state: bool,
     backend: BackendKind,
@@ -177,15 +181,24 @@ fn run(
         }
     };
 
-    let sim = match build_backend(backend, precision, module.qubits.num_qubits) {
-        Ok(s) => s,
-        Err(e) => {
-            oqi_diagnostics::emit(&e, path, &source);
-            return ExitCode::FAILURE;
-        }
+    let sim: Box<dyn QuantumBackend> = match backend {
+        BackendKind::Gpu => match build_gpu_backend(precision, module.qubits.num_qubits).await {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("gpu backend: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        _ => match build_backend(backend, precision, module.qubits.num_qubits) {
+            Ok(s) => s,
+            Err(e) => {
+                oqi_diagnostics::emit(&e, path, &source);
+                return ExitCode::FAILURE;
+            }
+        },
     };
     let mut vm = Vm::new(&module, sim, NoExterns);
-    match vm.run_with_inputs(inputs) {
+    match vm.run_with_inputs(inputs).await {
         Ok(result) => {
             for (qubit, bit) in &result.measurements {
                 println!("q[{qubit}] = {}", if *bit { 1 } else { 0 });
@@ -195,7 +208,7 @@ fn run(
             }
             if show_state {
                 let width = module.qubits.num_qubits as usize;
-                if let Some(amps) = vm.backend().amplitudes() {
+                if let Some(amps) = vm.backend().amplitudes().await {
                     for (i, amp) in amps.iter().enumerate() {
                         if amp.norm() > 1e-12 {
                             println!("|{i:0width$b}> = {amp}");
@@ -238,6 +251,27 @@ fn build_backend(
         ),
     };
     Ok(sim)
+}
+
+/// Construct the WebGPU backend (single precision only). Returns an error
+/// string if the build lacks gpu support or no adapter/device is available.
+#[cfg(feature = "gpu")]
+async fn build_gpu_backend(
+    precision: Precision,
+    num_qubits: u32,
+) -> Result<Box<dyn QuantumBackend>, String> {
+    if matches!(precision, Precision::F64) {
+        eprintln!("note: the gpu backend is single precision (f32); --precision f64 ignored");
+    }
+    Ok(Box::new(oqi_vm::GpuSim::new(num_qubits).await?))
+}
+
+#[cfg(not(feature = "gpu"))]
+async fn build_gpu_backend(
+    _precision: Precision,
+    _num_qubits: u32,
+) -> Result<Box<dyn QuantumBackend>, String> {
+    Err("this build has no gpu support; rebuild with `--features gpu`".to_string())
 }
 
 /// Parse `--input NAME=VALUE` specs into a symbol-keyed value map,

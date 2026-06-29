@@ -166,8 +166,8 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// inputs. If the program declares any `input`, prefer
     /// [`Vm::run_with_inputs`] — running with an empty map errors on the
     /// first missing input.
-    pub fn run(&mut self) -> std::result::Result<RunResult, VmError> {
-        self.run_with_inputs(HashMap::new())
+    pub async fn run(&mut self) -> std::result::Result<RunResult, VmError> {
+        self.run_with_inputs(HashMap::new()).await
     }
 
     /// Execute the entry procedure, seeding each declared `input` from
@@ -175,19 +175,20 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// [`oqi_compile::bytecode::BcModule::symbols`]). Every declared
     /// input must be present and castable to its declared type; a value
     /// for a symbol that isn't a declared input is rejected.
-    pub fn run_with_inputs(
+    pub async fn run_with_inputs(
         &mut self,
         inputs: HashMap<SymbolId, Value>,
     ) -> std::result::Result<RunResult, VmError> {
         self.current_span = Span::default();
         self.run_inner(inputs)
+            .await
             .map_err(|kind| VmError::new(kind).with_span(self.current_span))
     }
 
     /// The execution body, raising spanless [`VmErrorKind`]s. The span of the
     /// instruction in flight is tracked in `self.current_span` and attached by
     /// [`run_with_inputs`](Self::run_with_inputs).
-    fn run_inner(&mut self, mut inputs: HashMap<SymbolId, Value>) -> Result<RunResult> {
+    async fn run_inner(&mut self, mut inputs: HashMap<SymbolId, Value>) -> Result<RunResult> {
         let entry = self.module.entry;
         let mut regs = self.fresh_regs(entry);
 
@@ -209,7 +210,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             slots: self.fresh_slots(entry),
             mods: GateModifiers::none(),
         };
-        self.exec_proc(&mut frame)?;
+        self.exec_proc(&mut frame).await?;
         let outputs = self
             .module
             .outputs
@@ -229,7 +230,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         })
     }
 
-    fn exec_proc(&mut self, frame: &mut Frame) -> Result<Option<Value>> {
+    async fn exec_proc(&mut self, frame: &mut Frame) -> Result<Option<Value>> {
         let module = self.module;
         let proc = &module.procedures[frame.proc.0 as usize];
         let mut current = proc.entry;
@@ -247,7 +248,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             let block = &proc.blocks[pos as usize];
             for instr in &block.instrs {
                 self.current_span = instr.span;
-                self.exec_op(&instr.op, frame)?;
+                self.exec_op(&instr.op, frame).await?;
             }
             self.current_span = block.span;
             match &block.terminator {
@@ -301,7 +302,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         })
     }
 
-    fn exec_op(&mut self, op: &BcOp, frame: &mut Frame) -> Result<()> {
+    async fn exec_op(&mut self, op: &BcOp, frame: &mut Frame) -> Result<()> {
         match op {
             // ── Binary classical ops ──────────────────────────────────
             BcOp::Add { dest, lhs, rhs } => self.bin::<ops::Add>(frame, *dest, lhs, rhs),
@@ -396,7 +397,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
 
             // ── Call ──────────────────────────────────────────────────
-            BcOp::Call { dest, callee, args } => self.exec_call(frame, *dest, callee, args),
+            BcOp::Call { dest, callee, args } => self.exec_call(frame, *dest, callee, args).await,
 
             // ── Quantum ops ───────────────────────────────────────────
             BcOp::GateCall {
@@ -404,12 +405,15 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 modifiers,
                 args,
                 qubits,
-            } => self.exec_gate_call(*gate, modifiers, args, qubits, frame),
+            } => {
+                self.exec_gate_call(*gate, modifiers, args, qubits, frame)
+                    .await
+            }
             BcOp::Measure { dest, qubit } => {
                 let qs = self.qubits(frame, qubit)?;
                 let mut bits: u128 = 0;
                 for (i, q) in qs.iter().enumerate() {
-                    let b = self.backend.measure(*q);
+                    let b = self.backend.measure(*q).await;
                     self.measurements.push((*q, b));
                     if b {
                         bits |= 1 << i;
@@ -427,13 +431,13 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
             BcOp::Reset { qubit } => {
                 for q in self.qubits(frame, qubit)? {
-                    self.backend.reset(q);
+                    self.backend.reset(q).await;
                 }
                 Ok(())
             }
             BcOp::Barrier { qubits } => {
                 let qs = self.qubit_list(frame, qubits)?;
-                self.backend.barrier(&qs);
+                self.backend.barrier(&qs).await;
                 Ok(())
             }
             BcOp::Delay { duration, qubits } => {
@@ -444,7 +448,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 }
                 .ok_or_else(|| VmErrorKind::Type("delay duration must be a duration".into()))?;
                 let qs = self.qubit_list(frame, qubits)?;
-                self.backend.delay(&qs, dur);
+                self.backend.delay(&qs, dur).await;
                 Ok(())
             }
             BcOp::Nop { .. } => Ok(()),
@@ -457,7 +461,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     slots: self.fresh_slots(*body),
                     mods: GateModifiers::none(),
                 };
-                self.exec_proc(&mut child)?;
+                Box::pin(self.exec_proc(&mut child)).await?;
                 Ok(())
             }
             BcOp::AliasBind { slot, segments } => {
@@ -500,7 +504,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 
     // ── Calls ─────────────────────────────────────────────────────────
 
-    fn exec_call(
+    async fn exec_call(
         &mut self,
         frame: &mut Frame,
         dest: Option<Reg>,
@@ -543,7 +547,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         VmErrorKind::Unsupported(format!("call to non-subroutine symbol s{}", s.0))
                     })?;
                     let mut child = self.bind_subroutine(frame, proc_id, args)?;
-                    let ret = self.exec_proc(&mut child)?;
+                    let ret = Box::pin(self.exec_proc(&mut child)).await?;
                     if let Some(d) = dest {
                         let v = ret.ok_or_else(|| {
                             VmErrorKind::Type(
@@ -592,7 +596,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 
     // ── Gates ─────────────────────────────────────────────────────────
 
-    fn exec_gate_call(
+    async fn exec_gate_call(
         &mut self,
         gate: SymbolId,
         modifiers: &[BcGateModifier],
@@ -677,7 +681,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         slots,
                         mods: eff.clone(),
                     };
-                    self.exec_proc(&mut child)?;
+                    Box::pin(self.exec_proc(&mut child)).await?;
                 } else {
                     // `inv`/`pow` on a (possibly composite) body: flatten
                     // the body to a leaf trace, then reverse+invert or
@@ -692,11 +696,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     };
                     let prev = self.recording.take();
                     self.recording = Some(Vec::new());
-                    let res = self.exec_proc(&mut child);
+                    let res = Box::pin(self.exec_proc(&mut child)).await;
                     let trace = self.recording.take().unwrap_or_default();
                     self.recording = prev;
                     res?;
-                    self.apply_transformed(trace, eff.power, &eff)?;
+                    self.apply_transformed(trace, eff.power, &eff).await?;
                 }
             }
             Ok(())
@@ -709,14 +713,14 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     let lambda = value_f64(&self.eval(frame, &args[2])?)?;
                     for op in arg_ops {
                         for q in self.qubits(frame, op)? {
-                            self.emit_u(q, theta, phi, lambda, &eff);
+                            self.emit_u(q, theta, phi, lambda, &eff).await;
                         }
                     }
                     Ok(())
                 }
                 "gphase" => {
                     let gamma = value_f64(&self.eval(frame, &args[0])?)?;
-                    self.emit_gphase(gamma, &eff);
+                    self.emit_gphase(gamma, &eff).await;
                     Ok(())
                 }
                 other => Err(VmErrorKind::UndefinedGate(other.to_string())),
@@ -725,7 +729,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     }
 
     /// Apply (or, when recording, record) a leaf `U`.
-    fn emit_u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
+    async fn emit_u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
         if let Some(buf) = self.recording.as_mut() {
             buf.push(Leaf::U {
                 target,
@@ -737,12 +741,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 power: m.power,
             });
         } else {
-            self.backend.u(target, theta, phi, lambda, m);
+            self.backend.u(target, theta, phi, lambda, m).await;
         }
     }
 
     /// Apply (or, when recording, record) a leaf `gphase`.
-    fn emit_gphase(&mut self, gamma: f64, m: &GateModifiers) {
+    async fn emit_gphase(&mut self, gamma: f64, m: &GateModifiers) {
         if let Some(buf) = self.recording.as_mut() {
             buf.push(Leaf::Gphase {
                 gamma,
@@ -751,14 +755,14 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 power: m.power,
             });
         } else {
-            self.backend.gphase(gamma, m);
+            self.backend.gphase(gamma, m).await;
         }
     }
 
     /// Emit one recorded leaf, scaling its power by `factor` (1 for a
     /// forward repeat, -1 to invert, or the exponent for a fractional
     /// power) and merging the outer controls `eff` onto it.
-    fn emit_leaf(&mut self, leaf: &Leaf, factor: f64, eff: &GateModifiers) {
+    async fn emit_leaf(&mut self, leaf: &Leaf, factor: f64, eff: &GateModifiers) {
         match leaf {
             Leaf::U {
                 target,
@@ -774,7 +778,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     neg_controls: merge(neg_controls, &eff.neg_controls),
                     power: power * factor,
                 };
-                self.emit_u(*target, *theta, *phi, *lambda, &m);
+                self.emit_u(*target, *theta, *phi, *lambda, &m).await;
             }
             Leaf::Gphase {
                 gamma,
@@ -787,7 +791,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     neg_controls: merge(neg_controls, &eff.neg_controls),
                     power: power * factor,
                 };
-                self.emit_gphase(*gamma, &m);
+                self.emit_gphase(*gamma, &m).await;
             }
         }
     }
@@ -802,7 +806,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     ///   phases), where the power folds per-leaf. A fractional power of a
     ///   genuinely composite body would need a dense matrix power and is
     ///   rejected.
-    fn apply_transformed(&mut self, trace: Vec<Leaf>, p: f64, eff: &GateModifiers) -> Result<()> {
+    async fn apply_transformed(
+        &mut self,
+        trace: Vec<Leaf>,
+        p: f64,
+        eff: &GateModifiers,
+    ) -> Result<()> {
         let rounded = p.round();
         if (rounded - p).abs() < 1e-9 {
             let k = rounded as i64;
@@ -810,13 +819,13 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             if k >= 0 {
                 for _ in 0..reps {
                     for leaf in &trace {
-                        self.emit_leaf(leaf, 1.0, eff);
+                        self.emit_leaf(leaf, 1.0, eff).await;
                     }
                 }
             } else {
                 for _ in 0..reps {
                     for leaf in trace.iter().rev() {
-                        self.emit_leaf(leaf, -1.0, eff);
+                        self.emit_leaf(leaf, -1.0, eff).await;
                     }
                 }
             }
@@ -828,7 +837,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 ));
             }
             for leaf in &trace {
-                self.emit_leaf(leaf, p, eff);
+                self.emit_leaf(leaf, p, eff).await;
             }
             Ok(())
         }

@@ -1,5 +1,6 @@
 //! A CPU state-vector simulator backend.
 
+use async_trait::async_trait;
 use num_complex::Complex;
 use num_traits::Float;
 use oqi_quantum::{Gate, StateVector, Unitary};
@@ -151,14 +152,15 @@ impl StateVectorSim<f64> {
     }
 }
 
+#[async_trait(?Send)]
 impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
-    fn u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
+    async fn u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
         let u = Unitary::new(Self::cast(theta), Self::cast(phi), Self::cast(lambda));
         let g = self.gate(u, m);
         self.apply_gate(&g, target as usize);
     }
 
-    fn gphase(&mut self, gamma: f64, m: &GateModifiers) {
+    async fn gphase(&mut self, gamma: f64, m: &GateModifiers) {
         // gphase scales linearly with power: gphase(γ)^k = gphase(kγ).
         let g = Self::cast(gamma * m.power);
 
@@ -196,7 +198,7 @@ impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
         }
     }
 
-    fn measure(&mut self, qubit: u32) -> bool {
+    async fn measure(&mut self, qubit: u32) -> bool {
         let bit = 1usize << qubit;
         let amps = self.state.state();
 
@@ -230,13 +232,13 @@ impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
         outcome
     }
 
-    fn reset(&mut self, qubit: u32) {
-        if self.measure(qubit) {
+    async fn reset(&mut self, qubit: u32) {
+        if self.measure(qubit).await {
             self.apply_x(qubit);
         }
     }
 
-    fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
+    async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
         // Resolve the tracked global phase so the snapshot is physically
         // faithful and matches other backends' conventions.
         let phase = Complex::from_polar(1.0, self.state.global_phase().to_f64().unwrap());

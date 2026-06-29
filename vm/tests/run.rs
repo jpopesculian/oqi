@@ -10,6 +10,17 @@ use oqi_compile::symbol::SymbolId;
 use oqi_compile::{cfg, qubits, ssa};
 use oqi_vm::{FnRegistry, NoExterns, StateVectorSim, Vm, VmError, VmErrorKind};
 
+/// Drive an async VM call to completion on a shared multi-threaded tokio
+/// runtime (the VM is async now; tests are sync). `block_on` runs the future
+/// on the calling thread, so the runtime's `Send` bound on spawned tasks
+/// doesn't apply to our `?Send` futures.
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    use std::sync::OnceLock;
+    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+    RT.get_or_init(|| tokio::runtime::Runtime::new().expect("tokio runtime"))
+        .block_on(fut)
+}
+
 /// Compile source straight through to a bytecode module.
 fn build(src: &str) -> BcModule {
     let program = compile_source(src, DefaultIncludeResolver, None).expect("compile");
@@ -24,7 +35,7 @@ fn run_measurements(src: &str) -> Vec<(u32, bool)> {
     let module = build(src);
     let sim = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
     let mut vm = Vm::new(&module, sim, NoExterns);
-    vm.run().expect("run").measurements
+    block_on(vm.run()).expect("run").measurements
 }
 
 const TOL: f64 = 1e-9;
@@ -71,7 +82,7 @@ fn bell_state_amplitudes() {
     );
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
-    vm.run().expect("run");
+    block_on(vm.run()).expect("run");
     let amps = vm.backend().state();
     let inv_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
     assert!(
@@ -156,7 +167,7 @@ fn extern_function_result_is_used() {
     });
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, registry);
-    let result = vm.run().expect("run");
+    let result = block_on(vm.run()).expect("run");
     assert_eq!(result.measurements, vec![(0, true)]);
 }
 
@@ -377,7 +388,7 @@ fn mismatched_register_broadcast_is_rejected() {
     );
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
-    match vm.run() {
+    match block_on(vm.run()) {
         Err(VmError {
             kind: VmErrorKind::BroadcastMismatch(lengths),
             ..
@@ -392,7 +403,7 @@ fn final_state(src: &str) -> Vec<(f64, f64)> {
     let module = build(src);
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
-    vm.run().expect("run");
+    block_on(vm.run()).expect("run");
     vm.backend().state().iter().map(|c| (c.re, c.im)).collect()
 }
 
@@ -511,7 +522,7 @@ fn fractional_pow_of_multi_qubit_composite_is_rejected() {
     );
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
-    match vm.run() {
+    match block_on(vm.run()) {
         Err(VmError {
             kind: VmErrorKind::Unsupported(_),
             ..
@@ -845,7 +856,7 @@ fn run_outputs(src: &str) -> Vec<(String, String)> {
     let module = build(src);
     let sim = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
     let mut vm = Vm::new(&module, sim, NoExterns);
-    let result = vm.run().expect("run");
+    let result = block_on(vm.run()).expect("run");
     let mut out: Vec<(String, String)> = result
         .outputs
         .iter()
@@ -926,7 +937,7 @@ fn input_value_drives_a_branch() {
         let sim = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
         let mut vm = Vm::new(&module, sim, NoExterns);
         let inputs = HashMap::from([(n, Value::int(val, iw(32)))]);
-        let r = vm.run_with_inputs(inputs).expect("run");
+        let r = block_on(vm.run_with_inputs(inputs)).expect("run");
         assert_eq!(r.measurements, vec![(0, expect)], "n = {val}");
     }
 }
@@ -936,7 +947,7 @@ fn missing_input_is_rejected() {
     let module = build(INPUT_BRANCH_SRC);
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
-    match vm.run_with_inputs(HashMap::new()) {
+    match block_on(vm.run_with_inputs(HashMap::new())) {
         Err(VmError {
             kind: VmErrorKind::MissingInput(_),
             ..
@@ -954,7 +965,7 @@ fn physical_qubit_program_sizes_its_register() {
     assert_eq!(module.qubits.num_qubits, 1);
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
-    vm.run().expect("physical-qubit program should run");
+    block_on(vm.run()).expect("physical-qubit program should run");
 }
 
 #[test]
@@ -965,7 +976,7 @@ fn value_for_non_input_symbol_is_rejected() {
     let sim = StateVectorSim::new(module.qubits.num_qubits);
     let mut vm = Vm::new(&module, sim, NoExterns);
     let inputs = HashMap::from([(n, Value::int(1, iw(32))), (q, Value::int(0, iw(32)))]);
-    match vm.run_with_inputs(inputs) {
+    match block_on(vm.run_with_inputs(inputs)) {
         Err(VmError {
             kind: VmErrorKind::UnknownInput(_),
             ..

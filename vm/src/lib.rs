@@ -14,6 +14,8 @@ pub mod backend;
 pub mod diagnostic;
 pub mod error;
 pub mod extern_fns;
+#[cfg(feature = "gpu")]
+pub mod gpu;
 pub mod sim;
 pub mod sim_simd;
 pub mod vm;
@@ -21,6 +23,8 @@ pub mod vm;
 pub use backend::{GateModifiers, QuantumBackend};
 pub use error::{Result, VmError, VmErrorKind};
 pub use extern_fns::{ExternProvider, FnRegistry, NoExterns};
+#[cfg(feature = "gpu")]
+pub use gpu::GpuSim;
 pub use sim::StateVectorSim;
 pub use sim_simd::SimdSim;
 pub use vm::{RunResult, Vm};

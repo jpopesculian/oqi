@@ -43,6 +43,13 @@ pub enum VmErrorKind {
     /// [`OpaqueCalHandler`](crate::OpaqueCalHandler), or by the VM when
     /// pulse state is inconsistent).
     Pulse(String),
+    /// The auto backend's sum-over-Cliffords term budget was exhausted on
+    /// a non-Clifford gate and the dense fallback is unavailable.
+    RankOverflow {
+        rank: usize,
+        max_rank: usize,
+        qubits: u32,
+    },
     /// Execution reached a block marked unreachable.
     Unreachable,
 }
@@ -83,6 +90,16 @@ impl fmt::Display for VmErrorKind {
                  (2^{requested} complex amplitudes) cannot be allocated"
             ),
             VmErrorKind::Pulse(msg) => write!(f, "pulse error: {msg}"),
+            VmErrorKind::RankOverflow {
+                rank,
+                max_rank,
+                qubits,
+            } => write!(
+                f,
+                "circuit exceeds the sum-over-Cliffords budget ({rank} > {max_rank} \
+                 stabilizer terms) and its 2^{qubits}-amplitude dense state cannot \
+                 be allocated; raise the term budget or reduce non-Clifford gates"
+            ),
             VmErrorKind::Unreachable => write!(f, "reached an unreachable block"),
         }
     }

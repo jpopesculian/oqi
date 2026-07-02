@@ -14,6 +14,8 @@ use async_trait::async_trait;
 use num_complex::Complex;
 use oqi_classical::Duration;
 
+use crate::error::VmErrorKind;
+
 /// Modifiers on a single backend primitive call: the controls in scope
 /// plus a `power` to raise this one primitive to. Control indices are
 /// global qubit indices.
@@ -94,6 +96,15 @@ pub trait QuantumBackend {
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
         None
     }
+
+    /// Take a deferred error raised by an earlier primitive. The methods
+    /// above are infallible; a backend that can fail mid-run (e.g. the
+    /// auto-router when its sum-over-Cliffords budget is exhausted and no
+    /// dense fallback fits) parks the error here and no-ops until the VM
+    /// polls it after each quantum instruction.
+    fn take_error(&mut self) -> Option<VmErrorKind> {
+        None
+    }
 }
 
 /// Forward a boxed backend so the VM can be driven by a runtime-selected
@@ -133,5 +144,9 @@ impl QuantumBackend for Box<dyn QuantumBackend> {
 
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
         (**self).amplitudes().await
+    }
+
+    fn take_error(&mut self) -> Option<VmErrorKind> {
+        (**self).take_error()
     }
 }

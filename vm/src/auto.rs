@@ -1,320 +1,61 @@
-//! An auto-routing backend: runs Clifford circuits on a stabilizer
-//! [`Tableau`](crate::stabilizer::Tableau) (O(n²)/gate) and transparently
-//! falls back to the dense [`StateVectorSim`] the moment a non-Clifford gate
-//! appears, so any circuit still runs correctly.
+//! An auto-routing backend with three tiers:
+//!
+//! ```text
+//! Tableau ──(first non-Clifford)──▶ Sum-over-Cliffords ──(rank budget)──▶ dense
+//! ```
+//!
+//! Pure-Clifford circuits run on a stabilizer
+//! [`Tableau`](crate::stabilizer::Tableau) (O(n²)/gate). The first
+//! non-Clifford gate converts the logged prefix into a
+//! [`SumState`](crate::sum::SumState) — a sum of phase-exact CH-form
+//! stabilizer terms whose rank grows only with the *non-Clifford* gate
+//! count, so a 150-qubit circuit with a few T gates stays exact and cheap.
+//! When the rank would exceed [`SumPolicy::max_rank`], the log is replayed
+//! onto a dense [`StateVectorSim`] if its 2ⁿ amplitudes are allocatable;
+//! otherwise a [`VmErrorKind::RankOverflow`] is parked and surfaced by the
+//! VM's `take_error` poll.
 //!
 //! Gates arrive as `U(θ,φ,λ)`/`gphase` (the compiler lowers `h`/`s`/`cx`
-//! before the backend), so Clifford-ness is detected from the gate's matrix:
-//! a single-qubit gate is Clifford iff it conjugates both Paulis to signed
-//! Paulis. While in stabilizer mode every applied op is logged; on the first
-//! non-Clifford op the log is replayed onto a fresh state vector (recorded
-//! measurement outcomes forced via [`StateVectorSim::project`]) and execution
-//! continues there.
-
-use std::collections::HashMap;
-use std::collections::VecDeque;
-use std::sync::OnceLock;
+//! before the backend), so Clifford-ness is detected from the gate's matrix
+//! (see [`crate::clifford`]). Every applied op is logged until the dense
+//! tier; recorded measurement outcomes replay deterministically via
+//! [`StateVectorSim::project`] / [`SumState::project`]. Measurement
+//! sampling stays seeded across tier handoffs (the RNG moves with the
+//! state), but a run that escalates is not distribution-identical to a
+//! pure-dense run with the same seed.
 
 use async_trait::async_trait;
 use num_complex::Complex;
-use oqi_quantum::{Gate, Unitary};
 
 use crate::backend::{GateModifiers, QuantumBackend};
+use crate::clifford::{CliffordSink, apply_clifford_gphase, apply_clifford_u};
+use crate::error::VmErrorKind;
 use crate::sim::{Rng, StateVectorSim};
 use crate::stabilizer::Tableau;
+use crate::sum::SumState;
 
 const SEED: u64 = 0x2545F4914F6CDD1D;
 
-// ── 2×2 complex matrix helpers (for Clifford detection) ─────────────────
-
-type M2 = [[Complex<f64>; 2]; 2];
-
-fn cpx(re: f64, im: f64) -> Complex<f64> {
-    Complex::new(re, im)
-}
-fn pauli_x() -> M2 {
-    [
-        [cpx(0.0, 0.0), cpx(1.0, 0.0)],
-        [cpx(1.0, 0.0), cpx(0.0, 0.0)],
-    ]
-}
-fn pauli_y() -> M2 {
-    [
-        [cpx(0.0, 0.0), cpx(0.0, -1.0)],
-        [cpx(0.0, 1.0), cpx(0.0, 0.0)],
-    ]
-}
-fn pauli_z() -> M2 {
-    [
-        [cpx(1.0, 0.0), cpx(0.0, 0.0)],
-        [cpx(0.0, 0.0), cpx(-1.0, 0.0)],
-    ]
+/// Budget for the sum-over-Cliffords tier.
+#[derive(Clone, Copy, Debug)]
+pub struct SumPolicy {
+    /// Maximum number of stabilizer terms before escalating (each
+    /// non-Clifford gate multiplies the term count by 2–3).
+    pub max_rank: usize,
+    /// Whether exceeding the budget may fall back to a dense state vector
+    /// (when 2ⁿ amplitudes are allocatable). `false` parks an error
+    /// instead — useful to pin the sum tier for benchmarking.
+    pub dense_escape: bool,
 }
 
-fn matmul(a: &M2, b: &M2) -> M2 {
-    let mut o = [[cpx(0.0, 0.0); 2]; 2];
-    for (i, orow) in o.iter_mut().enumerate() {
-        for (j, oij) in orow.iter_mut().enumerate() {
-            *oij = a[i][0] * b[0][j] + a[i][1] * b[1][j];
-        }
-    }
-    o
-}
-
-fn dagger(a: &M2) -> M2 {
-    [
-        [a[0][0].conj(), a[1][0].conj()],
-        [a[0][1].conj(), a[1][1].conj()],
-    ]
-}
-
-/// `m · p · m†`.
-fn conjugate(m: &M2, p: &M2) -> M2 {
-    matmul(&matmul(m, p), &dagger(m))
-}
-
-fn approx_eq(a: &M2, b: &M2) -> bool {
-    const TOL: f64 = 1e-6;
-    (0..2).all(|i| (0..2).all(|j| (a[i][j] - b[i][j]).norm() < TOL))
-}
-
-fn scaled(p: &M2, s: f64) -> M2 {
-    [[p[0][0] * s, p[0][1] * s], [p[1][0] * s, p[1][1] * s]]
-}
-
-/// A signed single-qubit Pauli: axis (0=X, 1=Y, 2=Z) and a negative flag.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct SignedPauli {
-    axis: u8,
-    neg: bool,
-}
-
-impl SignedPauli {
-    fn key(self) -> u8 {
-        self.axis * 2 + self.neg as u8
-    }
-}
-
-/// Classify a 2×2 matrix as a signed Pauli (up to numerical tolerance), or
-/// `None` if it isn't one (and so the gate is non-Clifford).
-fn classify(m: &M2) -> Option<SignedPauli> {
-    for (axis, base) in [(0u8, pauli_x()), (1, pauli_y()), (2, pauli_z())] {
-        if approx_eq(m, &base) {
-            return Some(SignedPauli { axis, neg: false });
-        }
-        if approx_eq(m, &scaled(&base, -1.0)) {
-            return Some(SignedPauli { axis, neg: true });
-        }
-    }
-    None
-}
-
-// ── Single-qubit Clifford decomposition into {H, S} ─────────────────────
-
-#[derive(Clone, Copy)]
-enum Prim {
-    H,
-    S,
-}
-
-/// Conjugate a signed Pauli by a primitive (combinatorial — no floats).
-/// `H`: X↔Z (sign kept), Y→−Y. `S`: X→Y (kept), Y→−X, Z→Z.
-fn conj_prim(prim: Prim, p: SignedPauli) -> SignedPauli {
-    let SignedPauli { axis, neg } = p;
-    match (prim, axis) {
-        (Prim::H, 0) => SignedPauli { axis: 2, neg },
-        (Prim::H, 2) => SignedPauli { axis: 0, neg },
-        (Prim::H, 1) => SignedPauli { axis: 1, neg: !neg },
-        (Prim::S, 0) => SignedPauli { axis: 1, neg },
-        (Prim::S, 1) => SignedPauli { axis: 0, neg: !neg },
-        (Prim::S, 2) => SignedPauli { axis: 2, neg },
-        _ => unreachable!(),
-    }
-}
-
-/// BFS table mapping a Clifford's `(image of X, image of Z)` to a primitive
-/// word realizing it. Built once; the single-qubit Clifford group (mod phase)
-/// has 24 elements, all reachable from `⟨H, S⟩`.
-fn clifford_table() -> &'static HashMap<u16, Vec<Prim>> {
-    static TABLE: OnceLock<HashMap<u16, Vec<Prim>>> = OnceLock::new();
-    TABLE.get_or_init(|| {
-        let start = (
-            SignedPauli {
-                axis: 0,
-                neg: false,
-            }, // X → +X
-            SignedPauli {
-                axis: 2,
-                neg: false,
-            }, // Z → +Z
-        );
-        let key = |ix: SignedPauli, iz: SignedPauli| (ix.key() as u16) * 6 + iz.key() as u16;
-        let mut table: HashMap<u16, Vec<Prim>> = HashMap::new();
-        table.insert(key(start.0, start.1), Vec::new());
-        let mut queue = VecDeque::new();
-        queue.push_back(start);
-        while let Some((ix, iz)) = queue.pop_front() {
-            let word = table[&key(ix, iz)].clone();
-            for prim in [Prim::H, Prim::S] {
-                let nx = conj_prim(prim, ix);
-                let nz = conj_prim(prim, iz);
-                if let std::collections::hash_map::Entry::Vacant(e) = table.entry(key(nx, nz)) {
-                    let mut w = word.clone();
-                    w.push(prim);
-                    e.insert(w);
-                    queue.push_back((nx, nz));
-                }
-            }
-        }
-        table
-    })
-}
-
-fn clifford_word(ix: SignedPauli, iz: SignedPauli) -> Option<&'static [Prim]> {
-    let key = (ix.key() as u16) * 6 + iz.key() as u16;
-    clifford_table().get(&key).map(|w| w.as_slice())
-}
-
-/// The effective single-qubit matrix `U(θ,φ,λ)^power`.
-fn effective_matrix(theta: f64, phi: f64, lambda: f64, power: f64) -> M2 {
-    let base = Gate::new(Unitary::<f64>::new(theta, phi, lambda));
-    if power != 1.0 {
-        base.pow(power).matrix()
-    } else {
-        base.matrix()
-    }
-}
-
-fn identity() -> M2 {
-    [
-        [cpx(1.0, 0.0), cpx(0.0, 0.0)],
-        [cpx(0.0, 0.0), cpx(1.0, 0.0)],
-    ]
-}
-
-/// The phase gate `diag(1, e^{iα})` (`= U(0,0,α)`), used to express a
-/// relative phase on a control qubit.
-fn phase_matrix(alpha: f64) -> M2 {
-    [
-        [cpx(1.0, 0.0), cpx(0.0, 0.0)],
-        [cpx(0.0, 0.0), Complex::from_polar(1.0, alpha)],
-    ]
-}
-
-/// The primitive `{H, S}` word realizing a single-qubit Clifford `mat`
-/// (global phase ignored, since it cancels under conjugation), or `None` if
-/// `mat` isn't Clifford.
-fn single_qubit_word(mat: &M2) -> Option<Vec<Prim>> {
-    let ix = classify(&conjugate(mat, &pauli_x()))?;
-    let iz = classify(&conjugate(mat, &pauli_z()))?;
-    clifford_word(ix, iz).map(<[Prim]>::to_vec)
-}
-
-/// Decompose `mat` as `λ · base` with `base ∈ {I, X, Y, Z}` (so `mat` is a
-/// Pauli up to a global phase `λ`), or `None` otherwise. `axis` is `None` for
-/// the identity base.
-fn phased_pauli(mat: &M2) -> Option<(Option<u8>, f64)> {
-    const TOL: f64 = 1e-6;
-    let bases: [(Option<u8>, M2); 4] = [
-        (None, identity()),
-        (Some(0), pauli_x()),
-        (Some(1), pauli_y()),
-        (Some(2), pauli_z()),
-    ];
-    for (axis, base) in bases {
-        // Paulis and I are involutions, so mat = λ·base ⇔ mat·base = λ·I.
-        let prod = matmul(mat, &base);
-        let lambda = prod[0][0];
-        let lam_i = [[lambda, cpx(0.0, 0.0)], [cpx(0.0, 0.0), lambda]];
-        if (lambda.norm() - 1.0).abs() < TOL && approx_eq(&prod, &lam_i) {
-            return Some((axis, lambda.arg()));
-        }
-    }
-    None
-}
-
-fn apply_word(tab: &mut Tableau, q: usize, word: &[Prim]) {
-    for prim in word {
-        match prim {
-            Prim::H => tab.h(q),
-            Prim::S => tab.s(q),
+impl Default for SumPolicy {
+    fn default() -> Self {
+        SumPolicy {
+            max_rank: 1024,
+            dense_escape: true,
         }
     }
 }
-
-/// Apply a single-qubit `mat` to the tableau, or `false` if non-Clifford.
-fn apply_single_qubit(tab: &mut Tableau, q: usize, mat: &M2) -> bool {
-    match single_qubit_word(mat) {
-        Some(word) => {
-            apply_word(tab, q, &word);
-            true
-        }
-        None => false,
-    }
-}
-
-/// Apply a controlled single-qubit `mat` (one control `c`, target `t`), or
-/// `false` if non-Clifford. `ctrl@(λ·P)` = `(controlled-P)` followed by the
-/// relative phase `arg(λ)` on the control (a single-qubit phase gate), which
-/// is Clifford iff that phase is a multiple of π/2.
-fn apply_controlled(tab: &mut Tableau, c: usize, t: usize, mat: &M2) -> bool {
-    let (axis, alpha) = match phased_pauli(mat) {
-        Some(v) => v,
-        None => return false,
-    };
-    // The relative phase on the control must itself be Clifford.
-    let phase_word = match single_qubit_word(&phase_matrix(alpha)) {
-        Some(w) => w,
-        None => return false,
-    };
-    match axis {
-        None => {} // controlled-(scalar): only the control phase
-        Some(0) => tab.cnot(c, t),
-        Some(1) => tab.cy(c, t),
-        Some(2) => tab.cz(c, t),
-        _ => unreachable!(),
-    }
-    apply_word(tab, c, &phase_word);
-    true
-}
-
-/// Try to apply a `u()` call to the tableau as a Clifford. Returns `true` on
-/// success, `false` if non-Clifford (caller must fall back).
-fn apply_clifford_u(
-    tab: &mut Tableau,
-    target: u32,
-    theta: f64,
-    phi: f64,
-    lambda: f64,
-    m: &GateModifiers,
-) -> bool {
-    if !m.neg_controls.is_empty() {
-        return false; // negative controls: route to the dense sim
-    }
-    let mat = effective_matrix(theta, phi, lambda, m.power);
-    let t = target as usize;
-    match m.controls.as_slice() {
-        [] => apply_single_qubit(tab, t, &mat),
-        [c] => apply_controlled(tab, *c as usize, t, &mat),
-        _ => false, // 2+ controls (e.g. Toffoli): non-Clifford
-    }
-}
-
-/// Try to apply a `gphase` to the tableau as a Clifford. Uncontrolled global
-/// phase has no effect on the stabilizer state (the caller logs it for a
-/// faithful state-vector readout); a single-control global phase is a phase
-/// `g` on that control (Clifford iff `g` is a multiple of π/2).
-fn apply_clifford_gphase(tab: &mut Tableau, g: f64, m: &GateModifiers) -> bool {
-    if m.controls.is_empty() && m.neg_controls.is_empty() {
-        return true; // no tableau effect
-    }
-    if m.neg_controls.is_empty() && m.controls.len() == 1 {
-        return apply_single_qubit(tab, m.controls[0] as usize, &phase_matrix(g));
-    }
-    false
-}
-
-// ── The auto-routing backend ────────────────────────────────────────────
 
 /// A recorded operation, replayed onto a state vector on fallback.
 enum Op {
@@ -349,25 +90,39 @@ enum Mode {
         log: Vec<Op>,
         rng: Rng,
     },
+    Sum {
+        sum: SumState,
+        log: Vec<Op>,
+        rng: Rng,
+    },
     StateVector(StateVectorSim<f64>),
 }
 
-/// State-vector simulator that starts in stabilizer mode and falls back to a
-/// dense state vector on the first non-Clifford gate.
+/// Simulator that starts in stabilizer-tableau mode, moves to an exact
+/// sum-over-Cliffords on the first non-Clifford gate, and escalates to a
+/// dense state vector only when the term budget is exhausted.
 pub struct AutoSim {
     n: u32,
     mode: Mode,
+    policy: SumPolicy,
+    pending_error: Option<VmErrorKind>,
 }
 
 impl AutoSim {
-    /// A fresh simulator with `num_qubits` qubits in |0…0⟩ (default seed).
+    /// A fresh simulator with `num_qubits` qubits in |0…0⟩ (default seed
+    /// and [`SumPolicy`]).
     pub fn new(num_qubits: u32) -> Self {
         Self::with_seed(num_qubits, SEED)
     }
 
     /// A fresh simulator with an explicit RNG seed (for reproducible
-    /// measurement sampling in stabilizer mode).
+    /// measurement sampling).
     pub fn with_seed(num_qubits: u32, seed: u64) -> Self {
+        Self::with_policy(num_qubits, seed, SumPolicy::default())
+    }
+
+    /// A fresh simulator with an explicit seed and sum-tier budget.
+    pub fn with_policy(num_qubits: u32, seed: u64, policy: SumPolicy) -> Self {
         AutoSim {
             n: num_qubits,
             mode: Mode::Stabilizer {
@@ -375,6 +130,8 @@ impl AutoSim {
                 log: Vec::new(),
                 rng: Rng::new(seed),
             },
+            policy,
+            pending_error: None,
         }
     }
 
@@ -432,22 +189,112 @@ impl AutoSim {
         Some(sv)
     }
 
-    /// Switch to dense state-vector mode by replaying the logged prefix.
-    async fn fall_back(&mut self) {
-        let log = match &mut self.mode {
-            Mode::Stabilizer { log, .. } => std::mem::take(log),
-            Mode::StateVector(_) => return,
+    /// Replay a recorded Clifford prefix into a rank-1 sum state.
+    fn replay_sum(n: u32, log: &[Op]) -> SumState {
+        let mut sum = SumState::zero(n as usize);
+        for op in log {
+            match op {
+                Op::U {
+                    target,
+                    theta,
+                    phi,
+                    lambda,
+                    controls,
+                    neg_controls,
+                    power,
+                } => {
+                    let m = GateModifiers {
+                        controls: controls.clone(),
+                        neg_controls: neg_controls.clone(),
+                        power: *power,
+                    };
+                    let r = sum.apply_u(*target, *theta, *phi, *lambda, &m, usize::MAX);
+                    debug_assert!(r.is_ok());
+                }
+                Op::Gphase {
+                    gamma,
+                    controls,
+                    neg_controls,
+                    power,
+                } => {
+                    let m = GateModifiers {
+                        controls: controls.clone(),
+                        neg_controls: neg_controls.clone(),
+                        power: *power,
+                    };
+                    let r = sum.apply_gphase(*gamma, &m, usize::MAX);
+                    debug_assert!(r.is_ok());
+                }
+                Op::Measure { qubit, outcome } => sum.project(*qubit as usize, *outcome),
+                Op::Reset { qubit, outcome } => {
+                    sum.project(*qubit as usize, *outcome);
+                    if *outcome {
+                        // The dense replay flips with `U(π,0,π)` = i·X;
+                        // stay phase-identical to it.
+                        sum.x(*qubit as usize);
+                        sum.phase(Complex::new(0.0, 1.0));
+                    }
+                }
+            }
+        }
+        debug_assert_eq!(sum.rank(), 1, "Clifford prefix grew the sum");
+        sum
+    }
+
+    /// Tableau → sum handoff: the tableau can't take the pending op.
+    fn enter_sum(&mut self) {
+        let (log, rng) = match &mut self.mode {
+            Mode::Stabilizer { log, rng, .. } => {
+                (std::mem::take(log), std::mem::replace(rng, Rng::new(0)))
+            }
+            _ => return,
         };
-        let sv = Self::replay(self.n, &log)
-            .await
-            .expect("state vector allocation on Clifford fallback");
-        self.mode = Mode::StateVector(sv);
+        let sum = Self::replay_sum(self.n, &log);
+        self.mode = Mode::Sum { sum, log, rng };
+    }
+
+    /// Sum → dense escalation after a rank-budget overflow. Returns `true`
+    /// if execution can continue on a dense state vector; otherwise parks
+    /// a [`VmErrorKind::RankOverflow`] and returns `false`.
+    async fn escalate(&mut self, needed: usize) -> bool {
+        if self.policy.dense_escape {
+            let log = match &mut self.mode {
+                Mode::Sum { log, .. } => std::mem::take(log),
+                _ => return true,
+            };
+            if let Some(sv) = Self::replay(self.n, &log).await {
+                self.mode = Mode::StateVector(sv);
+                return true;
+            }
+            // 2ⁿ amplitudes don't fit: restore the log and fail below.
+            if let Mode::Sum { log: l, .. } = &mut self.mode {
+                *l = log;
+            }
+        }
+        self.pending_error = Some(VmErrorKind::RankOverflow {
+            rank: needed,
+            max_rank: self.policy.max_rank,
+            qubits: self.n,
+        });
+        false
+    }
+
+    #[cfg(test)]
+    fn mode_name(&self) -> &'static str {
+        match self.mode {
+            Mode::Stabilizer { .. } => "stabilizer",
+            Mode::Sum { .. } => "sum",
+            Mode::StateVector(_) => "dense",
+        }
     }
 }
 
 #[async_trait(?Send)]
 impl QuantumBackend for AutoSim {
     async fn u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
+        if self.pending_error.is_some() {
+            return;
+        }
         if let Mode::Stabilizer { tab, log, .. } = &mut self.mode {
             if apply_clifford_u(tab, target, theta, phi, lambda, m) {
                 log.push(Op::U {
@@ -461,8 +308,31 @@ impl QuantumBackend for AutoSim {
                 });
                 return;
             }
-            // Non-Clifford: fall back, then apply on the state vector.
-            self.fall_back().await;
+            // Non-Clifford: convert the prefix into a sum state.
+            self.enter_sum();
+        }
+        let mut overflow = None;
+        if let Mode::Sum { sum, log, .. } = &mut self.mode {
+            match sum.apply_u(target, theta, phi, lambda, m, self.policy.max_rank) {
+                Ok(()) => {
+                    log.push(Op::U {
+                        target,
+                        theta,
+                        phi,
+                        lambda,
+                        controls: m.controls.clone(),
+                        neg_controls: m.neg_controls.clone(),
+                        power: m.power,
+                    });
+                    return;
+                }
+                Err(needed) => overflow = Some(needed),
+            }
+        }
+        if let Some(needed) = overflow
+            && !self.escalate(needed).await
+        {
+            return;
         }
         if let Mode::StateVector(sv) = &mut self.mode {
             sv.u(target, theta, phi, lambda, m).await;
@@ -470,6 +340,9 @@ impl QuantumBackend for AutoSim {
     }
 
     async fn gphase(&mut self, gamma: f64, m: &GateModifiers) {
+        if self.pending_error.is_some() {
+            return;
+        }
         if let Mode::Stabilizer { tab, log, .. } = &mut self.mode {
             // Uncontrolled phase: no tableau effect but logged for a faithful
             // state-vector readout. A single-control phase is a Clifford phase
@@ -484,7 +357,27 @@ impl QuantumBackend for AutoSim {
                 });
                 return;
             }
-            self.fall_back().await;
+            self.enter_sum();
+        }
+        let mut overflow = None;
+        if let Mode::Sum { sum, log, .. } = &mut self.mode {
+            match sum.apply_gphase(gamma, m, self.policy.max_rank) {
+                Ok(()) => {
+                    log.push(Op::Gphase {
+                        gamma,
+                        controls: m.controls.clone(),
+                        neg_controls: m.neg_controls.clone(),
+                        power: m.power,
+                    });
+                    return;
+                }
+                Err(needed) => overflow = Some(needed),
+            }
+        }
+        if let Some(needed) = overflow
+            && !self.escalate(needed).await
+        {
+            return;
         }
         if let Mode::StateVector(sv) = &mut self.mode {
             sv.gphase(gamma, m).await;
@@ -492,9 +385,17 @@ impl QuantumBackend for AutoSim {
     }
 
     async fn measure(&mut self, qubit: u32) -> bool {
+        if self.pending_error.is_some() {
+            return false;
+        }
         match &mut self.mode {
             Mode::Stabilizer { tab, log, rng } => {
                 let outcome = tab.measure(qubit as usize, rng);
+                log.push(Op::Measure { qubit, outcome });
+                outcome
+            }
+            Mode::Sum { sum, log, rng } => {
+                let outcome = sum.measure(qubit as usize, rng);
                 log.push(Op::Measure { qubit, outcome });
                 outcome
             }
@@ -503,12 +404,19 @@ impl QuantumBackend for AutoSim {
     }
 
     async fn reset(&mut self, qubit: u32) {
+        if self.pending_error.is_some() {
+            return;
+        }
         match &mut self.mode {
             Mode::Stabilizer { tab, log, rng } => {
                 let outcome = tab.measure(qubit as usize, rng);
                 if outcome {
                     tab.x(qubit as usize);
                 }
+                log.push(Op::Reset { qubit, outcome });
+            }
+            Mode::Sum { sum, log, rng } => {
+                let outcome = sum.reset(qubit as usize, rng);
                 log.push(Op::Reset { qubit, outcome });
             }
             Mode::StateVector(sv) => sv.reset(qubit).await,
@@ -518,6 +426,8 @@ impl QuantumBackend for AutoSim {
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
         match &self.mode {
             Mode::StateVector(sv) => sv.amplitudes().await,
+            // Exact and phase-faithful straight from the sum.
+            Mode::Sum { sum, .. } => sum.amplitudes(),
             Mode::Stabilizer { log, .. } => {
                 // Materialize the stabilizer state as a vector (only sensible
                 // for modest n — e.g. `--state` / tests).
@@ -525,6 +435,10 @@ impl QuantumBackend for AutoSim {
                 sv.amplitudes().await
             }
         }
+    }
+
+    fn take_error(&mut self) -> Option<VmErrorKind> {
+        self.pending_error.take()
     }
 }
 
@@ -703,6 +617,9 @@ mod tests {
         let n = 4u32;
         let mut auto = AutoSim::new(n);
         mixed_circuit(&mut auto).await;
+        // A few non-Clifford gates fit comfortably in the default budget:
+        // the run must stay exact in the sum tier, not go dense.
+        assert_eq!(auto.mode_name(), "sum");
         let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
         mixed_circuit(&mut sv).await;
 
@@ -712,5 +629,97 @@ mod tests {
         for (x, y) in a.iter().zip(&b) {
             assert!((x - y).norm() < 1e-9, "fallback mismatch: {x} vs {y}");
         }
+    }
+
+    /// A tiny rank budget forces the third (dense) tier mid-circuit; the
+    /// result must still match the pure state-vector sim exactly.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tiny_budget_escalates_to_dense() {
+        let n = 4u32;
+        let policy = SumPolicy {
+            max_rank: 2,
+            dense_escape: true,
+        };
+        let mut auto = AutoSim::with_policy(n, SEED, policy);
+        mixed_circuit(&mut auto).await;
+        assert_eq!(auto.mode_name(), "dense");
+        assert!(auto.take_error().is_none());
+        let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
+        mixed_circuit(&mut sv).await;
+
+        let a = auto.amplitudes().await.unwrap();
+        let b = sv.amplitudes().await.unwrap();
+        for (x, y) in a.iter().zip(&b) {
+            assert!((x - y).norm() < 1e-9, "escalation mismatch: {x} vs {y}");
+        }
+    }
+
+    /// Measurements recorded in tableau mode replay correctly through the
+    /// tableau → sum handoff — both deterministic and random outcomes.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn handoff_replays_measurements() {
+        let none = GateModifiers::none();
+        for seed in 0..10u64 {
+            let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
+            let mut auto = AutoSim::with_seed(3, s);
+            // Random outcome (Bell pair), then a deterministic one (X|0⟩).
+            apply(&mut auto, G::H(0)).await;
+            apply(&mut auto, G::Cx(0, 1)).await;
+            let o0 = auto.measure(0).await;
+            apply(&mut auto, G::X(2)).await;
+            auto.reset(2).await; // deterministic 1, recorded reset
+            assert_eq!(auto.mode_name(), "stabilizer");
+            // First non-Clifford triggers the handoff replay.
+            auto.u(1, 0.0, 0.0, FRAC_PI_4, &none).await;
+            apply(&mut auto, G::H(1)).await;
+            assert_eq!(auto.mode_name(), "sum");
+
+            let mut sv = StateVectorSim::<f64>::try_zeroed(3, 0).unwrap();
+            apply(&mut sv, G::H(0)).await;
+            apply(&mut sv, G::Cx(0, 1)).await;
+            sv.project(0, o0);
+            apply(&mut sv, G::X(2)).await;
+            sv.project(2, true);
+            apply(&mut sv, G::X(2)).await;
+            sv.u(1, 0.0, 0.0, FRAC_PI_4, &none).await;
+            apply(&mut sv, G::H(1)).await;
+
+            let a = auto.amplitudes().await.unwrap();
+            let b = sv.amplitudes().await.unwrap();
+            for (x, y) in a.iter().zip(&b) {
+                assert!((x - y).norm() < 1e-9, "handoff mismatch: {x} vs {y}");
+            }
+        }
+    }
+
+    /// When the budget overflows and the dense state can't be allocated,
+    /// the backend parks a `RankOverflow` and no-ops instead of panicking.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rank_overflow_is_parked_not_panicked() {
+        let n = 60u32; // 2^60 amplitudes can never be allocated
+        let policy = SumPolicy {
+            max_rank: 8,
+            dense_escape: true,
+        };
+        let mut auto = AutoSim::with_policy(n, SEED, policy);
+        let none = GateModifiers::none();
+        apply(&mut auto, G::H(0)).await;
+        for _ in 0..6 {
+            auto.u(0, 0.0, 0.0, FRAC_PI_4, &none).await; // T
+        }
+        assert!(!auto.measure(0).await, "errored backend must no-op");
+        match auto.take_error() {
+            Some(crate::error::VmErrorKind::RankOverflow {
+                rank,
+                max_rank,
+                qubits,
+            }) => {
+                assert!(rank > max_rank);
+                assert_eq!(max_rank, 8);
+                assert_eq!(qubits, n);
+            }
+            other => panic!("expected RankOverflow, got {other:?}"),
+        }
+        assert!(auto.take_error().is_none(), "error must be taken once");
     }
 }

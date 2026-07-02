@@ -23,6 +23,7 @@ impl Diagnostic for VmError {
             VmErrorKind::TooManyQubits { .. } => 12,
             VmErrorKind::Pulse(_) => 13,
             VmErrorKind::Extern { .. } => 14,
+            VmErrorKind::RankOverflow { .. } => 15,
         };
         Code::runtime(num)
     }
@@ -47,6 +48,7 @@ impl Diagnostic for VmError {
             VmErrorKind::TooManyQubits { .. } => "too many qubits",
             VmErrorKind::Pulse(_) => "pulse error",
             VmErrorKind::Extern { .. } => "extern call failed",
+            VmErrorKind::RankOverflow { .. } => "sum-over-Cliffords budget exhausted",
         };
         vec![DiagLabel::primary(self.span.unwrap_or_default(), pointer)]
     }
@@ -59,6 +61,12 @@ impl Diagnostic for VmError {
             VmErrorKind::UnknownExtern(name) => {
                 vec![format!(
                     "no implementation is registered for extern `{name}`"
+                )]
+            }
+            VmErrorKind::RankOverflow { max_rank, .. } => {
+                vec![format!(
+                    "each non-Clifford gate multiplies the stabilizer term \
+                     count; the budget is {max_rank} (see `--max-rank`)"
                 )]
             }
             _ => Vec::new(),

@@ -9,6 +9,7 @@
 //! bare sign — this keeps Pauli multiplication total (the transient odd-phase
 //! row produced during a random measurement is overwritten immediately).
 
+use crate::clifford::CliffordSink;
 use crate::sim::Rng;
 
 #[derive(Clone)]
@@ -166,5 +167,26 @@ impl Tableau {
             self.rows[h].x[j] ^= xi;
             self.rows[h].z[j] ^= zi;
         }
+    }
+}
+
+/// The tableau is a phase-blind Clifford sink: global phase is not part of
+/// the stabilizer formalism, so [`CliffordSink::phase`] keeps its no-op
+/// default.
+impl CliffordSink for Tableau {
+    fn h(&mut self, q: usize) {
+        Tableau::h(self, q);
+    }
+    fn s(&mut self, q: usize) {
+        Tableau::s(self, q);
+    }
+    fn cnot(&mut self, c: usize, t: usize) {
+        Tableau::cnot(self, c, t);
+    }
+    fn cz(&mut self, c: usize, t: usize) {
+        Tableau::cz(self, c, t);
+    }
+    fn cy(&mut self, c: usize, t: usize) {
+        Tableau::cy(self, c, t);
     }
 }

@@ -685,21 +685,21 @@ impl<'a> EmitCtx<'a> {
                 // A slice or multi-element target (`reg[a:b] = ...`) writes a
                 // multi-bit value across several positions. Resolve the
                 // positions statically and emit a slice store.
-                if let Some(io) = indices.first().filter(|io| is_multi_index(io)) {
-                    if let Some(len) = self.symbol_bit_len(old.symbol) {
-                        let positions = qubits::resolve_static_index(io, len)?;
-                        let value = self.rvalue_to_operand(value, instrs, reg_map)?;
-                        instrs.push(BcInstr {
-                            op: BcOp::StoreSlice {
-                                new: new_reg,
-                                base,
-                                indices: positions.iter().map(|&i| i as u32).collect(),
-                                value,
-                            },
-                            span,
-                        });
-                        return Ok(());
-                    }
+                if let Some(io) = indices.first().filter(|io| is_multi_index(io))
+                    && let Some(len) = self.symbol_bit_len(old.symbol)
+                {
+                    let positions = qubits::resolve_static_index(io, len)?;
+                    let value = self.rvalue_to_operand(value, instrs, reg_map)?;
+                    instrs.push(BcInstr {
+                        op: BcOp::StoreSlice {
+                            new: new_reg,
+                            base,
+                            indices: positions.iter().map(|&i| i as u32).collect(),
+                            value,
+                        },
+                        span,
+                    });
+                    return Ok(());
                 }
                 // Fallback: collapse a slice index to its first element
                 // (v1 single-dimension behavior).

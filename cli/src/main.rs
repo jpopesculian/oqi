@@ -13,7 +13,7 @@ use oqi_compile::symbol::{SymbolId, SymbolKind};
 use oqi_compile::types::CompileOptions;
 use oqi_compile::{bytecode, cfg, duration, qubits, ssa};
 use oqi_format::Config;
-use oqi_vm::{AutoSim, NoExterns, QuantumBackend, SimdSim, StateVectorSim, Vm};
+use oqi_vm::{AutoSim, NoExterns, QuantumBackend, SimdSim, StateVectorSim, SumPolicy, Vm};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 /// Amplitude precision for the simulator backend.
@@ -39,9 +39,13 @@ enum BackendKind {
     /// WebGPU (wgpu) state-vector simulator (single precision; needs the
     /// `gpu` build feature and a working GPU adapter).
     Gpu,
-    /// Auto-routing: stabilizer (Clifford) tableau, falling back to the
-    /// state-vector sim on the first non-Clifford gate.
+    /// Auto-routing: stabilizer (Clifford) tableau, then an exact
+    /// sum-over-Cliffords for non-Clifford gates, escalating to the
+    /// state-vector sim only when the term budget is exhausted.
     Auto,
+    /// Like `auto` but pinned to the sum-over-Cliffords tier: exceeding
+    /// the term budget is an error instead of a dense fallback.
+    Sum,
 }
 
 #[derive(Parser)]
@@ -190,6 +194,12 @@ enum Command {
         #[arg(long, value_enum, default_value_t = Precision::F64)]
         precision: Precision,
 
+        /// Maximum stabilizer terms for the auto/sum backends' exact
+        /// sum-over-Cliffords tier (each non-Clifford gate multiplies the
+        /// term count by 2-3)
+        #[arg(long, default_value_t = 1024)]
+        max_rank: usize,
+
         /// Supply a value for a declared input (repeatable)
         #[arg(long = "input", value_name = "NAME=VALUE")]
         input: Vec<String>,
@@ -224,9 +234,10 @@ async fn main() -> ExitCode {
             state,
             backend,
             precision,
+            max_rank,
             input,
             timing,
-        } => run(&path, state, backend, precision, &input, &timing).await,
+        } => run(&path, state, backend, precision, max_rank, &input, &timing).await,
         Command::Fmt {
             compact,
             stdout,
@@ -275,6 +286,7 @@ async fn run(
     show_state: bool,
     backend: BackendKind,
     precision: Precision,
+    max_rank: usize,
     input_specs: &[String],
     timing: &TimingArgs,
 ) -> ExitCode {
@@ -329,7 +341,7 @@ async fn run(
                 return ExitCode::FAILURE;
             }
         },
-        _ => match build_backend(backend, precision, module.qubits.num_qubits) {
+        _ => match build_backend(backend, precision, max_rank, module.qubits.num_qubits) {
             Ok(s) => s,
             Err(e) => {
                 oqi_diagnostics::emit(&e, path, &source);
@@ -387,12 +399,21 @@ fn parse_dt(spec: &str) -> Result<Duration, String> {
 fn build_backend(
     backend: BackendKind,
     precision: Precision,
+    max_rank: usize,
     num_qubits: u32,
 ) -> Result<Box<dyn QuantumBackend>, oqi_vm::VmError> {
-    // Auto-routing is exact (stabilizer tableau); precision is irrelevant
-    // until it falls back, which uses f64.
-    if matches!(backend, BackendKind::Auto) {
-        return Ok(Box::new(AutoSim::new(num_qubits)));
+    // Auto-routing is exact (stabilizer tableau + sum-over-Cliffords);
+    // precision is irrelevant until it escalates to dense, which uses f64.
+    if matches!(backend, BackendKind::Auto | BackendKind::Sum) {
+        let policy = SumPolicy {
+            max_rank,
+            dense_escape: matches!(backend, BackendKind::Auto),
+        };
+        return Ok(Box::new(AutoSim::with_policy(
+            num_qubits,
+            DEFAULT_SEED,
+            policy,
+        )));
     }
     let simd = matches!(backend, BackendKind::Simd | BackendKind::RayonSimd);
     let par = matches!(backend, BackendKind::Rayon | BackendKind::RayonSimd);

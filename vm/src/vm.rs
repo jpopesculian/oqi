@@ -535,8 +535,23 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 args,
                 qubits,
             } => {
-                self.exec_gate_call(*gate, modifiers, args, qubits, frame)
-                    .await
+                let call_span = self.current_span;
+                let r = self
+                    .exec_gate_call(*gate, modifiers, args, qubits, frame)
+                    .await;
+                // Flattening the gate body (recursion / `pow` replay) moves
+                // `current_span` into the decomposition — down to synthetic
+                // spans in the embedded `stdgates.inc`. Restore this call
+                // site's span so an error from the body is attributed to the
+                // instruction the user wrote, keeping it in range of the
+                // rendered source.
+                self.current_span = call_span;
+                // Backend primitives are infallible; surface any deferred
+                // error (e.g. a sum-over-Cliffords budget overflow) here.
+                if let Some(kind) = self.backend.take_error() {
+                    return Err(kind);
+                }
+                r
             }
             BcOp::Measure { dest, qubit } => {
                 // Defcal dispatch: `measure $n` runs a matching measure
@@ -586,6 +601,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         bits |= 1 << i;
                     }
                 }
+                if let Some(kind) = self.backend.take_error() {
+                    return Err(kind);
+                }
                 if let Some(d) = dest {
                     let v = if qs.len() == 1 {
                         Value::bit(bits & 1 != 0)
@@ -611,6 +629,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 }
                 for q in self.qubits(frame, qubit)? {
                     self.backend.reset(q).await;
+                }
+                if let Some(kind) = self.backend.take_error() {
+                    return Err(kind);
                 }
                 Ok(())
             }

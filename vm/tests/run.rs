@@ -8,7 +8,7 @@ use oqi_compile::lower::compile_source;
 use oqi_compile::resolve::DefaultIncludeResolver;
 use oqi_compile::symbol::SymbolId;
 use oqi_compile::{cfg, qubits, ssa};
-use oqi_vm::{AutoSim, FnRegistry, NoExterns, StateVectorSim, Vm, VmError, VmErrorKind};
+use oqi_vm::{AutoSim, FnRegistry, NoExterns, StateVectorSim, SumPolicy, Vm, VmError, VmErrorKind};
 
 /// Drive an async VM call to completion on a shared multi-threaded tokio
 /// runtime (the VM is async now; tests are sync). `block_on` runs the future
@@ -93,6 +93,102 @@ fn auto_backend_scales_to_200_qubits() {
         m.iter().all(|&(_, b)| b == first),
         "GHZ outcomes not all equal"
     );
+}
+
+#[test]
+fn sum_tier_scales_past_dense_limits() {
+    // H T⁴ H = H Z H = X: sixteen sum-over-Cliffords terms must interfere
+    // back into a deterministic |1⟩, which a 100-qubit CX chain then
+    // copies to the far end. Impossible for a dense state vector (2¹⁰⁰
+    // amplitudes); the T gates also rule the plain tableau out.
+    let n = 100u32;
+    let mut src = String::from(
+        "include \"stdgates.inc\";\nqubit[100] q;\nh q[0];\nt q[0];\nt q[0];\nt q[0];\nt q[0];\nh q[0];\n",
+    );
+    for i in 0..n - 1 {
+        src.push_str(&format!("cx q[{i}], q[{}];\n", i + 1));
+    }
+    src.push_str("bit c0 = measure q[0];\nbit c99 = measure q[99];\n");
+
+    let module = build(&src);
+    let mut vm = Vm::new(&module, AutoSim::new(module.qubits.num_qubits), NoExterns);
+    let m = block_on(vm.run()).expect("run").measurements;
+    assert_eq!(m, vec![(0, true), (99, true)]);
+}
+
+#[test]
+fn sum_tier_toffoli_at_scale() {
+    // A Toffoli with both controls set flips its target — at 100 qubits,
+    // exercising the controlled-anti-diagonal decomposition in the sum
+    // tier where no dense representation exists.
+    let src = r#"
+        include "stdgates.inc";
+        qubit[100] q;
+        x q[0];
+        x q[1];
+        ccx q[0], q[1], q[2];
+        bit[3] c;
+        measure q[0:2] -> c[0:2];
+    "#;
+    let module = build(src);
+    let mut vm = Vm::new(&module, AutoSim::new(module.qubits.num_qubits), NoExterns);
+    let m = block_on(vm.run()).expect("run").measurements;
+    assert_eq!(m, vec![(0, true), (1, true), (2, true)]);
+}
+
+#[test]
+fn sum_tier_rank_overflow_is_a_spanned_error() {
+    // Five T gates want 32 stabilizer terms; with a budget of 8 and a
+    // 40-qubit register whose 2⁴⁰-amplitude dense state can't be
+    // allocated, the run must fail with a spanned RankOverflow, not panic.
+    let src = r#"
+        include "stdgates.inc";
+        qubit[40] q;
+        h q[0];
+        t q[0];
+        t q[0];
+        t q[0];
+        t q[0];
+        t q[0];
+        bit c = measure q[0];
+    "#;
+    let module = build(src);
+    let policy = SumPolicy {
+        max_rank: 8,
+        dense_escape: true,
+    };
+    let sim = AutoSim::with_policy(module.qubits.num_qubits, 0xABCD, policy);
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    match block_on(vm.run()) {
+        Err(VmError {
+            kind: VmErrorKind::RankOverflow { max_rank: 8, .. },
+            span,
+        }) => assert!(span.is_some(), "RankOverflow should carry a span"),
+        other => panic!("expected RankOverflow, got {other:?}"),
+    }
+}
+
+#[test]
+fn auto_backend_matches_scalar_on_fixtures() {
+    // Deterministic fixtures must produce identical measurement logs on
+    // the auto router and the scalar simulator. The adder's eight
+    // Toffolis overflow the default term budget mid-run, so it also
+    // exercises the sum → dense escalation on a real program.
+    for src in [
+        include_str!("../../fixtures/qasm/adder.qasm"),
+        include_str!("../../fixtures/qasm/cphase.qasm"),
+    ] {
+        let module = build(src);
+        let scalar = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
+        let mut vm = Vm::new(&module, scalar, NoExterns);
+        let expect = block_on(vm.run()).expect("scalar run").measurements;
+
+        let module = build(src);
+        let auto = AutoSim::with_seed(module.qubits.num_qubits, 0xABCD);
+        let mut vm = Vm::new(&module, auto, NoExterns);
+        let got = block_on(vm.run()).expect("auto run").measurements;
+        assert_eq!(got, expect);
+    }
 }
 
 #[test]

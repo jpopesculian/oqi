@@ -243,14 +243,30 @@ pub struct StateVector<F> {
     global_phase: F,
 }
 
+/// Ceiling on a dense state vector's byte size. On an overcommitting allocator
+/// a multi-TiB `try_reserve_exact` can succeed and only OOM-kill the process
+/// when the pages are faulted in, so [`StateVector::try_zero`] refuses anything
+/// larger up front. 2^34 B = 16 GiB ≈ 30 qubits (f64) — far above any real CPU
+/// state-vector run, far below where overcommit bites.
+const MAX_STATE_VECTOR_BYTES: usize = 1 << 34;
+
 impl<F: Float> StateVector<F> {
     /// Allocate the |0…0⟩ state for `size` qubits, or `None` if its
-    /// `2^size`-amplitude vector cannot be allocated — either the length
-    /// overflows `usize` or the allocator can't satisfy the request. This
-    /// lets callers fail gracefully on oversized circuits instead of
-    /// aborting the process on an infallible allocation.
+    /// `2^size`-amplitude vector cannot be allocated — the length overflows
+    /// `usize`, its byte size exceeds [`MAX_STATE_VECTOR_BYTES`], or the
+    /// allocator can't satisfy the request. This lets callers fail gracefully
+    /// on oversized circuits instead of aborting the process on an infallible
+    /// allocation.
     pub fn try_zero(size: usize) -> Option<Self> {
         let len = 1usize.checked_shl(size as u32)?;
+        // On an overcommitting allocator the `try_reserve_exact` below can be
+        // granted for a multi-TiB vector and only OOM-kill the process when
+        // `resize` faults in the pages. Refuse allocations past the ceiling so
+        // callers fail gracefully instead.
+        let bytes = len.checked_mul(std::mem::size_of::<Complex<F>>())?;
+        if bytes > MAX_STATE_VECTOR_BYTES {
+            return None;
+        }
         let mut state: Vec<Complex<F>> = Vec::new();
         state.try_reserve_exact(len).ok()?;
         state.resize(len, Complex::zero());

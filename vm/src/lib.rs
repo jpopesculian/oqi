@@ -13,6 +13,8 @@
 pub mod auto;
 pub mod backend;
 pub mod cal;
+pub(crate) mod ch;
+pub(crate) mod clifford;
 pub mod diagnostic;
 pub mod error;
 pub mod extern_fns;
@@ -21,9 +23,10 @@ pub mod gpu;
 pub mod sim;
 pub mod sim_simd;
 pub(crate) mod stabilizer;
+pub(crate) mod sum;
 pub mod vm;
 
-pub use auto::AutoSim;
+pub use auto::{AutoSim, SumPolicy};
 pub use backend::{GateModifiers, QuantumBackend};
 pub use cal::{FrameHandle, OpaqueCalHandler, OpenPulseHandler, PortHandle, WaveformHandle};
 pub use error::{Result, VmError, VmErrorKind};

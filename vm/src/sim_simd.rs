@@ -132,6 +132,18 @@ impl<F: SimdLane> SimdSim<F> {
             })
         };
         let len = 1usize.checked_shl(num_qubits).ok_or_else(too_many)?;
+        // Match StateVector::try_zero: an overcommitting allocator can grant the
+        // reservations below for a multi-TiB pair of arrays and only OOM-kill
+        // the process when `resize` faults the pages in. Refuse anything past
+        // the same 16 GiB ceiling up front. The re/im arrays together hold
+        // 2·len·size_of::<F>() bytes.
+        const MAX_SIMD_STATE_BYTES: usize = 1 << 34;
+        let bytes = len
+            .checked_mul(2 * std::mem::size_of::<F>())
+            .ok_or_else(too_many)?;
+        if bytes > MAX_SIMD_STATE_BYTES {
+            return Err(too_many());
+        }
         let mut re: Vec<F> = Vec::new();
         let mut im: Vec<F> = Vec::new();
         re.try_reserve_exact(len).map_err(|_| too_many())?;

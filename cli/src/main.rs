@@ -171,7 +171,7 @@ async fn run(
     };
     let ssa = ssa::build_program(&cfgs, &program.symbols);
     let layout = qubits::build_layout(&program);
-    let module = match bytecode::emit(&ssa, &program.symbols, layout) {
+    let module = match bytecode::emit(&ssa, &program, layout) {
         Ok(m) => m,
         Err(e) => return report_compile_error(path, &source, e),
     };

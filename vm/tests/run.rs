@@ -27,7 +27,7 @@ fn build(src: &str) -> BcModule {
     let cfgs = cfg::build_program(&program).expect("cfg");
     let ssa = ssa::build_program(&cfgs, &program.symbols);
     let layout = qubits::build_layout(&program);
-    emit(&ssa, &program.symbols, layout).expect("emit")
+    emit(&ssa, &program, layout).expect("emit")
 }
 
 /// Run with the CPU simulator and no externs; return the measurement log.
@@ -1040,4 +1040,101 @@ fn physical_qubits_size_the_register() {
         "#,
     );
     assert_eq!(m, vec![(0, true), (1, false), (2, true)]);
+}
+
+// ── durationof ───────────────────────────────────────────────────────
+
+/// Delays accumulate onto one timeline, with unit normalization
+/// (100ns + 1us = 1100ns).
+#[test]
+fn durationof_accumulates_delays_across_units() {
+    let outs = run_outputs(
+        r#"
+            duration d = durationof({ delay[100ns] $0; delay[1us] $0; });
+        "#,
+    );
+    assert_eq!(outs, vec![("d".to_string(), "1100ns".to_string())]);
+}
+
+/// `durationof` references a duration — it must not execute the
+/// block's gates. Uncalibrated gates contribute zero time.
+#[test]
+fn durationof_does_not_execute_gates() {
+    let module = build(
+        r#"
+            include "stdgates.inc";
+            qubit q;
+            duration d = durationof({ x q; });
+            bit c = measure q;
+        "#,
+    );
+    let sim = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    let result = block_on(vm.run()).expect("run");
+    // The X inside durationof never applied: q measures 0.
+    assert_eq!(result.measurements, vec![(0, false)]);
+    let d = result
+        .outputs
+        .iter()
+        .find(|(sym, _)| module.symbols.get(*sym).name == "d")
+        .map(|(_, v)| v.to_string())
+        .expect("output d");
+    assert_eq!(d, "0ns");
+}
+
+/// A measure inside a timing pass yields a deterministic 0 and is not
+/// recorded in the measurement log.
+#[test]
+fn measure_inside_durationof_records_nothing() {
+    let m = run_measurements(
+        r#"
+            qubit q;
+            duration d = durationof({ bit b = measure q; });
+        "#,
+    );
+    assert!(m.is_empty());
+}
+
+/// `box[d]` pins its subcircuit to `d`: the body's delays don't count
+/// on top of it.
+#[test]
+fn box_with_duration_pins_durationof() {
+    let outs = run_outputs(
+        r#"
+            duration d = durationof({ box[2us] { delay[5us] $0; } });
+        "#,
+    );
+    assert_eq!(outs, vec![("d".to_string(), "2us".to_string())]);
+}
+
+/// Control flow inside the block runs so per-iteration delays count.
+#[test]
+fn durationof_loop_accumulates() {
+    let outs = run_outputs(
+        r#"
+            duration d = durationof({
+                for uint i in [1:3] { delay[10ns] $0; }
+            });
+        "#,
+    );
+    assert_eq!(outs, vec![("d".to_string(), "30ns".to_string())]);
+}
+
+/// The spec's T1 pattern — `delay[p * durationof({x $1;})]` — runs end
+/// to end (duration arithmetic on the durationof result).
+#[test]
+fn t1_style_durationof_delay_pattern_runs() {
+    let m = run_measurements(
+        r#"
+            include "stdgates.inc";
+            bit c0;
+            for int p in [0:2] {
+                reset $0;
+                x $0;
+                delay[p * durationof({x $1;})];
+                c0 = measure $0;
+            }
+        "#,
+    );
+    assert_eq!(m, vec![(0, true), (0, true), (0, true)]);
 }

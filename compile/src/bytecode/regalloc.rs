@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use oqi_classical::ValueTy;
+use oqi_classical::{PrimitiveTy, ValueTy, iw};
 
 use crate::sir::{
     Alias, Binary, Call, Cast, Delay, GateCall, GateModifier, Index, IndexItem, IndexKind, IndexOp,
@@ -20,6 +20,7 @@ use crate::ssa::{
     SsaValue,
 };
 use crate::symbol::SymbolTable;
+use crate::types::Type;
 
 use super::types::Reg;
 
@@ -64,11 +65,22 @@ pub fn allocate_registers(cfg: &SsaCfg, symbols: &SymbolTable) -> RegMap {
     map
 }
 
+/// The register type backing a symbol of type `ty`, if it lives in a
+/// register. Classical types use their value type; openpulse values
+/// (ports, frames, waveforms) are opaque handles minted by the VM's
+/// pulse handler, carried in a `uint[64]` register.
+pub(crate) fn reg_value_ty(ty: &Type) -> Option<ValueTy> {
+    match ty {
+        Type::Openpulse(_) => Some(ValueTy::Scalar(PrimitiveTy::Uint(iw(64)))),
+        _ => ty.value_ty(),
+    }
+}
+
 fn try_alloc(map: &mut RegMap, symbols: &SymbolTable, v: SsaValue) {
-    if let Some(ty) = symbols.get(v.symbol).ty.value_ty() {
+    if let Some(ty) = reg_value_ty(&symbols.get(v.symbol).ty) {
         map.alloc(v, ty);
     }
-    // Symbols without a `ValueTy` (qubits etc.) don't go into registers.
+    // Symbols without a register type (qubits etc.) don't go into registers.
 }
 
 fn visit_stmt(kind: &SsaStmtKind, map: &mut RegMap, symbols: &SymbolTable) {

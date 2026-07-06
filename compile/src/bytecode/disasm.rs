@@ -4,8 +4,9 @@
 use std::fmt;
 
 use super::types::{
-    BcAliasSegment, BcBlock, BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand,
-    BcSwitchLabels, BcTerminator, BlockId, ConstId, ProcId, ProcOwner, QubitSource, Reg, StringId,
+    BcAliasSegment, BcBlock, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCallTarget,
+    BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcSwitchLabels, BcTerminator, BlockId,
+    ConstId, ProcId, ProcOwner, QubitSource, Reg, StringId,
 };
 
 impl fmt::Display for BcModule {
@@ -13,6 +14,9 @@ impl fmt::Display for BcModule {
         writeln!(f, ".module openqasm 3")?;
         writeln!(f, ".version {}.{}", self.version.major, self.version.minor)?;
         writeln!(f, ".entry proc{}", self.entry.0)?;
+        if let Some(grammar) = &self.calibration_grammar {
+            writeln!(f, ".defcalgrammar {grammar}")?;
+        }
 
         if !self.symbols.is_empty() {
             writeln!(f)?;
@@ -57,6 +61,47 @@ impl fmt::Display for BcModule {
                     write!(f, " ; {}", self.symbols.get(sym).name)?;
                 }
                 writeln!(f)?;
+            }
+        }
+
+        if !self.calibrations.is_empty() {
+            writeln!(f)?;
+            writeln!(f, ".calibrations")?;
+            for (i, cal) in self.calibrations.iter().enumerate() {
+                write!(f, "  cal{i} = ")?;
+                match &cal.target {
+                    BcCalTarget::Measure => write!(f, "measure")?,
+                    BcCalTarget::Reset => write!(f, "reset")?,
+                    BcCalTarget::Delay => write!(f, "delay")?,
+                    BcCalTarget::Gate(s) => write!(f, "gate(s{})", s.0)?,
+                }
+                if !cal.args.is_empty() {
+                    write!(f, "(")?;
+                    for (j, a) in cal.args.iter().enumerate() {
+                        if j > 0 {
+                            write!(f, ", ")?;
+                        }
+                        match a {
+                            BcCalArg::Param(s) => write!(f, "s{}", s.0)?,
+                            BcCalArg::Unsupported => write!(f, "?")?,
+                        }
+                    }
+                    write!(f, ")")?;
+                }
+                for (j, op) in cal.operands.iter().enumerate() {
+                    write!(f, "{}", if j == 0 { " " } else { ", " })?;
+                    match op {
+                        BcCalOperand::Hardware(n) => write!(f, "${n}")?,
+                        BcCalOperand::Any => write!(f, "any")?,
+                    }
+                }
+                if cal.has_return {
+                    write!(f, " -> ret")?;
+                }
+                match &cal.body {
+                    BcCalBody::OpenPulse(p) => writeln!(f, " => {}", fmt_proc(*p))?,
+                    BcCalBody::Opaque(s) => writeln!(f, " => {}", fmt_str(*s))?,
+                }
             }
         }
 
@@ -279,6 +324,13 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
         }
         BcOp::CalOpaque { content } => write!(f, "cal_opaque {}", fmt_str(*content)),
         BcOp::CalOpenPulse { body } => write!(f, "cal_openpulse -> {}", fmt_proc(*body)),
+        BcOp::CalLoad { dest, symbol } => {
+            write!(f, "{} = cal_load s{}", fmt_reg(*dest), symbol.0)
+        }
+        BcOp::CalStore { symbol, src } => {
+            write!(f, "cal_store s{} = ", symbol.0)?;
+            fmt_operand(f, src)
+        }
         BcOp::DurationOf { dest, body } => {
             write!(f, "{} = durationof -> {}", fmt_reg(*dest), fmt_proc(*body))
         }

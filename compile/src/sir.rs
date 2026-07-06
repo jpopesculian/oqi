@@ -74,7 +74,7 @@ pub enum CalibrationTarget {
     Measure,
     Reset,
     Delay,
-    Named(String),
+    Named(SymbolId),
 }
 
 pub enum CalibrationArg {
@@ -84,7 +84,7 @@ pub enum CalibrationArg {
 
 pub enum CalibrationOperand {
     Hardware(usize),
-    Ident(String),
+    Ident(SymbolId),
 }
 
 #[derive(Clone)]

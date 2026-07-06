@@ -9,7 +9,7 @@ oqi-parse = { path = "../parse" }
 oqi-diagnostics = { path = "../diagnostics" }
 oqi-classical = { path = "../classical" }
 oqi-openpulse = { path = "../openpulse" }
-oqi-quantum = { path = "../quantum" }
+oqi-quantum = { path = "../quantum", default-features = false }
 awint = "0.18"
 num-traits = "0.2.19"
 postcard = { version = "1", features = ["alloc"] }

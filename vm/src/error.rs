@@ -34,6 +34,11 @@ pub enum VmErrorKind {
     /// state-vector simulator's exponential memory cost outran available
     /// memory or the addressable limit).
     TooManyQubits { requested: u32 },
+    /// A calibration/pulse operation failed (raised by the installed
+    /// [`OpenPulseHandler`](crate::OpenPulseHandler) /
+    /// [`OpaqueCalHandler`](crate::OpaqueCalHandler), or by the VM when
+    /// pulse state is inconsistent).
+    Pulse(String),
     /// Execution reached a block marked unreachable.
     Unreachable,
 }
@@ -70,6 +75,7 @@ impl fmt::Display for VmErrorKind {
                 "program requires {requested} qubits; its state vector \
                  (2^{requested} complex amplitudes) cannot be allocated"
             ),
+            VmErrorKind::Pulse(msg) => write!(f, "pulse error: {msg}"),
             VmErrorKind::Unreachable => write!(f, "reached an unreachable block"),
         }
     }

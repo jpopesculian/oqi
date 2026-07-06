@@ -409,15 +409,16 @@ impl Lowerer {
                     ast::DefcalTarget::Reset(_) => sir::CalibrationTarget::Reset,
                     ast::DefcalTarget::Delay(_) => sir::CalibrationTarget::Delay,
                     ast::DefcalTarget::Ident(id) => {
-                        if self.resolver.symbols().lookup(id.name).is_none() {
-                            self.resolver.declare(
+                        let sym = match self.resolver.symbols().lookup(id.name) {
+                            Some(sym) => sym,
+                            None => self.resolver.declare(
                                 id.name,
                                 SymbolKind::Gate,
                                 Type::Void,
                                 id.span,
-                            )?;
-                        }
-                        sir::CalibrationTarget::Named(id.name.to_string())
+                            )?,
+                        };
+                        sir::CalibrationTarget::Named(sym)
                     }
                 };
                 let (sir_args, sir_operands, ret_ty, sir_body) =
@@ -443,13 +444,13 @@ impl Lowerer {
                                     )?))
                                 }
                                 ast::DefcalOperand::Ident(id) => {
-                                    this.resolver.declare(
+                                    let sym = this.resolver.declare(
                                         id.name,
                                         SymbolKind::GateQubit,
                                         Type::Qubit,
                                         id.span,
                                     )?;
-                                    Ok(sir::CalibrationOperand::Ident(id.name.to_string()))
+                                    Ok(sir::CalibrationOperand::Ident(sym))
                                 }
                             })
                             .collect::<Result<_>>()?;
@@ -3028,7 +3029,7 @@ mod tests {
         let cfgs = crate::cfg::build_program(&program).unwrap();
         let ssa = crate::ssa::build_program(&cfgs, &program.symbols);
         let layout = crate::qubits::build_layout(&program);
-        let module = crate::bytecode::emit(&ssa, &program.symbols, layout).unwrap();
+        let module = crate::bytecode::emit(&ssa, &program, layout).unwrap();
         let proc = module
             .procedures
             .iter()

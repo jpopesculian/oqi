@@ -1,4 +1,5 @@
 /target
+/js/pkg
 __pycache__
 
 .claude/settings.local.json

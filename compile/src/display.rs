@@ -291,7 +291,7 @@ impl fmt::Display for Program {
                 CalibrationTarget::Measure => write!(f, "measure")?,
                 CalibrationTarget::Reset => write!(f, "reset")?,
                 CalibrationTarget::Delay => write!(f, "delay")?,
-                CalibrationTarget::Named(name) => write!(f, "{name}")?,
+                CalibrationTarget::Named(sym) => write!(f, "{}", self.symbols.get(*sym).name)?,
             }
             if !cal.args.is_empty() {
                 write!(f, "(")?;
@@ -313,7 +313,7 @@ impl fmt::Display for Program {
                 write!(f, "{}", if i == 0 { " " } else { ", " })?;
                 match op {
                     CalibrationOperand::Hardware(n) => write!(f, "${n}")?,
-                    CalibrationOperand::Ident(name) => write!(f, "{name}")?,
+                    CalibrationOperand::Ident(sym) => write!(f, "{}", self.symbols.get(*sym).name)?,
                 }
             }
             if let Some(ref ty) = cal.return_ty {

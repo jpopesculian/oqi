@@ -12,6 +12,7 @@
 
 pub mod auto;
 pub mod backend;
+pub mod cal;
 pub mod diagnostic;
 pub mod error;
 pub mod extern_fns;
@@ -24,6 +25,7 @@ pub mod vm;
 
 pub use auto::AutoSim;
 pub use backend::{GateModifiers, QuantumBackend};
+pub use cal::{FrameHandle, OpaqueCalHandler, OpenPulseHandler, PortHandle, WaveformHandle};
 pub use error::{Result, VmError, VmErrorKind};
 pub use extern_fns::{ExternProvider, FnRegistry, NoExterns};
 #[cfg(feature = "gpu")]

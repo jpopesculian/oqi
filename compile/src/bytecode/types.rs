@@ -39,7 +39,7 @@ pub struct BcVersion {
 }
 
 impl BcVersion {
-    pub const CURRENT: BcVersion = BcVersion { major: 1, minor: 0 };
+    pub const CURRENT: BcVersion = BcVersion { major: 2, minor: 0 };
 }
 
 /// Global quantum memory: every named register is statically allocated
@@ -88,6 +88,12 @@ pub struct BcModule {
     /// semantics — if any `output` is declared only those appear, else
     /// every named classical variable. Sorted by symbol id.
     pub outputs: Vec<(SymbolId, Reg)>,
+    /// `defcal` declarations, in declaration order. When a pulse handler
+    /// is installed, the VM dispatches matching gate/measure/reset
+    /// operations on hardware qubits to these bodies.
+    pub calibrations: Vec<BcCalibration>,
+    /// The `defcalgrammar` string, quotes stripped (e.g. `openpulse`).
+    pub calibration_grammar: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -124,6 +130,57 @@ pub enum ProcOwner {
     InlineCal,
     /// Lifted body of a `durationof({...})` expression.
     DurationOf,
+}
+
+// ── Calibrations ─────────────────────────────────────────────────────
+
+/// A `defcal` declaration: the operation it calibrates, its signature,
+/// and its lowered body. With a pulse handler installed, the VM matches
+/// gate/measure/reset operations on hardware qubits against these
+/// (most-specific operand match wins; ties go to the first declared).
+#[derive(Clone, Serialize, Deserialize)]
+pub struct BcCalibration {
+    pub target: BcCalTarget,
+    /// Classical parameter list. A calibration with any
+    /// [`BcCalArg::Unsupported`] entry is never dispatched.
+    pub args: Vec<BcCalArg>,
+    pub operands: Vec<BcCalOperand>,
+    /// True for measure defcals, whose body returns the measured value.
+    pub has_return: bool,
+    pub body: BcCalBody,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BcCalTarget {
+    Measure,
+    Reset,
+    Delay,
+    Gate(SymbolId),
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum BcCalArg {
+    /// A declared parameter, bound positionally to the call's argument.
+    Param(SymbolId),
+    /// An expression specialization (e.g. `defcal rx(pi/2)`); such
+    /// calibrations are not dispatched.
+    Unsupported,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum BcCalOperand {
+    /// A specific hardware qubit: the call's operand must be `$n`.
+    Hardware(u32),
+    /// A named (generic) operand: matches any hardware qubit.
+    Any,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum BcCalBody {
+    /// Lowered OpenPulse body.
+    OpenPulse(ProcId),
+    /// Unlowered text of a non-OpenPulse grammar.
+    Opaque(StringId),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -441,6 +498,23 @@ pub enum BcOp {
     AliasBind {
         slot: u32,
         segments: Vec<BcAliasSegment>,
+    },
+
+    // ── Calibration globals ────────────────────────────────────────
+    // (Appended at the end: postcard encodes variants by index.)
+    /// Read a cal-scope global (a frame/port/waveform shared across all
+    /// cal/defcal bodies) from the VM's pulse-global store. Emitted at
+    /// the entry of every calibration procedure, once per such value
+    /// the body references.
+    CalLoad {
+        dest: Reg,
+        symbol: SymbolId,
+    },
+    /// Write a cal-scope global back to the VM's pulse-global store;
+    /// emitted after each assignment to one.
+    CalStore {
+        symbol: SymbolId,
+        src: BcOperand,
     },
 }
 

@@ -7,20 +7,23 @@
 
 use std::collections::HashMap;
 
+use num_complex::Complex64;
 use oqi_classical::ops::{BinOp, UnOp};
 use oqi_classical::{
-    Array, ArrayTy, DurationUnit, FloatWidth, Index, Primitive, PrimitiveTy, Scalar, Value,
-    ValueTy, iw, ops,
+    Array, ArrayTy, Duration, DurationUnit, FloatWidth, Index, Primitive, PrimitiveTy, Scalar,
+    Value, ValueTy, iw, ops,
 };
 use oqi_compile::bytecode::{
-    BcAliasSegment, BcCallTarget, BcGateModifier, BcModule, BcOp, BcOperand, BcSwitchLabels,
-    BcTerminator, BlockId, ProcId, ProcOwner, QubitSource, Reg,
+    BcAliasSegment, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCallTarget, BcGateModifier,
+    BcModule, BcOp, BcOperand, BcSwitchLabels, BcTerminator, BlockId, ProcId, ProcOwner,
+    QubitSource, Reg,
 };
 use oqi_compile::sir::Intrinsic;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
 use oqi_lex::Span;
 
 use crate::backend::{GateModifiers, QuantumBackend};
+use crate::cal::{FrameHandle, OpaqueCalHandler, OpenPulseHandler, PortHandle, WaveformHandle};
 use crate::error::{Result, VmError, VmErrorKind};
 use crate::extern_fns::ExternProvider;
 
@@ -93,6 +96,67 @@ impl Leaf {
     }
 }
 
+/// State of an active `durationof` timing pass: quantum side effects
+/// are suppressed and elapsed time accumulates here instead (see the
+/// `BcOp::DurationOf` arm of `exec_op`). Frames and the qubit timeline
+/// are modeled as independent parallel timelines; the pass's result is
+/// their maximum.
+struct TimingState {
+    /// The qubit timeline, advanced by `delay[d]` and `box[d]`.
+    base: Duration,
+    /// Per-frame clocks (keyed by frame handle), advanced by
+    /// `play`/`capture` using handler-reported durations.
+    frames: HashMap<u64, Duration>,
+}
+
+impl TimingState {
+    fn new() -> Self {
+        TimingState {
+            base: Duration::new(0.0, DurationUnit::Ns),
+            frames: HashMap::new(),
+        }
+    }
+
+    /// Advance `clock` by `d`. A zero clock adopts `d` wholesale so
+    /// results keep the program's own units (duration addition
+    /// converts into the left operand's unit).
+    fn advance(clock: &mut Duration, d: Duration) {
+        *clock = if clock.value == 0.0 { d } else { *clock + d };
+    }
+
+    fn advance_base(&mut self, d: Duration) {
+        Self::advance(&mut self.base, d);
+    }
+
+    fn advance_frame(&mut self, frame: u64, d: Duration) {
+        let clock = self
+            .frames
+            .entry(frame)
+            .or_insert(Duration::new(0.0, DurationUnit::Ns));
+        Self::advance(clock, d);
+    }
+
+    /// The pass's elapsed time: the maximum across all timelines.
+    fn elapsed(&self) -> Duration {
+        let mut max = self.base;
+        for d in self.frames.values() {
+            if *d > max {
+                max = *d;
+            }
+        }
+        max
+    }
+
+    /// Synchronize every timeline to the current maximum (a barrier).
+    fn sync(&mut self) {
+        let e = self.elapsed();
+        self.base = e;
+        for d in self.frames.values_mut() {
+            *d = e;
+        }
+    }
+}
+
 /// A virtual machine over a bytecode module with a chosen quantum
 /// backend and extern provider.
 pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
@@ -101,6 +165,14 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     externs: E,
     gate_procs: HashMap<SymbolId, ProcId>,
     sub_procs: HashMap<SymbolId, ProcId>,
+    /// Dispatchable defcal candidates — indexes into
+    /// [`BcModule::calibrations`] — gate defcals grouped by target gate
+    /// symbol, measure/reset defcals as flat lists. Only OpenPulse
+    /// bodies whose args are all plain `Param`s are dispatchable
+    /// (measure additionally requires a return type).
+    cal_gates: HashMap<SymbolId, Vec<u32>>,
+    cal_measures: Vec<u32>,
+    cal_resets: Vec<u32>,
     /// Per-procedure block-id → position-in-`blocks` lookup (`u32::MAX` =
     /// absent), built once in [`Vm::new`] to avoid a linear scan per jump.
     block_pos: Vec<Vec<u32>>,
@@ -108,6 +180,21 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     /// When `Some`, leaf `U`/`gphase` calls are appended here instead of
     /// being applied to the backend (gate-body flattening for modifiers).
     recording: Option<Vec<Leaf>>,
+    /// When `Some`, a `durationof` timing pass is active: quantum side
+    /// effects are suppressed and elapsed time accumulates here.
+    timing: Option<TimingState>,
+    /// Installed OpenPulse handler. `Some` activates calibration
+    /// execution: inline `cal` blocks run, and gate/measure/reset
+    /// operations on hardware qubits that match a `defcal` execute the
+    /// defcal body (see [`crate::cal`]).
+    pulse: Option<Box<dyn OpenPulseHandler + 'm>>,
+    /// Installed handler for non-OpenPulse `cal` block text.
+    opaque_cal: Option<Box<dyn OpaqueCalHandler + 'm>>,
+    /// Cal-scope globals (frames/ports/waveforms shared across all
+    /// cal/defcal bodies), keyed by symbol. Written by `CalStore`, read
+    /// by `CalLoad`; extern ports/frames are minted through the pulse
+    /// handler on first read. Cleared at the start of each run.
+    pulse_globals: HashMap<SymbolId, Value>,
     /// Span of the instruction (or block) currently executing, used to
     /// locate a runtime error in the source. Defaults to the empty sentinel.
     current_span: Span,
@@ -126,6 +213,24 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     sub_procs.insert(s, ProcId(i as u32));
                 }
                 _ => {}
+            }
+        }
+        let mut cal_gates: HashMap<SymbolId, Vec<u32>> = HashMap::new();
+        let mut cal_measures = Vec::new();
+        let mut cal_resets = Vec::new();
+        for (i, cal) in module.calibrations.iter().enumerate() {
+            let dispatchable = matches!(cal.body, BcCalBody::OpenPulse(_))
+                && cal.args.iter().all(|a| matches!(a, BcCalArg::Param(_)));
+            if !dispatchable {
+                continue;
+            }
+            match cal.target {
+                BcCalTarget::Gate(s) => cal_gates.entry(s).or_default().push(i as u32),
+                BcCalTarget::Measure if cal.has_return => cal_measures.push(i as u32),
+                // A measure defcal without a return type has nothing to
+                // yield to `measure`; delay defcals are never dispatched.
+                BcCalTarget::Measure | BcCalTarget::Delay => {}
+                BcCalTarget::Reset => cal_resets.push(i as u32),
             }
         }
         // Per-procedure block-id → position lookup, so the block-walking
@@ -149,11 +254,34 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             externs,
             gate_procs,
             sub_procs,
+            cal_gates,
+            cal_measures,
+            cal_resets,
             block_pos,
             measurements: Vec::new(),
             recording: None,
+            timing: None,
+            pulse: None,
+            opaque_cal: None,
+            pulse_globals: HashMap::new(),
             current_span: Span::default(),
         }
+    }
+
+    /// Install an [`OpenPulseHandler`], activating calibration
+    /// execution: inline `cal` blocks run, and gate/measure/reset
+    /// operations on hardware qubits that match a `defcal` execute the
+    /// defcal body instead of the gate's unitary definition.
+    pub fn with_pulse_handler(mut self, handler: impl OpenPulseHandler + 'm) -> Self {
+        self.pulse = Some(Box::new(handler));
+        self
+    }
+
+    /// Install an [`OpaqueCalHandler`] to receive the text of inline
+    /// `cal` blocks written in a non-OpenPulse `defcalgrammar`.
+    pub fn with_opaque_cal_handler(mut self, handler: impl OpaqueCalHandler + 'm) -> Self {
+        self.opaque_cal = Some(Box::new(handler));
+        self
     }
 
     /// Access the backend (e.g. to read a simulator's state vector after
@@ -189,6 +317,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// instruction in flight is tracked in `self.current_span` and attached by
     /// [`run_with_inputs`](Self::run_with_inputs).
     async fn run_inner(&mut self, mut inputs: HashMap<SymbolId, Value>) -> Result<RunResult> {
+        self.pulse_globals.clear();
         let entry = self.module.entry;
         let mut regs = self.fresh_regs(entry);
 
@@ -410,7 +539,45 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     .await
             }
             BcOp::Measure { dest, qubit } => {
+                // Defcal dispatch: `measure $n` runs a matching measure
+                // defcal, whose returned value is the measured bit.
+                if self.pulse.is_some()
+                    && let BcOperand::HardwareQubit(n) = qubit
+                    && let Some(idx) = self.match_calibration(&self.cal_measures, &[*n], 0)
+                {
+                    let ret = self.exec_defcal(idx, &[], &[*n], frame).await?;
+                    // In a timing pass the body only advanced frame
+                    // clocks; nothing was measured or recorded.
+                    if self.timing.is_some() {
+                        if let Some(d) = dest {
+                            self.set(frame, *d, Value::bit(false));
+                        }
+                        return Ok(());
+                    }
+                    let bit = value_bit(&ret.ok_or_else(|| {
+                        VmErrorKind::Pulse("measure defcal returned no value".into())
+                    })?)?;
+                    self.measurements.push((*n, bit));
+                    if let Some(d) = dest {
+                        self.set(frame, *d, Value::bit(bit));
+                    }
+                    return Ok(());
+                }
                 let qs = self.qubits(frame, qubit)?;
+                // Timing pass: nothing to measure — a deterministic 0
+                // stands in (calibration control flow must have equal
+                // branch durations, so the value must not matter).
+                if self.timing.is_some() {
+                    if let Some(d) = dest {
+                        let v = if qs.len() == 1 {
+                            Value::bit(false)
+                        } else {
+                            Value::bitreg_u128(0, qs.len() as u32)
+                        };
+                        self.set(frame, *d, v);
+                    }
+                    return Ok(());
+                }
                 let mut bits: u128 = 0;
                 for (i, q) in qs.iter().enumerate() {
                     let b = self.backend.measure(*q).await;
@@ -430,12 +597,29 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 Ok(())
             }
             BcOp::Reset { qubit } => {
+                // Defcal dispatch: `reset $n` runs a matching reset defcal.
+                if self.pulse.is_some()
+                    && let BcOperand::HardwareQubit(n) = qubit
+                    && let Some(idx) = self.match_calibration(&self.cal_resets, &[*n], 0)
+                {
+                    self.exec_defcal(idx, &[], &[*n], frame).await?;
+                    return Ok(());
+                }
+                // Timing pass: resets are suppressed (zero-duration).
+                if self.timing.is_some() {
+                    return Ok(());
+                }
                 for q in self.qubits(frame, qubit)? {
                     self.backend.reset(q).await;
                 }
                 Ok(())
             }
             BcOp::Barrier { qubits } => {
+                // A barrier in a timing pass synchronizes all timelines.
+                if let Some(t) = self.timing.as_mut() {
+                    t.sync();
+                    return Ok(());
+                }
                 let qs = self.qubit_list(frame, qubits)?;
                 self.backend.barrier(&qs).await;
                 Ok(())
@@ -447,14 +631,31 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     _ => None,
                 }
                 .ok_or_else(|| VmErrorKind::Type("delay duration must be a duration".into()))?;
+                // Timing pass: the delay advances the qubit timeline.
+                if let Some(t) = self.timing.as_mut() {
+                    t.advance_base(dur);
+                    return Ok(());
+                }
                 let qs = self.qubit_list(frame, qubits)?;
                 self.backend.delay(&qs, dur).await;
                 Ok(())
             }
             BcOp::Nop { .. } => Ok(()),
 
-            // ── Structured / misc (MVP: timing & pulse are no-ops) ────
-            BcOp::Box { body, .. } => {
+            // ── Structured / misc ──────────────────────────────────────
+            BcOp::Box { duration, body } => {
+                // A `box[d]` pins its subcircuit to duration `d`: a
+                // timing pass counts `d` and skips the body (recursing
+                // would count its delays twice).
+                if self.timing.is_some()
+                    && let Some(dur) = duration
+                {
+                    let d = value_duration(&self.eval(frame, dur)?)?;
+                    if let Some(t) = self.timing.as_mut() {
+                        t.advance_base(d);
+                    }
+                    return Ok(());
+                }
                 let mut child = Frame {
                     proc: *body,
                     regs: self.fresh_regs(*body),
@@ -494,11 +695,57 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     resolved;
                 Ok(())
             }
-            BcOp::Pragma { .. } | BcOp::Alias { .. } | BcOp::CalOpaque { .. } => Ok(()),
-            BcOp::CalOpenPulse { .. } => Ok(()),
-            BcOp::DurationOf { .. } => Err(VmErrorKind::Unsupported(
-                "durationof timing analysis".into(),
-            )),
+            BcOp::Pragma { .. } | BcOp::Alias { .. } => Ok(()),
+            BcOp::CalOpaque { content } => {
+                if let Some(handler) = self.opaque_cal.as_mut() {
+                    let text = &self.module.strings[content.0 as usize];
+                    handler.cal(self.module.calibration_grammar.as_deref(), text)?;
+                }
+                Ok(())
+            }
+            BcOp::CalOpenPulse { body } => {
+                // Inline cal blocks execute only when a pulse handler is
+                // installed; otherwise calibrations stay dormant.
+                if self.pulse.is_some() {
+                    let mut child = Frame {
+                        proc: *body,
+                        regs: self.fresh_regs(*body),
+                        slots: self.fresh_slots(*body),
+                        mods: GateModifiers::none(),
+                    };
+                    Box::pin(self.exec_proc(&mut child)).await?;
+                }
+                Ok(())
+            }
+            BcOp::CalLoad { dest, symbol } => {
+                let v = self.cal_load(*symbol)?;
+                self.set(frame, *dest, v);
+                Ok(())
+            }
+            BcOp::CalStore { symbol, src } => {
+                let v = self.eval(frame, src)?;
+                self.pulse_globals.insert(*symbol, v);
+                Ok(())
+            }
+            BcOp::DurationOf { dest, body } => {
+                // Run the body as a timing pass: quantum side effects
+                // are suppressed and elapsed time accumulates in a
+                // fresh [`TimingState`]. Save/restore nests correctly.
+                let saved = self.timing.replace(TimingState::new());
+                let mut child = Frame {
+                    proc: *body,
+                    regs: self.fresh_regs(*body),
+                    slots: self.fresh_slots(*body),
+                    mods: GateModifiers::none(),
+                };
+                let res = Box::pin(self.exec_proc(&mut child)).await;
+                let elapsed = self.timing.take().map(|t| t.elapsed());
+                self.timing = saved;
+                res?;
+                let elapsed = elapsed.expect("timing state active during durationof");
+                self.set(frame, *dest, Value::duration(elapsed.value, elapsed.unit));
+                Ok(())
+            }
         }
     }
 
@@ -534,6 +781,20 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         .iter()
                         .map(|a| self.eval(frame, a))
                         .collect::<Result<_>>()?;
+                    // OpenPulse intrinsics called from cal/defcal bodies
+                    // route to the typed pulse handler rather than the
+                    // extern provider.
+                    if self.pulse.is_some() && is_pulse_intrinsic(&name) && self.in_cal_proc(frame)
+                    {
+                        let ret = self.call_pulse_intrinsic(&name, &vals)?;
+                        if let Some(d) = dest {
+                            let v = ret.ok_or_else(|| {
+                                VmErrorKind::Type(format!("intrinsic `{name}` returned no value"))
+                            })?;
+                            self.set(frame, d, v);
+                        }
+                        return Ok(());
+                    }
                     let ret = self.externs.call(&name, &vals)?;
                     if let Some(d) = dest {
                         let v = ret.ok_or_else(|| {
@@ -594,6 +855,195 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         })
     }
 
+    // ── Calibrations ──────────────────────────────────────────────────
+
+    /// Whether `frame` is executing a calibration (`defcal`) or inline
+    /// `cal` body.
+    fn in_cal_proc(&self, frame: &Frame) -> bool {
+        matches!(
+            self.module.procedures[frame.proc.0 as usize].owner,
+            ProcOwner::Calibration(_) | ProcOwner::InlineCal
+        )
+    }
+
+    /// Read a cal-scope global. Extern ports/frames are minted through
+    /// the pulse handler on first read; anything else must have been
+    /// stored by a `cal` block that already ran.
+    fn cal_load(&mut self, symbol: SymbolId) -> Result<Value> {
+        if let Some(v) = self.pulse_globals.get(&symbol) {
+            return Ok(v.clone());
+        }
+        let sym = self.module.symbols.get(symbol);
+        let pulse = self.pulse.as_mut().ok_or_else(|| {
+            VmErrorKind::Pulse(format!(
+                "cal code executed without a pulse handler (reading `{}`)",
+                sym.name
+            ))
+        })?;
+        let handle = match sym.kind {
+            SymbolKind::ExternPort => pulse.port(&sym.name)?.0,
+            SymbolKind::ExternFrame => pulse.extern_frame(&sym.name)?.0,
+            _ => {
+                return Err(VmErrorKind::Pulse(format!(
+                    "`{}` read before initialization (its `cal` block has not run)",
+                    sym.name
+                )));
+            }
+        };
+        let v = handle_value(handle);
+        self.pulse_globals.insert(symbol, v.clone());
+        Ok(v)
+    }
+
+    /// Pick the best-matching calibration among `candidates` for a call
+    /// on hardware qubits `hw` with `n_args` classical arguments. Most
+    /// exact (`Hardware`) operand matches win — the spec's specificity
+    /// rule (docs/pulses.rst) — and ties go to the first declared (the
+    /// spec doesn't address equally-specific collisions).
+    fn match_calibration(&self, candidates: &[u32], hw: &[u32], n_args: usize) -> Option<u32> {
+        let mut best: Option<(u32, usize)> = None;
+        for &idx in candidates {
+            let cal = &self.module.calibrations[idx as usize];
+            if cal.operands.len() != hw.len() || cal.args.len() != n_args {
+                continue;
+            }
+            let mut exact = 0usize;
+            let matches = cal.operands.iter().zip(hw).all(|(op, q)| match op {
+                BcCalOperand::Hardware(n) => {
+                    exact += 1;
+                    n == q
+                }
+                BcCalOperand::Any => true,
+            });
+            if matches && best.is_none_or(|(_, e)| exact > e) {
+                best = Some((idx, exact));
+            }
+        }
+        best.map(|(idx, _)| idx)
+    }
+
+    /// Execute defcal `idx` for a call with classical `args` on hardware
+    /// qubits `hw`: like [`Self::bind_subroutine`], classical args bind
+    /// to the body's parameter registers and each qubit to its
+    /// positional slot `[0, n)`. Returns the body's return value
+    /// (measure defcals yield the measured bit).
+    async fn exec_defcal(
+        &mut self,
+        idx: u32,
+        args: &[BcOperand],
+        hw: &[u32],
+        frame: &Frame,
+    ) -> Result<Option<Value>> {
+        let BcCalBody::OpenPulse(proc_id) = self.module.calibrations[idx as usize].body else {
+            return Err(VmErrorKind::Pulse(
+                "opaque defcal bodies cannot execute".into(),
+            ));
+        };
+        let proc = &self.module.procedures[proc_id.0 as usize];
+        let mut regs = self.fresh_regs(proc_id);
+        let mut slots = self.fresh_slots(proc_id);
+        for (i, arg) in args.iter().enumerate() {
+            let v = self.eval(frame, arg)?;
+            let reg = proc.params.get(i).ok_or_else(|| {
+                VmErrorKind::Unsupported("more classical args than defcal parameters".into())
+            })?;
+            regs[reg.0 as usize] = Some(v);
+        }
+        for (slot, q) in hw.iter().enumerate() {
+            slots[slot] = vec![*q];
+        }
+        let mut child = Frame {
+            proc: proc_id,
+            regs,
+            slots,
+            mods: GateModifiers::none(),
+        };
+        Box::pin(self.exec_proc(&mut child)).await
+    }
+
+    /// Marshal one OpenPulse intrinsic call to the typed pulse handler.
+    /// Handles travel as `uint[64]` values; angles arrive in radians.
+    fn call_pulse_intrinsic(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>> {
+        let pulse = self
+            .pulse
+            .as_mut()
+            .expect("caller checks a pulse handler is installed");
+        let arg = |n: usize| -> Result<&Value> {
+            args.get(n).ok_or_else(|| {
+                VmErrorKind::Type(format!("intrinsic `{name}` missing argument {n}"))
+            })
+        };
+        // A durationof timing pass suppresses pulse emissions: plays
+        // and captures advance their frame's clock by handler-reported
+        // durations instead. Constructors (`newframe`, `gaussian`)
+        // fall through and run for real — their handles must exist so
+        // their durations can be queried.
+        if let Some(timing) = self.timing.as_mut() {
+            match name {
+                "play" => {
+                    let frame = value_u64(arg(0)?)?;
+                    let wf = WaveformHandle(value_u64(arg(1)?)?);
+                    timing.advance_frame(frame, pulse.waveform_duration(wf)?);
+                    return Ok(None);
+                }
+                "capture" => {
+                    let frame = value_u64(arg(0)?)?;
+                    let samples = value_u64(arg(1)?)?;
+                    let d = pulse.capture_duration(FrameHandle(frame), samples)?;
+                    timing.advance_frame(frame, d);
+                    return Ok(Some(Value::complex(0.0, 0.0, FloatWidth::F64)));
+                }
+                // Instantaneous; suppressed (threshold would see the
+                // fake IQ, so the handler isn't consulted).
+                "shift_phase" => return Ok(None),
+                "threshold" => return Ok(Some(Value::bit(false))),
+                _ => {}
+            }
+        }
+        Ok(match name {
+            "newframe" => {
+                let frame = pulse.new_frame(
+                    PortHandle(value_u64(arg(0)?)?),
+                    value_f64(arg(1)?)?,
+                    value_f64(arg(2)?)?,
+                )?;
+                Some(handle_value(frame.0))
+            }
+            "gaussian" => {
+                let wf = pulse.gaussian(
+                    value_f64(arg(0)?)?,
+                    value_duration(arg(1)?)?,
+                    value_duration(arg(2)?)?,
+                )?;
+                Some(handle_value(wf.0))
+            }
+            "play" => {
+                pulse.play(
+                    FrameHandle(value_u64(arg(0)?)?),
+                    WaveformHandle(value_u64(arg(1)?)?),
+                )?;
+                None
+            }
+            "capture" => {
+                let iq = pulse.capture(FrameHandle(value_u64(arg(0)?)?), value_u64(arg(1)?)?)?;
+                Some(Value::complex(iq.re, iq.im, FloatWidth::F64))
+            }
+            "shift_phase" => {
+                pulse.shift_phase(FrameHandle(value_u64(arg(0)?)?), value_f64(arg(1)?)?)?;
+                None
+            }
+            "threshold" => {
+                let bit = pulse.threshold(value_complex(arg(0)?)?, value_u64(arg(1)?)?)?;
+                Some(Value::bit(bit))
+            }
+            other => {
+                return Err(VmErrorKind::Pulse(format!(
+                    "`{other}` is not an OpenPulse intrinsic"
+                )));
+            }
+        })
+    }
+
     // ── Gates ─────────────────────────────────────────────────────────
 
     async fn exec_gate_call(
@@ -604,6 +1054,29 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         qubits: &[BcOperand],
         frame: &mut Frame,
     ) -> Result<()> {
+        // Defcal dispatch: with a pulse handler installed, an unmodified
+        // call on hardware qubits that matches a defcal executes the
+        // defcal body in place of the gate's unitary definition
+        // (docs/pulses.rst). Modified calls (`ctrl`/`pow`/`inv`, or
+        // inherited controls) and calls during gate-body flattening
+        // always take the unitary path below.
+        if self.pulse.is_some()
+            && modifiers.is_empty()
+            && frame.mods.controls.is_empty()
+            && frame.mods.neg_controls.is_empty()
+            && self.recording.is_none()
+            && let Some(hw) = hardware_operands(qubits)
+        {
+            let cal = self
+                .cal_gates
+                .get(&gate)
+                .and_then(|cands| self.match_calibration(cands, &hw, args.len()));
+            if let Some(idx) = cal {
+                self.exec_defcal(idx, args, &hw, frame).await?;
+                return Ok(());
+            }
+        }
+
         // Fold this call's `inv`/`pow` modifiers into one local power
         // scalar, and accumulate controls (inherited context + this
         // call's), consuming leading qubit operands as controls. Power is
@@ -730,6 +1203,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 
     /// Apply (or, when recording, record) a leaf `U`.
     async fn emit_u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
+        // A durationof timing pass applies no gates (uncalibrated
+        // gates are zero-duration).
+        if self.timing.is_some() {
+            return;
+        }
         if let Some(buf) = self.recording.as_mut() {
             buf.push(Leaf::U {
                 target,
@@ -747,6 +1225,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 
     /// Apply (or, when recording, record) a leaf `gphase`.
     async fn emit_gphase(&mut self, gamma: f64, m: &GateModifiers) {
+        // See `emit_u`: timing passes apply no gates.
+        if self.timing.is_some() {
+            return;
+        }
         if let Some(buf) = self.recording.as_mut() {
             buf.push(Leaf::Gphase {
                 gamma,
@@ -1107,6 +1589,19 @@ fn is_qubit_operand(op: &BcOperand) -> bool {
     )
 }
 
+/// The hardware indices of a qubit-operand list, if every operand is a
+/// literal `$n` reference — the only form defcals dispatch on
+/// (docs/pulses.rst binds calibrations to physical qubits).
+fn hardware_operands(qubits: &[BcOperand]) -> Option<Vec<u32>> {
+    qubits
+        .iter()
+        .map(|q| match q {
+            BcOperand::HardwareQubit(n) => Some(*n),
+            _ => None,
+        })
+        .collect()
+}
+
 fn scalar(v: &Value) -> Result<&Primitive> {
     match v {
         Value::Scalar(s) => Ok(s.value()),
@@ -1139,6 +1634,38 @@ fn value_usize(v: &Value) -> Result<usize> {
 
 fn value_isize(v: &Value) -> Result<isize> {
     Ok(value_i128(v)? as isize)
+}
+
+fn value_u64(v: &Value) -> Result<u64> {
+    scalar(v)?
+        .as_uint(iw(64))
+        .map(|u| u as u64)
+        .ok_or_else(|| VmErrorKind::Type("expected an unsigned integer value".into()))
+}
+
+fn value_duration(v: &Value) -> Result<Duration> {
+    scalar(v)?
+        .as_duration()
+        .ok_or_else(|| VmErrorKind::Type("expected a duration value".into()))
+}
+
+fn value_complex(v: &Value) -> Result<Complex64> {
+    scalar(v)?
+        .as_complex(FloatWidth::F64)
+        .ok_or_else(|| VmErrorKind::Type("expected a complex value".into()))
+}
+
+/// Wrap an opaque pulse handle for storage in a register.
+fn handle_value(h: u64) -> Value {
+    Value::uint(h as u128, iw(64))
+}
+
+/// The OpenPulse intrinsic names seeded by `defcalgrammar "openpulse"`.
+fn is_pulse_intrinsic(name: &str) -> bool {
+    matches!(
+        name,
+        "newframe" | "gaussian" | "play" | "capture" | "shift_phase" | "threshold"
+    )
 }
 
 /// Evaluate an intrinsic call against the classical op library.

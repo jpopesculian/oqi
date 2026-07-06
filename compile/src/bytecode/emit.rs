@@ -21,7 +21,7 @@ use crate::classical::PrimitiveTy;
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::qubits::{self, QubitLayout};
 use crate::sir::{
-    Alias, Binary, Call, CallTarget, Cast, Delay, GateCall, GateModifier, Index, IndexItem,
+    self, Alias, Binary, Call, CallTarget, Cast, Delay, GateCall, GateModifier, Index, IndexItem,
     IndexKind, IndexOp, MeasureExpr, MeasureExprKind, QubitOperand, RValue,
 };
 use crate::ssa::{
@@ -31,21 +31,24 @@ use crate::ssa::{
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 
 use super::phi_elim::deconstruct_phis;
-use super::regalloc::{RegMap, allocate_registers};
+use super::regalloc::{RegMap, allocate_registers, reg_value_ty};
 use super::types::{
-    BcAliasSegment, BcBlock, BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand,
-    BcProcedure, BcSwitchLabels, BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner,
-    QubitRegion, QubitRegionId, QubitSource, QubitTable, Reg, StringId,
+    BcAliasSegment, BcBlock, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCalibration,
+    BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcProcedure, BcSwitchLabels,
+    BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner, QubitRegion, QubitRegionId,
+    QubitSource, QubitTable, Reg, StringId,
 };
+use crate::types::Type;
 
 /// Entry point: lower an SSA program to bytecode against the global
 /// qubit layout (see [`crate::qubits::build_layout`]).
 pub fn emit(
     ssa: &ProgramSsa,
-    symbols: &SymbolTable,
+    program: &sir::Program,
     layout: QubitLayout,
 ) -> Result<BcModule, CompileError> {
-    let mut ctx = EmitCtx::new(symbols, layout);
+    let symbols = &program.symbols;
+    let mut ctx = EmitCtx::new(symbols, &program.calibrations, layout);
     let entry = ctx.emit_root(&ssa.top_level, ProcOwner::TopLevel)?;
     for sub in &ssa.subroutines {
         let owner = sub_owner(&sub.owner);
@@ -55,11 +58,27 @@ pub fn emit(
         let owner = gate_owner(&gate.owner);
         ctx.emit_root(gate, owner)?;
     }
+    let mut cal_procs: Vec<Option<ProcId>> = vec![None; ssa.calibrations.len()];
     for (i, cal) in ssa.calibrations.iter().enumerate() {
         if let Some(c) = cal {
-            ctx.emit_root(c, ProcOwner::Calibration(i as u32))?;
+            cal_procs[i] = Some(ctx.emit_root(c, ProcOwner::Calibration(i as u32))?);
         }
     }
+    let calibrations = program
+        .calibrations
+        .iter()
+        .zip(&cal_procs)
+        .map(|(cal, proc)| ctx.lower_calibration(cal, *proc))
+        .collect();
+    // The grammar string is stored in SIR with its source quotes; strip
+    // them so consumers see the bare grammar name.
+    let calibration_grammar = program.calibration_grammar.as_deref().map(|g| {
+        g.strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .or_else(|| g.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
+            .unwrap_or(g)
+            .to_string()
+    });
 
     Ok(BcModule {
         version: BcVersion::CURRENT,
@@ -79,6 +98,8 @@ pub fn emit(
         entry,
         inputs: ctx.inputs,
         outputs: ctx.outputs,
+        calibrations,
+        calibration_grammar,
     })
 }
 
@@ -99,6 +120,9 @@ fn gate_owner(owner: &crate::cfg::CfgOwner) -> ProcOwner {
 /// Mutable emission state shared across procedures.
 struct EmitCtx<'a> {
     symbols: &'a SymbolTable,
+    /// The program's calibration declarations; `ProcOwner::Calibration(i)`
+    /// indexes into this for the defcal's signature (args/operands).
+    calibrations: &'a [sir::CalibrationDecl],
     /// Global qubit layout; gains alias definitions during emission.
     layout: QubitLayout,
     qubit_regions: Vec<QubitRegion>,
@@ -124,6 +148,11 @@ struct EmitCtx<'a> {
     /// indices, so the simulator must be sized to cover the maximum one
     /// even when no `qubit` registers are declared.
     max_hardware_qubit: Option<u32>,
+    /// True while emitting a calibration (`defcal`) or inline-`cal` body.
+    /// Reads/writes of cal-scope globals in such bodies go through the
+    /// VM's pulse-global store ([`BcOp::CalLoad`]/[`BcOp::CalStore`]).
+    /// Saved/restored across nested procedures like `alias_slot`.
+    in_cal: bool,
 }
 
 /// The base a runtime-alias operand indexes: a declared register /
@@ -154,9 +183,14 @@ impl AliasSrc {
 }
 
 impl<'a> EmitCtx<'a> {
-    fn new(symbols: &'a SymbolTable, layout: QubitLayout) -> Self {
+    fn new(
+        symbols: &'a SymbolTable,
+        calibrations: &'a [sir::CalibrationDecl],
+        layout: QubitLayout,
+    ) -> Self {
         Self {
             symbols,
+            calibrations,
             layout,
             qubit_regions: Vec::new(),
             region_index: HashMap::new(),
@@ -168,6 +202,7 @@ impl<'a> EmitCtx<'a> {
             inputs: Vec::new(),
             outputs: Vec::new(),
             max_hardware_qubit: None,
+            in_cal: false,
         }
     }
 
@@ -224,19 +259,52 @@ impl<'a> EmitCtx<'a> {
         // don't disturb this one's numbering.
         let param_base = match &owner {
             ProcOwner::Gate(s) | ProcOwner::Subroutine(s) => self.layout.qubit_param_count(*s),
+            ProcOwner::Calibration(i) => self.calibrations[*i as usize].operands.len() as u32,
             _ => 0,
         };
         let saved_alias_slot = self.alias_slot;
         self.alias_slot = param_base;
+        let saved_in_cal = self.in_cal;
+        self.in_cal = matches!(owner, ProcOwner::Calibration(_) | ProcOwner::InlineCal);
 
-        let blocks: Vec<BcBlock> = cfg
+        let mut blocks: Vec<BcBlock> = cfg
             .blocks
             .iter()
             .map(|b| self.emit_block(b, &mut reg_map))
             .collect::<Result<_>>()?;
 
+        // Cal bodies read cal-scope globals (frames/ports shared across
+        // all cal/defcal bodies) through version-0 registers; seed each
+        // such register at entry from the VM's pulse-global store.
+        // Sorted by symbol id for deterministic bytecode.
+        if self.in_cal {
+            let mut loads: Vec<(SymbolId, Reg)> = reg_map
+                .by_ssa
+                .iter()
+                .filter(|(v, _)| v.version == 0 && self.is_pulse_global(v.symbol))
+                .map(|(v, r)| (v.symbol, *r))
+                .collect();
+            loads.sort_by_key(|(sym, _)| sym.0);
+            if !loads.is_empty() {
+                let entry_id = BlockId(cfg.entry.0 as u32);
+                let entry_block = blocks
+                    .iter_mut()
+                    .find(|b| b.id == entry_id)
+                    .expect("entry block emitted");
+                let span = entry_block.span;
+                entry_block.instrs.splice(
+                    0..0,
+                    loads.into_iter().map(|(symbol, dest)| BcInstr {
+                        op: BcOp::CalLoad { dest, symbol },
+                        span,
+                    }),
+                );
+            }
+        }
+
         let num_qubit_slots = self.alias_slot;
         self.alias_slot = saved_alias_slot;
+        self.in_cal = saved_in_cal;
 
         Ok(BcProcedure {
             owner,
@@ -297,15 +365,26 @@ impl<'a> EmitCtx<'a> {
         outputs
     }
 
-    /// Registers holding the classical parameters of a gate/subroutine,
-    /// in declaration order. Empty for owners that take no classical
-    /// parameters.
+    /// Registers holding the classical parameters of a gate/subroutine/
+    /// defcal, in declaration order. Empty for owners that take no
+    /// classical parameters.
     fn param_registers(&self, owner: &ProcOwner, reg_map: &mut RegMap) -> Vec<Reg> {
-        let sym = match owner {
-            ProcOwner::Gate(s) | ProcOwner::Subroutine(s) => *s,
+        let params: Vec<SymbolId> = match owner {
+            ProcOwner::Gate(s) | ProcOwner::Subroutine(s) => {
+                self.layout.classical_params(*s).to_vec()
+            }
+            // Defcal signatures aren't in the layout (several defcals can
+            // share one gate symbol); read the params off the declaration.
+            ProcOwner::Calibration(i) => self.calibrations[*i as usize]
+                .args
+                .iter()
+                .filter_map(|a| match a {
+                    sir::CalibrationArg::Param(sym) => Some(*sym),
+                    sir::CalibrationArg::Expr(_) => None,
+                })
+                .collect(),
             _ => return Vec::new(),
         };
-        let params = self.layout.classical_params(sym).to_vec();
         params
             .into_iter()
             .map(|symbol| {
@@ -564,6 +643,18 @@ impl<'a> EmitCtx<'a> {
             SsaLValue::Var(v) => {
                 let dest = self.reg_for(*v, reg_map);
                 self.emit_rvalue_to_dest(value, dest, instrs, reg_map, span)?;
+                // Propagate writes to cal-scope globals into the VM's
+                // pulse-global store so other cal/defcal bodies observe
+                // them (their entries CalLoad the current value).
+                if self.in_cal && v.version >= 1 && self.is_pulse_global(v.symbol) {
+                    instrs.push(BcInstr {
+                        op: BcOp::CalStore {
+                            symbol: v.symbol,
+                            src: BcOperand::Reg(dest),
+                        },
+                        span,
+                    });
+                }
             }
             SsaLValue::Indexed { old, new, indices } => {
                 // Indexed store: read `old`, compute `new = old[index] = value`.
@@ -736,7 +827,7 @@ impl<'a> EmitCtx<'a> {
                 };
                 // A void call (statement position) yields no value, so it
                 // has no destination — mirroring the bare gate-call path.
-                let dest = e.ty.value_ty().is_some().then_some(dest);
+                let dest = reg_value_ty(&e.ty).is_some().then_some(dest);
                 instrs.push(BcInstr {
                     op: BcOp::Call { dest, callee, args },
                     span,
@@ -809,9 +900,7 @@ impl<'a> EmitCtx<'a> {
             SsaExprKind::HardwareQubit(n) => self.hw_qubit(*n as u32),
             // Anything else: spill into a synthetic temp register.
             _ => {
-                let ty =
-                    e.ty.value_ty()
-                        .unwrap_or(ValueTy::Scalar(PrimitiveTy::Bool));
+                let ty = reg_value_ty(&e.ty).unwrap_or(ValueTy::Scalar(PrimitiveTy::Bool));
                 let temp = self.alloc_temp_reg(reg_map, ty);
                 self.emit_expr_to_dest(e, temp, instrs, reg_map, e.span)?;
                 BcOperand::Reg(temp)
@@ -1516,16 +1605,63 @@ impl<'a> EmitCtx<'a> {
 
     // ── Helpers ────────────────────────────────────────────────────
 
+    /// A cal-scope global: an openpulse-typed value (frame, port,
+    /// waveform) declared at global scope. Cal/defcal bodies share these
+    /// through the VM's pulse-global store.
+    fn is_pulse_global(&self, sym: SymbolId) -> bool {
+        let s = self.symbols.get(sym);
+        matches!(s.ty, Type::Openpulse(_)) && s.scope.is_none()
+    }
+
+    /// The module-level record of one `defcal`: its dispatch signature
+    /// plus the body (the already-emitted proc for OpenPulse bodies, the
+    /// interned source text for opaque ones).
+    fn lower_calibration(
+        &mut self,
+        cal: &sir::CalibrationDecl,
+        proc: Option<ProcId>,
+    ) -> BcCalibration {
+        BcCalibration {
+            target: match &cal.target {
+                sir::CalibrationTarget::Measure => BcCalTarget::Measure,
+                sir::CalibrationTarget::Reset => BcCalTarget::Reset,
+                sir::CalibrationTarget::Delay => BcCalTarget::Delay,
+                sir::CalibrationTarget::Named(sym) => BcCalTarget::Gate(*sym),
+            },
+            args: cal
+                .args
+                .iter()
+                .map(|a| match a {
+                    sir::CalibrationArg::Param(sym) => BcCalArg::Param(*sym),
+                    sir::CalibrationArg::Expr(_) => BcCalArg::Unsupported,
+                })
+                .collect(),
+            operands: cal
+                .operands
+                .iter()
+                .map(|o| match o {
+                    sir::CalibrationOperand::Hardware(n) => BcCalOperand::Hardware(*n as u32),
+                    sir::CalibrationOperand::Ident(_) => BcCalOperand::Any,
+                })
+                .collect(),
+            has_return: cal.return_ty.is_some(),
+            body: match &cal.body {
+                sir::CalibrationBody::OpenPulse(_) => BcCalBody::OpenPulse(
+                    proc.expect("OpenPulse calibration body emitted as a proc"),
+                ),
+                sir::CalibrationBody::Opaque(text) => {
+                    BcCalBody::Opaque(self.intern_string(text.clone()))
+                }
+            },
+        }
+    }
+
     fn reg_for(&self, v: SsaValue, reg_map: &mut RegMap) -> Reg {
         if let Some(r) = reg_map.by_ssa.get(&v) {
             return *r;
         }
         // Symbol lookup; fall back to bool type if non-classical.
-        let ty = self
-            .symbols
-            .get(v.symbol)
-            .ty
-            .value_ty()
+        let ty = reg_value_ty(&self.symbols.get(v.symbol).ty)
             .unwrap_or(ValueTy::Scalar(PrimitiveTy::Bool));
         reg_map.alloc(v, ty)
     }

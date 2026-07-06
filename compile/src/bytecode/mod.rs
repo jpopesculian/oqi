@@ -44,7 +44,7 @@ mod tests {
         let cfgs = cfg::build_program(&program).expect("cfg");
         let ssa = ssa::build_program(&cfgs, &program.symbols);
         let layout = crate::qubits::build_layout(&program);
-        emit(&ssa, &program.symbols, layout)
+        emit(&ssa, &program, layout)
     }
 
     #[test]
@@ -445,7 +445,7 @@ mod tests {
         let cfgs = cfg::build_program(&program).expect("cfg");
         let ssa = ssa::build_program(&cfgs, &program.symbols);
         let layout = crate::qubits::build_layout(&program);
-        let module = emit(&ssa, &program.symbols, layout).expect("emit");
+        let module = emit(&ssa, &program, layout).expect("emit");
 
         let bytes = to_bytes(&module).expect("encode");
         assert!(bytes.len() > 4, "encoded module should be non-trivial");
@@ -467,7 +467,7 @@ mod tests {
         let cfgs = cfg::build_program(&program).expect("cfg");
         let ssa = ssa::build_program(&cfgs, &program.symbols);
         let layout = crate::qubits::build_layout(&program);
-        let module = emit(&ssa, &program.symbols, layout).expect("emit");
+        let module = emit(&ssa, &program, layout).expect("emit");
         // adder.qasm: cin(1) + a(4) + b(4) + cout(1).
         assert_eq!(module.qubits.num_qubits, 10);
         let text = format!("{module}");
@@ -475,5 +475,92 @@ mod tests {
         let bytes = to_bytes(&module).expect("encode");
         assert!(bytes.len() > 4);
         let _ = from_bytes(&bytes).expect("decode");
+    }
+
+    #[test]
+    fn defcal_fixture_calibration_table() {
+        let src = include_str!("../../../fixtures/qasm/defcal.qasm");
+        let module = build_bytecode(src);
+
+        assert_eq!(module.calibration_grammar.as_deref(), Some("openpulse"));
+        // x $0, x $1, rz, measure, zx90_ix, cx — in declaration order.
+        assert_eq!(module.calibrations.len(), 6);
+
+        let sym = |name: &str| {
+            module
+                .symbols
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| s.id)
+                .expect("symbol")
+        };
+
+        // The two `defcal x` share the gate symbol and differ in operand.
+        let x = sym("x");
+        for (i, hw) in [(0usize, 0u32), (1, 1)] {
+            let cal = &module.calibrations[i];
+            assert!(matches!(cal.target, BcCalTarget::Gate(s) if s == x));
+            assert!(cal.args.is_empty());
+            assert!(!cal.has_return);
+            assert!(matches!(cal.operands.as_slice(), [BcCalOperand::Hardware(n)] if *n == hw));
+        }
+
+        // defcal rz(angle[20] theta) q — one Param arg, one Any operand.
+        let rz = sym("rz");
+        let cal_rz = &module.calibrations[2];
+        assert!(matches!(cal_rz.target, BcCalTarget::Gate(s) if s == rz));
+        assert!(matches!(cal_rz.args.as_slice(), [BcCalArg::Param(_)]));
+        assert!(matches!(cal_rz.operands.as_slice(), [BcCalOperand::Any]));
+
+        // defcal measure $0 -> bit.
+        let cal_measure = &module.calibrations[3];
+        assert!(matches!(cal_measure.target, BcCalTarget::Measure));
+        assert!(cal_measure.has_return);
+
+        // Every body is OpenPulse and points at its Calibration-owned proc.
+        for (i, cal) in module.calibrations.iter().enumerate() {
+            let BcCalBody::OpenPulse(p) = &cal.body else {
+                panic!("calibration {i} should have an OpenPulse body");
+            };
+            assert!(matches!(
+                module.procedures[p.0 as usize].owner,
+                ProcOwner::Calibration(j) if j == i as u32
+            ));
+        }
+
+        // Roundtrip preserves the table and the grammar.
+        let bytes = to_bytes(&module).expect("encode");
+        let module2 = from_bytes(&bytes).expect("decode");
+        assert_eq!(module2.calibrations.len(), 6);
+        assert_eq!(module2.calibration_grammar.as_deref(), Some("openpulse"));
+
+        // Defcal bodies read the shared frames through entry cal_loads;
+        // the inline cal block cal_stores the frames it creates.
+        let text = format!("{module}");
+        assert!(text.contains(".defcalgrammar openpulse"), "disasm:\n{text}");
+        assert!(text.contains(".calibrations"), "disasm:\n{text}");
+        assert!(text.contains("cal_load"), "disasm:\n{text}");
+        assert!(text.contains("cal_store"), "disasm:\n{text}");
+    }
+
+    #[test]
+    fn opaque_cal_bodies_keep_text() {
+        let module = build_bytecode(
+            r#"
+                defcalgrammar "mypulses";
+                cal { raw pulse text }
+                defcal x $0 { more raw text }
+            "#,
+        );
+        assert_eq!(module.calibration_grammar.as_deref(), Some("mypulses"));
+        assert_eq!(module.calibrations.len(), 1);
+        let BcCalBody::Opaque(s) = &module.calibrations[0].body else {
+            panic!("non-openpulse defcal should have an opaque body");
+        };
+        assert!(module.strings[s.0 as usize].contains("more raw text"));
+        assert!(
+            all_ops(&module).any(|op| matches!(op, BcOp::CalOpaque { .. })),
+            "inline cal should emit CalOpaque:\n{module}"
+        );
     }
 }

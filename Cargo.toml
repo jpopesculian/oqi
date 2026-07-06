@@ -10,5 +10,6 @@ members = [
   "openpulse",
   "quantum",
   "vm",
+  "js",
 ]
 resolver = "2"

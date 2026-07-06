@@ -111,6 +111,18 @@ pub fn build_layout(program: &sir::Program) -> QubitLayout {
         classical_params.insert(sub.symbol, classical);
         qubit_param_count.insert(sub.symbol, qslot);
     }
+    // Defcal operands bind to slots `[0, n)` by position, like gate
+    // qubits; only named operands are referenced through a slot ($n
+    // references stay hardware-direct). Classical params and the qubit
+    // count aren't recorded here — several defcals can share one gate
+    // symbol, so the emitter reads those off the declaration instead.
+    for cal in &program.calibrations {
+        for (slot, op) in cal.operands.iter().enumerate() {
+            if let sir::CalibrationOperand::Ident(sym) = op {
+                param_slots.insert(*sym, slot as u32);
+            }
+        }
+    }
 
     QubitLayout {
         memory,

@@ -932,7 +932,7 @@ fn output_names(source: &str) -> Vec<String> {
     let cfgs = cfg::build_program(&program).expect("cfg");
     let ssa = ssa::build_program(&cfgs, &program.symbols);
     let layout = qubits::build_layout(&program);
-    let module = bytecode::emit(&ssa, &program.symbols, layout).expect("emit");
+    let module = bytecode::emit(&ssa, &program, layout).expect("emit");
     let mut names: Vec<String> = module
         .outputs
         .iter()
@@ -964,7 +964,7 @@ fn input_names(source: &str) -> Vec<String> {
     let cfgs = cfg::build_program(&program).expect("cfg");
     let ssa = ssa::build_program(&cfgs, &program.symbols);
     let layout = qubits::build_layout(&program);
-    let module = bytecode::emit(&ssa, &program.symbols, layout).expect("emit");
+    let module = bytecode::emit(&ssa, &program, layout).expect("emit");
     let mut names: Vec<String> = module
         .inputs
         .iter()

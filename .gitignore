@@ -1,5 +1,6 @@
 /target
 /js/pkg
+.venv
 __pycache__
 
 .claude/settings.local.json

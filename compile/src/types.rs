@@ -161,6 +161,7 @@ impl Default for SystemWidth {
 }
 
 /// Options affecting type resolution and lowering.
+#[derive(Debug, Clone)]
 pub struct CompileOptions {
     /// Source file path, used for include resolution and diagnostics.
     pub source_name: Option<std::path::PathBuf>,

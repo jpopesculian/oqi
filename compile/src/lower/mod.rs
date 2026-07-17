@@ -56,14 +56,24 @@ pub fn compile_source(
     include_resolver: impl IncludeResolver + 'static,
     source_name: Option<&Path>,
 ) -> Result<sir::Program> {
-    let ast = oqi_parse::parse(source).map_err(|e| {
-        CompileError::new(ErrorKind::Unsupported(format!("parse error: {e:?}")))
-            .with_path(source_name.map(Path::to_path_buf))
-    })?;
     let options = CompileOptions {
         source_name: source_name.map(|p| p.to_path_buf()),
         ..Default::default()
     };
+    compile_source_with_options(source, include_resolver, options)
+}
+
+/// [`compile_source`] with explicit [`CompileOptions`] (source name, system
+/// width, `dt`).
+pub fn compile_source_with_options(
+    source: &str,
+    include_resolver: impl IncludeResolver + 'static,
+    options: CompileOptions,
+) -> Result<sir::Program> {
+    let ast = oqi_parse::parse(source).map_err(|e| {
+        CompileError::new(ErrorKind::Unsupported(format!("parse error: {e:?}")))
+            .with_path(options.source_name.clone())
+    })?;
     compile_ast(&ast, include_resolver, options)
 }
 

@@ -5,11 +5,13 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use oqi_compile::classical::{PrimitiveTy, Value, ValueTy};
+use oqi_compile::classical::{Duration, PrimitiveTy, Value, ValueTy};
+use oqi_compile::duration::TableTimings;
 use oqi_compile::error::CompileError;
 use oqi_compile::resolve::DefaultIncludeResolver;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
-use oqi_compile::{bytecode, cfg, qubits, ssa};
+use oqi_compile::types::CompileOptions;
+use oqi_compile::{bytecode, cfg, duration, qubits, ssa};
 use oqi_format::Config;
 use oqi_vm::{AutoSim, NoExterns, QuantumBackend, SimdSim, StateVectorSim, Vm};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
@@ -81,6 +83,24 @@ enum Command {
         /// Supply a value for a declared input (repeatable)
         #[arg(long = "input", value_name = "NAME=VALUE")]
         input: Vec<String>,
+
+        /// Supply a fixed duration for a named operation and resolve
+        /// `durationof` at compile time (repeatable). Names are gate names;
+        /// `measure` and `reset` are reserved. Durations use timing-literal
+        /// syntax ("50ns", "4dt"). Unknown names are permitted (a timing
+        /// table is a device property, not program-specific)
+        #[arg(long = "timing", value_name = "NAME=DURATION")]
+        timing: Vec<String>,
+
+        /// Duration of one `dt` unit (e.g. "0.5ns"); affects `dt` literals
+        /// and dt-valued timings
+        #[arg(long, value_name = "DURATION")]
+        dt: Option<String>,
+
+        /// Resolve `durationof` at compile time using the program's defcal
+        /// bodies (and any --timing entries; --timing implies this)
+        #[arg(long)]
+        resolve_durations: bool,
     },
 
     /// Format OpenQASM files
@@ -110,7 +130,22 @@ async fn main() -> ExitCode {
             backend,
             precision,
             input,
-        } => run(&path, state, backend, precision, &input).await,
+            timing,
+            dt,
+            resolve_durations,
+        } => {
+            run(
+                &path,
+                state,
+                backend,
+                precision,
+                &input,
+                &timing,
+                dt.as_deref(),
+                resolve_durations,
+            )
+            .await
+        }
         Command::Fmt {
             compact,
             stdout,
@@ -144,12 +179,16 @@ fn compile(path: &Path, dump: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run(
     path: &Path,
     show_state: bool,
     backend: BackendKind,
     precision: Precision,
     input_specs: &[String],
+    timing_specs: &[String],
+    dt_spec: Option<&str>,
+    resolve_durations: bool,
 ) -> ExitCode {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
@@ -160,11 +199,48 @@ async fn run(
     };
 
     // Full pipeline: source → SIR → CFG → SSA → bytecode.
-    let program =
-        match oqi_compile::lower::compile_source(&source, DefaultIncludeResolver, Some(path)) {
-            Ok(p) => p,
+    let mut options = CompileOptions {
+        source_name: Some(path.to_path_buf()),
+        ..Default::default()
+    };
+    if let Some(spec) = dt_spec {
+        options.dt = match parse_dt(spec) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("--dt: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+    }
+    let mut program = match oqi_compile::lower::compile_source_with_options(
+        &source,
+        DefaultIncludeResolver,
+        options.clone(),
+    ) {
+        Ok(p) => p,
+        Err(e) => return report_compile_error(path, &source, e),
+    };
+    // With timings supplied, `durationof` is resolved at compile time
+    // (spec semantics); otherwise it stays for the VM's runtime pass.
+    if resolve_durations || !timing_specs.is_empty() {
+        let mut entries = Vec::new();
+        for spec in timing_specs {
+            let Some((name, dur)) = spec.split_once('=') else {
+                eprintln!("invalid --timing `{spec}` (expected NAME=DURATION)");
+                return ExitCode::FAILURE;
+            };
+            entries.push((name, dur));
+        }
+        let table = match TableTimings::from_str_entries(entries, &options.dt) {
+            Ok(t) => t
+                .with_defcals(&program, &options.dt)
+                .with_program_gates(&program),
             Err(e) => return report_compile_error(path, &source, e),
         };
+        if let Err(e) = duration::resolve_durationof(&mut program, &table, &options) {
+            return report_compile_error(path, &source, e);
+        }
+    }
     let cfgs = match cfg::build_program(&program) {
         Ok(c) => c,
         Err(e) => return report_compile_error(path, &source, e),
@@ -230,6 +306,21 @@ async fn run(
 
 /// Default RNG seed (matches `StateVectorSim::new`).
 const DEFAULT_SEED: u64 = 0x2545F4914F6CDD1D;
+
+/// Parse a `--dt` duration ("0.5ns"): timing-literal syntax, except the
+/// `dt` unit itself is rejected (self-referential) and the value must be
+/// positive.
+fn parse_dt(spec: &str) -> Result<Duration, String> {
+    if spec.trim_end().ends_with("dt") {
+        return Err("cannot itself be given in `dt` units".into());
+    }
+    let d = oqi_compile::types::parse_timing_literal(spec, &CompileOptions::default().dt)
+        .map_err(|_| format!("`{spec}` is not a duration literal (e.g. \"0.5ns\")"))?;
+    if d.value <= 0.0 {
+        return Err("must be a positive duration".into());
+    }
+    Ok(d)
+}
 
 /// Construct the runtime-selected backend as a boxed trait object.
 fn build_backend(

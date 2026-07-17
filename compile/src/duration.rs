@@ -5,19 +5,28 @@
 //! [`crate::sir::Program`] and replaces every `ExprKind::DurationOf` with a
 //! constant [`crate::classical::Duration`] literal, stacking per-qubit
 //! durations and taking the maximum across qubits at sync points.
+//!
+//! This is the compile-time timing path the spec mandates (docs/delays.rst:
+//! "all operations on durations happen at compile time"). It is strict:
+//! control flow and classical statements inside a `durationof` scope are
+//! errors, because they cannot be timed statically. When no [`Timings`] is
+//! supplied (the pass is simply not run), `durationof` expressions survive to
+//! the bytecode and the VM's runtime timing pass evaluates them instead —
+//! that path additionally supports control flow, but knows no per-gate
+//! durations (uncalibrated gates are zero-width).
 
 use std::collections::HashMap;
 
 use oqi_lex::Span;
 
 use crate::classical::{
-    Duration, DurationUnit, PrimitiveTy, Value, ValueTy, value_as_usize,
+    Duration, DurationUnit, Primitive, PrimitiveTy, Value, ValueTy, value_as_usize,
 };
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{
-    BinOp, CallTarget, Expr, ExprKind, GateCallTarget, GateDecl, GateModifier, IndexItem,
-    IndexKind, IndexOp, Intrinsic, MeasureExpr, MeasureExprKind, Program, QubitOperand, Stmt,
-    StmtKind, UnOp,
+    BinOp, CallTarget, Expr, ExprKind, GateDecl, GateModifier, IndexItem, IndexKind, IndexOp,
+    Intrinsic, MeasureExpr, MeasureExprKind, Program, QubitOperand, RValue, Stmt, StmtKind,
+    SwitchLabels, UnOp,
 };
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::{CompileOptions, Type};
@@ -214,66 +223,68 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         Ok(())
     }
 
+    // LValue index expressions (assignment/measure targets) are not visited:
+    // a `durationof` inside an assignment-target index is pathological and
+    // out of scope for this pass.
     fn visit_stmt(&mut self, stmt: &mut Stmt) -> Result<()> {
         match &mut stmt.kind {
-            StmtKind::ClassicalDecl { init, .. } => {
-                if let Some(init) = init {
-                    self.visit_decl_init(init)?;
-                }
-            }
-            StmtKind::ConstDecl { init, .. } => self.visit_expr(init)?,
-            StmtKind::Alias { value, .. } => {
-                for e in value {
+            StmtKind::Alias(a) => {
+                for e in &mut a.value {
                     self.visit_expr(e)?;
                 }
             }
-            StmtKind::GateCall { args, qubits, .. } => {
-                for a in args {
+            StmtKind::GateCall(gc) => {
+                for m in &mut gc.modifiers {
+                    if let GateModifier::Pow(e) = m {
+                        self.visit_expr(e)?;
+                    }
+                }
+                for a in &mut gc.args {
                     self.visit_expr(a)?;
                 }
-                for q in qubits {
+                for q in &mut gc.qubits {
                     self.visit_qubit_operand(q)?;
                 }
             }
-            StmtKind::Measure { measure, .. } => self.visit_measure_expr(measure)?,
-            StmtKind::Reset { operand } => self.visit_qubit_operand(operand)?,
-            StmtKind::Barrier { operands } | StmtKind::Nop { operands } => {
+            StmtKind::Measure(m) => self.visit_measure_expr(&mut m.measure)?,
+            StmtKind::Reset(operand) => self.visit_qubit_operand(operand)?,
+            StmtKind::Barrier(operands) | StmtKind::Nop(operands) => {
                 for o in operands {
                     self.visit_qubit_operand(o)?;
                 }
             }
-            StmtKind::Delay { duration, operands } => {
-                self.visit_expr(duration)?;
-                for o in operands {
+            StmtKind::Delay(d) => {
+                self.visit_expr(&mut d.duration)?;
+                for o in &mut d.operands {
                     self.visit_qubit_operand(o)?;
                 }
             }
-            StmtKind::Box { duration, body } => {
-                if let Some(d) = duration {
+            StmtKind::Box(b) => {
+                if let Some(d) = &mut b.duration {
                     self.visit_expr(d)?;
                 }
-                self.visit_stmts(body)?;
+                self.visit_stmts(&mut b.body)?;
             }
-            StmtKind::Assignment { value, .. } => self.visit_assign_value(value)?,
-            StmtKind::If { condition, then_body, else_body } => {
-                self.visit_expr(condition)?;
-                self.visit_stmts(then_body)?;
-                if let Some(eb) = else_body {
+            StmtKind::Assignment(a) => self.visit_rvalue(&mut a.value)?,
+            StmtKind::If(i) => {
+                self.visit_expr(&mut i.condition)?;
+                self.visit_stmts(&mut i.then_body)?;
+                if let Some(eb) = &mut i.else_body {
                     self.visit_stmts(eb)?;
                 }
             }
-            StmtKind::For { iterable, body, .. } => {
-                self.visit_for_iterable(iterable)?;
-                self.visit_stmts(body)?;
+            StmtKind::For(f) => {
+                self.visit_for_iterable(&mut f.iterable)?;
+                self.visit_stmts(&mut f.body)?;
             }
-            StmtKind::While { condition, body } => {
-                self.visit_expr(condition)?;
-                self.visit_stmts(body)?;
+            StmtKind::While(w) => {
+                self.visit_expr(&mut w.condition)?;
+                self.visit_stmts(&mut w.body)?;
             }
-            StmtKind::Switch { target, cases } => {
-                self.visit_expr(target)?;
-                for c in cases {
-                    if let crate::sir::SwitchLabels::Values(v) = &mut c.labels {
+            StmtKind::Switch(s) => {
+                self.visit_expr(&mut s.target)?;
+                for c in &mut s.cases {
+                    if let SwitchLabels::Values(v) = &mut c.labels {
                         for e in v {
                             self.visit_expr(e)?;
                         }
@@ -281,42 +292,26 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                     self.visit_stmts(&mut c.body)?;
                 }
             }
-            StmtKind::Return(Some(rv)) => match rv {
-                crate::sir::ReturnValue::Expr(e) => self.visit_expr(e)?,
-                crate::sir::ReturnValue::Measure(m) => self.visit_measure_expr(m)?,
-            },
+            StmtKind::Return(Some(rv)) => self.visit_rvalue(rv)?,
             StmtKind::ExprStmt(e) => self.visit_expr(e)?,
-            _ => {}
+            StmtKind::Return(None)
+            | StmtKind::Break
+            | StmtKind::Continue
+            | StmtKind::End
+            | StmtKind::Pragma(_)
+            | StmtKind::Cal(_) => {}
         }
         Ok(())
     }
 
-    fn visit_assign_value(&mut self, value: &mut crate::sir::AssignValue) -> Result<()> {
+    fn visit_rvalue(&mut self, value: &mut RValue<Expr>) -> Result<()> {
         match value {
-            crate::sir::AssignValue::Expr(e) => self.visit_expr(e),
-            crate::sir::AssignValue::Measure(m) => self.visit_measure_expr(m),
+            RValue::Expr(e) => self.visit_expr(e),
+            RValue::Measure(m) => self.visit_measure_expr(m),
         }
     }
 
-    fn visit_decl_init(&mut self, init: &mut crate::sir::DeclInit) -> Result<()> {
-        match init {
-            crate::sir::DeclInit::Expr(e) => self.visit_expr(e),
-            crate::sir::DeclInit::Measure(m) => self.visit_measure_expr(m),
-            crate::sir::DeclInit::ArrayLiteral(al) => self.visit_array_literal(al),
-        }
-    }
-
-    fn visit_array_literal(&mut self, al: &mut crate::sir::ArrayLiteral) -> Result<()> {
-        for item in &mut al.items {
-            match item {
-                crate::sir::ArrayLiteralItem::Expr(e) => self.visit_expr(e)?,
-                crate::sir::ArrayLiteralItem::Nested(n) => self.visit_array_literal(n)?,
-            }
-        }
-        Ok(())
-    }
-
-    fn visit_measure_expr(&mut self, m: &mut MeasureExpr) -> Result<()> {
+    fn visit_measure_expr(&mut self, m: &mut MeasureExpr<Expr>) -> Result<()> {
         match &mut m.kind {
             MeasureExprKind::Measure { operand } => self.visit_qubit_operand(operand),
             MeasureExprKind::QuantumCall { args, qubits, .. } => {
@@ -331,7 +326,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         }
     }
 
-    fn visit_qubit_operand(&mut self, op: &mut QubitOperand) -> Result<()> {
+    fn visit_qubit_operand(&mut self, op: &mut QubitOperand<Expr>) -> Result<()> {
         if let QubitOperand::Indexed { indices, .. } = op {
             for idx in indices {
                 self.visit_index_op(idx)?;
@@ -340,7 +335,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         Ok(())
     }
 
-    fn visit_index_op(&mut self, op: &mut IndexOp) -> Result<()> {
+    fn visit_index_op(&mut self, op: &mut IndexOp<Expr>) -> Result<()> {
         match &mut op.kind {
             IndexKind::Set(exprs) => {
                 for e in exprs {
@@ -397,24 +392,29 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         // Rewrite durationof in place, then recurse into children.
         if let ExprKind::DurationOf(stmts) = &expr.kind {
             let duration = self.compute_scope_duration(stmts, expr.span)?;
-            expr.kind = ExprKind::Literal(Value::from(duration));
+            expr.kind = ExprKind::Literal(Primitive::from(duration));
             expr.ty = Type::Classical(ValueTy::duration());
             return Ok(());
         }
         match &mut expr.kind {
-            ExprKind::Binary { left, right, .. } => {
-                self.visit_expr(left)?;
-                self.visit_expr(right)?;
+            ExprKind::Binary(b) => {
+                self.visit_expr(&mut b.left)?;
+                self.visit_expr(&mut b.right)?;
             }
-            ExprKind::Unary { operand, .. } => self.visit_expr(operand)?,
-            ExprKind::Cast { operand, .. } => self.visit_expr(operand)?,
-            ExprKind::Index { base, index } => {
-                self.visit_expr(base)?;
-                self.visit_index_op(index)?;
+            ExprKind::Unary(u) => self.visit_expr(&mut u.operand)?,
+            ExprKind::Cast(c) => self.visit_expr(&mut c.operand)?,
+            ExprKind::Index(ix) => {
+                self.visit_expr(&mut ix.base)?;
+                self.visit_index_op(&mut ix.index)?;
             }
-            ExprKind::Call { args, .. } => {
-                for a in args {
+            ExprKind::Call(c) => {
+                for a in &mut c.args {
                     self.visit_expr(a)?;
+                }
+            }
+            ExprKind::ArrayLiteral(al) => {
+                for e in &mut al.items {
+                    self.visit_expr(e)?;
                 }
             }
             ExprKind::Literal(_) | ExprKind::Var(_) | ExprKind::HardwareQubit(_) => {}
@@ -456,55 +456,60 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
     ) -> Result<()> {
         let span = stmt.span;
         match &stmt.kind {
-            StmtKind::GateCall {
-                gate,
-                modifiers,
-                args,
-                qubits,
-            } => self.process_gate_call(gate, modifiers, args, qubits, tracker, frame, span),
-            StmtKind::Measure { measure, .. } => self.process_measure(measure, tracker, frame),
-            StmtKind::ClassicalDecl { init: Some(crate::sir::DeclInit::Measure(m)), .. } => {
-                self.process_measure(m, tracker, frame)
-            }
-            StmtKind::Reset { operand } => {
+            StmtKind::GateCall(gc) => self.process_gate_call(
+                gc.gate,
+                &gc.modifiers,
+                &gc.args,
+                &gc.qubits,
+                tracker,
+                frame,
+                span,
+            ),
+            // Covers both a bare `measure q;` and `bit c = measure q;` (a
+            // decl-with-measure-init lowers to `Measure { target: Some(..) }`).
+            StmtKind::Measure(m) => self.process_measure(&m.measure, tracker, frame),
+            StmtKind::Reset(operand) => {
                 let qr = resolve_qubit_operand(operand, self.symbols, frame, span)?;
                 let args = ResetArgs { qubits: qr.clone() };
                 let dur = self.timings.reset(&args).resolve(&self.options.dt);
                 tracker.advance(&qr, dur);
                 Ok(())
             }
-            StmtKind::Delay { duration, operands } => {
-                let dur_val = self.eval_const_expr(duration, frame)?;
-                let dur = value_to_duration(&dur_val, duration.span)?;
-                let qubits = resolve_qubit_operands(operands, self.symbols, frame, span)?;
+            StmtKind::Delay(d) => {
+                let dur_val = self.eval_const_expr(&d.duration, frame)?;
+                let dur = value_to_duration(&dur_val, d.duration.span)?;
+                let qubits = resolve_qubit_operands(&d.operands, self.symbols, frame, span)?;
                 if qubits.is_empty() {
-                    return Err(err(ErrorKind::InvalidContext(
-                        "delay requires at least one qubit operand".into(),
-                    ), span));
+                    return Err(err(
+                        ErrorKind::InvalidContext(
+                            "delay requires at least one qubit operand".into(),
+                        ),
+                        span,
+                    ));
                 }
                 tracker.advance(&qubits, dur);
                 Ok(())
             }
-            StmtKind::Barrier { operands } | StmtKind::Nop { operands } => {
+            StmtKind::Barrier(operands) | StmtKind::Nop(operands) => {
                 let qubits = resolve_qubit_operands(operands, self.symbols, frame, span)?;
                 if !qubits.is_empty() {
                     tracker.sync(&qubits);
                 }
                 Ok(())
             }
-            StmtKind::Box { duration, body } => {
-                if let Some(dur_expr) = duration {
+            StmtKind::Box(b) => {
+                if let Some(dur_expr) = &b.duration {
                     let v = self.eval_const_expr(dur_expr, frame)?;
                     let dur = value_to_duration(&v, dur_expr.span)?;
                     // A box with an explicit duration pins the enclosed scope
                     // to that duration across its qubits.
-                    let inner = self.compute_scope_duration_with(body, frame, span)?;
+                    let inner = self.compute_scope_duration_with(&b.body, frame, span)?;
                     let (qubits, _) = inner;
                     if !qubits.is_empty() {
                         tracker.advance(&qubits, dur);
                     }
                 } else {
-                    let (qubits, dur) = self.compute_scope_duration_with(body, frame, span)?;
+                    let (qubits, dur) = self.compute_scope_duration_with(&b.body, frame, span)?;
                     if !qubits.is_empty() {
                         tracker.advance(&qubits, dur);
                     }
@@ -512,10 +517,17 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                 Ok(())
             }
             _ => Err(err(
-                ErrorKind::InvalidContext(format!(
-                    "statement not supported inside `durationof`"
-                )),
-                if span == Span::default() { outer_span } else { span },
+                ErrorKind::InvalidContext(
+                    "statement not supported inside `durationof` when compile-time timings \
+                     are supplied (control flow and classical statements cannot be timed \
+                     statically)"
+                        .into(),
+                ),
+                if span == Span::default() {
+                    outer_span
+                } else {
+                    span
+                },
             )),
         }
     }
@@ -533,20 +545,19 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         Ok((qubits, total))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn process_gate_call(
         &self,
-        gate: &GateCallTarget,
-        modifiers: &[GateModifier],
+        gate: SymbolId,
+        modifiers: &[GateModifier<Expr>],
         args: &[Expr],
-        qubits: &[QubitOperand],
+        qubits: &[QubitOperand<Expr>],
         tracker: &mut Tracker,
         frame: &Frame,
         span: Span,
     ) -> Result<()> {
-        let name = match gate {
-            GateCallTarget::Symbol(sid) => self.symbols.get(*sid).name.clone(),
-            GateCallTarget::GPhase => "gphase".to_string(),
-        };
+        // `gphase` arrives as an ordinary seeded symbol named "gphase".
+        let name = self.symbols.get(gate).name.clone();
         let qubit_refs = resolve_qubit_operands(qubits, self.symbols, frame, span)?;
         let resolved_args: Vec<Value> = args
             .iter()
@@ -571,21 +582,12 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                 Ok(())
             }
             GateCallTiming::Enter => {
-                let sid = match gate {
-                    GateCallTarget::Symbol(sid) => *sid,
-                    GateCallTarget::GPhase => {
-                        return Err(err(
-                            ErrorKind::InvalidContext(
-                                "cannot enter a gphase call to compute duration".into(),
-                            ),
-                            span,
-                        ));
-                    }
-                };
+                // Built-ins (`U`, `gphase`) have no GateDecl and fail the
+                // lookup, producing the not-found error below.
                 let decl = self
                     .gates
                     .iter()
-                    .find(|g| g.symbol == sid)
+                    .find(|g| g.symbol == gate)
                     .ok_or_else(|| {
                         err(
                             ErrorKind::InvalidContext(format!(
@@ -637,7 +639,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
 
     fn process_measure(
         &self,
-        measure: &MeasureExpr,
+        measure: &MeasureExpr<Expr>,
         tracker: &mut Tracker,
         frame: &Frame,
     ) -> Result<()> {
@@ -656,23 +658,14 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             } => {
                 // A quantum call used as a measure expression — treat as a
                 // gate call, but the Timings callback decides the semantics.
-                let mods: Vec<GateModifier> = vec![];
-                self.process_gate_call(
-                    &GateCallTarget::Symbol(*callee),
-                    &mods,
-                    args,
-                    qubits,
-                    tracker,
-                    frame,
-                    measure.span,
-                )
+                self.process_gate_call(*callee, &[], args, qubits, tracker, frame, measure.span)
             }
         }
     }
 
     fn resolve_modifier(
         &self,
-        m: &GateModifier,
+        m: &GateModifier<Expr>,
         frame: &Frame,
     ) -> Result<ResolvedGateModifier> {
         Ok(match m {
@@ -689,7 +682,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
 
     fn eval_const_expr(&self, expr: &Expr, frame: &Frame) -> Result<Value> {
         match &expr.kind {
-            ExprKind::Literal(v) => Ok(v.clone()),
+            ExprKind::Literal(p) => Ok(Value::from(p.clone())),
             ExprKind::Var(sid) => {
                 if let Some(v) = frame.params.get(sid) {
                     return Ok(v.clone());
@@ -700,34 +693,33 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                     .clone()
                     .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span))
             }
-            ExprKind::Binary { op, left, right } => {
-                let lv = self.eval_const_expr(left, frame)?;
-                let rv = self.eval_const_expr(right, frame)?;
-                apply_binop(*op, lv, rv, expr.span)
+            ExprKind::Binary(b) => {
+                let lv = self.eval_const_expr(&b.left, frame)?;
+                let rv = self.eval_const_expr(&b.right, frame)?;
+                apply_binop(b.op, lv, rv, expr.span)
             }
-            ExprKind::Unary { op, operand } => {
-                let v = self.eval_const_expr(operand, frame)?;
-                apply_unop(*op, v, expr.span)
+            ExprKind::Unary(u) => {
+                let v = self.eval_const_expr(&u.operand, frame)?;
+                apply_unop(u.op, v, expr.span)
             }
-            ExprKind::Cast { target_ty, operand } => {
-                let v = self.eval_const_expr(operand, frame)?;
-                let ty = target_ty
+            ExprKind::Cast(c) => {
+                let v = self.eval_const_expr(&c.operand, frame)?;
+                let ty = c
+                    .target_ty
                     .value_ty()
                     .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span))?;
                 v.cast(ty)
                     .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
             }
-            ExprKind::Call { callee, args } => match callee {
-                CallTarget::Intrinsic(i) => self.eval_intrinsic(i, args, frame, expr.span),
-                CallTarget::Symbol(_) => {
-                    Err(err(ErrorKind::NonConstantExpression, expr.span))
-                }
+            ExprKind::Call(c) => match &c.callee {
+                CallTarget::Intrinsic(i) => self.eval_intrinsic(i, &c.args, frame, expr.span),
+                CallTarget::Symbol(_) => Err(err(ErrorKind::NonConstantExpression, expr.span)),
             },
             ExprKind::DurationOf(stmts) => {
                 let d = self.compute_scope_duration(stmts, expr.span)?;
                 Ok(Value::from(d))
             }
-            ExprKind::Index { .. } | ExprKind::HardwareQubit(_) => {
+            ExprKind::Index(_) | ExprKind::HardwareQubit(_) | ExprKind::ArrayLiteral(_) => {
                 Err(err(ErrorKind::NonConstantExpression, expr.span))
             }
         }
@@ -851,7 +843,7 @@ struct Frame {
 // ── Qubit resolution ────────────────────────────────────────────────────
 
 fn resolve_qubit_operands(
-    ops: &[QubitOperand],
+    ops: &[QubitOperand<Expr>],
     symbols: &SymbolTable,
     frame: &Frame,
     span: Span,
@@ -865,7 +857,7 @@ fn resolve_qubit_operands(
 }
 
 fn resolve_qubit_operand(
-    op: &QubitOperand,
+    op: &QubitOperand<Expr>,
     symbols: &SymbolTable,
     frame: &Frame,
     span: Span,
@@ -899,9 +891,7 @@ fn resolve_qubit_operand(
                             .collect())
                     }
                     _ => Err(err(
-                        ErrorKind::InvalidContext(format!(
-                            "`{name}` is not a qubit"
-                        )),
+                        ErrorKind::InvalidContext(format!("`{name}` is not a qubit")),
                         span,
                     )),
                 }
@@ -925,7 +915,7 @@ fn resolve_qubit_operand(
     }
 }
 
-fn single_index(op: &IndexOp) -> Result<usize> {
+fn single_index(op: &IndexOp<Expr>) -> Result<usize> {
     let items = match &op.kind {
         IndexKind::Items(items) => items,
         IndexKind::Set(_) => {
@@ -947,7 +937,7 @@ fn single_index(op: &IndexOp) -> Result<usize> {
     }
     match &items[0] {
         IndexItem::Single(e) => match &e.kind {
-            ExprKind::Literal(v) => value_as_usize(v).ok_or_else(|| {
+            ExprKind::Literal(p) => value_as_usize(&Value::from(p.clone())).ok_or_else(|| {
                 err(
                     ErrorKind::InvalidContext("qubit index must be a non-negative integer".into()),
                     op.span,
@@ -972,31 +962,25 @@ fn single_index(op: &IndexOp) -> Result<usize> {
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 fn value_to_duration(v: &Value, span: Span) -> Result<Duration> {
+    let mismatch = || {
+        err(
+            ErrorKind::TypeMismatch {
+                expected: Box::new(Type::Classical(ValueTy::duration())),
+                got: Box::new(Type::Classical(v.ty())),
+            },
+            span,
+        )
+    };
     let scalar = match v {
         Value::Scalar(s) => s,
-        _ => {
-            return Err(err(
-                ErrorKind::TypeMismatch {
-                    expected: Box::new(Type::Classical(ValueTy::duration())),
-                    got: Box::new(Type::Classical(v.ty())),
-                },
-                span,
-            ));
-        }
+        _ => return Err(mismatch()),
     };
     scalar
+        .clone()
         .cast(PrimitiveTy::Duration)
         .ok()
         .and_then(|s| s.value().as_duration())
-        .ok_or_else(|| {
-            err(
-                ErrorKind::TypeMismatch {
-                    expected: Box::new(Type::Classical(ValueTy::duration())),
-                    got: Box::new(Type::Classical(v.ty())),
-                },
-                span,
-            )
-        })
+        .ok_or_else(mismatch)
 }
 
 fn apply_binop(op: BinOp, lv: Value, rv: Value, span: Span) -> Result<Value> {
@@ -1073,10 +1057,10 @@ fn err(kind: ErrorKind, span: Span) -> CompileError {
 mod tests {
     use super::*;
     use crate::lower::compile_source;
-    use crate::resolve::StdFileResolver;
+    use crate::resolve::DefaultIncludeResolver;
 
     fn compile(source: &str) -> Program {
-        compile_source(source, StdFileResolver, None).expect("compile ok")
+        compile_source(source, DefaultIncludeResolver, None).expect("compile ok")
     }
 
     /// A simple backend that returns a fixed duration for every gate/reset/
@@ -1133,9 +1117,33 @@ mod tests {
 
     fn get_duration_literal(expr: &Expr) -> Duration {
         match &expr.kind {
-            ExprKind::Literal(Value::Scalar(s)) => s.value().as_duration().unwrap(),
+            ExprKind::Literal(Primitive::Duration(d)) => *d,
             _ => panic!("expected literal duration, got {:?}", expr.ty),
         }
+    }
+
+    /// The init expression of the first decl-with-init (which lowers to an
+    /// assignment), with any cast to the declared type unwrapped.
+    fn first_init_expr(p: &Program) -> &Expr {
+        let stmt = p
+            .body
+            .iter()
+            .find(|s| matches!(&s.kind, StmtKind::Assignment(_)))
+            .expect("assignment from decl init");
+        let StmtKind::Assignment(a) = &stmt.kind else {
+            unreachable!()
+        };
+        let RValue::Expr(e) = &a.value else {
+            panic!("expected expr rvalue")
+        };
+        match &e.kind {
+            ExprKind::Cast(c) => &c.operand,
+            _ => e,
+        }
+    }
+
+    fn first_init_duration(p: &Program) -> Duration {
+        get_duration_literal(first_init_expr(p))
     }
 
     #[test]
@@ -1280,7 +1288,10 @@ mod tests {
             });
         "#;
         let mut p = compile(src);
-        let t = FixedTimings::new().gate("h", 20.0).measure(200.0).reset(50.0);
+        let t = FixedTimings::new()
+            .gate("h", 20.0)
+            .measure(200.0)
+            .reset(50.0);
         resolve_durationof(&mut p, &t, &CompileOptions::default()).unwrap();
         let d = first_init_duration(&p);
         assert_eq!(d.value, 270.0);
@@ -1318,39 +1329,12 @@ mod tests {
         // The init expression for `d` is `Binary { Mul, DurationOf → 15ns, 2 }`.
         // After resolution the DurationOf child is a literal; the outer * is
         // not re-folded by this pass.
-        let decl = p
-            .body
-            .iter()
-            .find(|s| matches!(&s.kind, StmtKind::ClassicalDecl { init: Some(_), .. }))
-            .unwrap();
-        if let StmtKind::ClassicalDecl {
-            init: Some(crate::sir::DeclInit::Expr(e)),
-            ..
-        } = &decl.kind
-        {
-            if let ExprKind::Binary { left, .. } = &e.kind {
-                let inner = get_duration_literal(left);
-                assert_eq!(inner.value, 15.0);
-            } else {
-                panic!("expected binary expression after resolution");
-            }
+        let e = first_init_expr(&p);
+        if let ExprKind::Binary(b) = &e.kind {
+            let inner = get_duration_literal(&b.left);
+            assert_eq!(inner.value, 15.0);
         } else {
-            panic!("expected classical decl with init");
-        }
-    }
-
-    fn first_init_duration(p: &Program) -> Duration {
-        let decl = p
-            .body
-            .iter()
-            .find(|s| matches!(&s.kind, StmtKind::ClassicalDecl { init: Some(_), .. }))
-            .expect("decl with init");
-        match &decl.kind {
-            StmtKind::ClassicalDecl {
-                init: Some(crate::sir::DeclInit::Expr(e)),
-                ..
-            } => get_duration_literal(e),
-            _ => panic!("unexpected kind"),
+            panic!("expected binary expression after resolution");
         }
     }
 }

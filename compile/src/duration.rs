@@ -15,7 +15,7 @@
 //! that path additionally supports control flow, but knows no per-gate
 //! durations (uncalibrated gates are zero-width).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use oqi_lex::Span;
 
@@ -1051,6 +1051,112 @@ fn err(kind: ErrorKind, span: Span) -> CompileError {
     CompileError::new(kind).with_span(span)
 }
 
+// ── TableTimings: a name → duration table ───────────────────────────────
+
+/// A [`Timings`] impl backed by a name → duration table.
+///
+/// Lookup policy for `gate_call`: a named entry always wins; otherwise a
+/// gate registered as enterable (via [`TableTimings::with_program_gates`])
+/// is entered and its duration derived from its body; otherwise (built-ins
+/// like `U`/`gphase`, or unregistered gates) the call costs 0 ns — matching
+/// the runtime convention that uncalibrated gates take zero time. `measure`
+/// and `reset` default to 0 ns.
+#[derive(Debug, Default, Clone)]
+pub struct TableTimings {
+    gates: HashMap<String, TimingDuration>,
+    measure: Option<TimingDuration>,
+    reset: Option<TimingDuration>,
+    enterable: HashSet<String>,
+}
+
+impl TableTimings {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the duration of the gate `name`.
+    pub fn gate(mut self, name: impl Into<String>, d: TimingDuration) -> Self {
+        self.gates.insert(name.into(), d);
+        self
+    }
+
+    /// Set the duration of measurements.
+    pub fn measure(mut self, d: TimingDuration) -> Self {
+        self.measure = Some(d);
+        self
+    }
+
+    /// Set the duration of resets.
+    pub fn reset(mut self, d: TimingDuration) -> Self {
+        self.reset = Some(d);
+        self
+    }
+
+    /// Register every gate declared with a body in `program` as enterable:
+    /// a call to one (absent a named entry) recurses into its body and
+    /// derives the duration from the gates it decomposes into.
+    pub fn with_program_gates(mut self, program: &Program) -> Self {
+        for g in &program.gates {
+            self.enterable
+                .insert(program.symbols.get(g.symbol).name.clone());
+        }
+        self
+    }
+
+    /// Build from `(name, duration-literal)` string pairs — the shared
+    /// driver entry point for `--timing NAME=DURATION`-style options. The
+    /// names `measure` and `reset` set those operations' durations; any
+    /// other name is a gate. Values use OpenQASM timing-literal syntax
+    /// (`"50ns"`, `"4dt"`); `dt` values are resolved against `dt`. Unknown
+    /// gate names are permitted (a timing table is a device property, not
+    /// program-specific); negative durations are rejected.
+    pub fn from_str_entries<'a>(
+        entries: impl IntoIterator<Item = (&'a str, &'a str)>,
+        dt: &Duration,
+    ) -> Result<Self> {
+        let mut table = TableTimings::new();
+        for (name, raw) in entries {
+            let d = crate::types::parse_timing_literal(raw, dt).map_err(|_| {
+                CompileError::new(ErrorKind::InvalidLiteral(format!(
+                    "timing for `{name}`: `{raw}` is not a duration literal"
+                )))
+            })?;
+            if d.value.is_nan() || d.value < 0.0 {
+                return Err(CompileError::new(ErrorKind::InvalidLiteral(format!(
+                    "timing for `{name}`: duration must be non-negative"
+                ))));
+            }
+            let td = TimingDuration::Si(d);
+            match name {
+                "measure" => table.measure = Some(td),
+                "reset" => table.reset = Some(td),
+                _ => {
+                    table.gates.insert(name.to_string(), td);
+                }
+            }
+        }
+        Ok(table)
+    }
+}
+
+impl Timings for TableTimings {
+    fn measurement(&self, _args: &MeasureArgs) -> TimingDuration {
+        self.measure.unwrap_or(TimingDuration::zero())
+    }
+    fn reset(&self, _args: &ResetArgs) -> TimingDuration {
+        self.reset.unwrap_or(TimingDuration::zero())
+    }
+    fn gate_call(&self, args: &GateCallArgs) -> GateCallTiming {
+        if let Some(d) = self.gates.get(&args.name) {
+            return GateCallTiming::Duration(*d);
+        }
+        if self.enterable.contains(&args.name) {
+            return GateCallTiming::Enter;
+        }
+        GateCallTiming::Duration(TimingDuration::zero())
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1336,5 +1442,129 @@ mod tests {
         } else {
             panic!("expected binary expression after resolution");
         }
+    }
+
+    // ── TableTimings ────────────────────────────────────────────────────
+
+    #[test]
+    fn table_timings_named_entry_wins() {
+        let src = r#"
+            include "stdgates.inc";
+            gate my_pair a { x a; y a; }
+            duration d = durationof({ my_pair $0; });
+        "#;
+        let mut p = compile(src);
+        // `my_pair` is enterable (body would derive 0ns with no entries),
+        // but its named entry takes precedence.
+        let t = TableTimings::new()
+            .gate("my_pair", TimingDuration::ns(70.0))
+            .with_program_gates(&p);
+        resolve_durationof(&mut p, &t, &CompileOptions::default()).unwrap();
+        assert_eq!(first_init_duration(&p).value, 70.0);
+    }
+
+    #[test]
+    fn table_timings_enters_defined_gates() {
+        let src = r#"
+            include "stdgates.inc";
+            gate my_pair a { x a; y a; }
+            duration d = durationof({ my_pair $0; });
+        "#;
+        let mut p = compile(src);
+        let t = TableTimings::new()
+            .gate("x", TimingDuration::ns(10.0))
+            .gate("y", TimingDuration::ns(20.0))
+            .with_program_gates(&p);
+        resolve_durationof(&mut p, &t, &CompileOptions::default()).unwrap();
+        assert_eq!(first_init_duration(&p).value, 30.0);
+    }
+
+    #[test]
+    fn table_timings_derives_through_u() {
+        // Only the built-in `U` has an entry; the user gate derives its
+        // duration by recursing down to it.
+        let src = r#"
+            gate my_x a { U(3.14, 0.0, 3.14) a; }
+            duration d = durationof({ my_x $0; });
+        "#;
+        let mut p = compile(src);
+        let t = TableTimings::new()
+            .gate("U", TimingDuration::ns(40.0))
+            .with_program_gates(&p);
+        resolve_durationof(&mut p, &t, &CompileOptions::default()).unwrap();
+        assert_eq!(first_init_duration(&p).value, 40.0);
+    }
+
+    #[test]
+    fn table_timings_unknown_gate_is_zero() {
+        let src = r#"
+            include "stdgates.inc";
+            duration d = durationof({ x $0; });
+        "#;
+        let mut p = compile(src);
+        // Empty table, no enterable gates: `x` costs 0ns, no error.
+        let t = TableTimings::new();
+        resolve_durationof(&mut p, &t, &CompileOptions::default()).unwrap();
+        assert_eq!(first_init_duration(&p).value, 0.0);
+    }
+
+    #[test]
+    fn table_timings_measure_reset_defaults() {
+        let src = r#"
+            include "stdgates.inc";
+            duration d = durationof({
+                reset $0;
+                bit c = measure $0;
+            });
+        "#;
+        // Defaults: both 0ns.
+        let mut p = compile(src);
+        resolve_durationof(&mut p, &TableTimings::new(), &CompileOptions::default()).unwrap();
+        assert_eq!(first_init_duration(&p).value, 0.0);
+
+        // Reserved names via the string entry point.
+        let mut p = compile(src);
+        let t = TableTimings::from_str_entries(
+            [("measure", "200ns"), ("reset", "50ns")],
+            &CompileOptions::default().dt,
+        )
+        .unwrap();
+        resolve_durationof(&mut p, &t, &CompileOptions::default()).unwrap();
+        assert_eq!(
+            first_init_duration(&p).to_unit(DurationUnit::Ns).value,
+            250.0
+        );
+    }
+
+    #[test]
+    fn table_timings_from_str_entries_dt() {
+        let dt = Duration::new(0.5, DurationUnit::Ns);
+        let t = TableTimings::from_str_entries([("x", "4dt")], &dt).unwrap();
+        let src = r#"
+            include "stdgates.inc";
+            duration d = durationof({ x $0; });
+        "#;
+        let mut p = compile(src);
+        resolve_durationof(&mut p, &t, &CompileOptions::default()).unwrap();
+        assert_eq!(first_init_duration(&p).to_unit(DurationUnit::Ns).value, 2.0);
+
+        let err = TableTimings::from_str_entries([("x", "-5ns")], &dt).unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::InvalidLiteral(_)));
+        let err = TableTimings::from_str_entries([("x", "abc")], &dt).unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::InvalidLiteral(_)));
+    }
+
+    #[test]
+    fn table_timings_control_flow_errors() {
+        let src = r#"
+            include "stdgates.inc";
+            duration d = durationof({
+                for int i in [0:2] { x $0; }
+            });
+        "#;
+        let mut p = compile(src);
+        let err = resolve_durationof(&mut p, &TableTimings::new(), &CompileOptions::default())
+            .unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::InvalidContext(_)));
     }
 }

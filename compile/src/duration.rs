@@ -24,8 +24,9 @@ use crate::classical::{
 };
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{
-    BinOp, CallTarget, Expr, ExprKind, GateDecl, GateModifier, IndexItem, IndexKind, IndexOp,
-    Intrinsic, MeasureExpr, MeasureExprKind, Program, QubitOperand, RValue, Stmt, StmtKind,
+    BinOp, CalibrationArg, CalibrationBody, CalibrationDecl, CalibrationOperand, CalibrationTarget,
+    CallTarget, Expr, ExprKind, GateDecl, GateModifier, IndexItem, IndexKind, IndexOp, Intrinsic,
+    LValue, MeasureExpr, MeasureExprKind, Program, QubitOperand, RValue, Stmt, StmtKind,
     SwitchLabels, UnOp,
 };
 use crate::symbol::{SymbolId, SymbolTable};
@@ -130,10 +131,15 @@ pub struct GateCallArgs {
 
 /// Backend-supplied durations for the operations that can appear in a
 /// `durationof` scope.
+///
+/// The methods are fallible so a provider that *derives* durations (e.g.
+/// [`TableTimings`] walking a defcal body) can report why a duration
+/// cannot be determined statically. Spanless errors get the call site's
+/// span attached by the pass.
 pub trait Timings {
-    fn measurement(&self, args: &MeasureArgs) -> TimingDuration;
-    fn reset(&self, args: &ResetArgs) -> TimingDuration;
-    fn gate_call(&self, args: &GateCallArgs) -> GateCallTiming;
+    fn measurement(&self, args: &MeasureArgs) -> Result<TimingDuration>;
+    fn reset(&self, args: &ResetArgs) -> Result<TimingDuration>;
+    fn gate_call(&self, args: &GateCallArgs) -> Result<GateCallTiming>;
 }
 
 // ── Public entry points ─────────────────────────────────────────────────
@@ -471,7 +477,11 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             StmtKind::Reset(operand) => {
                 let qr = resolve_qubit_operand(operand, self.symbols, frame, span)?;
                 let args = ResetArgs { qubits: qr.clone() };
-                let dur = self.timings.reset(&args).resolve(&self.options.dt);
+                let dur = self
+                    .timings
+                    .reset(&args)
+                    .map_err(|e| at_span(e, span))?
+                    .resolve(&self.options.dt);
                 tracker.advance(&qr, dur);
                 Ok(())
             }
@@ -574,7 +584,11 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             args: resolved_args.clone(),
             qubits: qubit_refs.clone(),
         };
-        match self.timings.gate_call(&call_args) {
+        match self
+            .timings
+            .gate_call(&call_args)
+            .map_err(|e| at_span(e, span))?
+        {
             GateCallTiming::Duration(d) => {
                 if !qubit_refs.is_empty() {
                     tracker.advance(&qubit_refs, d.resolve(&self.options.dt));
@@ -647,7 +661,11 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             MeasureExprKind::Measure { operand } => {
                 let qr = resolve_qubit_operand(operand, self.symbols, frame, measure.span)?;
                 let args = MeasureArgs { qubits: qr.clone() };
-                let dur = self.timings.measurement(&args).resolve(&self.options.dt);
+                let dur = self
+                    .timings
+                    .measurement(&args)
+                    .map_err(|e| at_span(e, measure.span))?
+                    .resolve(&self.options.dt);
                 tracker.advance(&qr, dur);
                 Ok(())
             }
@@ -1051,22 +1069,48 @@ fn err(kind: ErrorKind, span: Span) -> CompileError {
     CompileError::new(kind).with_span(span)
 }
 
+/// Attach `span` to `e` unless it already carries one (provider errors may
+/// point inside a defcal body; keep the more precise span).
+fn at_span(e: CompileError, span: Span) -> CompileError {
+    if e.span == Span::default() {
+        e.with_span(span)
+    } else {
+        e
+    }
+}
+
 // ── TableTimings: a name → duration table ───────────────────────────────
 
 /// A [`Timings`] impl backed by a name → duration table.
 ///
 /// Lookup policy for `gate_call`: a named entry always wins; otherwise a
-/// gate registered as enterable (via [`TableTimings::with_program_gates`])
-/// is entered and its duration derived from its body; otherwise (built-ins
-/// like `U`/`gphase`, or unregistered gates) the call costs 0 ns — matching
-/// the runtime convention that uncalibrated gates take zero time. `measure`
-/// and `reset` default to 0 ns.
-#[derive(Debug, Default, Clone)]
+/// matching defcal (via [`TableTimings::with_defcals`]) has its pulse body's
+/// duration derived; otherwise a gate registered as enterable (via
+/// [`TableTimings::with_program_gates`]) is entered and its duration derived
+/// from its body; otherwise (built-ins like `U`/`gphase`, or unregistered
+/// gates) the call costs 0 ns — matching the runtime convention that
+/// uncalibrated gates take zero time. `measure` and `reset` default to a
+/// matching measure/reset defcal, then 0 ns.
+#[derive(Default, Clone)]
 pub struct TableTimings {
     gates: HashMap<String, TimingDuration>,
     measure: Option<TimingDuration>,
     reset: Option<TimingDuration>,
     enterable: HashSet<String>,
+    defcals: Option<DefcalTable>,
+}
+
+// Manual: `DefcalTable` holds SIR nodes, which have no `Debug`.
+impl std::fmt::Debug for TableTimings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TableTimings")
+            .field("gates", &self.gates)
+            .field("measure", &self.measure)
+            .field("reset", &self.reset)
+            .field("enterable", &self.enterable)
+            .field("defcals", &self.defcals.is_some())
+            .finish()
+    }
 }
 
 impl TableTimings {
@@ -1100,6 +1144,45 @@ impl TableTimings {
             self.enterable
                 .insert(program.symbols.get(g.symbol).name.clone());
         }
+        self
+    }
+
+    /// Derive durations from the program's `defcal` bodies: a gate call
+    /// (or measure/reset) matching a calibration — most exact
+    /// hardware-operand match wins, mirroring the VM's dispatch — takes
+    /// the busiest-frame duration of its pulse body. Explicit table
+    /// entries still win. `capture` counts one `dt` per sample; a matched
+    /// defcal whose durations aren't compile-time constants is an error,
+    /// not silently zero. The calibrations are cloned out of `program`
+    /// (the pass later needs `&mut Program`).
+    pub fn with_defcals(mut self, program: &Program, dt: &Duration) -> Self {
+        let mut table = DefcalTable {
+            gates: HashMap::new(),
+            measures: Vec::new(),
+            resets: Vec::new(),
+            names: HashMap::new(),
+            consts: HashMap::new(),
+            dt: *dt,
+        };
+        for s in program.symbols.iter() {
+            table.names.insert(s.id, s.name.clone());
+            if let Some(v) = &s.const_value {
+                table.consts.insert(s.id, v.clone());
+            }
+        }
+        for cal in &program.calibrations {
+            match &cal.target {
+                CalibrationTarget::Named(sid) => table
+                    .gates
+                    .entry(program.symbols.get(*sid).name.clone())
+                    .or_default()
+                    .push(cal.clone()),
+                CalibrationTarget::Measure => table.measures.push(cal.clone()),
+                CalibrationTarget::Reset => table.resets.push(cal.clone()),
+                CalibrationTarget::Delay => {}
+            }
+        }
+        self.defcals = Some(table);
         self
     }
 
@@ -1140,20 +1223,472 @@ impl TableTimings {
 }
 
 impl Timings for TableTimings {
-    fn measurement(&self, _args: &MeasureArgs) -> TimingDuration {
-        self.measure.unwrap_or(TimingDuration::zero())
+    fn measurement(&self, args: &MeasureArgs) -> Result<TimingDuration> {
+        if let Some(d) = self.measure {
+            return Ok(d);
+        }
+        if let Some(dc) = &self.defcals
+            && let Some(cal) = DefcalTable::find(&dc.measures, &args.qubits, 0)
+        {
+            return dc.body_duration(cal, &[]).map(TimingDuration::from);
+        }
+        Ok(TimingDuration::zero())
     }
-    fn reset(&self, _args: &ResetArgs) -> TimingDuration {
-        self.reset.unwrap_or(TimingDuration::zero())
+    fn reset(&self, args: &ResetArgs) -> Result<TimingDuration> {
+        if let Some(d) = self.reset {
+            return Ok(d);
+        }
+        if let Some(dc) = &self.defcals
+            && let Some(cal) = DefcalTable::find(&dc.resets, &args.qubits, 0)
+        {
+            return dc.body_duration(cal, &[]).map(TimingDuration::from);
+        }
+        Ok(TimingDuration::zero())
     }
-    fn gate_call(&self, args: &GateCallArgs) -> GateCallTiming {
+    fn gate_call(&self, args: &GateCallArgs) -> Result<GateCallTiming> {
         if let Some(d) = self.gates.get(&args.name) {
-            return GateCallTiming::Duration(*d);
+            return Ok(GateCallTiming::Duration(*d));
+        }
+        if let Some(dc) = &self.defcals
+            && let Some(cals) = dc.gates.get(&args.name)
+            && let Some(cal) = DefcalTable::find(cals, &args.qubits, args.args.len())
+        {
+            return dc
+                .body_duration(cal, &args.args)
+                .map(|d| GateCallTiming::Duration(d.into()));
         }
         if self.enterable.contains(&args.name) {
-            return GateCallTiming::Enter;
+            return Ok(GateCallTiming::Enter);
         }
-        GateCallTiming::Duration(TimingDuration::zero())
+        Ok(GateCallTiming::Duration(TimingDuration::zero()))
+    }
+}
+
+// ── Defcal-derived timings ──────────────────────────────────────────────
+
+/// Calibration data cloned out of a [`Program`] so [`TableTimings`] can
+/// derive durations from defcal pulse bodies.
+#[derive(Clone)]
+struct DefcalTable {
+    /// Gate defcals grouped by gate name, in declaration order.
+    gates: HashMap<String, Vec<CalibrationDecl>>,
+    measures: Vec<CalibrationDecl>,
+    resets: Vec<CalibrationDecl>,
+    /// Symbol names, for resolving intrinsic callees and frame variables.
+    names: HashMap<SymbolId, String>,
+    /// Compile-time constant values of symbols.
+    consts: HashMap<SymbolId, Value>,
+    /// The `dt` duration captured at build time (one `capture` sample
+    /// lasts one `dt`).
+    dt: Duration,
+}
+
+impl DefcalTable {
+    /// Pick the best-matching calibration for a call on `qubits` with
+    /// `n_args` classical arguments. Mirrors the VM's dispatch rule: arity
+    /// must match, `Hardware` operands must equal (`Ident` matches
+    /// anything), most exact matches win, ties go to the first declared.
+    fn find<'c>(
+        cals: &'c [CalibrationDecl],
+        qubits: &[QubitRef],
+        n_args: usize,
+    ) -> Option<&'c CalibrationDecl> {
+        let mut best: Option<(&CalibrationDecl, usize)> = None;
+        for cal in cals {
+            if cal.operands.len() != qubits.len() || cal.args.len() != n_args {
+                continue;
+            }
+            let mut exact = 0usize;
+            let ok = cal.operands.iter().zip(qubits).all(|(op, q)| match op {
+                CalibrationOperand::Hardware(n) => {
+                    exact += 1;
+                    matches!(q, QubitRef::Hardware(m) if m == n)
+                }
+                CalibrationOperand::Ident(_) => true,
+            });
+            if ok && best.is_none_or(|(_, e)| exact > e) {
+                best = Some((cal, exact));
+            }
+        }
+        best.map(|(c, _)| c)
+    }
+
+    /// Duration of a defcal's pulse body: per-frame clocks advanced by
+    /// plays, captures and delays; the result is the busiest frame
+    /// (mirroring the VM's runtime `TimingState`).
+    fn body_duration(&self, cal: &CalibrationDecl, call_args: &[Value]) -> Result<Duration> {
+        let CalibrationBody::OpenPulse(stmts) = &cal.body else {
+            return Err(err(
+                ErrorKind::InvalidContext("opaque defcal bodies cannot be timed".into()),
+                cal.span,
+            ));
+        };
+        let mut params = HashMap::new();
+        for (arg, v) in cal.args.iter().zip(call_args) {
+            if let CalibrationArg::Param(sid) = arg {
+                params.insert(*sid, v.clone());
+            }
+        }
+        let mut walk = CalWalk {
+            table: self,
+            params,
+            frames: HashMap::new(),
+            waveforms: HashMap::new(),
+        };
+        for stmt in stmts {
+            walk.stmt(stmt)?;
+        }
+        Ok(walk.total())
+    }
+}
+
+/// One walk over a defcal body, accumulating per-frame clocks.
+struct CalWalk<'a> {
+    table: &'a DefcalTable,
+    /// Defcal params bound to the call's actual argument values.
+    params: HashMap<SymbolId, Value>,
+    /// Frame variable → its clock.
+    frames: HashMap<SymbolId, Duration>,
+    /// Local waveform variable → its duration.
+    waveforms: HashMap<SymbolId, Duration>,
+}
+
+impl CalWalk<'_> {
+    fn total(&self) -> Duration {
+        let mut max = Duration::new(0.0, DurationUnit::Ns);
+        for d in self.frames.values() {
+            if *d > max {
+                max = *d;
+            }
+        }
+        max
+    }
+
+    fn advance(&mut self, frame: SymbolId, dur: Duration) {
+        let clock = self
+            .frames
+            .entry(frame)
+            .or_insert(Duration::new(0.0, DurationUnit::Ns));
+        *clock = *clock + dur;
+    }
+
+    fn name(&self, sid: SymbolId) -> &str {
+        self.table.names.get(&sid).map(String::as_str).unwrap_or("")
+    }
+
+    fn stmt(&mut self, stmt: &Stmt) -> Result<()> {
+        let span = stmt.span;
+        match &stmt.kind {
+            StmtKind::Assignment(a) => {
+                // `waveform wf = gaussian(...)` binds a local waveform.
+                if let RValue::Expr(e) = &a.value
+                    && let ExprKind::Call(c) = &e.kind
+                    && let CallTarget::Symbol(callee) = &c.callee
+                    && self.name(*callee) == "gaussian"
+                {
+                    let dur = self.waveform_duration(e)?;
+                    if let LValue::Var(sid) = &a.target {
+                        self.waveforms.insert(*sid, dur);
+                    }
+                    return Ok(());
+                }
+                // Captures nested in the assigned expression still advance
+                // their frame; other classical work is zero-width.
+                if let RValue::Expr(e) = &a.value {
+                    self.scan_expr(e)?;
+                }
+                Ok(())
+            }
+            StmtKind::ExprStmt(e) => self.scan_expr(e),
+            StmtKind::Return(Some(RValue::Expr(e))) => self.scan_expr(e),
+            StmtKind::Return(_) => Ok(()),
+            // A defcal body may call other gates (recursive defcal
+            // dispatch); their pulses land on this walk's frame clocks.
+            StmtKind::GateCall(gc) => self.gate_call(gc, span),
+            StmtKind::Delay(d) => {
+                let v = eval_cal_expr(&d.duration, &self.params, &self.table.consts)?;
+                let dur = value_to_duration(&v, d.duration.span)?;
+                let mut targets: Vec<SymbolId> = Vec::new();
+                for op in &d.operands {
+                    match op {
+                        QubitOperand::Indexed { symbol, indices } if indices.is_empty() => {
+                            targets.push(*symbol);
+                        }
+                        _ => {
+                            return Err(err(
+                                ErrorKind::InvalidContext(
+                                    "delay operands in a timed defcal body must be frames".into(),
+                                ),
+                                span,
+                            ));
+                        }
+                    }
+                }
+                if targets.is_empty() {
+                    targets = self.frames.keys().copied().collect();
+                }
+                for f in targets {
+                    self.advance(f, dur);
+                }
+                Ok(())
+            }
+            StmtKind::Barrier(ops) => {
+                let mut targets: Vec<SymbolId> = ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        QubitOperand::Indexed { symbol, indices } if indices.is_empty() => {
+                            Some(*symbol)
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                if targets.is_empty() {
+                    targets = self.frames.keys().copied().collect();
+                }
+                let mut max = Duration::new(0.0, DurationUnit::Ns);
+                for f in &targets {
+                    let d = self
+                        .frames
+                        .get(f)
+                        .copied()
+                        .unwrap_or(Duration::new(0.0, DurationUnit::Ns));
+                    if d > max {
+                        max = d;
+                    }
+                }
+                for f in targets {
+                    self.frames.insert(f, max);
+                }
+                Ok(())
+            }
+            StmtKind::Nop(_) => Ok(()),
+            _ => Err(err(
+                ErrorKind::InvalidContext(
+                    "statement not supported in a defcal body timed at compile time".into(),
+                ),
+                span,
+            )),
+        }
+    }
+
+    /// Advance clocks for every pulse operation found in `e`; everything
+    /// classical is zero-width.
+    fn scan_expr(&mut self, e: &Expr) -> Result<()> {
+        if let ExprKind::Call(c) = &e.kind {
+            if let CallTarget::Symbol(callee) = &c.callee {
+                match self.name(*callee) {
+                    "play" => return self.play(&c.args, e.span),
+                    "capture" => return self.capture(&c.args, e.span),
+                    // A waveform constructed but not played is zero-width.
+                    "gaussian" => return Ok(()),
+                    _ => {}
+                }
+            }
+            // shift_phase / newframe / threshold / ordinary calls: captures
+            // may hide in their arguments.
+            for a in &c.args {
+                self.scan_expr(a)?;
+            }
+            return Ok(());
+        }
+        match &e.kind {
+            ExprKind::Binary(b) => {
+                self.scan_expr(&b.left)?;
+                self.scan_expr(&b.right)
+            }
+            ExprKind::Unary(u) => self.scan_expr(&u.operand),
+            ExprKind::Cast(c) => self.scan_expr(&c.operand),
+            _ => Ok(()),
+        }
+    }
+
+    /// Recursive defcal dispatch for a gate call inside a defcal body:
+    /// find the called gate's own defcal (same matching rule) and walk its
+    /// body against this walk's frame clocks.
+    fn gate_call(&mut self, gc: &crate::sir::GateCall<Expr>, span: Span) -> Result<()> {
+        let table = self.table;
+        let name = self.name(gc.gate).to_string();
+        let mut qubits = Vec::new();
+        for op in &gc.qubits {
+            match op {
+                QubitOperand::Hardware(n) => qubits.push(QubitRef::Hardware(*n)),
+                QubitOperand::Indexed { symbol, indices } if indices.is_empty() => {
+                    qubits.push(QubitRef::Symbol {
+                        name: self.name(*symbol).to_string(),
+                        index: None,
+                    });
+                }
+                _ => {
+                    return Err(err(
+                        ErrorKind::InvalidContext(
+                            "indexed qubit operands are not supported in a timed defcal body"
+                                .into(),
+                        ),
+                        span,
+                    ));
+                }
+            }
+        }
+        let call_args: Vec<Value> = gc
+            .args
+            .iter()
+            .map(|a| eval_cal_expr(a, &self.params, &table.consts))
+            .collect::<Result<_>>()?;
+        let cal = table
+            .gates
+            .get(&name)
+            .and_then(|cals| DefcalTable::find(cals, &qubits, call_args.len()))
+            .ok_or_else(|| {
+                err(
+                    ErrorKind::InvalidContext(format!(
+                        "no defcal matches `{name}` inside a timed defcal body"
+                    )),
+                    span,
+                )
+            })?;
+        let CalibrationBody::OpenPulse(stmts) = &cal.body else {
+            return Err(err(
+                ErrorKind::InvalidContext("opaque defcal bodies cannot be timed".into()),
+                cal.span,
+            ));
+        };
+        let mut sub_params = HashMap::new();
+        for (arg, v) in cal.args.iter().zip(&call_args) {
+            if let CalibrationArg::Param(sid) = arg {
+                sub_params.insert(*sid, v.clone());
+            }
+        }
+        let saved_params = std::mem::replace(&mut self.params, sub_params);
+        let saved_waveforms = std::mem::take(&mut self.waveforms);
+        let result = stmts.iter().try_for_each(|s| self.stmt(s));
+        self.params = saved_params;
+        self.waveforms = saved_waveforms;
+        result
+    }
+
+    fn play(&mut self, args: &[Expr], span: Span) -> Result<()> {
+        let [frame, wf] = args else {
+            return Err(err(
+                ErrorKind::InvalidContext("play expects (frame, waveform)".into()),
+                span,
+            ));
+        };
+        let ExprKind::Var(frame_sid) = &frame.kind else {
+            return Err(err(
+                ErrorKind::InvalidContext("play frame must be a frame variable".into()),
+                frame.span,
+            ));
+        };
+        let dur = match &wf.kind {
+            ExprKind::Var(wf_sid) => self.waveforms.get(wf_sid).copied().ok_or_else(|| {
+                err(
+                    ErrorKind::InvalidContext(
+                        "played waveform's duration is not statically known".into(),
+                    ),
+                    wf.span,
+                )
+            })?,
+            _ => self.waveform_duration(wf)?,
+        };
+        self.advance(*frame_sid, dur);
+        Ok(())
+    }
+
+    fn capture(&mut self, args: &[Expr], span: Span) -> Result<()> {
+        let [frame, samples] = args else {
+            return Err(err(
+                ErrorKind::InvalidContext("capture expects (frame, samples)".into()),
+                span,
+            ));
+        };
+        let ExprKind::Var(frame_sid) = &frame.kind else {
+            return Err(err(
+                ErrorKind::InvalidContext("capture frame must be a frame variable".into()),
+                frame.span,
+            ));
+        };
+        let v = eval_cal_expr(samples, &self.params, &self.table.consts)?;
+        let n = value_as_usize(&v).ok_or_else(|| {
+            err(
+                ErrorKind::InvalidContext(
+                    "capture sample count must be a constant non-negative integer".into(),
+                ),
+                samples.span,
+            )
+        })?;
+        let dt = self.table.dt;
+        self.advance(*frame_sid, Duration::new(n as f64 * dt.value, dt.unit));
+        Ok(())
+    }
+
+    /// Duration of a waveform constructor call (`gaussian(amp, dur, sigma)`).
+    fn waveform_duration(&self, e: &Expr) -> Result<Duration> {
+        let ExprKind::Call(c) = &e.kind else {
+            return Err(err(
+                ErrorKind::InvalidContext("waveform value is not a constructor call".into()),
+                e.span,
+            ));
+        };
+        let CallTarget::Symbol(callee) = &c.callee else {
+            return Err(err(
+                ErrorKind::InvalidContext("waveform value is not a constructor call".into()),
+                e.span,
+            ));
+        };
+        match self.name(*callee) {
+            "gaussian" => {
+                let dur_expr = c.args.get(1).ok_or_else(|| {
+                    err(
+                        ErrorKind::InvalidContext("gaussian expects (amp, duration, sigma)".into()),
+                        e.span,
+                    )
+                })?;
+                let v = eval_cal_expr(dur_expr, &self.params, &self.table.consts)?;
+                value_to_duration(&v, dur_expr.span)
+            }
+            other => Err(err(
+                ErrorKind::InvalidContext(format!(
+                    "cannot statically time waveform constructor `{other}`"
+                )),
+                e.span,
+            )),
+        }
+    }
+}
+
+/// Constant evaluation inside a defcal body: literals, defcal params,
+/// global consts, and arithmetic (no intrinsics).
+fn eval_cal_expr(
+    expr: &Expr,
+    params: &HashMap<SymbolId, Value>,
+    consts: &HashMap<SymbolId, Value>,
+) -> Result<Value> {
+    match &expr.kind {
+        ExprKind::Literal(p) => Ok(Value::from(p.clone())),
+        ExprKind::Var(sid) => params
+            .get(sid)
+            .or_else(|| consts.get(sid))
+            .cloned()
+            .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span)),
+        ExprKind::Binary(b) => {
+            let lv = eval_cal_expr(&b.left, params, consts)?;
+            let rv = eval_cal_expr(&b.right, params, consts)?;
+            apply_binop(b.op, lv, rv, expr.span)
+        }
+        ExprKind::Unary(u) => {
+            let v = eval_cal_expr(&u.operand, params, consts)?;
+            apply_unop(u.op, v, expr.span)
+        }
+        ExprKind::Cast(c) => {
+            let v = eval_cal_expr(&c.operand, params, consts)?;
+            let ty = c
+                .target_ty
+                .value_ty()
+                .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span))?;
+            v.cast(ty)
+                .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
+        }
+        _ => Err(err(ErrorKind::NonConstantExpression, expr.span)),
     }
 }
 
@@ -1206,18 +1741,18 @@ mod tests {
     }
 
     impl Timings for FixedTimings {
-        fn measurement(&self, _args: &MeasureArgs) -> TimingDuration {
-            TimingDuration::ns(self.measure_ns)
+        fn measurement(&self, _args: &MeasureArgs) -> Result<TimingDuration> {
+            Ok(TimingDuration::ns(self.measure_ns))
         }
-        fn reset(&self, _args: &ResetArgs) -> TimingDuration {
-            TimingDuration::ns(self.reset_ns)
+        fn reset(&self, _args: &ResetArgs) -> Result<TimingDuration> {
+            Ok(TimingDuration::ns(self.reset_ns))
         }
-        fn gate_call(&self, args: &GateCallArgs) -> GateCallTiming {
+        fn gate_call(&self, args: &GateCallArgs) -> Result<GateCallTiming> {
             if self.enter.iter().any(|n| n == &args.name) {
-                return GateCallTiming::Enter;
+                return Ok(GateCallTiming::Enter);
             }
             let ns = self.gate_ns.get(&args.name).copied().unwrap_or(0.0);
-            GateCallTiming::Duration(TimingDuration::ns(ns))
+            Ok(GateCallTiming::Duration(TimingDuration::ns(ns)))
         }
     }
 
@@ -1330,14 +1865,14 @@ mod tests {
         let mut p = compile(src);
         struct DtTimings;
         impl Timings for DtTimings {
-            fn measurement(&self, _a: &MeasureArgs) -> TimingDuration {
-                TimingDuration::zero()
+            fn measurement(&self, _a: &MeasureArgs) -> Result<TimingDuration> {
+                Ok(TimingDuration::zero())
             }
-            fn reset(&self, _a: &ResetArgs) -> TimingDuration {
-                TimingDuration::zero()
+            fn reset(&self, _a: &ResetArgs) -> Result<TimingDuration> {
+                Ok(TimingDuration::zero())
             }
-            fn gate_call(&self, _a: &GateCallArgs) -> GateCallTiming {
-                GateCallTiming::Duration(TimingDuration::dt(4.0))
+            fn gate_call(&self, _a: &GateCallArgs) -> Result<GateCallTiming> {
+                Ok(GateCallTiming::Duration(TimingDuration::dt(4.0)))
             }
         }
         let options = CompileOptions {
@@ -1552,6 +2087,171 @@ mod tests {
         assert!(matches!(err.kind, ErrorKind::InvalidLiteral(_)));
         let err = TableTimings::from_str_entries([("x", "abc")], &dt).unwrap_err();
         assert!(matches!(err.kind, ErrorKind::InvalidLiteral(_)));
+    }
+
+    // ── Defcal-derived timings ──────────────────────────────────────────
+
+    const CAL_PRELUDE: &str = r#"
+        defcalgrammar "openpulse";
+        cal {
+            extern port d0;
+            extern port d1;
+            frame drive0 = newframe(d0, 5.0e9, 0.0);
+            frame cr1 = newframe(d1, 5.2e9, 0.0);
+        }
+    "#;
+
+    #[test]
+    fn defcal_timings_derives_play_duration() {
+        let src = format!(
+            "{CAL_PRELUDE}
+            defcal x q {{
+                waveform wf = gaussian(0.1, 100dt, 30dt);
+                play(drive0, wf);
+            }}
+            duration d = durationof({{ x $1; }});"
+        );
+        let mut p = compile(&src);
+        let opts = CompileOptions::default(); // dt = 1us, so 100dt = 100us
+        let t = TableTimings::new().with_defcals(&p, &opts.dt);
+        resolve_durationof(&mut p, &t, &opts).unwrap();
+        assert_eq!(
+            first_init_duration(&p).to_unit(DurationUnit::Us).value,
+            100.0
+        );
+    }
+
+    #[test]
+    fn defcal_timings_max_across_frames() {
+        // The shared defcal fixture: `cx $0, $1` recursively dispatches to
+        // zx90_ix/x defcals; cr1 plays twice at 160us — the busiest frame.
+        // Twin of the VM test `durationof_takes_max_across_frames` (320us).
+        let fixture = include_str!("../../fixtures/qasm/defcal.qasm");
+        let src = format!("{fixture}\nduration d = durationof({{ cx $0, $1; }});\n");
+        let mut p = compile(&src);
+        let opts = CompileOptions::default();
+        let t = TableTimings::new().with_defcals(&p, &opts.dt);
+        resolve_durationof(&mut p, &t, &opts).unwrap();
+        assert_eq!(
+            first_init_duration(&p).to_unit(DurationUnit::Us).value,
+            320.0
+        );
+    }
+
+    #[test]
+    fn defcal_timings_capture_uses_dt() {
+        let src = format!(
+            "{CAL_PRELUDE}
+            defcal measure q -> bit {{
+                return threshold(capture(drive0, 200), 100);
+            }}
+            duration d = durationof({{ bit c = measure $0; }});"
+        );
+        let mut p = compile(&src);
+        let opts = CompileOptions {
+            dt: Duration::new(0.5, DurationUnit::Ns),
+            ..Default::default()
+        };
+        let t = TableTimings::new().with_defcals(&p, &opts.dt);
+        resolve_durationof(&mut p, &t, &opts).unwrap();
+        // 200 samples × 0.5 ns/dt = 100 ns.
+        assert_eq!(
+            first_init_duration(&p).to_unit(DurationUnit::Ns).value,
+            100.0
+        );
+    }
+
+    #[test]
+    fn defcal_table_entry_overrides_defcal() {
+        let src = format!(
+            "{CAL_PRELUDE}
+            defcal x q {{
+                play(drive0, gaussian(0.1, 100us, 25us));
+            }}
+            duration d = durationof({{ x $0; }});"
+        );
+        let mut p = compile(&src);
+        let opts = CompileOptions::default();
+        let t = TableTimings::new()
+            .gate("x", TimingDuration::ns(5.0))
+            .with_defcals(&p, &opts.dt);
+        resolve_durationof(&mut p, &t, &opts).unwrap();
+        assert_eq!(first_init_duration(&p).to_unit(DurationUnit::Ns).value, 5.0);
+    }
+
+    #[test]
+    fn defcal_hardware_match_beats_wildcard() {
+        let src = format!(
+            "{CAL_PRELUDE}
+            defcal x q {{
+                play(drive0, gaussian(0.1, 100us, 25us));
+            }}
+            defcal x $0 {{
+                play(drive0, gaussian(0.1, 200us, 50us));
+            }}
+            duration a = durationof({{ x $0; }});
+            duration b = durationof({{ x $1; }});"
+        );
+        let mut p = compile(&src);
+        let opts = CompileOptions::default();
+        let t = TableTimings::new().with_defcals(&p, &opts.dt);
+        resolve_durationof(&mut p, &t, &opts).unwrap();
+        let durations: Vec<f64> = p
+            .body
+            .iter()
+            .filter_map(|s| match &s.kind {
+                StmtKind::Assignment(a) => match &a.value {
+                    RValue::Expr(e) => {
+                        let e = match &e.kind {
+                            ExprKind::Cast(c) => &c.operand,
+                            _ => e,
+                        };
+                        Some(get_duration_literal(e).to_unit(DurationUnit::Us).value)
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(durations, vec![200.0, 100.0]);
+    }
+
+    #[test]
+    fn defcal_param_substitution() {
+        // The defcal's duration depends on a classical parameter bound at
+        // the call site.
+        let src = format!(
+            "{CAL_PRELUDE}
+            defcal rx(duration len) q {{
+                play(drive0, gaussian(0.1, len, 25us));
+            }}
+            duration d = durationof({{ rx(150us) $0; }});"
+        );
+        let mut p = compile(&src);
+        let opts = CompileOptions::default();
+        let t = TableTimings::new().with_defcals(&p, &opts.dt);
+        resolve_durationof(&mut p, &t, &opts).unwrap();
+        assert_eq!(
+            first_init_duration(&p).to_unit(DurationUnit::Us).value,
+            150.0
+        );
+    }
+
+    #[test]
+    fn defcal_nonconst_duration_errors() {
+        let src = format!(
+            "{CAL_PRELUDE}
+            input duration len;
+            defcal x q {{
+                play(drive0, gaussian(0.1, len, 25us));
+            }}
+            duration d = durationof({{ x $0; }});"
+        );
+        let mut p = compile(&src);
+        let opts = CompileOptions::default();
+        let t = TableTimings::new().with_defcals(&p, &opts.dt);
+        let err = resolve_durationof(&mut p, &t, &opts).unwrap_err();
+        assert!(matches!(err.kind, ErrorKind::NonConstantExpression));
     }
 
     #[test]

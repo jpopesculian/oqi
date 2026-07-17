@@ -61,6 +61,7 @@ pub struct ExternDecl {
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub struct CalibrationDecl {
     pub target: CalibrationTarget,
     pub args: Vec<CalibrationArg>,
@@ -70,6 +71,7 @@ pub struct CalibrationDecl {
     pub span: Span,
 }
 
+#[derive(Clone)]
 pub enum CalibrationTarget {
     Measure,
     Reset,
@@ -77,11 +79,13 @@ pub enum CalibrationTarget {
     Named(SymbolId),
 }
 
+#[derive(Clone)]
 pub enum CalibrationArg {
     Expr(Box<Expr>),
     Param(SymbolId),
 }
 
+#[derive(Clone)]
 pub enum CalibrationOperand {
     Hardware(usize),
     Ident(SymbolId),

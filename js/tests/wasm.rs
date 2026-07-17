@@ -246,3 +246,41 @@ async fn extern_unused_is_allowed() {
         .await
         .unwrap();
 }
+
+const TIMED: &str = r#"
+OPENQASM 3.0;
+include "stdgates.inc";
+qubit q;
+duration d = durationof({x q; delay[30ns] q;});
+bit c = measure q;
+"#;
+
+#[wasm_bindgen_test]
+async fn run_with_timings_resolves_durationof() {
+    // With a timing table, `durationof` resolves at compile time.
+    let out = run(TIMED, options(r#"{ "timings": { "x": "20ns" } }"#))
+        .await
+        .unwrap();
+    assert_eq!(output(&out, "d").as_str().unwrap(), "50ns");
+
+    // dt-valued timings resolve against the `dt` option.
+    let out = run(
+        TIMED,
+        options(r#"{ "timings": { "x": "40dt" }, "dt": "0.5ns" }"#),
+    )
+    .await
+    .unwrap();
+    assert_eq!(output(&out, "d").as_str().unwrap(), "50ns");
+
+    // Without timings, the VM's runtime path still answers (x is 0ns).
+    let out = run(TIMED, options(r#"{ "seed": 1 }"#)).await.unwrap();
+    assert_eq!(output(&out, "d").as_str().unwrap(), "30ns");
+}
+
+#[wasm_bindgen_test]
+async fn bad_timing_rejected() {
+    let err = run(TIMED, options(r#"{ "timings": { "x": "abc" } }"#))
+        .await
+        .unwrap_err();
+    assert!(error_message(err).contains("is not a duration literal"));
+}

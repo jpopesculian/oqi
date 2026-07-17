@@ -13,10 +13,14 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use oqi_compile::bytecode::{self, BcModule};
-use oqi_compile::classical::{BitReg, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy};
+use oqi_compile::classical::{
+    BitReg, Duration, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy,
+};
+use oqi_compile::duration::TableTimings;
 use oqi_compile::resolve::IncludeResolver;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
-use oqi_compile::{cfg, qubits, ssa};
+use oqi_compile::types::CompileOptions;
+use oqi_compile::{cfg, duration, qubits, ssa};
 use oqi_vm::{ExternProvider, QuantumBackend, StateVectorSim, Vm, VmErrorKind};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
@@ -59,14 +63,60 @@ fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> JsError {
 }
 
 /// Source → bytecode module; same pipeline the CLI drives in `run`.
-fn build_module(source: &str) -> Result<BcModule, JsError> {
-    let program =
-        oqi_compile::lower::compile_source(source, LibOnlyResolver, Some(Path::new(SOURCE_NAME)))
+fn build_module(
+    source: &str,
+    timings: Option<&HashMap<String, String>>,
+    dt: Option<&str>,
+) -> Result<BcModule, JsError> {
+    let mut options = CompileOptions {
+        source_name: Some(Path::new(SOURCE_NAME).to_path_buf()),
+        ..Default::default()
+    };
+    if let Some(spec) = dt {
+        options.dt = parse_dt(spec)?;
+    }
+    let mut program =
+        oqi_compile::lower::compile_source_with_options(source, LibOnlyResolver, options.clone())
             .map_err(|e| diag_err(&e, source))?;
+    // With timings supplied (even an empty map), `durationof` is resolved
+    // at compile time; otherwise it stays for the VM's runtime pass.
+    if let Some(timings) = timings {
+        let entries = timings.iter().map(|(k, v)| (k.as_str(), v.as_str()));
+        let table = TableTimings::from_str_entries(entries, &options.dt)
+            .map_err(|e| diag_err(&e, source))?
+            .with_defcals(&program, &options.dt)
+            .with_program_gates(&program);
+        duration::resolve_durationof(&mut program, &table, &options)
+            .map_err(|e| diag_err(&e, source))?;
+    }
     let cfgs = cfg::build_program(&program).map_err(|e| diag_err(&e, source))?;
     let ssa = ssa::build_program(&cfgs, &program.symbols);
     let layout = qubits::build_layout(&program);
     bytecode::emit(&ssa, &program, layout).map_err(|e| diag_err(&e, source))
+}
+
+/// Parse the `dt` option ("0.5ns"): timing-literal syntax, except the `dt`
+/// unit itself is rejected (self-referential) and the value must be
+/// positive.
+fn parse_dt(spec: &str) -> Result<Duration, JsError> {
+    if spec.trim_end().ends_with("dt") {
+        return Err(JsError::new(
+            "invalid options: `dt` cannot itself be given in `dt` units",
+        ));
+    }
+    let d = oqi_compile::types::parse_timing_literal(spec, &CompileOptions::default().dt).map_err(
+        |_| {
+            JsError::new(&format!(
+                "invalid options: `{spec}` is not a duration literal (e.g. \"0.5ns\")"
+            ))
+        },
+    )?;
+    if d.value <= 0.0 {
+        return Err(JsError::new(
+            "invalid options: `dt` must be a positive duration",
+        ));
+    }
+    Ok(d)
 }
 
 #[wasm_bindgen(getter_with_clone)]
@@ -80,7 +130,7 @@ pub struct CompileResult {
 /// Compile an OpenQASM 3 program to bytecode.
 #[wasm_bindgen]
 pub fn compile(source: &str) -> Result<CompileResult, JsError> {
-    let module = build_module(source)?;
+    let module = build_module(source, None, None)?;
     let bytes = bytecode::to_bytes(&module)
         .map_err(|e| JsError::new(&format!("bytecode encoding failed: {e:?}")))?;
     Ok(CompileResult {
@@ -113,6 +163,15 @@ struct RunOptions {
     /// Captured raw — JS functions can't pass through serde.
     #[serde(default, with = "serde_wasm_bindgen::preserve")]
     externs: JsValue,
+    /// Per-operation durations for compile-time `durationof` resolution,
+    /// keyed by name (`measure`/`reset` reserved); values are timing
+    /// literals ("50ns", "4dt"). Presence (even `{}`) enables the pass,
+    /// which also derives durations from the program's defcal bodies.
+    #[serde(default)]
+    timings: Option<HashMap<String, String>>,
+    /// Duration of one `dt` unit, as a timing literal (e.g. "0.5ns").
+    #[serde(default)]
+    dt: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -147,22 +206,25 @@ struct RunOutput {
 
 /// Compile and run an OpenQASM 3 program on the state-vector simulator.
 ///
-/// `options` is an optional object: `{ inputs?, seed?, statevector?, externs? }`.
+/// `options` is an optional object:
+/// `{ inputs?, seed?, statevector?, externs?, timings?, dt? }`.
 /// `externs` maps each `extern` function's name to a JS implementation, which
 /// may return its result directly or as a `Promise` (awaited). Return values
 /// are coerced to the declared return type (radians for `angle[n]`, MSB-first
 /// "0101" strings for `bit[n]`). An extern with no implementation, or one
-/// that throws, aborts the run with a diagnostic error.
-/// Returns `{ measurements, outputs, statevector? }`.
+/// that throws, aborts the run with a diagnostic error. `timings` maps
+/// operation names to duration literals and enables compile-time
+/// `durationof` resolution (defcal bodies included); `dt` sets the device
+/// time unit. Returns `{ measurements, outputs, statevector? }`.
 #[wasm_bindgen]
 pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsError> {
-    let module = build_module(&source)?;
     let opts: RunOptions = if options.is_undefined() || options.is_null() {
         RunOptions::default()
     } else {
         serde_wasm_bindgen::from_value(options)
             .map_err(|e| JsError::new(&format!("invalid options: {e}")))?
     };
+    let module = build_module(&source, opts.timings.as_ref(), opts.dt.as_deref())?;
     let inputs = coerce_inputs(&module, opts.inputs)?;
     let externs = JsExterns::new(&module, &opts.externs)?;
 

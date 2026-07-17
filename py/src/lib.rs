@@ -14,10 +14,14 @@ use std::path::Path;
 use async_trait::async_trait;
 use num_complex::Complex;
 use oqi_compile::bytecode::{self, BcModule};
-use oqi_compile::classical::{BitReg, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy};
+use oqi_compile::classical::{
+    BitReg, Duration, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy,
+};
+use oqi_compile::duration::TableTimings;
 use oqi_compile::resolve::IncludeResolver;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
-use oqi_compile::{cfg, qubits, ssa};
+use oqi_compile::types::CompileOptions;
+use oqi_compile::{cfg, duration, qubits, ssa};
 use oqi_vm::{ExternProvider, QuantumBackend, StateVectorSim, Vm, VmErrorKind};
 use pyo3::IntoPyObjectExt;
 use pyo3::create_exception;
@@ -68,14 +72,70 @@ fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> PyErr {
 }
 
 /// Source → bytecode module; same pipeline the CLI drives in `run`.
-fn build_module(source: &str) -> PyResult<BcModule> {
-    let program =
-        oqi_compile::lower::compile_source(source, LibOnlyResolver, Some(Path::new(SOURCE_NAME)))
+fn build_module(
+    source: &str,
+    timings: Option<&Bound<'_, PyDict>>,
+    dt: Option<&str>,
+) -> PyResult<BcModule> {
+    let mut options = CompileOptions {
+        source_name: Some(Path::new(SOURCE_NAME).to_path_buf()),
+        ..Default::default()
+    };
+    if let Some(spec) = dt {
+        options.dt = parse_dt(spec)?;
+    }
+    let mut program =
+        oqi_compile::lower::compile_source_with_options(source, LibOnlyResolver, options.clone())
             .map_err(|e| diag_err(&e, source))?;
+    // With timings supplied (even an empty dict), `durationof` is resolved
+    // at compile time; otherwise it stays for the VM's runtime pass.
+    if let Some(timings) = timings {
+        let mut entries: Vec<(String, String)> = Vec::new();
+        for (key, val) in timings.iter() {
+            let name: String = key
+                .extract()
+                .map_err(|_| OqiError::new_err("timing names must be strings"))?;
+            let dur: String = val.extract().map_err(|_| {
+                OqiError::new_err(format!(
+                    "timing for `{name}` must be a duration string (e.g. \"50ns\")"
+                ))
+            })?;
+            entries.push((name, dur));
+        }
+        let entries = entries.iter().map(|(k, v)| (k.as_str(), v.as_str()));
+        let table = TableTimings::from_str_entries(entries, &options.dt)
+            .map_err(|e| diag_err(&e, source))?
+            .with_defcals(&program, &options.dt)
+            .with_program_gates(&program);
+        duration::resolve_durationof(&mut program, &table, &options)
+            .map_err(|e| diag_err(&e, source))?;
+    }
     let cfgs = cfg::build_program(&program).map_err(|e| diag_err(&e, source))?;
     let ssa = ssa::build_program(&cfgs, &program.symbols);
     let layout = qubits::build_layout(&program);
     bytecode::emit(&ssa, &program, layout).map_err(|e| diag_err(&e, source))
+}
+
+/// Parse the `dt` option ("0.5ns"): timing-literal syntax, except the `dt`
+/// unit itself is rejected (self-referential) and the value must be
+/// positive.
+fn parse_dt(spec: &str) -> PyResult<Duration> {
+    if spec.trim_end().ends_with("dt") {
+        return Err(OqiError::new_err(
+            "`dt` cannot itself be given in `dt` units",
+        ));
+    }
+    let d = oqi_compile::types::parse_timing_literal(spec, &CompileOptions::default().dt).map_err(
+        |_| {
+            OqiError::new_err(format!(
+                "`{spec}` is not a duration literal (e.g. \"0.5ns\")"
+            ))
+        },
+    )?;
+    if d.value <= 0.0 {
+        return Err(OqiError::new_err("`dt` must be a positive duration"));
+    }
+    Ok(d)
 }
 
 /// Result of [`compile`]: postcard-encoded bytecode plus its disassembly.
@@ -97,7 +157,7 @@ impl CompileResult {
 /// Compile an OpenQASM 3 program to bytecode.
 #[pyfunction]
 fn compile(source: &str) -> PyResult<CompileResult> {
-    let module = build_module(source)?;
+    let module = build_module(source, None, None)?;
     let bytes = bytecode::to_bytes(&module)
         .map_err(|e| OqiError::new_err(format!("bytecode encoding failed: {e:?}")))?;
     Ok(CompileResult {
@@ -135,8 +195,15 @@ impl RunResult {
 /// for `angle[n]`, MSB-first "0101" strings for `bit[n]`). An extern with no
 /// implementation, or one that raises, aborts the run with a diagnostic
 /// error; a callable returning an awaitable is rejected.
+///
+/// `timings` maps operation names (`measure`/`reset` reserved) to duration
+/// strings ("50ns", "4dt") and enables compile-time `durationof` resolution,
+/// which also derives durations from the program's defcal bodies (an empty
+/// dict enables defcal derivation alone). `dt` sets the device time unit
+/// (e.g. "0.5ns").
 #[pyfunction]
-#[pyo3(signature = (source, *, inputs=None, seed=None, statevector=false, externs=None))]
+#[pyo3(signature = (source, *, inputs=None, seed=None, statevector=false, externs=None, timings=None, dt=None))]
+#[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
     source: &str,
@@ -144,8 +211,10 @@ fn run(
     seed: Option<u64>,
     statevector: bool,
     externs: Option<&Bound<'_, PyDict>>,
+    timings: Option<&Bound<'_, PyDict>>,
+    dt: Option<&str>,
 ) -> PyResult<RunResult> {
-    let module = build_module(source)?;
+    let module = build_module(source, timings, dt)?;
     let input_map = coerce_inputs(&module, inputs)?;
     let externs = PyExterns::new(&module, externs)?;
     let sim =

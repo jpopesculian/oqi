@@ -154,3 +154,30 @@ def test_extern_coroutine_rejected():
 
     with pytest.raises(oqi.OqiError, match="must be synchronous"):
         oqi.run(INC, externs={"inc": inc})
+
+
+TIMED = (
+    'include "stdgates.inc";\n'
+    "qubit q;\n"
+    "duration d = durationof({x q; delay[30ns] q;});\n"
+    "bit c = measure q;\n"
+)
+
+
+def test_run_with_timings_resolves_durationof():
+    # With a timing table, `durationof` resolves at compile time.
+    out = oqi.run(TIMED, timings={"x": "20ns"})
+    assert out.outputs["d"] == "50ns"
+
+    # dt-valued timings resolve against the `dt` option.
+    out = oqi.run(TIMED, timings={"x": "40dt"}, dt="0.5ns")
+    assert out.outputs["d"] == "50ns"
+
+    # Without timings, the VM's runtime path still answers (x is 0ns).
+    out = oqi.run(TIMED)
+    assert out.outputs["d"] == "30ns"
+
+
+def test_bad_timing_literal_raises():
+    with pytest.raises(oqi.OqiError, match="is not a duration literal"):
+        oqi.run(TIMED, timings={"x": "abc"})

@@ -705,9 +705,21 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                 if let Some(v) = frame.params.get(sid) {
                     return Ok(v.clone());
                 }
-                self.symbols
-                    .get(*sid)
-                    .const_value
+                let sym = self.symbols.get(*sid);
+                // Spec-wise `stretch` resolves at compile time too, but no
+                // solver exists yet — give it an honest error rather than a
+                // generic non-constant one (clean seam for the future pass).
+                if matches!(sym.ty, Type::Stretch) {
+                    return Err(err(
+                        ErrorKind::InvalidContext(
+                            "stretch resolution is not implemented; `stretch` values cannot \
+                             be used where timings are resolved at compile time"
+                                .into(),
+                        ),
+                        expr.span,
+                    ));
+                }
+                sym.const_value
                     .clone()
                     .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span))
             }
@@ -2235,6 +2247,24 @@ mod tests {
             first_init_duration(&p).to_unit(DurationUnit::Us).value,
             150.0
         );
+    }
+
+    #[test]
+    fn stretch_in_timed_scope_names_stretch() {
+        let src = r#"
+            include "stdgates.inc";
+            stretch sd;
+            duration d = durationof({ delay[sd] $0; });
+        "#;
+        let mut p = compile(src);
+        let e = resolve_durationof(&mut p, &TableTimings::new(), &CompileOptions::default())
+            .unwrap_err();
+        match e.kind {
+            ErrorKind::InvalidContext(msg) => {
+                assert!(msg.contains("stretch"), "{msg}");
+            }
+            other => panic!("expected InvalidContext naming stretch, got {other:?}"),
+        }
     }
 
     #[test]

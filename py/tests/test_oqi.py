@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 import oqi
@@ -59,3 +61,96 @@ def test_int_input_drives_branch():
     )
     assert oqi.run(src, inputs={"n": 1}).measurements == [(0, True)]
     assert oqi.run(src, inputs={"n": 0}).measurements == [(0, False)]
+
+
+INC = (
+    "OPENQASM 3.0;\n"
+    "qubit q;\n"
+    "extern inc(int[32]) -> int[32];\n"
+    "int[32] x = 41;\n"
+    "int[32] y = inc(x);\n"
+)
+
+LOG_IT = "OPENQASM 3.0;\nqubit q;\nextern log_it(int[32]);\nlog_it(7);\n"
+
+
+def test_extern_callback():
+    out = oqi.run(INC, externs={"inc": lambda x: x + 1})
+    assert out.outputs["y"] == 42
+
+
+def test_extern_void_return_ignored():
+    seen = []
+    oqi.run(LOG_IT, externs={"log_it": lambda x: seen.append(x) or 123})
+    assert seen == [7]
+
+
+def test_extern_raising_callback():
+    def boom(x):
+        raise ValueError("boom")
+
+    with pytest.raises(oqi.OqiError, match="extern function `log_it` failed"):
+        oqi.run(LOG_IT, externs={"log_it": boom})
+    with pytest.raises(oqi.OqiError, match="boom"):
+        oqi.run(LOG_IT, externs={"log_it": boom})
+
+
+def test_extern_missing_rejected():
+    with pytest.raises(oqi.OqiError, match="extern function `inc` is not provided"):
+        oqi.run(INC)
+
+
+def test_extern_angle_return():
+    src = (
+        "OPENQASM 3.0;\n"
+        "qubit q;\n"
+        "extern get_theta() -> angle[16];\n"
+        "angle[16] a = get_theta();\n"
+    )
+    out = oqi.run(src, externs={"get_theta": lambda: math.pi / 2})
+    assert out.outputs["a"] == "(π/2)"
+
+
+def test_extern_bitreg_round_trip():
+    src = (
+        "OPENQASM 3.0;\n"
+        "qubit q;\n"
+        "extern flip(bit[4]) -> bit[4];\n"
+        # bit[4](3) == "0011"; a "0011" literal currently lowers with its
+        # bit order reversed (pre-existing compiler bug), so cast instead.
+        "bit[4] r = bit[4](3);\n"
+        "bit[4] s = flip(r);\n"
+    )
+    seen = []
+
+    def flip(bits):
+        seen.append(bits)
+        return bits[::-1]
+
+    out = oqi.run(src, externs={"flip": flip})
+    # Args arrive as unquoted MSB-first strings; outputs keep the quoted
+    # OpenQASM text form.
+    assert seen == ["0011"]
+    assert out.outputs["s"] == '"1100"'
+
+
+def test_extern_bad_return_value():
+    with pytest.raises(oqi.OqiError, match="extern function `inc` failed"):
+        oqi.run(INC, externs={"inc": lambda x: 1.5})
+
+
+def test_extern_non_callable_rejected():
+    with pytest.raises(oqi.OqiError, match="not callable"):
+        oqi.run(INC, externs={"inc": 5})
+
+
+def test_extern_unused_is_allowed():
+    oqi.run(BELL, seed=1, externs={"unused": lambda: 0})
+
+
+def test_extern_coroutine_rejected():
+    async def inc(x):
+        return x + 1
+
+    with pytest.raises(oqi.OqiError, match="must be synchronous"):
+        oqi.run(INC, externs={"inc": inc})

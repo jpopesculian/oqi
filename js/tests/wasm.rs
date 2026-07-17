@@ -209,13 +209,14 @@ async fn extern_bitreg_arg_round_trip() {
 OPENQASM 3.0;
 qubit q;
 extern parity(bit[4]) -> bit;
-bit[4] r = "0110";
+bit[4] r = bit[4](3);
 bit p = parity(r);
 "#;
-    // The callback asserts the arg arrives as an unquoted MSB-first string.
+    // The callback asserts the arg arrives as an unquoted MSB-first string
+    // ("0011" == bit[4](3); an order-sensitive, non-palindromic value).
     let parity = js_sys::Function::new_with_args(
         "s",
-        "if (s !== '0110') throw new Error('got ' + s); return 0;",
+        "if (s !== '0011') throw new Error('got ' + s); return 0;",
     );
     let out = run(src, extern_options(&[("parity", parity)]))
         .await

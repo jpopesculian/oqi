@@ -1163,6 +1163,7 @@ dependencies = [
 name = "oqi-py"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "num-complex",
  "oqi-compile",
  "oqi-diagnostics",

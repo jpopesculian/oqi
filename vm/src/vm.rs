@@ -795,7 +795,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         }
                         return Ok(());
                     }
-                    let ret = self.externs.call(&name, &vals)?;
+                    let ret = self.externs.call(&name, &vals).await?;
                     if let Some(d) = dest {
                         let v = ret.ok_or_else(|| {
                             VmErrorKind::Type(format!("extern `{name}` returned no value"))

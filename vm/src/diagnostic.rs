@@ -22,6 +22,7 @@ impl Diagnostic for VmError {
             VmErrorKind::Unreachable => 11,
             VmErrorKind::TooManyQubits { .. } => 12,
             VmErrorKind::Pulse(_) => 13,
+            VmErrorKind::Extern { .. } => 14,
         };
         Code::runtime(num)
     }
@@ -45,6 +46,7 @@ impl Diagnostic for VmError {
             VmErrorKind::Unreachable => "unreachable",
             VmErrorKind::TooManyQubits { .. } => "too many qubits",
             VmErrorKind::Pulse(_) => "pulse error",
+            VmErrorKind::Extern { .. } => "extern call failed",
         };
         vec![DiagLabel::primary(self.span.unwrap_or_default(), pointer)]
     }

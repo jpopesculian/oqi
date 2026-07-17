@@ -2,27 +2,35 @@
 //!
 //! OpenQASM `extern` functions take classical values and return zero or
 //! one classical value (docs/classical.rst). The VM marshals arguments
-//! into `Value`s and looks the function up by name.
+//! into `Value`s, looks the function up by name, and awaits the result.
 
 use std::collections::HashMap;
 
+use async_trait::async_trait;
 use oqi_classical::Value;
 
 use crate::error::{Result, VmErrorKind};
 
 /// Supplies implementations for the program's `extern` functions.
+///
+/// `call` is `async` so a provider can await host I/O (e.g. a JS callback
+/// returning a `Promise` in the wasm bindings); synchronous providers
+/// return ready futures. `?Send` for the same reason as
+/// [`QuantumBackend`](crate::QuantumBackend).
+#[async_trait(?Send)]
 pub trait ExternProvider {
     /// Call `name` with `args`; return its result (or `None` for a
     /// void extern).
-    fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>>;
+    async fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>>;
 }
 
 /// An [`ExternProvider`] that rejects every call. Use when a program
 /// declares no externs (or you want extern calls to be a hard error).
 pub struct NoExterns;
 
+#[async_trait(?Send)]
 impl ExternProvider for NoExterns {
-    fn call(&mut self, name: &str, _args: &[Value]) -> Result<Option<Value>> {
+    async fn call(&mut self, name: &str, _args: &[Value]) -> Result<Option<Value>> {
         Err(VmErrorKind::UnknownExtern(name.to_string()))
     }
 }
@@ -51,8 +59,9 @@ impl FnRegistry {
     }
 }
 
+#[async_trait(?Send)]
 impl ExternProvider for FnRegistry {
-    fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>> {
+    async fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>> {
         match self.fns.get_mut(name) {
             Some(f) => f(args),
             None => Err(VmErrorKind::UnknownExtern(name.to_string())),

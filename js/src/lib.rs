@@ -1,22 +1,27 @@
 //! JavaScript (wasm-bindgen) bindings for the oqi compiler and VM.
 //!
 //! Exposes a minimal API: [`compile`] (source → bytecode + disassembly) and
-//! [`run`] (source → simulated results). Includes are limited to the embedded
-//! `stdgates.inc`; file includes are rejected. Errors surface as thrown JS
-//! `Error`s whose message is the rendered diagnostic.
+//! [`run`] (source → simulated results). `run` can call host-supplied
+//! `extern` implementations (the `externs` option), synchronous or
+//! Promise-returning. Includes are limited to the embedded `stdgates.inc`;
+//! file includes are rejected. Errors surface as thrown JS `Error`s whose
+//! message is the rendered diagnostic.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
+use async_trait::async_trait;
 use oqi_compile::bytecode::{self, BcModule};
-use oqi_compile::classical::{Primitive, PrimitiveTy, Value, ValueTy};
+use oqi_compile::classical::{BitReg, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy};
 use oqi_compile::resolve::IncludeResolver;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
 use oqi_compile::{cfg, qubits, ssa};
-use oqi_vm::{NoExterns, QuantumBackend, StateVectorSim, Vm};
+use oqi_vm::{ExternProvider, QuantumBackend, StateVectorSim, Vm, VmErrorKind};
 use serde::{Deserialize, Serialize};
+use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 
 /// Name used for the root source in rendered diagnostics.
 const SOURCE_NAME: &str = "<source>";
@@ -104,6 +109,10 @@ struct RunOptions {
     /// Include the final state vector in the result.
     #[serde(default)]
     statevector: bool,
+    /// Extern implementations: an object mapping extern name → function.
+    /// Captured raw — JS functions can't pass through serde.
+    #[serde(default, with = "serde_wasm_bindgen::preserve")]
+    externs: JsValue,
 }
 
 #[derive(Serialize)]
@@ -138,7 +147,12 @@ struct RunOutput {
 
 /// Compile and run an OpenQASM 3 program on the state-vector simulator.
 ///
-/// `options` is an optional object: `{ inputs?, seed?, statevector? }`.
+/// `options` is an optional object: `{ inputs?, seed?, statevector?, externs? }`.
+/// `externs` maps each `extern` function's name to a JS implementation, which
+/// may return its result directly or as a `Promise` (awaited). Return values
+/// are coerced to the declared return type (radians for `angle[n]`, MSB-first
+/// "0101" strings for `bit[n]`). An extern with no implementation, or one
+/// that throws, aborts the run with a diagnostic error.
 /// Returns `{ measurements, outputs, statevector? }`.
 #[wasm_bindgen]
 pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsError> {
@@ -150,13 +164,14 @@ pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsError> {
             .map_err(|e| JsError::new(&format!("invalid options: {e}")))?
     };
     let inputs = coerce_inputs(&module, opts.inputs)?;
+    let externs = JsExterns::new(&module, &opts.externs)?;
 
     let sim = StateVectorSim::<f64>::try_zeroed(
         module.qubits.num_qubits,
         opts.seed.unwrap_or(DEFAULT_SEED),
     )
     .map_err(|e| diag_err(&e, &source))?;
-    let mut vm = Vm::new(&module, sim, NoExterns);
+    let mut vm = Vm::new(&module, sim, externs);
     let result = vm
         .run_with_inputs(inputs)
         .await
@@ -192,7 +207,8 @@ pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsError> {
 }
 
 /// Coerce JS input values to the declared types of the program's `input`
-/// symbols. Mirrors `parse_inputs` in `cli/src/main.rs`; keep the two in sync.
+/// symbols. A superset of `parse_inputs` in `cli/src/main.rs` (which handles
+/// int/uint/float/bit only); keep the shared types in sync.
 fn coerce_inputs(
     module: &BcModule,
     raw: HashMap<String, InputValue>,
@@ -208,79 +224,239 @@ fn coerce_inputs(
             .ty
             .value_ty()
             .ok_or_else(|| JsError::new(&format!("input `{name}` has no value type")))?;
-        let value = match ty {
-            ValueTy::Scalar(PrimitiveTy::Int(w)) => Value::int(input.to_i128(&name)?, w),
-            ValueTy::Scalar(PrimitiveTy::Uint(w)) => Value::uint(input.to_u128(&name)?, w),
-            ValueTy::Scalar(PrimitiveTy::Float(w)) => Value::float(input.to_f64(&name)?, w),
-            ValueTy::Scalar(PrimitiveTy::Bit) | ValueTy::Scalar(PrimitiveTy::Bool) => {
-                Value::bit(input.to_bool(&name)?)
-            }
-            _ => {
-                return Err(JsError::new(&format!(
-                    "input `{name}` has a type unsupported by the JS API"
-                )));
-            }
-        };
+        let value =
+            coerce_scalar(&format!("input `{name}`"), &input, ty).map_err(|m| JsError::new(&m))?;
         map.insert(sym.id, value);
     }
     Ok(map)
 }
 
+/// Coerce a raw JS value to the declared scalar type `ty`. Shared by
+/// [`coerce_inputs`] and extern return values; `what` names the value in
+/// error messages. Angles are radians (wrapped mod 2π and quantized to the
+/// declared width); bit registers are MSB-first "0101" strings of the
+/// declared width.
+fn coerce_scalar(what: &str, raw: &InputValue, ty: ValueTy) -> Result<Value, String> {
+    Ok(match ty {
+        ValueTy::Scalar(PrimitiveTy::Int(w)) => Value::int(raw.to_i128(what)?, w),
+        ValueTy::Scalar(PrimitiveTy::Uint(w)) => Value::uint(raw.to_u128(what)?, w),
+        ValueTy::Scalar(PrimitiveTy::Float(w)) => Value::float(raw.to_f64(what)?, w),
+        ValueTy::Scalar(PrimitiveTy::Bit) | ValueTy::Scalar(PrimitiveTy::Bool) => {
+            Value::bit(raw.to_bool(what)?)
+        }
+        ValueTy::Scalar(PrimitiveTy::Angle(w)) => {
+            Scalar::new(Primitive::float(raw.to_f64(what)?), PrimitiveTy::Angle(w))
+                .map_err(|e| format!("{what}: not representable as `{ty}`: {e:?}"))?
+                .into()
+        }
+        ValueTy::Scalar(PrimitiveTy::BitReg(w)) => Value::bitreg(raw.to_bitreg(what, w)?, w),
+        _ => return Err(format!("{what} has type `{ty}`, unsupported by the JS API")),
+    })
+}
+
 impl InputValue {
-    fn to_i128(&self, name: &str) -> Result<i128, JsError> {
+    fn to_i128(&self, what: &str) -> Result<i128, String> {
         match self {
             InputValue::Number(n) if n.fract() == 0.0 && n.abs() <= MAX_SAFE_INTEGER as f64 => {
                 Ok(*n as i128)
             }
             InputValue::Text(s) => s
                 .parse()
-                .map_err(|_| JsError::new(&format!("input `{name}`: `{s}` is not an integer"))),
-            _ => Err(JsError::new(&format!(
-                "input `{name}` must be a safe integer or a decimal string"
-            ))),
+                .map_err(|_| format!("{what}: `{s}` is not an integer")),
+            _ => Err(format!("{what} must be a safe integer or a decimal string")),
         }
     }
 
-    fn to_u128(&self, name: &str) -> Result<u128, JsError> {
+    fn to_u128(&self, what: &str) -> Result<u128, String> {
         match self {
             InputValue::Number(n)
                 if n.fract() == 0.0 && *n >= 0.0 && *n as u128 <= MAX_SAFE_INTEGER =>
             {
                 Ok(*n as u128)
             }
-            InputValue::Text(s) => s.parse().map_err(|_| {
-                JsError::new(&format!("input `{name}`: `{s}` is not an unsigned integer"))
-            }),
-            _ => Err(JsError::new(&format!(
-                "input `{name}` must be a non-negative safe integer or a decimal string"
-            ))),
+            InputValue::Text(s) => s
+                .parse()
+                .map_err(|_| format!("{what}: `{s}` is not an unsigned integer")),
+            _ => Err(format!(
+                "{what} must be a non-negative safe integer or a decimal string"
+            )),
         }
     }
 
-    fn to_f64(&self, name: &str) -> Result<f64, JsError> {
+    fn to_f64(&self, what: &str) -> Result<f64, String> {
         match self {
             InputValue::Number(n) => Ok(*n),
             InputValue::Text(s) => s
                 .parse()
-                .map_err(|_| JsError::new(&format!("input `{name}`: `{s}` is not a float"))),
-            InputValue::Bool(_) => Err(JsError::new(&format!(
-                "input `{name}` must be a number or a decimal string"
-            ))),
+                .map_err(|_| format!("{what}: `{s}` is not a float")),
+            InputValue::Bool(_) => Err(format!("{what} must be a number or a decimal string")),
         }
     }
 
-    fn to_bool(&self, name: &str) -> Result<bool, JsError> {
+    fn to_bool(&self, what: &str) -> Result<bool, String> {
         match self {
             InputValue::Bool(b) => Ok(*b),
             InputValue::Number(n) if *n == 0.0 => Ok(false),
             InputValue::Number(n) if *n == 1.0 => Ok(true),
             InputValue::Text(s) if s == "0" || s == "false" => Ok(false),
             InputValue::Text(s) if s == "1" || s == "true" => Ok(true),
-            _ => Err(JsError::new(&format!(
-                "input `{name}` is not a bit (use 0/1/true/false)"
-            ))),
+            _ => Err(format!("{what} is not a bit (use 0/1/true/false)")),
         }
     }
+
+    /// "0101"-style string, MSB first, exactly `width` chars of 0/1.
+    fn to_bitreg(&self, what: &str, width: u32) -> Result<BitReg, String> {
+        let err = || format!("{what} must be a {width}-character string of 0s and 1s");
+        let InputValue::Text(s) = self else {
+            return Err(err());
+        };
+        if s.len() != width as usize || !s.bytes().all(|b| matches!(b, b'0' | b'1')) {
+            return Err(err());
+        }
+        let mut reg = BitReg::zeros(width);
+        for (i, b) in s.bytes().enumerate() {
+            reg.set_bit(width as usize - 1 - i, b == b'1');
+        }
+        Ok(reg)
+    }
+}
+
+/// Extern implementations supplied from JS (`run`'s `externs` option):
+/// name → function, plus each declared extern's return type (`None` = void),
+/// harvested from the module's symbols — the VM stores extern results
+/// uncast, so returns must be built with their declared type.
+struct JsExterns {
+    fns: HashMap<String, js_sys::Function>,
+    ret_tys: HashMap<String, Option<ValueTy>>,
+}
+
+impl JsExterns {
+    /// `externs` is the raw option value (undefined/null ⇒ none). Errors if
+    /// it isn't an object or any property isn't a function.
+    fn new(module: &BcModule, externs: &JsValue) -> Result<Self, JsError> {
+        let ret_tys = module
+            .symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Extern)
+            .map(|s| (s.name.clone(), s.ty.value_ty()))
+            .collect();
+        let mut fns = HashMap::new();
+        if !externs.is_undefined() && !externs.is_null() {
+            let obj = externs.dyn_ref::<js_sys::Object>().ok_or_else(|| {
+                JsError::new(
+                    "invalid options: `externs` must be an object mapping extern names to functions",
+                )
+            })?;
+            for entry in js_sys::Object::entries(obj).iter() {
+                let entry: js_sys::Array = entry.unchecked_into();
+                let name = entry.get(0).as_string().unwrap_or_default();
+                let f = entry.get(1).dyn_into::<js_sys::Function>().map_err(|_| {
+                    JsError::new(&format!(
+                        "invalid options: externs.{name} is not a function"
+                    ))
+                })?;
+                fns.insert(name, f);
+            }
+        }
+        Ok(JsExterns { fns, ret_tys })
+    }
+}
+
+#[async_trait(?Send)]
+impl ExternProvider for JsExterns {
+    async fn call(
+        &mut self,
+        name: &str,
+        args: &[Value],
+    ) -> std::result::Result<Option<Value>, VmErrorKind> {
+        // Not provided, or not a declared classical extern (ports/frames land
+        // here when no pulse handler is installed) — same error as `NoExterns`.
+        let (Some(f), Some(ret_ty)) = (self.fns.get(name), self.ret_tys.get(name)) else {
+            return Err(VmErrorKind::UnknownExtern(name.to_string()));
+        };
+        let js_args = js_sys::Array::new();
+        for a in args {
+            js_args.push(&extern_arg(a));
+        }
+        let ret = f
+            .apply(&JsValue::UNDEFINED, &js_args)
+            .map_err(|e| extern_err(name, js_error_message(&e)))?;
+        // Settle Promise returns before the void check so rejections from
+        // void externs still surface.
+        let settled = match ret.dyn_into::<js_sys::Promise>() {
+            Ok(p) => JsFuture::from(p)
+                .await
+                .map_err(|e| extern_err(name, js_error_message(&e)))?,
+            Err(v) => v,
+        };
+        let Some(ty) = ret_ty else {
+            return Ok(None); // void extern: JS return value ignored
+        };
+        let raw: InputValue = serde_wasm_bindgen::from_value(settled).map_err(|_| {
+            extern_err(
+                name,
+                "returned a value that is not a boolean, number, or string",
+            )
+        })?;
+        coerce_scalar("return value", &raw, *ty)
+            .map(Some)
+            .map_err(|m| extern_err(name, m))
+    }
+}
+
+fn extern_err(name: &str, message: impl Into<String>) -> VmErrorKind {
+    VmErrorKind::Extern {
+        name: name.to_string(),
+        message: message.into(),
+    }
+}
+
+/// Best-effort message from a thrown/rejected JS value.
+fn js_error_message(v: &JsValue) -> String {
+    if let Some(e) = v.dyn_ref::<js_sys::Error>() {
+        return String::from(e.message());
+    }
+    v.as_string().unwrap_or_else(|| format!("{v:?}"))
+}
+
+/// Convert an extern-call argument for a JS callback. Like [`output_value`],
+/// except `bit[n]` becomes an unquoted MSB-first "0101" string and `angle` a
+/// radians number, so values round-trip with the extern return formats.
+fn extern_arg(v: &Value) -> JsValue {
+    if let Value::Scalar(s) = v {
+        match s.value() {
+            Primitive::Bit(b) => return JsValue::from_bool(*b),
+            Primitive::Int(i) if i.unsigned_abs() <= MAX_SAFE_INTEGER => {
+                return JsValue::from_f64(*i as f64);
+            }
+            Primitive::Uint(u) if *u <= MAX_SAFE_INTEGER => {
+                return JsValue::from_f64(*u as f64);
+            }
+            Primitive::Float(f) => return JsValue::from_f64(*f),
+            Primitive::Angle(_) => {
+                if let Ok(f) = s.clone().cast(PrimitiveTy::Float(FloatWidth::F64))
+                    && let Primitive::Float(radians) = f.value()
+                {
+                    return JsValue::from_f64(*radians);
+                }
+            }
+            Primitive::BitReg(reg) => {
+                if let PrimitiveTy::BitReg(w) = s.ty() {
+                    return JsValue::from_str(&bitreg_string(reg, w));
+                }
+            }
+            _ => {}
+        }
+    }
+    JsValue::from_str(&v.to_string())
+}
+
+/// Unquoted MSB-first bit string of `reg`'s low `width` bits.
+fn bitreg_string(reg: &BitReg, width: u32) -> String {
+    (0..width as usize)
+        .rev()
+        .map(|i| if reg.get_bit(i) { '1' } else { '0' })
+        .collect()
 }
 
 /// Values that fit a JS primitive losslessly come through natively; everything

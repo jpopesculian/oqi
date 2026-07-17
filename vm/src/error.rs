@@ -16,6 +16,10 @@ pub enum VmErrorKind {
     UnknownInput(SymbolId),
     /// A `Call` targeted an `extern` the provider doesn't implement.
     UnknownExtern(String),
+    /// An `extern` call's host implementation failed: it threw/rejected,
+    /// or returned a value that can't be coerced to the declared return
+    /// type.
+    Extern { name: String, message: String },
     /// A `GateCall` referenced a gate with no executable definition
     /// (not a built-in and no lifted gate body).
     UndefinedGate(String),
@@ -55,6 +59,9 @@ impl fmt::Display for VmErrorKind {
             }
             VmErrorKind::UnknownExtern(name) => {
                 write!(f, "extern function `{name}` is not provided")
+            }
+            VmErrorKind::Extern { name, message } => {
+                write!(f, "extern function `{name}` failed: {message}")
             }
             VmErrorKind::UndefinedGate(name) => {
                 write!(f, "gate `{name}` has no executable definition")

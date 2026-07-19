@@ -540,6 +540,9 @@ impl<'a> CfgBuilder<'a> {
                 modifiers,
                 args,
                 qubits,
+                // Compile-time timing only: the timing pass has already
+                // consumed (and rewritten) the designator by this point.
+                duration: _,
             }) => {
                 let modifiers = modifiers
                     .into_iter()
@@ -558,6 +561,7 @@ impl<'a> CfgBuilder<'a> {
                     modifiers,
                     args,
                     qubits,
+                    duration: None,
                 })
             }
             StmtKind::Measure(m) => BlockStmtKind::Measure(self.lower_measure(m)?),

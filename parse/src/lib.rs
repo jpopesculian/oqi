@@ -706,6 +706,11 @@ impl<'a> Parser<'a> {
                 let (name, args, designator) = self.decompose_gate_head(expr)?;
                 let operands = self.parse_gate_operand_list()?;
                 if matches!(self.peek(), Some(Token::Arrow)) {
+                    if designator.is_some() {
+                        return Err(
+                            self.error("duration designator is not supported on measure calls")
+                        );
+                    }
                     self.advance();
                     let target = self.parse_indexed_identifier()?;
                     self.expect_semi()?;
@@ -1176,7 +1181,10 @@ impl<'a> Parser<'a> {
 
         // Check for quantum call: expression followed by gate operands
         if self.peek_is_gate_operand() {
-            let (name, args, _) = self.decompose_gate_head(expr)?;
+            let (name, args, designator) = self.decompose_gate_head(expr)?;
+            if designator.is_some() {
+                return Err(self.error("duration designator is not supported on measure calls"));
+            }
             let operands = self.parse_gate_operand_list()?;
             let end = operands.last().unwrap().span().end;
             let span = oqi_lex::span(name.span.start, end);

@@ -416,6 +416,11 @@ fn fmt_gate_call<E: FmtExpr>(
         write!(f, " ")?;
     }
     write!(f, "{}", g.gate)?;
+    if let Some(d) = &g.duration {
+        write!(f, " dur<")?;
+        d.fmt_e(f, symbols)?;
+        write!(f, ">")?;
+    }
     write!(f, " (")?;
     for (i, arg) in g.args.iter().enumerate() {
         if i > 0 {

@@ -533,7 +533,7 @@ impl Lowerer {
                 modifiers,
                 name,
                 args,
-                designator: _,
+                designator,
                 operands,
             } => {
                 let gate = self.resolver.resolve(name.name, name.span)?;
@@ -552,12 +552,17 @@ impl Lowerer {
                     .iter()
                     .map(|o| self.lower_gate_operand(o))
                     .collect::<Result<_>>()?;
+                let sir_duration = designator
+                    .as_deref()
+                    .map(|e| self.lower_expr(e))
+                    .transpose()?;
                 vec![sir::Stmt {
                     kind: sir::StmtKind::GateCall(sir::GateCall {
                         gate,
                         modifiers: sir_mods,
                         args: sir_args,
                         qubits: sir_qubits,
+                        duration: sir_duration,
                     }),
                     annotations,
                     span,

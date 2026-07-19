@@ -280,11 +280,21 @@ impl<T: Timings> StretchResolver<'_, T> {
         let frame = Frame::default();
         match &stmt.kind {
             StmtKind::GateCall(gc) => {
+                // A `gate[duration]` designator is the call's duration and
+                // may be stretchy (spec delays.rst:212-222, the rotary
+                // idiom); it bypasses the Timings lookup entirely.
+                if let Some(d) = &gc.duration {
+                    let dur = self.eval_affine_expr(d)?;
+                    self.delay_checks.push((dur.clone(), d.span));
+                    let wires = resolve_qubit_operands(&gc.qubits, self.ctx.symbols, &frame, span)?;
+                    return self.advance(clocks, &wires, &dur, span);
+                }
                 let (wires, dur) = self.ctx.resolve_gate_call_duration(
                     gc.gate,
                     &gc.modifiers,
                     &gc.args,
                     &gc.qubits,
+                    None,
                     &frame,
                     span,
                 )?;
@@ -767,6 +777,7 @@ fn stmt_any_expr(stmt: &Stmt, pred: &mut dyn FnMut(&Expr) -> bool) -> bool {
                 _ => false,
             }) || gc.args.iter().any(|e| expr_any(e, pred))
                 || ops_any(&gc.qubits, pred)
+                || gc.duration.as_ref().is_some_and(|e| expr_any(e, pred))
         }
         StmtKind::Measure(m) => measure_any_expr(&m.measure, pred),
         StmtKind::Reset(op) => ops_any(std::slice::from_ref(op), pred),
@@ -912,6 +923,9 @@ fn rewrite_stmt(stmt: &mut Stmt, values: &HashMap<SymbolId, Duration>) {
                 rewrite_expr(a, values);
             }
             ops(&mut gc.qubits, values);
+            if let Some(d) = &mut gc.duration {
+                rewrite_expr(d, values);
+            }
         }
         StmtKind::Measure(m) => rewrite_measure(&mut m.measure, values),
         StmtKind::Reset(op) => ops(std::slice::from_mut(op), values),
@@ -1305,6 +1319,90 @@ mod tests {
         resolve(&mut p, &table()).unwrap();
         assert_ns(assignment_rhs_ns(&p, "d"), 300.0);
         assert_ns(delay_ns(&p)[0], 300.0);
+    }
+
+    /// All gate-call designator expressions in program order, boxes included.
+    fn gate_designators(stmts: &[Stmt]) -> Vec<&Expr> {
+        let mut out = Vec::new();
+        for s in stmts {
+            match &s.kind {
+                StmtKind::GateCall(gc) => out.extend(gc.duration.as_ref()),
+                StmtKind::Box(b) => out.extend(gate_designators(&b.body)),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn stretch_gate_designator_spectator() {
+        // The spec's rotary idiom (delays.rst:212-222): a stretchy gate on a
+        // spectator wire fills the span of the cx on the other wires.
+        let src = r#"
+            include "stdgates.inc";
+            stretch a;
+            qubit[3] q;
+            barrier q;
+            cx q[0], q[1];
+            x[a] q[2];
+            barrier q;
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        let d = gate_designators(&p.body);
+        assert_eq!(d.len(), 1);
+        assert_ns(eval_ns(d[0]), 300.0);
+    }
+
+    #[test]
+    fn designator_overrides_table() {
+        // The designator wins over the timing table (x would be 20ns).
+        let src = r#"
+            include "stdgates.inc";
+            stretch st;
+            qubit q;
+            box[250ns] {
+                x[200ns] q;
+                delay[st] q;
+            }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        assert_ns(delay_ns(&p)[0], 50.0);
+    }
+
+    #[test]
+    fn designator_only_stretch_use_detected() {
+        // A stretch referenced ONLY through a gate designator must still be
+        // detected and solved.
+        let src = r#"
+            include "stdgates.inc";
+            stretch a;
+            qubit q;
+            box[100ns] {
+                x[a] q;
+            }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        let d = gate_designators(&p.body);
+        assert_ns(eval_ns(d[0]), 100.0);
+    }
+
+    #[test]
+    fn stretchy_designator_negative_after_solve() {
+        // `st` is pinned to 100ns by the box; the designator then resolves
+        // to -100ns and the post-solve check rejects it.
+        let src = r#"
+            include "stdgates.inc";
+            stretch st;
+            qubit q;
+            box[100ns] { delay[st] q; }
+            x[100ns - 2 * st] q;
+        "#;
+        let mut p = compile(src);
+        let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
+        assert!(msg.contains("negative"), "{msg}");
     }
 
     #[test]

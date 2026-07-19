@@ -268,6 +268,9 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                 for q in &mut gc.qubits {
                     self.visit_qubit_operand(q)?;
                 }
+                if let Some(d) = &mut gc.duration {
+                    self.visit_expr(d)?;
+                }
             }
             StmtKind::Measure(m) => self.visit_measure_expr(&mut m.measure)?,
             StmtKind::Reset(operand) => self.visit_qubit_operand(operand)?,
@@ -484,6 +487,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                 &gc.modifiers,
                 &gc.args,
                 &gc.qubits,
+                gc.duration.as_ref(),
                 tracker,
                 frame,
                 span,
@@ -573,12 +577,13 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         modifiers: &[GateModifier<Expr>],
         args: &[Expr],
         qubits: &[QubitOperand<Expr>],
+        designator: Option<&Expr>,
         tracker: &mut Tracker,
         frame: &Frame,
         span: Span,
     ) -> Result<()> {
-        let (qubit_refs, dur) =
-            self.resolve_gate_call_duration(gate, modifiers, args, qubits, frame, span)?;
+        let (qubit_refs, dur) = self
+            .resolve_gate_call_duration(gate, modifiers, args, qubits, designator, frame, span)?;
         tracker.advance(&qubit_refs, dur);
         Ok(())
     }
@@ -592,9 +597,27 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         modifiers: &[GateModifier<Expr>],
         args: &[Expr],
         qubits: &[QubitOperand<Expr>],
+        designator: Option<&Expr>,
         frame: &Frame,
         span: Span,
     ) -> Result<(Vec<QubitRef>, Duration)> {
+        // A `gate[duration]` designator IS the call's duration (spec
+        // delays.rst:212-222): it bypasses the timing table, defcals and
+        // gate-body recursion, and the classical args need no resolution.
+        if let Some(d) = designator {
+            let qubit_refs = resolve_qubit_operands(qubits, self.symbols, frame, span)?;
+            let v = self.eval_const_expr(d, frame)?;
+            let dur = value_to_duration(&v, d.span)?;
+            if dur.to_unit(DurationUnit::Ns).value < 0.0 {
+                return Err(err(
+                    ErrorKind::InvalidContext(format!(
+                        "gate duration designator is negative ({dur})"
+                    )),
+                    d.span,
+                ));
+            }
+            return Ok((qubit_refs, dur));
+        }
         // `gphase` arrives as an ordinary seeded symbol named "gphase".
         let name = self.symbols.get(gate).name.clone();
         let qubit_refs = resolve_qubit_operands(qubits, self.symbols, frame, span)?;
@@ -708,7 +731,15 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             } => {
                 // A quantum call used as a measure expression — treat as a
                 // gate call, but the Timings callback decides the semantics.
-                self.resolve_gate_call_duration(*callee, &[], args, qubits, frame, measure.span)
+                self.resolve_gate_call_duration(
+                    *callee,
+                    &[],
+                    args,
+                    qubits,
+                    None,
+                    frame,
+                    measure.span,
+                )
             }
         }
     }
@@ -1578,6 +1609,14 @@ impl CalWalk<'_> {
     /// find the called gate's own defcal (same matching rule) and walk its
     /// body against this walk's frame clocks.
     fn gate_call(&mut self, gc: &crate::sir::GateCall<Expr>, span: Span) -> Result<()> {
+        if gc.duration.is_some() {
+            return Err(err(
+                ErrorKind::InvalidContext(
+                    "gate duration designators are not supported in a timed defcal body".into(),
+                ),
+                span,
+            ));
+        }
         let table = self.table;
         let name = self.name(gc.gate).to_string();
         let mut qubits = Vec::new();
@@ -1977,6 +2016,91 @@ mod tests {
         resolve_durationof(&mut p, &t, &CompileOptions::default()).unwrap();
         let d = first_init_duration(&p);
         assert_eq!(d.value, 30.0);
+    }
+
+    #[test]
+    fn designator_short_circuits_enter() {
+        // A `gate[duration]` designator IS the call's duration: the
+        // enterable body (10 + 20) is never consulted.
+        let src = r#"
+            include "stdgates.inc";
+            gate my_pair a { x a; y a; }
+            duration d = durationof({ my_pair[70ns] $0; });
+        "#;
+        let mut p = compile(src);
+        let t = FixedTimings::new()
+            .gate("x", 10.0)
+            .gate("y", 20.0)
+            .enter("my_pair");
+        resolve_durationof(&mut p, &t, &CompileOptions::default()).unwrap();
+        assert_eq!(
+            first_init_duration(&p).to_unit(DurationUnit::Ns).value,
+            70.0
+        );
+    }
+
+    #[test]
+    fn builtin_u_designator() {
+        let src = r#"
+            duration d = durationof({ U(0, 0, 0)[50ns] $0; });
+        "#;
+        let mut p = compile(src);
+        resolve_durationof(&mut p, &TableTimings::new(), &CompileOptions::default()).unwrap();
+        assert_eq!(
+            first_init_duration(&p).to_unit(DurationUnit::Ns).value,
+            50.0
+        );
+    }
+
+    #[test]
+    fn negative_designator_errors() {
+        let src = r#"
+            include "stdgates.inc";
+            duration d = durationof({ x[-5ns] $0; });
+        "#;
+        let mut p = compile(src);
+        let e = resolve_durationof(&mut p, &TableTimings::new(), &CompileOptions::default())
+            .unwrap_err();
+        match e.kind {
+            ErrorKind::InvalidContext(msg) => assert!(msg.contains("negative"), "{msg}"),
+            other => panic!("expected InvalidContext, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn designator_in_defcal_body_errors() {
+        let src = format!(
+            "include \"stdgates.inc\";
+            {CAL_PRELUDE}
+            defcal a2 q {{
+                x[10ns] q;
+            }}
+            duration d = durationof({{ a2 $0; }});"
+        );
+        let mut p = compile(&src);
+        let opts = CompileOptions::default();
+        let t = TableTimings::new().with_defcals(&p, &opts.dt);
+        let e = resolve_durationof(&mut p, &t, &opts).unwrap_err();
+        match e.kind {
+            ErrorKind::InvalidContext(msg) => {
+                assert!(msg.contains("defcal"), "{msg}");
+            }
+            other => panic!("expected InvalidContext, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn measure_call_designator_parse_errors() {
+        // `f(1)[100ns] q -> c;` — designators have no meaning on measure
+        // calls; the parser rejects them.
+        assert!(
+            compile_source(
+                "qubit q;\nbit c;\nf(1)[100ns] q -> c;\n",
+                DefaultIncludeResolver,
+                None,
+            )
+            .is_err()
+        );
     }
 
     #[test]

@@ -809,6 +809,7 @@ fn lower_block_stmt_with_defs(
                 .collect(),
             args: g.args.iter().map(|e| lower_expr(e, r)).collect(),
             qubits: g.qubits.iter().map(|q| lower_qubit_operand(q, r)).collect(),
+            duration: None,
         }),
         BlockStmtKind::Measure(m) => {
             let measure = lower_measure_expr(&m.measure, r);

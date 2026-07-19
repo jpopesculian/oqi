@@ -476,6 +476,7 @@ impl<'a> EmitCtx<'a> {
                 modifiers,
                 args,
                 qubits,
+                duration: _,
             }) => {
                 // A bare gate-call whose name resolves to a `def` (e.g.
                 // `hadamard_layer ancilla;`) is a subroutine call, not a gate.

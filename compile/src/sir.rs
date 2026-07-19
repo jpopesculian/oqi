@@ -162,6 +162,10 @@ pub struct GateCall<E> {
     pub modifiers: Vec<GateModifier<E>>,
     pub args: Vec<E>,
     pub qubits: Vec<QubitOperand<E>>,
+    /// `gate[duration]` designator (docs/delays.rst: stretchy/timed
+    /// instructions). Compile-time timing only: dropped at CFG conversion,
+    /// never reaches bytecode or the VM.
+    pub duration: Option<E>,
 }
 
 #[derive(Clone)]
@@ -510,6 +514,7 @@ mod tests {
                 modifiers: vec![],
                 args,
                 qubits,
+                duration: None,
             }),
             span,
         )

@@ -13,7 +13,12 @@
 //! supplied (the pass is simply not run), `durationof` expressions survive to
 //! the bytecode and the VM's runtime timing pass evaluates them instead —
 //! that path additionally supports control flow, but knows no per-gate
-//! durations (uncalibrated gates are zero-width).
+//! durations (uncalibrated gates are zero-width). On that runtime path an
+//! unresolved `stretch` reads as its default-initialized value (0 ns) via
+//! register zero-seeding, so stretchy delays execute zero-width — the
+//! minimal solution for an unconstrained stretch. This pass instead errors
+//! on `stretch` ("resolution is not implemented") until a real constraint
+//! solver exists.
 
 use std::collections::{HashMap, HashSet};
 
@@ -706,18 +711,8 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                     return Ok(v.clone());
                 }
                 let sym = self.symbols.get(*sid);
-                // Spec-wise `stretch` resolves at compile time too, but no
-                // solver exists yet — give it an honest error rather than a
-                // generic non-constant one (clean seam for the future pass).
                 if matches!(sym.ty, Type::Stretch) {
-                    return Err(err(
-                        ErrorKind::InvalidContext(
-                            "stretch resolution is not implemented; `stretch` values cannot \
-                             be used where timings are resolved at compile time"
-                                .into(),
-                        ),
-                        expr.span,
-                    ));
+                    return Err(stretch_err(expr.span));
                 }
                 sym.const_value
                     .clone()
@@ -1081,6 +1076,20 @@ fn err(kind: ErrorKind, span: Span) -> CompileError {
     CompileError::new(kind).with_span(span)
 }
 
+/// Spec-wise `stretch` resolves at compile time too, but no solver exists
+/// yet — give it an honest error rather than a generic non-constant one
+/// (clean seam for the future pass).
+fn stretch_err(span: Span) -> CompileError {
+    err(
+        ErrorKind::InvalidContext(
+            "stretch resolution is not implemented; `stretch` values cannot \
+             be used where timings are resolved at compile time"
+                .into(),
+        ),
+        span,
+    )
+}
+
 /// Attach `span` to `e` unless it already carries one (provider errors may
 /// point inside a defcal body; keep the more precise span).
 fn at_span(e: CompileError, span: Span) -> CompileError {
@@ -1174,12 +1183,16 @@ impl TableTimings {
             resets: Vec::new(),
             names: HashMap::new(),
             consts: HashMap::new(),
+            stretches: HashSet::new(),
             dt: *dt,
         };
         for s in program.symbols.iter() {
             table.names.insert(s.id, s.name.clone());
             if let Some(v) = &s.const_value {
                 table.consts.insert(s.id, v.clone());
+            }
+            if matches!(s.ty, Type::Stretch) {
+                table.stretches.insert(s.id);
             }
         }
         for cal in &program.calibrations {
@@ -1290,6 +1303,8 @@ struct DefcalTable {
     names: HashMap<SymbolId, String>,
     /// Compile-time constant values of symbols.
     consts: HashMap<SymbolId, Value>,
+    /// Symbols declared `stretch`, for the honest not-implemented error.
+    stretches: HashSet<SymbolId>,
     /// The `dt` duration captured at build time (one `capture` sample
     /// lasts one `dt`).
     dt: Duration,
@@ -1418,7 +1433,7 @@ impl CalWalk<'_> {
             // dispatch); their pulses land on this walk's frame clocks.
             StmtKind::GateCall(gc) => self.gate_call(gc, span),
             StmtKind::Delay(d) => {
-                let v = eval_cal_expr(&d.duration, &self.params, &self.table.consts)?;
+                let v = eval_cal_expr(&d.duration, &self.params, self.table)?;
                 let dur = value_to_duration(&v, d.duration.span)?;
                 let mut targets: Vec<SymbolId> = Vec::new();
                 for op in &d.operands {
@@ -1544,7 +1559,7 @@ impl CalWalk<'_> {
         let call_args: Vec<Value> = gc
             .args
             .iter()
-            .map(|a| eval_cal_expr(a, &self.params, &table.consts))
+            .map(|a| eval_cal_expr(a, &self.params, table))
             .collect::<Result<_>>()?;
         let cal = table
             .gates
@@ -1619,7 +1634,7 @@ impl CalWalk<'_> {
                 frame.span,
             ));
         };
-        let v = eval_cal_expr(samples, &self.params, &self.table.consts)?;
+        let v = eval_cal_expr(samples, &self.params, self.table)?;
         let n = value_as_usize(&v).ok_or_else(|| {
             err(
                 ErrorKind::InvalidContext(
@@ -1655,7 +1670,7 @@ impl CalWalk<'_> {
                         e.span,
                     )
                 })?;
-                let v = eval_cal_expr(dur_expr, &self.params, &self.table.consts)?;
+                let v = eval_cal_expr(dur_expr, &self.params, self.table)?;
                 value_to_duration(&v, dur_expr.span)
             }
             other => Err(err(
@@ -1673,26 +1688,31 @@ impl CalWalk<'_> {
 fn eval_cal_expr(
     expr: &Expr,
     params: &HashMap<SymbolId, Value>,
-    consts: &HashMap<SymbolId, Value>,
+    table: &DefcalTable,
 ) -> Result<Value> {
     match &expr.kind {
         ExprKind::Literal(p) => Ok(Value::from(p.clone())),
-        ExprKind::Var(sid) => params
-            .get(sid)
-            .or_else(|| consts.get(sid))
-            .cloned()
-            .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span)),
+        ExprKind::Var(sid) => {
+            if table.stretches.contains(sid) {
+                return Err(stretch_err(expr.span));
+            }
+            params
+                .get(sid)
+                .or_else(|| table.consts.get(sid))
+                .cloned()
+                .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span))
+        }
         ExprKind::Binary(b) => {
-            let lv = eval_cal_expr(&b.left, params, consts)?;
-            let rv = eval_cal_expr(&b.right, params, consts)?;
+            let lv = eval_cal_expr(&b.left, params, table)?;
+            let rv = eval_cal_expr(&b.right, params, table)?;
             apply_binop(b.op, lv, rv, expr.span)
         }
         ExprKind::Unary(u) => {
-            let v = eval_cal_expr(&u.operand, params, consts)?;
+            let v = eval_cal_expr(&u.operand, params, table)?;
             apply_unop(u.op, v, expr.span)
         }
         ExprKind::Cast(c) => {
-            let v = eval_cal_expr(&c.operand, params, consts)?;
+            let v = eval_cal_expr(&c.operand, params, table)?;
             let ty = c
                 .target_ty
                 .value_ty()
@@ -2259,6 +2279,28 @@ mod tests {
         let mut p = compile(src);
         let e = resolve_durationof(&mut p, &TableTimings::new(), &CompileOptions::default())
             .unwrap_err();
+        match e.kind {
+            ErrorKind::InvalidContext(msg) => {
+                assert!(msg.contains("stretch"), "{msg}");
+            }
+            other => panic!("expected InvalidContext naming stretch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn defcal_stretch_names_stretch() {
+        let src = format!(
+            "{CAL_PRELUDE}
+            stretch sd;
+            defcal x q {{
+                play(drive0, gaussian(0.1, sd, 25us));
+            }}
+            duration d = durationof({{ x $0; }});"
+        );
+        let mut p = compile(&src);
+        let opts = CompileOptions::default();
+        let t = TableTimings::new().with_defcals(&p, &opts.dt);
+        let e = resolve_durationof(&mut p, &t, &opts).unwrap_err();
         match e.kind {
             ErrorKind::InvalidContext(msg) => {
                 assert!(msg.contains("stretch"), "{msg}");

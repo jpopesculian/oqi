@@ -1044,6 +1044,22 @@ fn physical_qubits_size_the_register() {
 
 // ── durationof ───────────────────────────────────────────────────────
 
+/// An unresolved `stretch` default-initializes to 0ns at runtime (register
+/// zero-seeding), so a stretchy delay is zero-width — the minimal solution
+/// for an unconstrained stretch. Pins today's behavior; a real stretch
+/// solver (compile-time) would supersede it.
+#[test]
+fn stretch_reads_as_zero_at_runtime() {
+    let outs = run_outputs(
+        r#"
+            include "stdgates.inc";
+            stretch g;
+            duration d = durationof({ x $0; delay[g] $0; });
+        "#,
+    );
+    assert_eq!(outs, vec![("d".to_string(), "0ns".to_string())]);
+}
+
 /// Delays accumulate onto one timeline, with unit normalization
 /// (100ns + 1us = 1100ns).
 #[test]

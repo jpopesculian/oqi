@@ -933,7 +933,7 @@ impl Tracker {
 
 // ── Frame: substitution for recursive gate-body evaluation ──────────────
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Frame {
     /// Formal gate qubit → concrete qubit.
     qubits: HashMap<SymbolId, QubitRef>,
@@ -1006,7 +1006,7 @@ fn resolve_qubit_operand(
                         span,
                     ));
                 }
-                let idx = single_index(&indices[0])?;
+                let idx = single_index(&indices[0], symbols, frame)?;
                 Ok(vec![QubitRef::Symbol {
                     name,
                     index: Some(idx),
@@ -1016,7 +1016,7 @@ fn resolve_qubit_operand(
     }
 }
 
-fn single_index(op: &IndexOp<Expr>) -> Result<usize> {
+fn single_index(op: &IndexOp<Expr>, symbols: &SymbolTable, frame: &Frame) -> Result<usize> {
     let items = match &op.kind {
         IndexKind::Items(items) => items,
         IndexKind::Set(_) => {
@@ -1037,20 +1037,26 @@ fn single_index(op: &IndexOp<Expr>) -> Result<usize> {
         ));
     }
     match &items[0] {
-        IndexItem::Single(e) => match &e.kind {
-            ExprKind::Literal(p) => value_as_usize(&Value::from(p.clone())).ok_or_else(|| {
+        IndexItem::Single(e) => {
+            let v = match &e.kind {
+                ExprKind::Literal(p) => Some(Value::from(p.clone())),
+                // Loop variables (via the frame) and consts index too.
+                ExprKind::Var(sid) => frame
+                    .params
+                    .get(sid)
+                    .cloned()
+                    .or_else(|| symbols.get(*sid).const_value.clone()),
+                _ => None,
+            };
+            v.as_ref().and_then(value_as_usize).ok_or_else(|| {
                 err(
-                    ErrorKind::InvalidContext("qubit index must be a non-negative integer".into()),
+                    ErrorKind::InvalidContext(
+                        "qubit index must be a compile-time non-negative integer".into(),
+                    ),
                     op.span,
                 )
-            }),
-            _ => Err(err(
-                ErrorKind::InvalidContext(
-                    "qubit index must be a constant integer literal in `durationof`".into(),
-                ),
-                op.span,
-            )),
-        },
+            })
+        }
         IndexItem::Range(_) => Err(err(
             ErrorKind::InvalidContext(
                 "range indices are not supported in `durationof` qubit operands".into(),

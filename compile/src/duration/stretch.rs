@@ -33,6 +33,9 @@ use super::{CalibrationBody, Frame, QubitRef, ResolveCtx, Timings, err, resolve_
 
 const EPS_NS: f64 = 1e-9;
 
+/// Total loop-unrolling budget across all (possibly nested) loops.
+const UNROLL_BUDGET: usize = 10_000;
+
 fn zero() -> Duration {
     Duration::new(0.0, DurationUnit::Ns)
 }
@@ -85,9 +88,10 @@ pub(super) fn resolve_stretch<T: Timings>(
                 solved: HashMap::new(),
             },
             delay_checks: Vec::new(),
+            unrolled: 0,
         };
         let mut clocks = AffineClocks::default();
-        resolver.walk_stmts(&program.body, &mut clocks)?;
+        resolver.walk_stmts(&program.body, &mut clocks, &Frame::default())?;
         // End of program is the outermost synchronization point.
         let wires: Vec<QubitRef> = clocks.times.iter().map(|(q, _)| q.clone()).collect();
         if !wires.is_empty() {
@@ -265,28 +269,34 @@ struct StretchResolver<'a, T: Timings> {
     solver: Solver,
     /// Resolved-value non-negativity checks deferred to after solving.
     delay_checks: Vec<(AffineDur, Span)>,
+    /// Iterations spent unrolling loops, capped by [`UNROLL_BUDGET`].
+    unrolled: usize,
 }
 
 impl<T: Timings> StretchResolver<'_, T> {
-    fn walk_stmts(&mut self, stmts: &[Stmt], clocks: &mut AffineClocks) -> Result<()> {
+    fn walk_stmts(
+        &mut self,
+        stmts: &[Stmt],
+        clocks: &mut AffineClocks,
+        frame: &Frame,
+    ) -> Result<()> {
         for stmt in stmts {
-            self.walk_stmt(stmt, clocks)?;
+            self.walk_stmt(stmt, clocks, frame)?;
         }
         Ok(())
     }
 
-    fn walk_stmt(&mut self, stmt: &Stmt, clocks: &mut AffineClocks) -> Result<()> {
+    fn walk_stmt(&mut self, stmt: &Stmt, clocks: &mut AffineClocks, frame: &Frame) -> Result<()> {
         let span = stmt.span;
-        let frame = Frame::default();
         match &stmt.kind {
             StmtKind::GateCall(gc) => {
                 // A `gate[duration]` designator is the call's duration and
                 // may be stretchy (spec delays.rst:212-222, the rotary
                 // idiom); it bypasses the Timings lookup entirely.
                 if let Some(d) = &gc.duration {
-                    let dur = self.eval_affine_expr(d)?;
+                    let dur = self.eval_affine_expr(d, frame)?;
                     self.delay_checks.push((dur.clone(), d.span));
-                    let wires = resolve_qubit_operands(&gc.qubits, self.ctx.symbols, &frame, span)?;
+                    let wires = resolve_qubit_operands(&gc.qubits, self.ctx.symbols, frame, span)?;
                     return self.advance(clocks, &wires, &dur, span);
                 }
                 let (wires, dur) = self.ctx.resolve_gate_call_duration(
@@ -295,21 +305,21 @@ impl<T: Timings> StretchResolver<'_, T> {
                     &gc.args,
                     &gc.qubits,
                     None,
-                    &frame,
+                    frame,
                     span,
                 )?;
                 self.advance(clocks, &wires, &AffineDur::concrete(dur), span)
             }
             StmtKind::Measure(m) => {
-                let (wires, dur) = self.ctx.resolve_measure_duration(&m.measure, &frame)?;
+                let (wires, dur) = self.ctx.resolve_measure_duration(&m.measure, frame)?;
                 self.advance(clocks, &wires, &AffineDur::concrete(dur), span)
             }
             StmtKind::Reset(operand) => {
-                let (wires, dur) = self.ctx.resolve_reset_duration(operand, &frame, span)?;
+                let (wires, dur) = self.ctx.resolve_reset_duration(operand, frame, span)?;
                 self.advance(clocks, &wires, &AffineDur::concrete(dur), span)
             }
             StmtKind::Delay(d) => {
-                let dur = self.eval_affine_expr(&d.duration)?;
+                let dur = self.eval_affine_expr(&d.duration, frame)?;
                 self.delay_checks.push((dur.clone(), d.duration.span));
                 if d.operands.is_empty() {
                     if !dur.terms.is_empty() {
@@ -323,24 +333,24 @@ impl<T: Timings> StretchResolver<'_, T> {
                     // Bare concrete delay: no runtime effect (matches VM).
                     return Ok(());
                 }
-                let wires = resolve_qubit_operands(&d.operands, self.ctx.symbols, &frame, span)?;
+                let wires = resolve_qubit_operands(&d.operands, self.ctx.symbols, frame, span)?;
                 self.advance(clocks, &wires, &dur, span)
             }
             StmtKind::Barrier(ops) | StmtKind::Nop(ops) => {
                 let wires = if ops.is_empty() {
                     clocks.times.iter().map(|(q, _)| q.clone()).collect()
                 } else {
-                    resolve_qubit_operands(ops, self.ctx.symbols, &frame, span)?
+                    resolve_qubit_operands(ops, self.ctx.symbols, frame, span)?
                 };
                 if !wires.is_empty() {
                     self.sync_point(clocks, &wires, span, "barrier synchronization")?;
                 }
                 Ok(())
             }
-            StmtKind::Box(b) => self.walk_box(b, clocks, span),
+            StmtKind::Box(b) => self.walk_box(b, clocks, span, frame),
             StmtKind::Assignment(a) => {
                 if let RValue::Measure(m) = &a.value {
-                    let (wires, dur) = self.ctx.resolve_measure_duration(m, &frame)?;
+                    let (wires, dur) = self.ctx.resolve_measure_duration(m, frame)?;
                     return self.advance(clocks, &wires, &AffineDur::concrete(dur), span);
                 }
                 let RValue::Expr(e) = &a.value else {
@@ -359,7 +369,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                                 span,
                             ));
                         }
-                        let v = self.eval_affine_expr(e)?;
+                        let v = self.eval_affine_expr(e, frame)?;
                         self.env.insert(*sid, v);
                         return Ok(());
                     }
@@ -373,16 +383,15 @@ impl<T: Timings> StretchResolver<'_, T> {
             | StmtKind::Break
             | StmtKind::Continue
             | StmtKind::Return(_) => Ok(()),
-            StmtKind::If(_) | StmtKind::For(_) | StmtKind::While(_) | StmtKind::Switch(_) => {
-                Err(err(
-                    ErrorKind::InvalidContext(
-                        "stretch resolution requires straight-line code (control flow is \
-                         not supported)"
-                            .into(),
-                    ),
-                    span,
-                ))
-            }
+            StmtKind::For(f) => self.unroll_for(f, clocks, frame, span),
+            StmtKind::If(_) | StmtKind::While(_) | StmtKind::Switch(_) => Err(err(
+                ErrorKind::InvalidContext(
+                    "stretch resolution requires straight-line code (control flow is \
+                     not supported)"
+                        .into(),
+                ),
+                span,
+            )),
             StmtKind::End => Err(err(
                 ErrorKind::InvalidContext(
                     "`end` is not supported where stretch is resolved".into(),
@@ -404,6 +413,123 @@ impl<T: Timings> StretchResolver<'_, T> {
         }
     }
 
+    /// Unroll a const-bound range for-loop, mirroring `cfg::lower_for`'s
+    /// semantics: start defaults to 0, step to 1, the end is required and
+    /// inclusive, and direction follows the step's sign. The loop variable
+    /// is bound per iteration through the frame, so bounds, delays and
+    /// designators may reference it.
+    fn unroll_for(
+        &mut self,
+        f: &crate::sir::For,
+        clocks: &mut AffineClocks,
+        frame: &Frame,
+        span: Span,
+    ) -> Result<()> {
+        if stmts_have_break_or_continue(&f.body) {
+            return Err(err(
+                ErrorKind::InvalidContext(
+                    "break/continue are not supported where stretch is resolved".into(),
+                ),
+                span,
+            ));
+        }
+        let crate::sir::ForIterable::Range { start, step, end } = &f.iterable else {
+            // The CFG lowering has the same restriction.
+            return Err(err(
+                ErrorKind::InvalidContext(
+                    "only range for-loops are supported where stretch is resolved".into(),
+                ),
+                span,
+            ));
+        };
+        let start = match start {
+            Some(e) => self.const_i128(e, frame)?,
+            None => 0,
+        };
+        let step = match step {
+            Some(e) => self.const_i128(e, frame)?,
+            None => 1,
+        };
+        if step == 0 {
+            return Err(err(
+                ErrorKind::InvalidContext("for-loop range step must be non-zero".into()),
+                span,
+            ));
+        }
+        let Some(end_e) = end else {
+            return Err(err(
+                ErrorKind::InvalidContext(
+                    "range for-loops need an explicit end where stretch is resolved".into(),
+                ),
+                span,
+            ));
+        };
+        let end = self.const_i128(end_e, frame)?;
+        let var_ty = self.ctx.symbols.get(f.var).ty.value_ty().ok_or_else(|| {
+            err(
+                ErrorKind::InvalidContext("for-loop variable has no value type".into()),
+                span,
+            )
+        })?;
+
+        let mut i = start;
+        loop {
+            if (step > 0 && i > end) || (step < 0 && i < end) {
+                break;
+            }
+            self.unrolled += 1;
+            if self.unrolled > UNROLL_BUDGET {
+                return Err(err(
+                    ErrorKind::InvalidContext(format!(
+                        "loop unrolling budget ({UNROLL_BUDGET} iterations) exceeded \
+                         where stretch is resolved"
+                    )),
+                    span,
+                ));
+            }
+            let val = Value::int(i, crate::classical::iw(128))
+                .cast(var_ty)
+                .map_err(|_| {
+                    err(
+                        ErrorKind::InvalidContext(format!(
+                            "loop value {i} does not fit the loop variable's type"
+                        )),
+                        span,
+                    )
+                })?;
+            let mut iter_frame = frame.clone();
+            iter_frame.params.insert(f.var, val);
+            self.walk_stmts(&f.body, clocks, &iter_frame)?;
+            i += step;
+        }
+        Ok(())
+    }
+
+    /// A constant signed integer bound.
+    fn const_i128(&self, expr: &Expr, frame: &Frame) -> Result<i128> {
+        let nonconst = || {
+            err(
+                ErrorKind::InvalidContext(
+                    "for-loop bounds must be compile-time constants where stretch is \
+                     resolved"
+                        .into(),
+                ),
+                expr.span,
+            )
+        };
+        let v = self
+            .ctx
+            .eval_const_expr(expr, frame)
+            .map_err(|_| nonconst())?;
+        let Value::Scalar(s) = v else {
+            return Err(nonconst());
+        };
+        s.cast(PrimitiveTy::Int(crate::classical::iw(128)))
+            .ok()
+            .and_then(|s| s.value().as_int(crate::classical::iw(128)))
+            .ok_or_else(nonconst)
+    }
+
     /// A box is walked in its own relative clock set; its resolved duration
     /// then advances the enclosing timeline as one rigid block.
     fn walk_box(
@@ -411,9 +537,10 @@ impl<T: Timings> StretchResolver<'_, T> {
         b: &crate::sir::BoxStmt,
         clocks: &mut AffineClocks,
         span: Span,
+        frame: &Frame,
     ) -> Result<()> {
         let mut inner = AffineClocks::default();
-        self.walk_stmts(&b.body, &mut inner)?;
+        self.walk_stmts(&b.body, &mut inner, frame)?;
 
         // Minimal feasible interior span.
         let mut s_min = zero();
@@ -425,7 +552,7 @@ impl<T: Timings> StretchResolver<'_, T> {
         }
 
         let d = match &b.duration {
-            Some(e) => self.eval_affine_expr(e)?,
+            Some(e) => self.eval_affine_expr(e, frame)?,
             None => AffineDur::concrete(s_min),
         };
         // `box[st]` with concrete contents: the designator itself is pinned
@@ -537,10 +664,10 @@ impl<T: Timings> StretchResolver<'_, T> {
 
     // ── Affine expression evaluation ────────────────────────────────────
 
-    fn eval_affine_expr(&self, expr: &Expr) -> Result<AffineDur> {
+    fn eval_affine_expr(&self, expr: &Expr, frame: &Frame) -> Result<AffineDur> {
         // Concrete fast path: consts, intrinsics, folded arithmetic, and
         // dt-resolved literals all behave exactly as in the main pass.
-        if let Ok(v) = self.ctx.eval_const_expr(expr, &Frame::default()) {
+        if let Ok(v) = self.ctx.eval_const_expr(expr, frame) {
             return Ok(AffineDur::concrete(super::value_to_duration(
                 &v, expr.span,
             )?));
@@ -566,16 +693,16 @@ impl<T: Timings> StretchResolver<'_, T> {
                 use crate::sir::BinOp;
                 match b.op {
                     BinOp::Add => Ok(self
-                        .eval_affine_expr(&b.left)?
-                        .add(&self.eval_affine_expr(&b.right)?)),
+                        .eval_affine_expr(&b.left, frame)?
+                        .add(&self.eval_affine_expr(&b.right, frame)?)),
                     BinOp::Sub => Ok(self
-                        .eval_affine_expr(&b.left)?
-                        .sub(&self.eval_affine_expr(&b.right)?)),
+                        .eval_affine_expr(&b.left, frame)?
+                        .sub(&self.eval_affine_expr(&b.right, frame)?)),
                     BinOp::Mul => {
-                        if let Some(k) = self.const_scalar_f64(&b.left) {
-                            Ok(self.eval_affine_expr(&b.right)?.scale(k))
-                        } else if let Some(k) = self.const_scalar_f64(&b.right) {
-                            Ok(self.eval_affine_expr(&b.left)?.scale(k))
+                        if let Some(k) = self.const_scalar_f64(&b.left, frame) {
+                            Ok(self.eval_affine_expr(&b.right, frame)?.scale(k))
+                        } else if let Some(k) = self.const_scalar_f64(&b.right, frame) {
+                            Ok(self.eval_affine_expr(&b.left, frame)?.scale(k))
                         } else {
                             Err(err(
                                 ErrorKind::InvalidContext(
@@ -586,7 +713,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                         }
                     }
                     BinOp::Div => {
-                        if let Some(k) = self.const_scalar_f64(&b.right) {
+                        if let Some(k) = self.const_scalar_f64(&b.right, frame) {
                             if k == 0.0 {
                                 return Err(err(
                                     ErrorKind::InvalidContext(
@@ -595,7 +722,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                                     expr.span,
                                 ));
                             }
-                            Ok(self.eval_affine_expr(&b.left)?.scale(1.0 / k))
+                            Ok(self.eval_affine_expr(&b.left, frame)?.scale(1.0 / k))
                         } else {
                             Err(err(
                                 ErrorKind::InvalidContext(
@@ -614,7 +741,7 @@ impl<T: Timings> StretchResolver<'_, T> {
             ExprKind::Unary(u) => {
                 use crate::sir::UnOp;
                 match u.op {
-                    UnOp::Neg => Ok(self.eval_affine_expr(&u.operand)?.scale(-1.0)),
+                    UnOp::Neg => Ok(self.eval_affine_expr(&u.operand, frame)?.scale(-1.0)),
                     _ => Err(err(
                         ErrorKind::InvalidContext("stretch expressions must be linear".into()),
                         expr.span,
@@ -622,7 +749,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                 }
             }
             // Decl inits are wrapped in a cast to the declared type.
-            ExprKind::Cast(c) => self.eval_affine_expr(&c.operand),
+            ExprKind::Cast(c) => self.eval_affine_expr(&c.operand, frame),
             _ => Err(err(
                 ErrorKind::InvalidContext(
                     "expression cannot be statically evaluated for stretch resolution".into(),
@@ -633,8 +760,8 @@ impl<T: Timings> StretchResolver<'_, T> {
     }
 
     /// A constant scalar factor (int/uint/float), or None if not constant.
-    fn const_scalar_f64(&self, expr: &Expr) -> Option<f64> {
-        let v = self.ctx.eval_const_expr(expr, &Frame::default()).ok()?;
+    fn const_scalar_f64(&self, expr: &Expr, frame: &Frame) -> Option<f64> {
+        let v = self.ctx.eval_const_expr(expr, frame).ok()?;
         let Value::Scalar(s) = v else { return None };
         s.cast(PrimitiveTy::Float(FloatWidth::F64))
             .ok()?
@@ -740,6 +867,25 @@ fn boundary_scan(program: &Program) -> Result<()> {
 }
 
 // ── Mechanical scans ────────────────────────────────────────────────────
+
+/// `break`/`continue` at this loop's level (nested loops own their own).
+fn stmts_have_break_or_continue(stmts: &[Stmt]) -> bool {
+    stmts.iter().any(|s| match &s.kind {
+        StmtKind::Break | StmtKind::Continue => true,
+        StmtKind::Box(b) => stmts_have_break_or_continue(&b.body),
+        StmtKind::If(i) => {
+            stmts_have_break_or_continue(&i.then_body)
+                || i.else_body
+                    .as_ref()
+                    .is_some_and(|b| stmts_have_break_or_continue(b))
+        }
+        StmtKind::Switch(sw) => sw
+            .cases
+            .iter()
+            .any(|c| stmts_have_break_or_continue(&c.body)),
+        _ => false,
+    })
+}
 
 fn stmts_have_stretch_var(stmts: &[Stmt], symbols: &SymbolTable) -> bool {
     any_expr_in_stmts(
@@ -947,8 +1093,26 @@ fn rewrite_stmt(stmt: &mut Stmt, values: &HashMap<SymbolId, Duration>) {
         StmtKind::Return(Some(RValue::Expr(e))) => rewrite_expr(e, values),
         StmtKind::Return(Some(RValue::Measure(m))) => rewrite_measure(m, values),
         StmtKind::ExprStmt(e) => rewrite_expr(e, values),
-        // Straight-line-only: control flow errored during the walk; the
-        // remaining kinds carry no rewritable expressions.
+        // Unrolled loops: the single SIR body must also be rewritten, or
+        // the VM would zero-seed the surviving stretch variables.
+        StmtKind::For(f) => {
+            match &mut f.iterable {
+                crate::sir::ForIterable::Range { start, step, end } => {
+                    for e in [start, step, end].into_iter().flatten() {
+                        rewrite_expr(e, values);
+                    }
+                }
+                crate::sir::ForIterable::Set(v) => {
+                    for e in v {
+                        rewrite_expr(e, values);
+                    }
+                }
+                crate::sir::ForIterable::Expr(e) => rewrite_expr(e, values),
+            }
+            rewrite_stretch_vars(&mut f.body, values);
+        }
+        // Remaining straight-line kinds carry no rewritable expressions
+        // (other control flow errored during the walk).
         _ => {}
     }
 }
@@ -1085,6 +1249,7 @@ mod tests {
             match &s.kind {
                 StmtKind::Delay(d) => out.push(&d.duration),
                 StmtKind::Box(b) => out.extend(delays(&b.body)),
+                StmtKind::For(f) => out.extend(delays(&f.body)),
                 _ => {}
             }
         }
@@ -1403,6 +1568,188 @@ mod tests {
         let mut p = compile(src);
         let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
         assert!(msg.contains("negative"), "{msg}");
+    }
+
+    // ── Const-bound loop unrolling ──────────────────────────────────────
+
+    #[test]
+    fn const_loop_unrolls() {
+        // 3 iterations of (x + delay[g]): 3·(20 + g) == 120 → g = 20; the
+        // single SIR delay inside the loop body rewrites to 20ns.
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            box[120ns] {
+                for int i in [0:2] {
+                    x q;
+                    delay[g] q;
+                }
+            }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        assert_ns(delay_ns(&p)[0], 20.0);
+    }
+
+    #[test]
+    fn loop_var_delay() {
+        // delays 10 + 20 + 30 = 60; g absorbs the remaining 40.
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            box[100ns] {
+                for int i in [0:2] {
+                    delay[(i + 1) * 10ns] q;
+                }
+                delay[g] q;
+            }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        // The loop-var delay legitimately keeps `Var(i)` (the VM evaluates
+        // it per iteration); only the stretch delay must be a literal.
+        let d = delays(&p.body);
+        assert_ns(eval_ns(d[1]), 40.0);
+    }
+
+    #[test]
+    fn descending_range() {
+        // [2:-1:0] runs 3 iterations.
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            box[100ns] {
+                for int i in [2:-1:0] { x q; }
+                delay[g] q;
+            }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        assert_ns(delay_ns(&p)[0], 40.0);
+    }
+
+    #[test]
+    fn empty_range_noop() {
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            box[50ns] {
+                for int i in [0:-1:2] { x q; }
+                delay[g] q;
+            }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        assert_ns(delay_ns(&p)[0], 50.0);
+    }
+
+    #[test]
+    fn loop_qubit_index() {
+        // The loop variable indexes qubits through the frame.
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit[2] q;
+            box[80ns] {
+                for int i in [0:1] { x q[i]; }
+                delay[g] q[0];
+            }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        assert_ns(delay_ns(&p)[0], 60.0);
+    }
+
+    #[test]
+    fn break_in_unrolled_body_errors() {
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            delay[g] q;
+            for int i in [0:2] { x q; break; }
+        "#;
+        let mut p = compile(src);
+        let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
+        assert!(msg.contains("break"), "{msg}");
+    }
+
+    #[test]
+    fn unroll_budget_errors() {
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            delay[g] q;
+            for int i in [0:20000] { x q; }
+        "#;
+        let mut p = compile(src);
+        let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
+        assert!(msg.contains("budget"), "{msg}");
+    }
+
+    #[test]
+    fn nonconst_bound_errors() {
+        let src = r#"
+            include "stdgates.inc";
+            input int n;
+            stretch g;
+            qubit q;
+            delay[g] q;
+            for int i in [0:n] { x q; }
+        "#;
+        let mut p = compile(src);
+        let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
+        assert!(msg.contains("compile-time constants"), "{msg}");
+    }
+
+    #[test]
+    fn zero_step_errors() {
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            delay[g] q;
+            for int i in [0:0:5] { x q; }
+        "#;
+        let mut p = compile(src);
+        let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
+        assert!(msg.contains("non-zero"), "{msg}");
+    }
+
+    #[test]
+    fn set_iterable_errors() {
+        // The CFG lowering has the same range-only restriction.
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            delay[g] q;
+            for int i in {1, 3} { x q; }
+        "#;
+        let mut p = compile(src);
+        let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
+        assert!(msg.contains("range for-loops"), "{msg}");
+    }
+
+    #[test]
+    fn stretch_assign_in_loop_errors() {
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            delay[g] q;
+            for int i in [0:1] {
+                stretch d2 = g;
+            }
+        "#;
+        let mut p = compile(src);
+        let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
+        assert!(msg.contains("more than once"), "{msg}");
     }
 
     #[test]

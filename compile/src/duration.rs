@@ -480,13 +480,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             // decl-with-measure-init lowers to `Measure { target: Some(..) }`).
             StmtKind::Measure(m) => self.process_measure(&m.measure, tracker, frame),
             StmtKind::Reset(operand) => {
-                let qr = resolve_qubit_operand(operand, self.symbols, frame, span)?;
-                let args = ResetArgs { qubits: qr.clone() };
-                let dur = self
-                    .timings
-                    .reset(&args)
-                    .map_err(|e| at_span(e, span))?
-                    .resolve(&self.options.dt);
+                let (qr, dur) = self.resolve_reset_duration(operand, frame, span)?;
                 tracker.advance(&qr, dur);
                 Ok(())
             }
@@ -571,6 +565,24 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         frame: &Frame,
         span: Span,
     ) -> Result<()> {
+        let (qubit_refs, dur) =
+            self.resolve_gate_call_duration(gate, modifiers, args, qubits, frame, span)?;
+        tracker.advance(&qubit_refs, dur);
+        Ok(())
+    }
+
+    /// A gate call's operand wires and resolved duration, without touching
+    /// any clock.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_gate_call_duration(
+        &self,
+        gate: SymbolId,
+        modifiers: &[GateModifier<Expr>],
+        args: &[Expr],
+        qubits: &[QubitOperand<Expr>],
+        frame: &Frame,
+        span: Span,
+    ) -> Result<(Vec<QubitRef>, Duration)> {
         // `gphase` arrives as an ordinary seeded symbol named "gphase".
         let name = self.symbols.get(gate).name.clone();
         let qubit_refs = resolve_qubit_operands(qubits, self.symbols, frame, span)?;
@@ -594,12 +606,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             .gate_call(&call_args)
             .map_err(|e| at_span(e, span))?
         {
-            GateCallTiming::Duration(d) => {
-                if !qubit_refs.is_empty() {
-                    tracker.advance(&qubit_refs, d.resolve(&self.options.dt));
-                }
-                Ok(())
-            }
+            GateCallTiming::Duration(d) => Ok((qubit_refs, d.resolve(&self.options.dt))),
             GateCallTiming::Enter => {
                 // Built-ins (`U`, `gphase`) have no GateDecl and fail the
                 // lookup, producing the not-found error below.
@@ -648,10 +655,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                 let (inner_qubits, inner_dur) =
                     self.compute_scope_duration_with(&decl.body.body, &inner_frame, span)?;
                 let _ = inner_qubits;
-                if !qubit_refs.is_empty() {
-                    tracker.advance(&qubit_refs, inner_dur);
-                }
-                Ok(())
+                Ok((qubit_refs, inner_dur))
             }
         }
     }
@@ -662,6 +666,18 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         tracker: &mut Tracker,
         frame: &Frame,
     ) -> Result<()> {
+        let (qr, dur) = self.resolve_measure_duration(measure, frame)?;
+        tracker.advance(&qr, dur);
+        Ok(())
+    }
+
+    /// A measure expression's operand wires and resolved duration, without
+    /// touching any clock.
+    fn resolve_measure_duration(
+        &self,
+        measure: &MeasureExpr<Expr>,
+        frame: &Frame,
+    ) -> Result<(Vec<QubitRef>, Duration)> {
         match &measure.kind {
             MeasureExprKind::Measure { operand } => {
                 let qr = resolve_qubit_operand(operand, self.symbols, frame, measure.span)?;
@@ -671,8 +687,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                     .measurement(&args)
                     .map_err(|e| at_span(e, measure.span))?
                     .resolve(&self.options.dt);
-                tracker.advance(&qr, dur);
-                Ok(())
+                Ok((qr, dur))
             }
             MeasureExprKind::QuantumCall {
                 callee,
@@ -681,9 +696,27 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             } => {
                 // A quantum call used as a measure expression — treat as a
                 // gate call, but the Timings callback decides the semantics.
-                self.process_gate_call(*callee, &[], args, qubits, tracker, frame, measure.span)
+                self.resolve_gate_call_duration(*callee, &[], args, qubits, frame, measure.span)
             }
         }
+    }
+
+    /// A reset's operand wires and resolved duration, without touching any
+    /// clock.
+    fn resolve_reset_duration(
+        &self,
+        operand: &QubitOperand<Expr>,
+        frame: &Frame,
+        span: Span,
+    ) -> Result<(Vec<QubitRef>, Duration)> {
+        let qr = resolve_qubit_operand(operand, self.symbols, frame, span)?;
+        let args = ResetArgs { qubits: qr.clone() };
+        let dur = self
+            .timings
+            .reset(&args)
+            .map_err(|e| at_span(e, span))?
+            .resolve(&self.options.dt);
+        Ok((qr, dur))
     }
 
     fn resolve_modifier(

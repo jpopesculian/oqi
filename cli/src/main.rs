@@ -71,15 +71,48 @@ struct TimingArgs {
     /// bodies (and any --timing entries; --timing implies this)
     #[arg(long)]
     resolve_durations: bool,
+
+    /// Load a device timing profile: a flat JSON object mapping names to
+    /// duration literals ("50ns", "4dt"), with reserved keys `measure`,
+    /// `reset`, and `dt`. Repeatable --timing flags override file entries;
+    /// --dt overrides the file's "dt". Presence enables compile-time
+    /// resolution
+    #[arg(long = "timings", value_name = "FILE")]
+    timings_file: Option<PathBuf>,
 }
 
 impl TimingArgs {
-    /// Compile options honoring `--dt`, or a rendered failure.
+    /// The parsed device-profile file (empty when none was given).
+    fn file_entries(&self) -> Result<std::collections::BTreeMap<String, String>, ExitCode> {
+        let Some(file) = &self.timings_file else {
+            return Ok(Default::default());
+        };
+        let text = fs::read_to_string(file).map_err(|e| {
+            eprintln!("--timings {}: {e}", file.display());
+            ExitCode::FAILURE
+        })?;
+        serde_json::from_str(&text).map_err(|e| {
+            eprintln!(
+                "--timings {}: expected a flat JSON object of name → duration literal: {e}",
+                file.display()
+            );
+            ExitCode::FAILURE
+        })
+    }
+
+    /// Compile options honoring the profile's "dt" and `--dt`, or a
+    /// rendered failure.
     fn options(&self, path: &Path) -> Result<CompileOptions, ExitCode> {
         let mut options = CompileOptions {
             source_name: Some(path.to_path_buf()),
             ..Default::default()
         };
+        if let Some(spec) = self.file_entries()?.get("dt") {
+            options.dt = parse_dt(spec).map_err(|e| {
+                eprintln!("--timings dt: {e}");
+                ExitCode::FAILURE
+            })?;
+        }
         if let Some(spec) = &self.dt {
             options.dt = parse_dt(spec).map_err(|e| {
                 eprintln!("--dt: {e}");
@@ -98,10 +131,16 @@ impl TimingArgs {
         path: &Path,
         source: &str,
     ) -> Result<(), ExitCode> {
-        if !(self.resolve_durations || !self.timing.is_empty()) {
+        if !(self.resolve_durations || !self.timing.is_empty() || self.timings_file.is_some()) {
             return Ok(());
         }
-        let mut entries = Vec::new();
+        // File entries first; --timing flags later so they override.
+        let file = self.file_entries()?;
+        let mut entries: Vec<(&str, &str)> = file
+            .iter()
+            .filter(|(name, _)| name.as_str() != "dt")
+            .map(|(name, dur)| (name.as_str(), dur.as_str()))
+            .collect();
         for spec in &self.timing {
             let Some((name, dur)) = spec.split_once('=') else {
                 eprintln!("invalid --timing `{spec}` (expected NAME=DURATION)");

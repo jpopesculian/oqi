@@ -37,6 +37,8 @@ use crate::sir::{
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::{CompileOptions, Type};
 
+mod stretch;
+
 // ── Public types ────────────────────────────────────────────────────────
 
 /// A duration that may use the backend-dependent `dt` unit.
@@ -212,6 +214,16 @@ pub fn resolve_durationof<T: Timings>(
         })();
         program.subroutines[i].body = body;
         result?;
+    }
+
+    // Pass 4: stretch constraint resolution (only when stretch symbols
+    // exist; a stretch-free program is untouched).
+    if program
+        .symbols
+        .iter()
+        .any(|s| matches!(s.ty, Type::Stretch))
+    {
+        stretch::resolve_stretch(program, timings, options)?;
     }
 
     Ok(())

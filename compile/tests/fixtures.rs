@@ -110,6 +110,49 @@ fn alignment() {
     compile_fixture("alignment.qasm").expect("should compile");
 }
 
+/// The alignment fixture's stretchy delays resolve at compile time given a
+/// timing table: `3g + dur(U) == dur(cx)` between the barriers, so with
+/// cx = 300ns and U = 60ns the two delays become 80ns and 2·80ns.
+#[test]
+fn alignment_resolves_with_timings() {
+    use oqi_compile::classical::{Duration, DurationUnit, Primitive};
+    use oqi_compile::duration::{TableTimings, resolve_durationof};
+    use oqi_compile::sir::{ExprKind, StmtKind};
+    use oqi_compile::types::CompileOptions;
+
+    let mut p = compile_fixture("alignment.qasm").expect("should compile");
+    let options = CompileOptions::default();
+    let table = TableTimings::from_str_entries([("cx", "300ns"), ("U", "60ns")], &options.dt)
+        .expect("timing table");
+    resolve_durationof(&mut p, &table, &options).expect("stretch resolution");
+
+    let delays: Vec<&oqi_compile::sir::Expr> = p
+        .body
+        .iter()
+        .filter_map(|s| match &s.kind {
+            StmtKind::Delay(d) => Some(&d.duration),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(delays.len(), 2);
+    let lit_ns = |e: &oqi_compile::sir::Expr| match &e.kind {
+        ExprKind::Literal(Primitive::Duration(d)) => d.to_unit(DurationUnit::Ns).value,
+        other => panic!(
+            "expected duration literal, got {:?}",
+            std::mem::discriminant(other)
+        ),
+    };
+    assert!((lit_ns(delays[0]) - 80.0).abs() < 1e-6);
+    // The second delay is `2 * g`; its stretch operand is now a literal.
+    let ExprKind::Binary(b) = &delays[1].kind else {
+        panic!("expected 2 * g to remain a product");
+    };
+    assert!((lit_ns(&b.right) - 80.0).abs() < 1e-6);
+
+    // The rewritten program still lowers through the rest of the pipeline.
+    oqi_compile::cfg::build_program(&p).expect("cfg after stretch resolution");
+}
+
 #[test]
 fn ipe() {
     compile_fixture("ipe.qasm").expect("should compile");

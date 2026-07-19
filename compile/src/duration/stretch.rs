@@ -433,6 +433,23 @@ impl<T: Timings> StretchResolver<'_, T> {
                 span,
             ));
         }
+        // A retained stretchy durationof is a single SIR node; unrolled
+        // iterations could give it different values, which the rewrite
+        // cannot represent.
+        let symbols = self.ctx.symbols;
+        if any_expr_in_stmts(&f.body, &mut |e| {
+            matches!(&e.kind, ExprKind::DurationOf(stmts)
+                if stmts_have_stretch_var(stmts, symbols))
+        }) {
+            return Err(err(
+                ErrorKind::InvalidContext(
+                    "`durationof` over a stretchy scope is not supported inside an \
+                     unrolled loop"
+                        .into(),
+                ),
+                span,
+            ));
+        }
         let crate::sir::ForIterable::Range { start, step, end } = &f.iterable else {
             // The CFG lowering has the same restriction.
             return Err(err(
@@ -503,6 +520,203 @@ impl<T: Timings> StretchResolver<'_, T> {
             i += step;
         }
         Ok(())
+    }
+
+    /// The affine duration of a `durationof` scope retained by Pass 1.
+    ///
+    /// MIRROR INVARIANT: this walker's accept set and timings must match
+    /// `ResolveCtx::process_stmt` exactly — the same scope is re-resolved
+    /// by that machinery in Pass 5 (and by the VM at runtime), so any
+    /// divergence here silently mistimes. It is also purely referential:
+    /// the solver is never constrained from inside a measured scope (the
+    /// scope does not execute), and clocks with unresolved stretch cannot
+    /// be compared across wires.
+    fn measure_scope(&mut self, stmts: &[Stmt], frame: &Frame, span: Span) -> Result<AffineDur> {
+        let mut clocks = AffineClocks::default();
+        for stmt in stmts {
+            self.measure_stmt(stmt, &mut clocks, frame, span)?;
+        }
+        self.measured_total(&mut clocks, span)
+    }
+
+    /// Final scope span: sync every wire referentially and read the result.
+    fn measured_total(&mut self, clocks: &mut AffineClocks, span: Span) -> Result<AffineDur> {
+        let wires: Vec<QubitRef> = clocks.times.iter().map(|(q, _)| q.clone()).collect();
+        self.measured_sync(clocks, &wires, span)?;
+        Ok(clocks
+            .times
+            .first()
+            .map(|(_, c)| c.clone())
+            .unwrap_or_else(|| AffineDur::concrete(zero())))
+    }
+
+    fn measure_stmt(
+        &mut self,
+        stmt: &Stmt,
+        clocks: &mut AffineClocks,
+        frame: &Frame,
+        outer_span: Span,
+    ) -> Result<()> {
+        let span = stmt.span;
+        match &stmt.kind {
+            StmtKind::GateCall(gc) => {
+                if let Some(d) = &gc.duration {
+                    let dur = self.eval_affine_expr(d, frame)?;
+                    self.delay_checks.push((dur.clone(), d.span));
+                    let wires = resolve_qubit_operands(&gc.qubits, self.ctx.symbols, frame, span)?;
+                    return self.measured_advance(clocks, &wires, &dur, span);
+                }
+                let (wires, dur) = self.ctx.resolve_gate_call_duration(
+                    gc.gate,
+                    &gc.modifiers,
+                    &gc.args,
+                    &gc.qubits,
+                    None,
+                    frame,
+                    span,
+                )?;
+                self.measured_advance(clocks, &wires, &AffineDur::concrete(dur), span)
+            }
+            StmtKind::Measure(m) => {
+                let (wires, dur) = self.ctx.resolve_measure_duration(&m.measure, frame)?;
+                self.measured_advance(clocks, &wires, &AffineDur::concrete(dur), span)
+            }
+            StmtKind::Reset(operand) => {
+                let (wires, dur) = self.ctx.resolve_reset_duration(operand, frame, span)?;
+                self.measured_advance(clocks, &wires, &AffineDur::concrete(dur), span)
+            }
+            StmtKind::Delay(d) => {
+                let dur = self.eval_affine_expr(&d.duration, frame)?;
+                self.delay_checks.push((dur.clone(), d.duration.span));
+                let wires = resolve_qubit_operands(&d.operands, self.ctx.symbols, frame, span)?;
+                if wires.is_empty() {
+                    return Err(err(
+                        ErrorKind::InvalidContext(
+                            "delay requires at least one qubit operand".into(),
+                        ),
+                        span,
+                    ));
+                }
+                self.measured_advance(clocks, &wires, &dur, span)
+            }
+            StmtKind::Barrier(ops) | StmtKind::Nop(ops) => {
+                let wires = resolve_qubit_operands(ops, self.ctx.symbols, frame, span)?;
+                if !wires.is_empty() {
+                    self.measured_sync(clocks, &wires, span)?;
+                }
+                Ok(())
+            }
+            StmtKind::Box(b) => {
+                let mut inner_clocks = AffineClocks::default();
+                for s in &b.body {
+                    self.measure_stmt(s, &mut inner_clocks, frame, span)?;
+                }
+                let wires: Vec<QubitRef> =
+                    inner_clocks.times.iter().map(|(q, _)| q.clone()).collect();
+                let inner = self.measured_total(&mut inner_clocks, span)?;
+                let dur = match &b.duration {
+                    Some(e) => {
+                        let d = self.eval_affine_expr(e, frame)?;
+                        let sub = d.substituted(&self.solver.solved);
+                        if !sub.terms.is_empty() {
+                            return Err(err(
+                                ErrorKind::InvalidContext(
+                                    "a box duration inside `durationof` must be resolved \
+                                     before the scope is measured"
+                                        .into(),
+                                ),
+                                span,
+                            ));
+                        }
+                        sub
+                    }
+                    None => inner,
+                };
+                if !wires.is_empty() {
+                    self.measured_advance(clocks, &wires, &dur, span)?;
+                }
+                Ok(())
+            }
+            _ => Err(err(
+                ErrorKind::InvalidContext(
+                    "statement not supported inside `durationof` when compile-time timings \
+                     are supplied (control flow and classical statements cannot be timed \
+                     statically)"
+                        .into(),
+                ),
+                if span == Span::default() {
+                    outer_span
+                } else {
+                    span
+                },
+            )),
+        }
+    }
+
+    /// Advance in a measured scope: like [`Self::advance`], but syncs use
+    /// the measured (referential) rule.
+    fn measured_advance(
+        &mut self,
+        clocks: &mut AffineClocks,
+        wires: &[QubitRef],
+        dur: &AffineDur,
+        span: Span,
+    ) -> Result<()> {
+        if wires.is_empty() {
+            return Ok(());
+        }
+        let idxs: Vec<usize> = wires.iter().map(|w| clocks.idx(w)).collect();
+        let all_equal = idxs
+            .iter()
+            .all(|&i| clocks.times[i].1 == clocks.times[idxs[0]].1);
+        if !all_equal {
+            self.measured_sync(clocks, wires, span)?;
+        }
+        for &i in &idxs {
+            clocks.times[i].1 = clocks.times[i].1.add(dur);
+        }
+        Ok(())
+    }
+
+    /// Referential synchronization: solved values may substitute, but no
+    /// constraint is ever emitted. All-equal clocks are a no-op; all
+    /// concrete clocks take the Tracker max; anything else cannot be
+    /// compared statically.
+    fn measured_sync(
+        &mut self,
+        clocks: &mut AffineClocks,
+        wires: &[QubitRef],
+        span: Span,
+    ) -> Result<()> {
+        if wires.is_empty() {
+            return Ok(());
+        }
+        let idxs: Vec<usize> = wires.iter().map(|w| clocks.idx(w)).collect();
+        let subs: Vec<AffineDur> = idxs
+            .iter()
+            .map(|&i| clocks.times[i].1.substituted(&self.solver.solved))
+            .collect();
+        if subs.iter().all(|s| *s == subs[0]) {
+            return Ok(());
+        }
+        if subs.iter().all(|s| s.terms.is_empty()) {
+            let mut max = zero();
+            for s in &subs {
+                if s.fixed > max {
+                    max = s.fixed;
+                }
+            }
+            for &i in &idxs {
+                clocks.times[i].1 = AffineDur::concrete(max);
+            }
+            return Ok(());
+        }
+        Err(err(
+            ErrorKind::InvalidContext(
+                "cannot statically compare stretchy parallel timelines inside `durationof`".into(),
+            ),
+            span,
+        ))
     }
 
     /// A constant signed integer bound.
@@ -664,7 +878,7 @@ impl<T: Timings> StretchResolver<'_, T> {
 
     // ── Affine expression evaluation ────────────────────────────────────
 
-    fn eval_affine_expr(&self, expr: &Expr, frame: &Frame) -> Result<AffineDur> {
+    fn eval_affine_expr(&mut self, expr: &Expr, frame: &Frame) -> Result<AffineDur> {
         // Concrete fast path: consts, intrinsics, folded arithmetic, and
         // dt-resolved literals all behave exactly as in the main pass.
         if let Ok(v) = self.ctx.eval_const_expr(expr, frame) {
@@ -673,6 +887,8 @@ impl<T: Timings> StretchResolver<'_, T> {
             )?));
         }
         match &expr.kind {
+            // A durationof scope retained by Pass 1 (it references stretch).
+            ExprKind::DurationOf(stmts) => self.measure_scope(stmts, frame, expr.span),
             ExprKind::Var(sid) => {
                 if let Some(v) = self.env.get(sid) {
                     return Ok(v.clone());
@@ -887,7 +1103,7 @@ fn stmts_have_break_or_continue(stmts: &[Stmt]) -> bool {
     })
 }
 
-fn stmts_have_stretch_var(stmts: &[Stmt], symbols: &SymbolTable) -> bool {
+pub(super) fn stmts_have_stretch_var(stmts: &[Stmt], symbols: &SymbolTable) -> bool {
     any_expr_in_stmts(
         stmts,
         &mut |e| matches!(&e.kind, ExprKind::Var(sid) if matches!(symbols.get(*sid).ty, Type::Stretch)),
@@ -1179,10 +1395,10 @@ fn rewrite_expr(expr: &mut Expr, values: &HashMap<SymbolId, Duration>) {
                 rewrite_expr(e, values);
             }
         }
-        ExprKind::DurationOf(_)
-        | ExprKind::Literal(_)
-        | ExprKind::Var(_)
-        | ExprKind::HardwareQubit(_) => {}
+        // Scopes retained by Pass 1 (stretchy durationof): their stretch
+        // references become literals so Pass 5 can fold the scope.
+        ExprKind::DurationOf(stmts) => rewrite_stretch_vars(stmts, values),
+        ExprKind::Literal(_) | ExprKind::Var(_) | ExprKind::HardwareQubit(_) => {}
     }
 }
 
@@ -1568,6 +1784,158 @@ mod tests {
         let mut p = compile(src);
         let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
         assert!(msg.contains("negative"), "{msg}");
+    }
+
+    // ── durationof over stretchy scopes ─────────────────────────────────
+
+    fn no_durationof(stmts: &[Stmt]) -> bool {
+        !any_expr_in_stmts(stmts, &mut |e| matches!(&e.kind, ExprKind::DurationOf(_)))
+    }
+
+    #[test]
+    fn durationof_stretchy_scope() {
+        // env d = g + 20; box: g + 20 == 100 → g = 80, d = 100. The scope's
+        // delay rewrites to 80ns and Pass 5 folds the scope to 100ns.
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            duration d = durationof({ delay[g] q; x q; });
+            box[100ns] { delay[d] q; }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        assert_ns(assignment_rhs_ns(&p, "d"), 100.0);
+        let d = delays(&p.body);
+        // The retained scope's delay is folded away with the scope itself;
+        // remaining delays: the box's delay[d] (kept as Var(d) is fine —
+        // d is a duration variable, not a stretch).
+        assert!(no_durationof(&p.body));
+        let _ = d;
+    }
+
+    #[test]
+    fn durationof_is_referential() {
+        // The measured barrier must NOT pin g; only the later box does.
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            duration d = durationof({ delay[g] q; barrier q; });
+            x q;
+            box[50ns] { delay[g] q; }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        assert_ns(assignment_rhs_ns(&p, "d"), 50.0);
+        assert!(no_durationof(&p.body));
+    }
+
+    #[test]
+    fn durationof_parallel_stretchy_errors() {
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit[2] q;
+            duration d = durationof({ delay[g] q[0]; x q[1]; });
+            delay[d] q[0];
+        "#;
+        let mut p = compile(src);
+        let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
+        assert!(msg.contains("parallel timelines"), "{msg}");
+    }
+
+    #[test]
+    fn durationof_all_equal_multiwire() {
+        // cx syncs both wires; the two-wire stretchy delay keeps them
+        // equal, so the scope measures cleanly: 300 + g.
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit[3] q;
+            duration d = durationof({ cx q[0], q[1]; delay[g] q[0], q[1]; });
+            box[400ns] { delay[d] q[2]; }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        // 300 + g == 400 → g = 100, d = 400.
+        assert_ns(assignment_rhs_ns(&p, "d"), 400.0);
+    }
+
+    #[test]
+    fn durationof_solved_stretch() {
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit[2] q;
+            box[100ns] { delay[g] q[0]; }
+            duration d = durationof({ delay[g] q[1]; });
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        assert_ns(assignment_rhs_ns(&p, "d"), 100.0);
+    }
+
+    #[test]
+    fn durationof_scope_assignment_errors() {
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            duration d = durationof({ duration t = 5ns; delay[g] q; });
+        "#;
+        let mut p = compile(src);
+        let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
+        assert!(msg.contains("not supported inside `durationof`"), "{msg}");
+    }
+
+    #[test]
+    fn durationof_nested_concrete_inner() {
+        // The inner concrete durationof folds in Pass 1 (20ns); the outer
+        // stretchy scope then measures 20 + g; box: g = 80.
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit[2] q;
+            duration d = durationof({ delay[durationof({x $0;})] q[1]; delay[g] q[1]; });
+            box[100ns] { delay[d] q[1]; }
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        assert_ns(assignment_rhs_ns(&p, "d"), 100.0);
+        assert!(no_durationof(&p.body));
+    }
+
+    #[test]
+    fn durationof_direct_in_delay() {
+        // A stretchy durationof directly in a delay designator (no
+        // intermediate variable).
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit[2] q;
+            box[100ns] { delay[g] q[0]; }
+            delay[durationof({ delay[g] $0; })] q[1];
+        "#;
+        let mut p = compile(src);
+        resolve(&mut p, &table()).unwrap();
+        assert!(no_durationof(&p.body));
+    }
+
+    #[test]
+    fn retained_durationof_in_loop_errors() {
+        let src = r#"
+            include "stdgates.inc";
+            stretch g;
+            qubit q;
+            delay[g] q;
+            for int i in [0:1] {
+                duration d = durationof({ delay[g] q; });
+            }
+        "#;
+        let mut p = compile(src);
+        let msg = error_msg(resolve(&mut p, &table()).unwrap_err());
+        assert!(msg.contains("unrolled loop"), "{msg}");
     }
 
     // ── Const-bound loop unrolling ──────────────────────────────────────

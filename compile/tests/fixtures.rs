@@ -115,7 +115,7 @@ fn alignment() {
 /// cx = 300ns and U = 60ns the two delays become 80ns and 2·80ns.
 #[test]
 fn alignment_resolves_with_timings() {
-    use oqi_compile::classical::{Duration, DurationUnit, Primitive};
+    use oqi_compile::classical::{DurationUnit, Primitive};
     use oqi_compile::duration::{TableTimings, resolve_durationof};
     use oqi_compile::sir::{ExprKind, StmtKind};
     use oqi_compile::types::CompileOptions;

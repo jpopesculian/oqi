@@ -224,6 +224,19 @@ pub fn resolve_durationof<T: Timings>(
         .any(|s| matches!(s.ty, Type::Stretch))
     {
         stretch::resolve_stretch(program, timings, options)?;
+
+        // Pass 5: durationof scopes retained for stretch resolution are
+        // now concrete; fold them with the Pass-1 machinery (idempotent
+        // for everything already rewritten).
+        let mut ctx = ResolveCtx {
+            timings,
+            symbols: &program.symbols,
+            gates: &program.gates,
+            options,
+        };
+        for stmt in &mut program.body {
+            ctx.visit_stmt(stmt)?;
+        }
     }
 
     Ok(())
@@ -417,6 +430,12 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
     fn visit_expr(&mut self, expr: &mut Expr) -> Result<()> {
         // Rewrite durationof in place, then recurse into children.
         if let ExprKind::DurationOf(stmts) = &expr.kind {
+            // A scope referencing stretch is retained: Pass 4 measures it
+            // affinely and rewrites its stretch variables, then Pass 5
+            // re-runs this rewrite on the by-then concrete scope.
+            if stretch::stmts_have_stretch_var(stmts, self.symbols) {
+                return Ok(());
+            }
             let duration = self.compute_scope_duration(stmts, expr.span)?;
             expr.kind = ExprKind::Literal(Primitive::from(duration));
             expr.ty = Type::Classical(ValueTy::duration());
@@ -2446,10 +2465,13 @@ mod tests {
 
     #[test]
     fn stretch_in_timed_scope_names_stretch() {
+        // Stretchy delays inside `durationof` are resolved these days;
+        // positions with no stretch semantics (a gate *argument*) still get
+        // the honest named error.
         let src = r#"
             include "stdgates.inc";
             stretch sd;
-            duration d = durationof({ delay[sd] $0; });
+            duration d = durationof({ rx(sd) $0; });
         "#;
         let mut p = compile(src);
         let e = resolve_durationof(&mut p, &TableTimings::new(), &CompileOptions::default())

@@ -299,6 +299,75 @@ fn msd() {
 // ── Focused regression tests ─────────────────────────────────────────
 
 #[test]
+fn special_standard_assignment_requires_explicit_cast() {
+    // bit[8] → uint[8] is castable but not implicitly promotable
+    // (docs/types.rst implicit-promotion-rules): demand an explicit cast.
+    let err = match compile_inline(
+        r#"
+            qubit q;
+            bit[8] b;
+            uint[8] u = b;
+        "#,
+    ) {
+        Err(e) => e,
+        Ok(_) => panic!("expected type mismatch"),
+    };
+    assert!(matches!(
+        err.kind,
+        oqi_compile::error::ErrorKind::TypeMismatch { .. }
+    ));
+
+    // The explicit-cast form stays valid.
+    compile_inline(
+        r#"
+            qubit q;
+            bit[8] b;
+            uint[8] u = uint[8](b);
+        "#,
+    )
+    .expect("explicit cast should compile");
+}
+
+#[test]
+fn standard_assignment_promotes_implicitly() {
+    use oqi_compile::sir::{ExprKind, RValue, StmtKind};
+
+    // int → float is a standard-type conversion: an implicit cast is
+    // inserted so the stored value is correct at runtime.
+    let p = compile_inline(
+        r#"
+            int[32] i = 5;
+            float[64] f = i;
+        "#,
+    )
+    .expect("should compile");
+    let cast_count = p
+        .body
+        .iter()
+        .filter(|s| {
+            matches!(&s.kind, StmtKind::Assignment(a)
+                if matches!(&a.value, RValue::Expr(e) if matches!(&e.kind, ExprKind::Cast(_))))
+        })
+        .count();
+    assert_eq!(cast_count, 1, "float decl-init should carry a cast");
+}
+
+#[test]
+fn bit_bool_assignments_are_implicit() {
+    // bit and bool are interchangeable (docs/types.rst).
+    compile_inline(
+        r#"
+            include "stdgates.inc";
+            qubit q;
+            bit c = measure q;
+            bool ok = c;
+            bit c2 = ok;
+        "#,
+    )
+    .expect("bit/bool interchange should compile");
+}
+
+#[test]
 fn compound_assign_with_measure_desugars() {
     use oqi_compile::sir::{
         Assignment, BinOp, Binary, ExprKind, LValue, Measure, MeasureExprKind, RValue, StmtKind,

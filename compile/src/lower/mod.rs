@@ -670,7 +670,7 @@ impl Lowerer {
                     ast::ExprOrMeasure::Measure(_) => unreachable!(),
                 };
                 let sir_value = match compound_to_bin_op(op) {
-                    None => Box::new(collapse_to(rhs_expr, &self.lvalue_type(&lv))),
+                    None => Box::new(coerce_assign(rhs_expr, &self.lvalue_type(&lv), span)?),
                     Some(bin_op) => {
                         let left = self.lower_indexed_ident_to_expr(target)?;
                         let ty = left.ty.clone();
@@ -1436,7 +1436,7 @@ impl Lowerer {
             Some(ast::ExprOrMeasure::Expr(e)) => {
                 let e = self.lower_expr(e)?;
                 let target_ty = self.resolver.symbols().get(symbol).ty.clone();
-                let e = collapse_to(e, &target_ty);
+                let e = coerce_assign(e, &target_ty, span)?;
                 Ok(vec![sir::Stmt {
                     kind: sir::StmtKind::Assignment(sir::Assignment {
                         target: sir::LValue::Var(symbol),
@@ -1988,6 +1988,63 @@ fn collapse_to(expr: sir::Expr, target: &Type) -> sir::Expr {
     match Scalar::new(prim.clone(), from).and_then(|s| s.cast(to)) {
         Ok(casted) => rebuild(casted.into_value(), Type::from(to)),
         Err(_) => rebuild(prim, ty),
+    }
+}
+
+/// Coerce an assignment/decl-init RHS to the target type, per the spec's
+/// assignment rules (docs/types.rst, implicit-promotion-rules): standard
+/// classical types convert implicitly (C99-style), as do the noted
+/// special-type exceptions (float → angle, angle width changes, bit ↔ bool);
+/// any other mismatch demands an explicit cast.
+fn coerce_assign(expr: sir::Expr, target: &Type, span: oqi_lex::Span) -> Result<sir::Expr> {
+    let expr = collapse_to(expr, target);
+    if expr.ty == *target {
+        return Ok(expr);
+    }
+    let mismatch = |got: &Type| {
+        CompileError::new(ErrorKind::TypeMismatch {
+            expected: Box::new(target.clone()),
+            got: Box::new(got.clone()),
+        })
+        .with_span(span)
+    };
+    let (Some(from), Some(to)) = (expr.ty.scalar_ty(), target.scalar_ty()) else {
+        // Non-scalar assignment (arrays/refs): aliasing and reference
+        // conversion are handled downstream; leave untouched.
+        return Ok(expr);
+    };
+    if from == to {
+        // Same runtime representation (e.g. `stretch` into `duration`).
+        return Ok(expr);
+    }
+    if !(expr.ty.unsized_ty().is_some() || is_implicit_assign(&from, &to)) {
+        return Err(mismatch(&expr.ty));
+    }
+    validate_cast(&expr.ty, target, span)?;
+    Ok(sir::Expr {
+        ty: target.clone(),
+        span: expr.span,
+        kind: sir::ExprKind::Cast(sir::Cast {
+            target_ty: target.clone(),
+            operand: Box::new(expr),
+        }),
+    })
+}
+
+fn is_implicit_assign(
+    from: &crate::classical::PrimitiveTy,
+    to: &crate::classical::PrimitiveTy,
+) -> bool {
+    use crate::classical::PrimitiveTy::{Angle, Bit, Bool, Complex, Float, Int, Uint};
+    let standard = |p: &crate::classical::PrimitiveTy| {
+        matches!(p, Bool | Int(_) | Uint(_) | Float(_) | Complex(_))
+    };
+    match (from, to) {
+        _ if standard(from) && standard(to) => true,
+        (Angle(_), Angle(_)) => true,
+        (Float(_), Angle(_)) => true,
+        (Bool, Bit) | (Bit, Bool) => true,
+        _ => false,
     }
 }
 

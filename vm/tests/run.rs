@@ -312,6 +312,28 @@ fn intrinsic_call_is_evaluated() {
     assert_eq!(m, vec![(0, true)]);
 }
 
+/// Bit-string literals are MSB-first: the spec's `"00001111"` example has
+/// decimal value 15 (docs/types.rst), and the literal round-trips through
+/// the display form.
+#[test]
+fn bitstring_literal_is_msb_first() {
+    let outs = run_outputs(
+        r#"
+            qubit q;
+            bit[8] b = "00001111";
+            uint[8] u = uint[8](b);
+        "#,
+    );
+    assert!(
+        outs.contains(&("u".to_string(), "15".to_string())),
+        "{outs:?}"
+    );
+    assert!(
+        outs.contains(&("b".to_string(), "\"00001111\"".to_string())),
+        "{outs:?}"
+    );
+}
+
 #[test]
 fn sizeof_on_unspecified_length_array_ref_is_runtime() {
     // `sizeof(a, dim)` on a `#dim` (unspecified-length) array reference is not

@@ -463,9 +463,9 @@ pub fn parse_bitstring_literal(s: &str) -> Result<(u128, usize)> {
                     )
                     .into());
                 }
-                if ch == '1' {
-                    value |= 1u128 << width;
-                }
+                // MSB first: the leftmost character is the most significant
+                // bit (docs/types.rst: `"00001111"` has decimal value 15).
+                value = (value << 1) | u128::from(ch == '1');
                 width += 1;
             }
             '_' => {}
@@ -1019,6 +1019,15 @@ mod tests {
             }
             other => panic!("expected bitstring literal, got {other:?}"),
         }
+    }
+
+    /// The leftmost character is the most significant bit: the spec's
+    /// `"00001111"` example has decimal value 15 (docs/types.rst).
+    #[test]
+    fn test_bitstring_literal_is_msb_first() {
+        assert_eq!(parse_bitstring_literal(r#""00001111""#).unwrap(), (15, 8));
+        assert_eq!(parse_bitstring_literal(r#""1000""#).unwrap(), (8, 4));
+        assert_eq!(parse_bitstring_literal(r#""0001_0001""#).unwrap(), (17, 8));
     }
 
     #[test]

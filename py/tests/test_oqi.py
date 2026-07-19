@@ -116,9 +116,7 @@ def test_extern_bitreg_round_trip():
         "OPENQASM 3.0;\n"
         "qubit q;\n"
         "extern flip(bit[4]) -> bit[4];\n"
-        # bit[4](3) == "0011"; a "0011" literal currently lowers with its
-        # bit order reversed (pre-existing compiler bug), so cast instead.
-        "bit[4] r = bit[4](3);\n"
+        'bit[4] r = "0011";\n'
         "bit[4] s = flip(r);\n"
     )
     seen = []

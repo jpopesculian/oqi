@@ -51,6 +51,74 @@ struct Cli {
     command: Command,
 }
 
+/// Compile-time timing options shared by `compile` and `run`.
+#[derive(clap::Args)]
+struct TimingArgs {
+    /// Supply a fixed duration for a named operation and resolve
+    /// `durationof` at compile time (repeatable). Names are gate names;
+    /// `measure` and `reset` are reserved. Durations use timing-literal
+    /// syntax ("50ns", "4dt"). Unknown names are permitted (a timing
+    /// table is a device property, not program-specific)
+    #[arg(long = "timing", value_name = "NAME=DURATION")]
+    timing: Vec<String>,
+
+    /// Duration of one `dt` unit (e.g. "0.5ns"); affects `dt` literals
+    /// and dt-valued timings
+    #[arg(long, value_name = "DURATION")]
+    dt: Option<String>,
+
+    /// Resolve `durationof` at compile time using the program's defcal
+    /// bodies (and any --timing entries; --timing implies this)
+    #[arg(long)]
+    resolve_durations: bool,
+}
+
+impl TimingArgs {
+    /// Compile options honoring `--dt`, or a rendered failure.
+    fn options(&self, path: &Path) -> Result<CompileOptions, ExitCode> {
+        let mut options = CompileOptions {
+            source_name: Some(path.to_path_buf()),
+            ..Default::default()
+        };
+        if let Some(spec) = &self.dt {
+            options.dt = parse_dt(spec).map_err(|e| {
+                eprintln!("--dt: {e}");
+                ExitCode::FAILURE
+            })?;
+        }
+        Ok(options)
+    }
+
+    /// When requested, resolve `durationof`/stretch at compile time
+    /// (spec semantics); otherwise the VM's runtime pass handles them.
+    fn apply(
+        &self,
+        program: &mut oqi_compile::sir::Program,
+        options: &CompileOptions,
+        path: &Path,
+        source: &str,
+    ) -> Result<(), ExitCode> {
+        if !(self.resolve_durations || !self.timing.is_empty()) {
+            return Ok(());
+        }
+        let mut entries = Vec::new();
+        for spec in &self.timing {
+            let Some((name, dur)) = spec.split_once('=') else {
+                eprintln!("invalid --timing `{spec}` (expected NAME=DURATION)");
+                return Err(ExitCode::FAILURE);
+            };
+            entries.push((name, dur));
+        }
+        let table = TableTimings::from_str_entries(entries, &options.dt)
+            .map_err(|e| report_compile_error(path, source, e))?
+            .with_defcals(program, &options.dt)
+            .with_program_gates(program);
+        duration::resolve_durationof(program, &table, options)
+            .map_err(|e| report_compile_error(path, source, e))?;
+        Ok(())
+    }
+}
+
 #[derive(Subcommand)]
 enum Command {
     /// Compile an OpenQASM file
@@ -61,6 +129,9 @@ enum Command {
         /// Dump the IR to stdout
         #[arg(long)]
         dump: bool,
+
+        #[command(flatten)]
+        timing: TimingArgs,
     },
 
     /// Compile and run an OpenQASM file on the CPU simulator
@@ -84,23 +155,8 @@ enum Command {
         #[arg(long = "input", value_name = "NAME=VALUE")]
         input: Vec<String>,
 
-        /// Supply a fixed duration for a named operation and resolve
-        /// `durationof` at compile time (repeatable). Names are gate names;
-        /// `measure` and `reset` are reserved. Durations use timing-literal
-        /// syntax ("50ns", "4dt"). Unknown names are permitted (a timing
-        /// table is a device property, not program-specific)
-        #[arg(long = "timing", value_name = "NAME=DURATION")]
-        timing: Vec<String>,
-
-        /// Duration of one `dt` unit (e.g. "0.5ns"); affects `dt` literals
-        /// and dt-valued timings
-        #[arg(long, value_name = "DURATION")]
-        dt: Option<String>,
-
-        /// Resolve `durationof` at compile time using the program's defcal
-        /// bodies (and any --timing entries; --timing implies this)
-        #[arg(long)]
-        resolve_durations: bool,
+        #[command(flatten)]
+        timing: TimingArgs,
     },
 
     /// Format OpenQASM files
@@ -123,7 +179,7 @@ async fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Compile { path, dump } => compile(&path, dump),
+        Command::Compile { path, dump, timing } => compile(&path, dump, &timing),
         Command::Run {
             path,
             state,
@@ -131,21 +187,7 @@ async fn main() -> ExitCode {
             precision,
             input,
             timing,
-            dt,
-            resolve_durations,
-        } => {
-            run(
-                &path,
-                state,
-                backend,
-                precision,
-                &input,
-                &timing,
-                dt.as_deref(),
-                resolve_durations,
-            )
-            .await
-        }
+        } => run(&path, state, backend, precision, &input, &timing).await,
         Command::Fmt {
             compact,
             stdout,
@@ -154,7 +196,7 @@ async fn main() -> ExitCode {
     }
 }
 
-fn compile(path: &Path, dump: bool) -> ExitCode {
+fn compile(path: &Path, dump: bool, timing: &TimingArgs) -> ExitCode {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -163,14 +205,24 @@ fn compile(path: &Path, dump: bool) -> ExitCode {
         }
     };
 
-    let program =
-        match oqi_compile::lower::compile_source(&source, DefaultIncludeResolver, Some(path)) {
-            Ok(p) => p,
-            Err(e) => {
-                oqi_diagnostics::emit(&e, path, &source);
-                return ExitCode::FAILURE;
-            }
-        };
+    let options = match timing.options(path) {
+        Ok(o) => o,
+        Err(code) => return code,
+    };
+    let mut program = match oqi_compile::lower::compile_source_with_options(
+        &source,
+        DefaultIncludeResolver,
+        options.clone(),
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            oqi_diagnostics::emit(&e, path, &source);
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(code) = timing.apply(&mut program, &options, path, &source) {
+        return code;
+    }
 
     if dump {
         print!("{program}");
@@ -179,16 +231,13 @@ fn compile(path: &Path, dump: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run(
     path: &Path,
     show_state: bool,
     backend: BackendKind,
     precision: Precision,
     input_specs: &[String],
-    timing_specs: &[String],
-    dt_spec: Option<&str>,
-    resolve_durations: bool,
+    timing: &TimingArgs,
 ) -> ExitCode {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
@@ -199,19 +248,10 @@ async fn run(
     };
 
     // Full pipeline: source → SIR → CFG → SSA → bytecode.
-    let mut options = CompileOptions {
-        source_name: Some(path.to_path_buf()),
-        ..Default::default()
+    let options = match timing.options(path) {
+        Ok(o) => o,
+        Err(code) => return code,
     };
-    if let Some(spec) = dt_spec {
-        options.dt = match parse_dt(spec) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("--dt: {e}");
-                return ExitCode::FAILURE;
-            }
-        };
-    }
     let mut program = match oqi_compile::lower::compile_source_with_options(
         &source,
         DefaultIncludeResolver,
@@ -220,26 +260,8 @@ async fn run(
         Ok(p) => p,
         Err(e) => return report_compile_error(path, &source, e),
     };
-    // With timings supplied, `durationof` is resolved at compile time
-    // (spec semantics); otherwise it stays for the VM's runtime pass.
-    if resolve_durations || !timing_specs.is_empty() {
-        let mut entries = Vec::new();
-        for spec in timing_specs {
-            let Some((name, dur)) = spec.split_once('=') else {
-                eprintln!("invalid --timing `{spec}` (expected NAME=DURATION)");
-                return ExitCode::FAILURE;
-            };
-            entries.push((name, dur));
-        }
-        let table = match TableTimings::from_str_entries(entries, &options.dt) {
-            Ok(t) => t
-                .with_defcals(&program, &options.dt)
-                .with_program_gates(&program),
-            Err(e) => return report_compile_error(path, &source, e),
-        };
-        if let Err(e) = duration::resolve_durationof(&mut program, &table, &options) {
-            return report_compile_error(path, &source, e);
-        }
+    if let Err(code) = timing.apply(&mut program, &options, path, &source) {
+        return code;
     }
     let cfgs = match cfg::build_program(&program) {
         Ok(c) => c,

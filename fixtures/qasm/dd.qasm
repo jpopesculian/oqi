@@ -6,7 +6,7 @@ include "stdgates.inc";
 
 stretch a;
 duration start_stretch = -0.5 * durationof({x $0;}) + a;
-duration middle_stretch = -0.5 * durationof({x $0;}) - 5 * durationof({y $0;}) + a;
+duration middle_stretch = -0.5 * durationof({x $0;}) - 0.5 * durationof({y $0;}) + a;
 duration end_stretch = -0.5 * durationof({y $0;}) + a;
 
 box {

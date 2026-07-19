@@ -154,6 +154,72 @@ fn alignment_resolves_with_timings() {
 }
 
 #[test]
+fn dd() {
+    compile_fixture("dd.qasm").expect("should compile");
+}
+
+/// The DD fixture (spec delays.rst:247-266, boxed): the box span is set by
+/// the two sequential cx (600ns); wire $0 telescopes to exactly 5a, so
+/// a = 120ns and the derived delays resolve to 110/100/110.
+#[test]
+fn dd_resolves_with_timings() {
+    use oqi_compile::duration::{TableTimings, resolve_durationof};
+    use oqi_compile::sir::{ExprKind, LValue, RValue, StmtKind};
+    use oqi_compile::types::CompileOptions;
+
+    let mut p = compile_fixture("dd.qasm").expect("should compile");
+    let options = CompileOptions::default();
+    let table = TableTimings::from_str_entries(
+        [("x", "20ns"), ("y", "20ns"), ("cx", "300ns")],
+        &options.dt,
+    )
+    .expect("timing table");
+    resolve_durationof(&mut p, &table, &options).expect("stretch resolution");
+
+    // Each duration-variable assignment's RHS is now concrete arithmetic;
+    // fold it to ns.
+    fn eval_ns(e: &oqi_compile::sir::Expr) -> f64 {
+        use oqi_compile::classical::{DurationUnit, Primitive};
+        use oqi_compile::sir::{BinOp, UnOp};
+        match &e.kind {
+            ExprKind::Literal(Primitive::Duration(d)) => d.to_unit(DurationUnit::Ns).value,
+            ExprKind::Literal(Primitive::Int(i)) => *i as f64,
+            ExprKind::Literal(Primitive::Float(f)) => *f,
+            ExprKind::Binary(b) => {
+                let (l, r) = (eval_ns(&b.left), eval_ns(&b.right));
+                match b.op {
+                    BinOp::Add => l + r,
+                    BinOp::Sub => l - r,
+                    BinOp::Mul => l * r,
+                    other => panic!("unexpected op {other:?}"),
+                }
+            }
+            ExprKind::Unary(u) => match u.op {
+                UnOp::Neg => -eval_ns(&u.operand),
+                other => panic!("unexpected unop {other:?}"),
+            },
+            ExprKind::Cast(c) => eval_ns(&c.operand),
+            other => panic!("unexpected expr {:?}", std::mem::discriminant(other)),
+        }
+    }
+    let rhs_ns = |name: &str| -> f64 {
+        for s in &p.body {
+            if let StmtKind::Assignment(a) = &s.kind
+                && let LValue::Var(sid) = &a.target
+                && p.symbols.get(*sid).name == name
+                && let RValue::Expr(e) = &a.value
+            {
+                return eval_ns(e);
+            }
+        }
+        panic!("no assignment to `{name}`");
+    };
+    assert!((rhs_ns("start_stretch") - 110.0).abs() < 1e-6);
+    assert!((rhs_ns("middle_stretch") - 100.0).abs() < 1e-6);
+    assert!((rhs_ns("end_stretch") - 110.0).abs() < 1e-6);
+}
+
+#[test]
 fn ipe() {
     compile_fixture("ipe.qasm").expect("should compile");
 }

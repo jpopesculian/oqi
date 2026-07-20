@@ -247,8 +247,9 @@ pub struct StateVector<F> {
 /// a multi-TiB `try_reserve_exact` can succeed and only OOM-kill the process
 /// when the pages are faulted in, so [`StateVector::try_zero`] refuses anything
 /// larger up front. 2^34 B = 16 GiB ≈ 30 qubits (f64) — far above any real CPU
-/// state-vector run, far below where overcommit bites.
-const MAX_STATE_VECTOR_BYTES: usize = 1 << 34;
+/// state-vector run, far below where overcommit bites. `u64` so the constant
+/// (and the byte math) stays valid on 32-bit targets like wasm32.
+const MAX_STATE_VECTOR_BYTES: u64 = 1 << 34;
 
 impl<F: Float> StateVector<F> {
     /// Allocate the |0…0⟩ state for `size` qubits, or `None` if its
@@ -263,7 +264,7 @@ impl<F: Float> StateVector<F> {
         // granted for a multi-TiB vector and only OOM-kill the process when
         // `resize` faults in the pages. Refuse allocations past the ceiling so
         // callers fail gracefully instead.
-        let bytes = len.checked_mul(std::mem::size_of::<Complex<F>>())?;
+        let bytes = (len as u64).checked_mul(std::mem::size_of::<Complex<F>>() as u64)?;
         if bytes > MAX_STATE_VECTOR_BYTES {
             return None;
         }

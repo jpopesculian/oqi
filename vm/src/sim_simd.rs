@@ -136,10 +136,11 @@ impl<F: SimdLane> SimdSim<F> {
         // reservations below for a multi-TiB pair of arrays and only OOM-kill
         // the process when `resize` faults the pages in. Refuse anything past
         // the same 16 GiB ceiling up front. The re/im arrays together hold
-        // 2·len·size_of::<F>() bytes.
-        const MAX_SIMD_STATE_BYTES: usize = 1 << 34;
-        let bytes = len
-            .checked_mul(2 * std::mem::size_of::<F>())
+        // 2·len·size_of::<F>() bytes. `u64` math so the ceiling stays valid on
+        // 32-bit targets like wasm32.
+        const MAX_SIMD_STATE_BYTES: u64 = 1 << 34;
+        let bytes = (len as u64)
+            .checked_mul(2 * std::mem::size_of::<F>() as u64)
             .ok_or_else(too_many)?;
         if bytes > MAX_SIMD_STATE_BYTES {
             return Err(too_many());

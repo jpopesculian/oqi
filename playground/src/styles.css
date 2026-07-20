@@ -187,6 +187,31 @@ body {
   color: var(--fg-dim);
 }
 
+.backend-badge {
+  display: inline-block;
+  margin-bottom: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+}
+
+.backend-badge.gpu {
+  color: #7ee787;
+  border-color: #2ea04326;
+  background: #2ea04315;
+}
+
+.backend-badge.cpu {
+  color: #79c0ff;
+  border-color: #1f6feb26;
+  background: #1f6feb15;
+}
+
 .diagnostic {
   margin: 0;
   font-family: var(--mono);

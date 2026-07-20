@@ -3,14 +3,19 @@
 
 export type InputValue = boolean | number | string;
 
+export type BackendChoice = 'cpu' | 'gpu' | 'auto';
+
 export interface RunOptions {
   inputs: Record<string, InputValue>;
   seed?: number | bigint;
+  backend?: BackendChoice;
 }
 
 export interface RunResult {
   outputs: { name: string; value: InputValue }[];
   measurements: { qubit: number; value: boolean }[];
+  /** The backend that actually ran (`auto` reports `cpu` or `gpu`). */
+  backend: 'cpu' | 'gpu';
 }
 
 type WorkerReply =

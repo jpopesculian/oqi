@@ -11,8 +11,8 @@ The app depends on the wasm bindings in [`../js`](../js) via `file:../js/pkg`,
 so that package must be built first (and rebuilt after any change under `js/`):
 
 ```sh
-# from the repo root
-wasm-pack build js --target web
+# from the repo root — `--features gpu` compiles in the WebGPU backend
+wasm-pack build js --target web --features gpu
 
 cd playground
 npm install
@@ -37,6 +37,11 @@ npm run preview    # http://localhost:4173/oqi/
   OpenQASM (keyword lists mirror the lexer in `../lex`).
 - Inputs are a JSON object (`{ "name": value }`) passed straight to `run()`'s
   `inputs` option; the seed field feeds its `seed` option for reproducible runs.
+- **Backend**: the app requests `backend: 'auto'`, so `run()` prefers the WebGPU
+  (`wgpu`) simulator when the browser exposes it and falls back to the CPU sim
+  otherwise. The results pane badges which one ran. WebGPU is single-precision
+  (`f32`); the CPU sim is `f64`. Requires a WebGPU-capable browser (Chrome/Edge,
+  recent Firefox/Safari) over HTTPS — GitHub Pages qualifies.
 
 ## Notes
 

@@ -94,7 +94,9 @@ export function App() {
 
     setPhase('running');
     setResult(null);
-    runner.run(source, { inputs, seed: seedValue }).then(
+    // Prefer WebGPU (f32) when the browser exposes it; the wasm run() falls
+    // back to the f64 CPU sim and reports which backend actually ran.
+    runner.run(source, { inputs, seed: seedValue, backend: 'auto' }).then(
       (res) => {
         setResult(res);
         setPhase('idle');

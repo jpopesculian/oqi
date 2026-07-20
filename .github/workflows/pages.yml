@@ -30,8 +30,9 @@ jobs:
           tool: wasm-pack
 
       # Build the wasm package first: playground depends on it via `file:../js/pkg`,
-      # so it must exist before `npm ci`.
-      - run: wasm-pack build js --target web --release
+      # so it must exist before `npm ci`. `--features gpu` compiles the WebGPU
+      # backend in so the playground can auto-select it at run time.
+      - run: wasm-pack build js --target web --release --features gpu
 
       - uses: actions/setup-node@v4
         with:

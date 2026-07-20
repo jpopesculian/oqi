@@ -19,12 +19,24 @@ export function ResultsPane({ phase, result, error }: Props) {
           <pre className="diagnostic">{error}</pre>
         )}
         {phase === 'idle' && error === null && result !== null && (
-          <Outputs result={result} />
+          <>
+            <BackendBadge backend={result.backend} />
+            <Outputs result={result} />
+          </>
         )}
         {phase === 'idle' && error === null && result === null && (
           <div className="hint">Press Run to execute the program.</div>
         )}
       </div>
+    </div>
+  );
+}
+
+function BackendBadge({ backend }: { backend: 'cpu' | 'gpu' }) {
+  const label = backend === 'gpu' ? 'GPU · f32' : 'CPU · f64';
+  return (
+    <div className={`backend-badge ${backend}`} title="Simulator backend that ran">
+      {label}
     </div>
   );
 }

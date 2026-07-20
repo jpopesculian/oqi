@@ -4,11 +4,13 @@
 export type InputValue = boolean | number | string;
 
 export type BackendChoice = 'cpu' | 'gpu' | 'auto';
+export type Precision = 'f32' | 'f64';
 
 export interface RunOptions {
   inputs: Record<string, InputValue>;
   seed?: number | bigint;
   backend?: BackendChoice;
+  precision?: Precision;
   shots: number;
 }
 
@@ -27,6 +29,8 @@ export interface SampleResult {
   shots: number;
   /** The backend that actually ran (`auto` reports `cpu` or `gpu`). */
   backend: 'cpu' | 'gpu';
+  /** The amplitude precision that ran. */
+  precision: Precision;
   /** One histogram per named output variable, in program order. */
   histograms: Histogram[];
 }

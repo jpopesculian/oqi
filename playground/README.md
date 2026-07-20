@@ -40,13 +40,13 @@ npm run preview    # http://localhost:4173/oqi/
   stream advances across shots, so a given seed reproduces the whole histogram.
 - Inputs are a JSON object (`{ "name": value }`) passed straight to the `inputs`
   option; the seed and shots fields feed `seed` and `shots`.
-- **Backend**: the app requests `backend: 'auto'`, so sampling prefers the WebGPU
-  (`wgpu`) simulator when the browser exposes it and falls back to the CPU sim
-  otherwise. The results badge shows which ran plus the shot count. WebGPU is
-  single-precision (`f32`); the CPU sim is `f64`. Requires a WebGPU-capable browser
-  (Chrome/Edge, recent Firefox/Safari) over HTTPS — GitHub Pages qualifies. Note
-  that GPU shots re-upload |0> and read back each measurement per shot, so large
-  shot counts can be slower on GPU than CPU at small qubit sizes.
+- **Backend**: a toolbar dropdown selects the simulator — **CPU f64** (default),
+  **CPU f32**, or **GPU** (the WebGPU `wgpu` sim, always `f32`). It maps to `sample()`'s
+  `backend`/`precision` options, and the results badge echoes what ran plus the shot
+  count. GPU requires a WebGPU-capable browser (Chrome/Edge, recent Firefox/Safari) over
+  HTTPS — GitHub Pages qualifies; selecting GPU where it's unavailable surfaces a clear
+  error. Note that GPU shots re-upload |0> and read back each measurement per shot, so
+  large shot counts can be slower on GPU than CPU at small qubit sizes.
 
 ## Notes
 

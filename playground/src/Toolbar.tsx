@@ -1,5 +1,12 @@
+import type { BackendSel } from './App';
 import { EXAMPLES } from './examples';
 import type { Phase } from './ResultsPane';
+
+const BACKEND_OPTIONS: { value: BackendSel; label: string }[] = [
+  { value: 'cpu-f64', label: 'CPU f64' },
+  { value: 'cpu-f32', label: 'CPU f32' },
+  { value: 'gpu', label: 'GPU' },
+];
 
 interface Props {
   phase: Phase;
@@ -9,6 +16,8 @@ interface Props {
   shots: string;
   shotsError: string | null;
   onShotsChange: (shots: string) => void;
+  backend: BackendSel;
+  onBackendChange: (backend: BackendSel) => void;
   onRun: () => void;
   onStop: () => void;
   onLoadExample: (index: number) => void;
@@ -22,6 +31,8 @@ export function Toolbar({
   shots,
   shotsError,
   onShotsChange,
+  backend,
+  onBackendChange,
   onRun,
   onStop,
   onLoadExample,
@@ -60,6 +71,20 @@ export function Toolbar({
         />
       </label>
       {seedError !== null && <span className="inline-error">{seedError}</span>}
+      <label className="field">
+        backend
+        <select
+          className="backend-select"
+          value={backend}
+          onChange={(e) => onBackendChange(e.target.value as BackendSel)}
+        >
+          {BACKEND_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
       <span className="spacer" />
       <select
         className="examples"

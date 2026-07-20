@@ -15,6 +15,18 @@ import { Toolbar } from './Toolbar';
 const MAX_SEED = 1n << 64n;
 const MAX_SHOTS = 100_000;
 
+/** Backend dropdown choices, mapped to oqi-js `{ backend, precision }`. */
+export type BackendSel = 'cpu-f64' | 'cpu-f32' | 'gpu';
+
+const BACKENDS: Record<
+  BackendSel,
+  { label: string; backend: 'cpu' | 'gpu'; precision: 'f32' | 'f64' }
+> = {
+  'cpu-f64': { label: 'CPU · f64', backend: 'cpu', precision: 'f64' },
+  'cpu-f32': { label: 'CPU · f32', backend: 'cpu', precision: 'f32' },
+  gpu: { label: 'GPU · f32', backend: 'gpu', precision: 'f32' },
+};
+
 /** Positive integer shot count, clamped by the wasm side to 1..=100_000. */
 function parseShots(text: string): number {
   const trimmed = text.trim();
@@ -63,6 +75,7 @@ export function App() {
   const [inputsText, setInputsText] = useState(EXAMPLES[0].inputs);
   const [seed, setSeed] = useState(EXAMPLES[0].seed);
   const [shots, setShots] = useState('1024');
+  const [backendSel, setBackendSel] = useState<BackendSel>('cpu-f32');
   const [phase, setPhase] = useState<Phase>('booting');
   const [result, setResult] = useState<SampleResult | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
@@ -117,13 +130,13 @@ export function App() {
 
     setPhase('running');
     setResult(null);
-    // Prefer WebGPU (f32) when the browser exposes it; the wasm side falls back
-    // to the f64 CPU sim and reports which backend actually ran.
+    const chosen = BACKENDS[backendSel];
     runner
       .run(source, {
         inputs,
         seed: seedValue,
-        backend: 'auto',
+        backend: chosen.backend,
+        precision: chosen.precision,
         shots: shotCount,
       })
       .then(
@@ -170,6 +183,8 @@ export function App() {
         shots={shots}
         shotsError={shotsError}
         onShotsChange={setShots}
+        backend={backendSel}
+        onBackendChange={setBackendSel}
         onRun={handleRun}
         onStop={handleStop}
         onLoadExample={handleLoadExample}

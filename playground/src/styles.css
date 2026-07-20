@@ -95,12 +95,18 @@ body {
   flex: 1;
 }
 
-.examples {
+.examples,
+.backend-select {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 5px 8px;
+}
+
+.backend-select {
+  font-family: var(--mono);
+  font-size: 13px;
 }
 
 /* ── Panes ───────────────────────────────────────────────── */

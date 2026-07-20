@@ -66,6 +66,7 @@ struct Histogram {
 struct SampleOutput {
     shots: u32,
     backend: String,
+    precision: String,
     histograms: Vec<Histogram>,
 }
 
@@ -317,6 +318,7 @@ async fn sample_bell_histogram() {
         .unwrap();
     assert_eq!(out.shots, 200);
     assert_eq!(out.backend, "cpu");
+    assert_eq!(out.precision, "f64");
     // One histogram for the `c` register; counts sum to the shot total, and a
     // Bell state only ever yields the correlated "00"/"11" outcomes.
     let c = out.histograms.iter().find(|h| h.name == "c").unwrap();
@@ -326,6 +328,23 @@ async fn sample_bell_histogram() {
         assert!(bar.label == "00" || bar.label == "11", "got {}", bar.label);
     }
     assert!(c.bars.len() == 2, "both correlated outcomes should appear");
+}
+
+#[wasm_bindgen_test]
+async fn sample_cpu_f32() {
+    let out = sample(
+        BELL,
+        options(r#"{ "shots": 100, "backend": "cpu", "precision": "f32" }"#),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.backend, "cpu");
+    assert_eq!(out.precision, "f32");
+    let c = out.histograms.iter().find(|h| h.name == "c").unwrap();
+    assert_eq!(c.total, 100);
+    for bar in &c.bars {
+        assert!(bar.label == "00" || bar.label == "11");
+    }
 }
 
 #[wasm_bindgen_test]

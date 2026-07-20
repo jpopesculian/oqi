@@ -151,13 +151,25 @@ enum InputValue {
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum Backend {
-    /// The `f64` CPU state-vector simulator (default; deterministic).
+    /// The CPU state-vector simulator (default; deterministic). Its amplitude
+    /// precision is set by [`RunOptions::precision`].
     #[default]
     Cpu,
     /// The `f32` WebGPU (`wgpu`) simulator; errors if unavailable.
     Gpu,
     /// Prefer WebGPU, fall back to the CPU simulator when it isn't available.
     Auto,
+}
+
+/// Amplitude precision for the CPU simulator (the GPU backend is always `f32`).
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Precision {
+    /// Double precision (default).
+    #[default]
+    F64,
+    /// Single precision.
+    F32,
 }
 
 #[derive(Default, Deserialize)]
@@ -189,6 +201,10 @@ struct RunOptions {
     /// `"auto"` (WebGPU when available, else CPU).
     #[serde(default)]
     backend: Backend,
+    /// CPU amplitude precision: `"f64"` (default) or `"f32"`. Ignored by the
+    /// GPU backend, which is always `f32`.
+    #[serde(default)]
+    precision: Precision,
     /// Number of shots for [`sample`] (ignored by [`run`]). Clamped to
     /// `1..=100_000`.
     #[serde(default = "default_shots")]
@@ -225,6 +241,8 @@ struct SampleOutput {
     shots: u32,
     /// The backend that actually ran: `"cpu"` or `"gpu"`.
     backend: &'static str,
+    /// The amplitude precision that ran: `"f32"` or `"f64"`.
+    precision: &'static str,
     /// One histogram per named output variable, in program order.
     histograms: Vec<Histogram>,
 }
@@ -251,6 +269,8 @@ struct RunOutput {
     /// The backend that actually ran: `"cpu"` or `"gpu"` (differs from the
     /// requested backend when `"auto"` falls back to the CPU simulator).
     backend: &'static str,
+    /// The amplitude precision that ran: `"f32"` or `"f64"`.
+    precision: &'static str,
     /// Interleaved amplitudes `[re0, im0, re1, im1, ...]`, present iff requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     statevector: Option<Vec<f64>>,
@@ -281,8 +301,18 @@ pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsError> {
     let externs = JsExterns::new(&module, &opts.externs)?;
 
     let seed = opts.seed.unwrap_or(DEFAULT_SEED);
-    let (backend, used) =
-        select_backend(opts.backend, module.qubits.num_qubits, seed, &source).await?;
+    let Chosen {
+        backend,
+        name: used,
+        precision,
+    } = select_backend(
+        opts.backend,
+        opts.precision,
+        module.qubits.num_qubits,
+        seed,
+        &source,
+    )
+    .await?;
     let mut vm = Vm::new(&module, backend, externs);
     let result = vm
         .run_with_inputs(inputs)
@@ -313,46 +343,87 @@ pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsError> {
             })
             .collect(),
         backend: used,
+        precision,
         statevector,
     };
     serde_wasm_bindgen::to_value(&out)
         .map_err(|e| JsError::new(&format!("result serialization failed: {e}")))
 }
 
-/// Build the requested [`Backend`], boxed for the VM, returning it alongside
-/// the name of the backend that actually ran (`Auto` may fall back to `"cpu"`).
+/// A backend chosen for a run, boxed for the VM, plus the names of what
+/// actually ran (`Auto` may fall back to CPU; `precision` reflects the real
+/// amplitude type — always `"f32"` for GPU).
+struct Chosen {
+    backend: Box<dyn QuantumBackend>,
+    name: &'static str,
+    precision: &'static str,
+}
+
+/// Build the requested [`Backend`] at the requested CPU [`Precision`].
 async fn select_backend(
     choice: Backend,
+    precision: Precision,
     num_qubits: u32,
     seed: u64,
     source: &str,
-) -> Result<(Box<dyn QuantumBackend>, &'static str), JsError> {
-    fn cpu(num_qubits: u32, seed: u64, source: &str) -> Result<Box<dyn QuantumBackend>, JsError> {
-        let sim = StateVectorSim::<f64>::try_zeroed(num_qubits, seed)
-            .map_err(|e| diag_err(&e, source))?;
-        Ok(Box::new(sim))
+) -> Result<Chosen, JsError> {
+    fn cpu(
+        precision: Precision,
+        num_qubits: u32,
+        seed: u64,
+        source: &str,
+    ) -> Result<Chosen, JsError> {
+        let (backend, precision): (Box<dyn QuantumBackend>, &'static str) = match precision {
+            Precision::F64 => (
+                Box::new(
+                    StateVectorSim::<f64>::try_zeroed(num_qubits, seed)
+                        .map_err(|e| diag_err(&e, source))?,
+                ),
+                "f64",
+            ),
+            Precision::F32 => (
+                Box::new(
+                    StateVectorSim::<f32>::try_zeroed(num_qubits, seed)
+                        .map_err(|e| diag_err(&e, source))?,
+                ),
+                "f32",
+            ),
+        };
+        Ok(Chosen {
+            backend,
+            name: "cpu",
+            precision,
+        })
     }
     match choice {
-        Backend::Cpu => Ok((cpu(num_qubits, seed, source)?, "cpu")),
+        Backend::Cpu => cpu(precision, num_qubits, seed, source),
         #[cfg(feature = "gpu")]
         Backend::Gpu => {
             let gpu = oqi_vm::GpuSim::new(num_qubits)
                 .await
                 .map_err(|e| JsError::new(&format!("GPU backend unavailable: {e}")))?
                 .with_seed(seed);
-            Ok((Box::new(gpu), "gpu"))
+            Ok(Chosen {
+                backend: Box::new(gpu),
+                name: "gpu",
+                precision: "f32",
+            })
         }
         #[cfg(feature = "gpu")]
         Backend::Auto => match oqi_vm::GpuSim::new(num_qubits).await {
-            Ok(gpu) => Ok((Box::new(gpu.with_seed(seed)), "gpu")),
-            Err(_) => Ok((cpu(num_qubits, seed, source)?, "cpu")),
+            Ok(gpu) => Ok(Chosen {
+                backend: Box::new(gpu.with_seed(seed)),
+                name: "gpu",
+                precision: "f32",
+            }),
+            Err(_) => cpu(precision, num_qubits, seed, source),
         },
         #[cfg(not(feature = "gpu"))]
         Backend::Gpu => Err(JsError::new(
             "this build has no GPU backend (compile oqi-js with `--features gpu`)",
         )),
         #[cfg(not(feature = "gpu"))]
-        Backend::Auto => Ok((cpu(num_qubits, seed, source)?, "cpu")),
+        Backend::Auto => cpu(precision, num_qubits, seed, source),
     }
 }
 
@@ -379,7 +450,11 @@ pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsError
 
     let n = module.qubits.num_qubits;
     let seed = opts.seed.unwrap_or(DEFAULT_SEED);
-    let (backend, used) = select_backend(opts.backend, n, seed, &source).await?;
+    let Chosen {
+        backend,
+        name: used,
+        precision,
+    } = select_backend(opts.backend, opts.precision, n, seed, &source).await?;
     let mut vm = Vm::new(&module, backend, externs);
 
     // Accumulate per-output-symbol value counts; `order` preserves the
@@ -429,6 +504,7 @@ pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsError
     let out = SampleOutput {
         shots,
         backend: used,
+        precision,
         histograms,
     };
     serde_wasm_bindgen::to_value(&out)

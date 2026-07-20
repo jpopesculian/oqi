@@ -9,18 +9,31 @@ export interface RunOptions {
   inputs: Record<string, InputValue>;
   seed?: number | bigint;
   backend?: BackendChoice;
+  shots: number;
 }
 
-export interface RunResult {
-  outputs: { name: string; value: InputValue }[];
-  measurements: { qubit: number; value: boolean }[];
+export interface HistoBar {
+  label: string;
+  count: number;
+}
+
+export interface Histogram {
+  name: string;
+  total: number;
+  bars: HistoBar[];
+}
+
+export interface SampleResult {
+  shots: number;
   /** The backend that actually ran (`auto` reports `cpu` or `gpu`). */
   backend: 'cpu' | 'gpu';
+  /** One histogram per named output variable, in program order. */
+  histograms: Histogram[];
 }
 
 type WorkerReply =
   | { type: 'ready' }
-  | { type: 'result'; id: number; ok: true; value: RunResult }
+  | { type: 'result'; id: number; ok: true; value: SampleResult }
   | { type: 'result'; id: number; ok: false; error: string };
 
 export class RunnerStoppedError extends Error {
@@ -31,7 +44,7 @@ export class RunnerStoppedError extends Error {
 }
 
 interface Pending {
-  resolve: (result: RunResult) => void;
+  resolve: (result: SampleResult) => void;
   reject: (error: Error) => void;
 }
 
@@ -68,7 +81,8 @@ export class Runner {
     };
   }
 
-  run(source: string, options: RunOptions): Promise<RunResult> {
+  /** Sample the program over `options.shots` and return per-variable histograms. */
+  run(source: string, options: RunOptions): Promise<SampleResult> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });

@@ -6,6 +6,9 @@ interface Props {
   seed: string;
   seedError: string | null;
   onSeedChange: (seed: string) => void;
+  shots: string;
+  shotsError: string | null;
+  onShotsChange: (shots: string) => void;
   onRun: () => void;
   onStop: () => void;
   onLoadExample: (index: number) => void;
@@ -16,6 +19,9 @@ export function Toolbar({
   seed,
   seedError,
   onSeedChange,
+  shots,
+  shotsError,
+  onShotsChange,
   onRun,
   onStop,
   onLoadExample,
@@ -32,9 +38,21 @@ export function Toolbar({
           Run
         </button>
       )}
-      <label className="seed">
+      <label className="field">
+        shots
+        <input
+          className="num"
+          value={shots}
+          onChange={(e) => onShotsChange(e.target.value)}
+          inputMode="numeric"
+          spellCheck={false}
+        />
+      </label>
+      {shotsError !== null && <span className="inline-error">{shotsError}</span>}
+      <label className="field">
         seed
         <input
+          className="num"
           value={seed}
           onChange={(e) => onSeedChange(e.target.value)}
           placeholder="default"

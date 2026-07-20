@@ -1,10 +1,11 @@
-import type { RunResult } from './runner';
+import { Histogram } from './Histogram';
+import type { SampleResult } from './runner';
 
 export type Phase = 'booting' | 'idle' | 'running';
 
 interface Props {
   phase: Phase;
-  result: RunResult | null;
+  result: SampleResult | null;
   error: string | null;
 }
 
@@ -14,53 +15,48 @@ export function ResultsPane({ phase, result, error }: Props) {
       <div className="pane-title">Results</div>
       <div className="results-body">
         {phase === 'booting' && <div className="hint">Loading wasm…</div>}
-        {phase === 'running' && <div className="hint">Running…</div>}
+        {phase === 'running' && <div className="hint">Sampling…</div>}
         {phase === 'idle' && error !== null && (
           <pre className="diagnostic">{error}</pre>
         )}
         {phase === 'idle' && error === null && result !== null && (
-          <>
-            <BackendBadge backend={result.backend} />
-            <Outputs result={result} />
-          </>
+          <Histograms result={result} />
         )}
         {phase === 'idle' && error === null && result === null && (
-          <div className="hint">Press Run to execute the program.</div>
+          <div className="hint">Press Run to sample the program.</div>
         )}
       </div>
     </div>
   );
 }
 
-function BackendBadge({ backend }: { backend: 'cpu' | 'gpu' }) {
-  const label = backend === 'gpu' ? 'GPU · f32' : 'CPU · f64';
+function BackendBadge({
+  backend,
+  shots,
+}: {
+  backend: 'cpu' | 'gpu';
+  shots: number;
+}) {
+  const label = `${backend === 'gpu' ? 'GPU · f32' : 'CPU · f64'} · ${shots} shots`;
   return (
-    <div className={`backend-badge ${backend}`} title="Simulator backend that ran">
+    <div
+      className={`backend-badge ${backend}`}
+      title="Simulator backend and shot count"
+    >
       {label}
     </div>
   );
 }
 
-function Outputs({ result }: { result: RunResult }) {
-  if (result.outputs.length === 0) {
-    return <div className="hint">The program produced no outputs.</div>;
-  }
+function Histograms({ result }: { result: SampleResult }) {
   return (
-    <table className="outputs">
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Value</th>
-        </tr>
-      </thead>
-      <tbody>
-        {result.outputs.map((out) => (
-          <tr key={out.name}>
-            <td>{out.name}</td>
-            <td className="value">{String(out.value)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      <BackendBadge backend={result.backend} shots={result.shots} />
+      {result.histograms.length === 0 ? (
+        <div className="hint">The program produced no outputs.</div>
+      ) : (
+        result.histograms.map((h) => <Histogram key={h.name} data={h} />)
+      )}
+    </>
   );
 }

@@ -35,13 +35,18 @@ npm run preview    # http://localhost:4173/oqi/
   requests by id and re-spawns the worker on Stop.
 - **`src/qasm.ts`** is a small CodeMirror `StreamLanguage` highlighter for
   OpenQASM (keyword lists mirror the lexer in `../lex`).
-- Inputs are a JSON object (`{ "name": value }`) passed straight to `run()`'s
-  `inputs` option; the seed field feeds its `seed` option for reproducible runs.
-- **Backend**: the app requests `backend: 'auto'`, so `run()` prefers the WebGPU
+- The app **samples**: it runs the program `shots` times (default 1024) via
+  `oqi-js`'s `sample()` and renders a histogram per named output variable. One RNG
+  stream advances across shots, so a given seed reproduces the whole histogram.
+- Inputs are a JSON object (`{ "name": value }`) passed straight to the `inputs`
+  option; the seed and shots fields feed `seed` and `shots`.
+- **Backend**: the app requests `backend: 'auto'`, so sampling prefers the WebGPU
   (`wgpu`) simulator when the browser exposes it and falls back to the CPU sim
-  otherwise. The results pane badges which one ran. WebGPU is single-precision
-  (`f32`); the CPU sim is `f64`. Requires a WebGPU-capable browser (Chrome/Edge,
-  recent Firefox/Safari) over HTTPS — GitHub Pages qualifies.
+  otherwise. The results badge shows which ran plus the shot count. WebGPU is
+  single-precision (`f32`); the CPU sim is `f64`. Requires a WebGPU-capable browser
+  (Chrome/Edge, recent Firefox/Safari) over HTTPS — GitHub Pages qualifies. Note
+  that GPU shots re-upload |0> and read back each measurement per shot, so large
+  shot counts can be slower on GPU than CPU at small qubit sizes.
 
 ## Notes
 

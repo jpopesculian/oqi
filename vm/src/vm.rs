@@ -290,6 +290,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         &self.backend
     }
 
+    /// Mutable access to the backend (e.g. to `reset_state` between shots on
+    /// a reused VM).
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
     /// Execute the module's entry procedure with no host-supplied
     /// inputs. If the program declares any `input`, prefer
     /// [`Vm::run_with_inputs`] — running with an empty map errors on the

@@ -409,6 +409,18 @@ impl QuantumBackend for GpuSim {
         }
     }
 
+    async fn reset_state(&mut self, _num_qubits: u32) {
+        // Re-upload |0…0⟩ to the resident buffer, reusing the device/pipeline
+        // (no new adapter). Leaves the RNG stream intact so shots stay
+        // independent and reproducible.
+        let mut init = vec![0f32; self.len * 2];
+        init[0] = 1.0;
+        self.queue
+            .write_buffer(&self.state, 0, bytemuck::cast_slice(&init));
+        self.queue.submit(std::iter::empty());
+        self.global_phase = 0.0;
+    }
+
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
         let phase = Complex::from_polar(1.0, self.global_phase);
         Some(self.read_state().await.iter().map(|a| a * phase).collect())

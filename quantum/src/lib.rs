@@ -289,6 +289,15 @@ impl<F: Float> StateVector<F> {
         self.size
     }
 
+    /// Reset in place to |0…0⟩ without reallocating — all amplitudes zeroed,
+    /// `[0] = 1`, global phase cleared. Lets a simulator start a fresh shot on
+    /// its existing buffer.
+    pub fn zero_in_place(&mut self) {
+        self.state.iter_mut().for_each(|a| *a = Complex::zero());
+        self.state[0] = Complex::one();
+        self.global_phase = F::zero();
+    }
+
     pub fn state(&self) -> &[Complex<F>] {
         &self.state
     }

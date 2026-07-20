@@ -189,6 +189,14 @@ struct RunOptions {
     /// `"auto"` (WebGPU when available, else CPU).
     #[serde(default)]
     backend: Backend,
+    /// Number of shots for [`sample`] (ignored by [`run`]). Clamped to
+    /// `1..=100_000`.
+    #[serde(default = "default_shots")]
+    shots: u32,
+}
+
+fn default_shots() -> u32 {
+    1024
 }
 
 #[derive(Serialize)]
@@ -209,6 +217,30 @@ struct Measurement {
 struct OutputEntry {
     name: String,
     value: OutputValue,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SampleOutput {
+    shots: u32,
+    /// The backend that actually ran: `"cpu"` or `"gpu"`.
+    backend: &'static str,
+    /// One histogram per named output variable, in program order.
+    histograms: Vec<Histogram>,
+}
+
+#[derive(Serialize)]
+struct Histogram {
+    name: String,
+    total: u32,
+    /// Distinct observed values and their counts, sorted by value.
+    bars: Vec<HistoBar>,
+}
+
+#[derive(Serialize)]
+struct HistoBar {
+    label: String,
+    count: u32,
 }
 
 #[derive(Serialize)]
@@ -321,6 +353,100 @@ async fn select_backend(
         )),
         #[cfg(not(feature = "gpu"))]
         Backend::Auto => Ok((cpu(num_qubits, seed, source)?, "cpu")),
+    }
+}
+
+/// Compile and sample an OpenQASM 3 program over many shots, returning a
+/// histogram of observed values per named output variable.
+///
+/// `options` accepts the same object as [`run`] plus `shots` (default 1024,
+/// clamped to `1..=100_000`). Shots reuse one backend (respecting the
+/// `backend` option, WebGPU included), re-zeroing between runs while a single
+/// RNG stream advances — so a given `seed` reproduces the whole histogram.
+/// Returns `{ shots, backend, histograms: [{ name, total, bars: [{ label, count }] }] }`.
+#[wasm_bindgen]
+pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsError> {
+    let opts: RunOptions = if options.is_undefined() || options.is_null() {
+        RunOptions::default()
+    } else {
+        serde_wasm_bindgen::from_value(options)
+            .map_err(|e| JsError::new(&format!("invalid options: {e}")))?
+    };
+    let shots = opts.shots.clamp(1, 100_000);
+    let module = build_module(&source, opts.timings.as_ref(), opts.dt.as_deref())?;
+    let inputs = coerce_inputs(&module, opts.inputs)?;
+    let externs = JsExterns::new(&module, &opts.externs)?;
+
+    let n = module.qubits.num_qubits;
+    let seed = opts.seed.unwrap_or(DEFAULT_SEED);
+    let (backend, used) = select_backend(opts.backend, n, seed, &source).await?;
+    let mut vm = Vm::new(&module, backend, externs);
+
+    // Accumulate per-output-symbol value counts; `order` preserves the
+    // program's output order (fixed across shots) for stable display.
+    let mut order: Vec<SymbolId> = Vec::new();
+    let mut counts: HashMap<SymbolId, HashMap<String, u32>> = HashMap::new();
+    for shot in 0..shots {
+        if shot > 0 {
+            vm.backend_mut().reset_state(n).await;
+        }
+        let result = vm
+            .run_with_inputs(inputs.clone())
+            .await
+            .map_err(|e| diag_err(&e, &source))?;
+        for (sym, v) in &result.outputs {
+            if shot == 0 {
+                order.push(*sym);
+            }
+            *counts
+                .entry(*sym)
+                .or_default()
+                .entry(value_label(v))
+                .or_insert(0) += 1;
+        }
+    }
+
+    let histograms = order
+        .iter()
+        .map(|sym| {
+            let map = &counts[sym];
+            let mut bars: Vec<HistoBar> = map
+                .iter()
+                .map(|(label, count)| HistoBar {
+                    label: label.clone(),
+                    count: *count,
+                })
+                .collect();
+            sort_bars(&mut bars);
+            Histogram {
+                name: module.symbols.get(*sym).name.clone(),
+                total: bars.iter().map(|b| b.count).sum(),
+                bars,
+            }
+        })
+        .collect();
+
+    let out = SampleOutput {
+        shots,
+        backend: used,
+        histograms,
+    };
+    serde_wasm_bindgen::to_value(&out)
+        .map_err(|e| JsError::new(&format!("result serialization failed: {e}")))
+}
+
+/// Sort histogram bars by value: numerically for plain decimal integers
+/// (bits, ints), lexicographically otherwise — so fixed-width bit strings
+/// like `"010"` keep their binary order instead of being read as decimals.
+fn sort_bars(bars: &mut [HistoBar]) {
+    let numeric = bars.iter().all(|b| {
+        let s = b.label.strip_prefix('-').unwrap_or(&b.label);
+        s.parse::<i128>().is_ok() && (s.len() == 1 || !s.starts_with('0'))
+    });
+    if numeric {
+        bars.sort_by_key(|b| b.label.parse::<i128>().unwrap());
+    } else {
+        bars.sort_by(|a, b| a.label.cmp(&b.label));
     }
 }
 
@@ -567,6 +693,28 @@ fn extern_arg(v: &Value) -> JsValue {
         }
     }
     JsValue::from_str(&v.to_string())
+}
+
+/// Canonical string label for a value, used as a histogram bucket key:
+/// `bit`→`"0"`/`"1"`, `int`/`uint`/`float`→decimal, `bit[n]`→unquoted MSB-first
+/// bit string, everything else its OpenQASM text form with surrounding quotes
+/// stripped. Unlike [`output_value`], labels are always clean unquoted strings.
+fn value_label(v: &Value) -> String {
+    if let Value::Scalar(s) = v {
+        match s.value() {
+            Primitive::Bit(b) => return (if *b { "1" } else { "0" }).to_string(),
+            Primitive::Int(i) if i.unsigned_abs() <= MAX_SAFE_INTEGER => return i.to_string(),
+            Primitive::Uint(u) if *u <= MAX_SAFE_INTEGER => return u.to_string(),
+            Primitive::Float(f) => return f.to_string(),
+            Primitive::BitReg(reg) => {
+                if let PrimitiveTy::BitReg(w) = s.ty() {
+                    return bitreg_string(reg, w);
+                }
+            }
+            _ => {}
+        }
+    }
+    v.to_string().trim_matches('"').to_string()
 }
 
 /// Unquoted MSB-first bit string of `reg`'s low `width` bits.

@@ -49,6 +49,31 @@ async fn run(source: &str, opts: JsValue) -> Result<RunOutput, JsValue> {
     Ok(serde_wasm_bindgen::from_value(result).unwrap())
 }
 
+#[derive(Debug, Deserialize)]
+struct HistoBar {
+    label: String,
+    count: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct Histogram {
+    name: String,
+    total: u32,
+    bars: Vec<HistoBar>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SampleOutput {
+    shots: u32,
+    backend: String,
+    histograms: Vec<Histogram>,
+}
+
+async fn sample(source: &str, opts: JsValue) -> Result<SampleOutput, JsValue> {
+    let result = oqi_js::sample(source.to_string(), opts).await?;
+    Ok(serde_wasm_bindgen::from_value(result).unwrap())
+}
+
 fn error_message(err: JsValue) -> String {
     js_sys::Error::from(err).message().into()
 }
@@ -283,4 +308,37 @@ async fn bad_timing_rejected() {
         .await
         .unwrap_err();
     assert!(error_message(err).contains("is not a duration literal"));
+}
+
+#[wasm_bindgen_test]
+async fn sample_bell_histogram() {
+    let out = sample(BELL, options(r#"{ "shots": 200, "seed": 1234 }"#))
+        .await
+        .unwrap();
+    assert_eq!(out.shots, 200);
+    assert_eq!(out.backend, "cpu");
+    // One histogram for the `c` register; counts sum to the shot total, and a
+    // Bell state only ever yields the correlated "00"/"11" outcomes.
+    let c = out.histograms.iter().find(|h| h.name == "c").unwrap();
+    assert_eq!(c.total, 200);
+    assert_eq!(c.bars.iter().map(|b| b.count).sum::<u32>(), 200);
+    for bar in &c.bars {
+        assert!(bar.label == "00" || bar.label == "11", "got {}", bar.label);
+    }
+    assert!(c.bars.len() == 2, "both correlated outcomes should appear");
+}
+
+#[wasm_bindgen_test]
+async fn sample_is_reproducible() {
+    let opts = r#"{ "shots": 64, "seed": 99 }"#;
+    let a = sample(BELL, options(opts)).await.unwrap();
+    let b = sample(BELL, options(opts)).await.unwrap();
+    // Same seed → identical histogram (labels + counts, in order).
+    let ha = &a.histograms[0];
+    let hb = &b.histograms[0];
+    assert_eq!(ha.bars.len(), hb.bars.len());
+    for (x, y) in ha.bars.iter().zip(&hb.bars) {
+        assert_eq!(x.label, y.label);
+        assert_eq!(x.count, y.count);
+    }
 }

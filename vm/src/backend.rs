@@ -84,6 +84,17 @@ pub trait QuantumBackend {
     /// Reset `qubit` to |0⟩.
     async fn reset(&mut self, qubit: u32);
 
+    /// Reset the whole register to |0…0⟩ so a fresh shot can run on the same
+    /// backend. The default resets each qubit in turn (correct for any
+    /// backend, but consumes the measurement RNG); backends with an
+    /// addressable state override this with a cheaper direct re-zero that
+    /// leaves the RNG stream untouched.
+    async fn reset_state(&mut self, num_qubits: u32) {
+        for q in 0..num_qubits {
+            self.reset(q).await;
+        }
+    }
+
     /// A scheduling barrier across `qubits`. No effect on state.
     async fn barrier(&mut self, _qubits: &[u32]) {}
 
@@ -132,6 +143,10 @@ impl QuantumBackend for Box<dyn QuantumBackend> {
 
     async fn reset(&mut self, qubit: u32) {
         (**self).reset(qubit).await;
+    }
+
+    async fn reset_state(&mut self, num_qubits: u32) {
+        (**self).reset_state(num_qubits).await;
     }
 
     async fn barrier(&mut self, qubits: &[u32]) {

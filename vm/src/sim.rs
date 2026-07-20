@@ -267,6 +267,12 @@ impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
         }
     }
 
+    async fn reset_state(&mut self, _num_qubits: u32) {
+        // Direct re-zero on the existing buffer; leaves the RNG stream intact
+        // so shots stay independent and reproducible from the initial seed.
+        self.state.zero_in_place();
+    }
+
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
         // Resolve the tracked global phase so the snapshot is physically
         // faithful and matches other backends' conventions.
@@ -278,5 +284,26 @@ impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
                 .map(|a| Complex::new(a.re.to_f64().unwrap(), a.im.to_f64().unwrap()) * phase)
                 .collect(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `reset_state` returns the register to |0…0⟩ so a reused sim can start a
+    /// fresh shot (the shots feature depends on this).
+    #[tokio::test]
+    async fn reset_state_rezeros() {
+        let none = GateModifiers::none();
+        let mut sim = StateVectorSim::<f64>::try_zeroed(2, 7).unwrap();
+        // X on qubit 0 (U(π,0,π)) → |01>; q0 measures 1 deterministically.
+        sim.u(0, std::f64::consts::PI, 0.0, std::f64::consts::PI, &none)
+            .await;
+        assert!(sim.measure(0).await, "X|0⟩ measures 1");
+        // A fresh shot: re-zero, then both qubits measure 0.
+        sim.reset_state(2).await;
+        assert!(!sim.measure(0).await, "reset_state returns q0 to |0⟩");
+        assert!(!sim.measure(1).await, "reset_state returns q1 to |0⟩");
     }
 }

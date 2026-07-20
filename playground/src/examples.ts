@@ -61,20 +61,22 @@ bit parity = measure q;
     source: `OPENQASM 3.0;
 include "stdgates.inc";
 
-// All three measurements agree; change the seed to
-// flip between 000 and 111.
-qubit[3] q;
-bit[3] c;
+// Build a GHZ state whose size is chosen at run time (max 8):
+//   0 -> empty, 1 -> H on one qubit, 2 -> Bell pair,
+//   3+ -> an n-qubit GHZ chain.
+input int size;
+qubit[8] q;
+bit[8] c;
 
-h q[0];
-cx q[0], q[1];
-cx q[1], q[2];
-
-c[0] = measure q[0];
-c[1] = measure q[1];
-c[2] = measure q[2];
+if (size > 0) {
+  h q[0];
+}
+for int i in [1:size - 1] {
+  cx q[i - 1], q[i];
+}
+c = measure q;
 `,
-    inputs: '{}',
+    inputs: '{\n  "size": 3\n}',
     seed: '1',
   },
 ];

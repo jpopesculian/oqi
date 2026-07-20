@@ -147,6 +147,19 @@ enum InputValue {
     Text(String),
 }
 
+/// Which simulator backend to run on.
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Backend {
+    /// The `f64` CPU state-vector simulator (default; deterministic).
+    #[default]
+    Cpu,
+    /// The `f32` WebGPU (`wgpu`) simulator; errors if unavailable.
+    Gpu,
+    /// Prefer WebGPU, fall back to the CPU simulator when it isn't available.
+    Auto,
+}
+
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RunOptions {
@@ -172,6 +185,10 @@ struct RunOptions {
     /// Duration of one `dt` unit, as a timing literal (e.g. "0.5ns").
     #[serde(default)]
     dt: Option<String>,
+    /// Which simulator backend to run on: `"cpu"` (default), `"gpu"`, or
+    /// `"auto"` (WebGPU when available, else CPU).
+    #[serde(default)]
+    backend: Backend,
 }
 
 #[derive(Serialize)]
@@ -199,6 +216,9 @@ struct OutputEntry {
 struct RunOutput {
     measurements: Vec<Measurement>,
     outputs: Vec<OutputEntry>,
+    /// The backend that actually ran: `"cpu"` or `"gpu"` (differs from the
+    /// requested backend when `"auto"` falls back to the CPU simulator).
+    backend: &'static str,
     /// Interleaved amplitudes `[re0, im0, re1, im1, ...]`, present iff requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     statevector: Option<Vec<f64>>,
@@ -228,12 +248,10 @@ pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsError> {
     let inputs = coerce_inputs(&module, opts.inputs)?;
     let externs = JsExterns::new(&module, &opts.externs)?;
 
-    let sim = StateVectorSim::<f64>::try_zeroed(
-        module.qubits.num_qubits,
-        opts.seed.unwrap_or(DEFAULT_SEED),
-    )
-    .map_err(|e| diag_err(&e, &source))?;
-    let mut vm = Vm::new(&module, sim, externs);
+    let seed = opts.seed.unwrap_or(DEFAULT_SEED);
+    let (backend, used) =
+        select_backend(opts.backend, module.qubits.num_qubits, seed, &source).await?;
+    let mut vm = Vm::new(&module, backend, externs);
     let result = vm
         .run_with_inputs(inputs)
         .await
@@ -262,10 +280,48 @@ pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsError> {
                 value: output_value(v),
             })
             .collect(),
+        backend: used,
         statevector,
     };
     serde_wasm_bindgen::to_value(&out)
         .map_err(|e| JsError::new(&format!("result serialization failed: {e}")))
+}
+
+/// Build the requested [`Backend`], boxed for the VM, returning it alongside
+/// the name of the backend that actually ran (`Auto` may fall back to `"cpu"`).
+async fn select_backend(
+    choice: Backend,
+    num_qubits: u32,
+    seed: u64,
+    source: &str,
+) -> Result<(Box<dyn QuantumBackend>, &'static str), JsError> {
+    fn cpu(num_qubits: u32, seed: u64, source: &str) -> Result<Box<dyn QuantumBackend>, JsError> {
+        let sim = StateVectorSim::<f64>::try_zeroed(num_qubits, seed)
+            .map_err(|e| diag_err(&e, source))?;
+        Ok(Box::new(sim))
+    }
+    match choice {
+        Backend::Cpu => Ok((cpu(num_qubits, seed, source)?, "cpu")),
+        #[cfg(feature = "gpu")]
+        Backend::Gpu => {
+            let gpu = oqi_vm::GpuSim::new(num_qubits)
+                .await
+                .map_err(|e| JsError::new(&format!("GPU backend unavailable: {e}")))?
+                .with_seed(seed);
+            Ok((Box::new(gpu), "gpu"))
+        }
+        #[cfg(feature = "gpu")]
+        Backend::Auto => match oqi_vm::GpuSim::new(num_qubits).await {
+            Ok(gpu) => Ok((Box::new(gpu.with_seed(seed)), "gpu")),
+            Err(_) => Ok((cpu(num_qubits, seed, source)?, "cpu")),
+        },
+        #[cfg(not(feature = "gpu"))]
+        Backend::Gpu => Err(JsError::new(
+            "this build has no GPU backend (compile oqi-js with `--features gpu`)",
+        )),
+        #[cfg(not(feature = "gpu"))]
+        Backend::Auto => Ok((cpu(num_qubits, seed, source)?, "cpu")),
+    }
 }
 
 /// Coerce JS input values to the declared types of the program's `input`

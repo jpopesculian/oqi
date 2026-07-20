@@ -6,6 +6,12 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Compile the wgpu/WebGPU backend into the wasm module. Off by default so
+# native workspace builds and `wasm-pack test` stay wgpu-free; the Pages build
+# opts in with `wasm-pack build js --target web --features gpu`.
+gpu = ["oqi-vm/gpu"]
+
 [dependencies]
 async-trait = "0.1"
 js-sys = "0.3"

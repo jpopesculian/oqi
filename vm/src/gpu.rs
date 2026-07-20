@@ -226,6 +226,13 @@ impl GpuSim {
         })
     }
 
+    /// Reseed the measurement RNG so runs are reproducible (defaults to
+    /// [`DEFAULT_SEED`] otherwise).
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.rng = Rng::new(seed);
+        self
+    }
+
     /// Dispatch one gate: write the uniform, encode a compute pass, submit.
     fn run_gate(&mut self, m: &[[Complex<f32>; 2]; 2], target: u32, controls: &[u32], neg: &[u32]) {
         let num_pairs = (self.len / 2) as u32;

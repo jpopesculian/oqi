@@ -16,6 +16,7 @@
 //!   primary, VM-ingestable form) plus a textual disassembly (debug
 //!   aid).
 
+pub mod analysis;
 pub mod binary;
 pub mod disasm;
 pub mod emit;
@@ -23,6 +24,7 @@ pub mod phi_elim;
 pub mod regalloc;
 pub mod types;
 
+pub use analysis::is_sample_safe;
 pub use binary::{DecodeError, EncodeError, from_bytes, to_bytes};
 pub use emit::emit;
 pub use types::*;

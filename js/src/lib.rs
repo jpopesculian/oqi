@@ -461,23 +461,51 @@ pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsError
     // program's output order (fixed across shots) for stable display.
     let mut order: Vec<SymbolId> = Vec::new();
     let mut counts: HashMap<SymbolId, HashMap<String, u32>> = HashMap::new();
-    for shot in 0..shots {
-        if shot > 0 {
-            vm.backend_mut().reset_state(n).await;
-        }
-        let result = vm
-            .run_with_inputs(inputs.clone())
+
+    // Fast path: for a program with no measurement feedback, snapshot the final
+    // state once and draw every shot from its Born-rule distribution — one
+    // backend readback total instead of one per shot.
+    let mut sampled = false;
+    if bytecode::is_sample_safe(&module)
+        && let Some(psi) = vm
+            .run_capture(inputs.clone())
             .await
-            .map_err(|e| diag_err(&e, &source))?;
-        for (sym, v) in &result.outputs {
-            if shot == 0 {
-                order.push(*sym);
+            .map_err(|e| diag_err(&e, &source))?
+    {
+        // Cumulative |ψ|² table over basis states.
+        let mut cum = Vec::with_capacity(psi.len());
+        let mut acc = 0.0f64;
+        for a in &psi {
+            acc += a.norm_sqr();
+            cum.push(acc);
+        }
+        let total = acc.max(f64::MIN_POSITIVE);
+        let mut rng = SplitMix64::new(seed);
+        for shot in 0..shots {
+            let u = rng.next_f64() * total;
+            let idx = cum.partition_point(|&c| c < u).min(psi.len() - 1);
+            let basis: Vec<bool> = (0..n).map(|q| (idx >> q) & 1 == 1).collect();
+            let result = vm
+                .run_inject(inputs.clone(), basis)
+                .await
+                .map_err(|e| diag_err(&e, &source))?;
+            record_shot(&mut order, &mut counts, &result.outputs, shot == 0);
+        }
+        sampled = true;
+    }
+
+    // Fallback: re-run the whole circuit per shot (mid-circuit measurement /
+    // feedback), reusing one backend re-zeroed between shots.
+    if !sampled {
+        for shot in 0..shots {
+            if shot > 0 {
+                vm.backend_mut().reset_state(n).await;
             }
-            *counts
-                .entry(*sym)
-                .or_default()
-                .entry(value_label(v))
-                .or_insert(0) += 1;
+            let result = vm
+                .run_with_inputs(inputs.clone())
+                .await
+                .map_err(|e| diag_err(&e, &source))?;
+            record_shot(&mut order, &mut counts, &result.outputs, shot == 0);
         }
     }
 
@@ -509,6 +537,49 @@ pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsError
     };
     serde_wasm_bindgen::to_value(&out)
         .map_err(|e| JsError::new(&format!("result serialization failed: {e}")))
+}
+
+/// Tally one shot's outputs into the running histograms; on the first shot,
+/// record each output symbol's order for stable display.
+fn record_shot(
+    order: &mut Vec<SymbolId>,
+    counts: &mut HashMap<SymbolId, HashMap<String, u32>>,
+    outputs: &[(SymbolId, Value)],
+    first: bool,
+) {
+    for (sym, v) in outputs {
+        if first {
+            order.push(*sym);
+        }
+        *counts
+            .entry(*sym)
+            .or_default()
+            .entry(value_label(v))
+            .or_insert(0) += 1;
+    }
+}
+
+/// A small splitmix64 PRNG for host-side basis-state sampling on the fast path,
+/// seeded from the run's `seed` so a program+seed reproduces its histogram.
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        SplitMix64(seed)
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// A double in `[0, 1)` (53-bit mantissa).
+    fn next_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
 }
 
 /// Sort histogram bars by value: numerically for plain decimal integers

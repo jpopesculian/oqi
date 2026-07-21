@@ -348,6 +348,37 @@ async fn sample_cpu_f32() {
 }
 
 #[wasm_bindgen_test]
+async fn sample_feedback_uses_fallback() {
+    // A gate conditioned on a measurement is not sample-safe, so this takes the
+    // per-shot fallback. `x q[1]` fires iff `a == 1`, so `b == a` every shot.
+    let src = r#"
+OPENQASM 3.0;
+include "stdgates.inc";
+qubit[2] q;
+h q[0];
+bit a = measure q[0];
+if (a) { x q[1]; }
+bit b = measure q[1];
+"#;
+    let out = sample(src, options(r#"{ "shots": 128, "seed": 5 }"#))
+        .await
+        .unwrap();
+    assert_eq!(out.shots, 128);
+    let a = out.histograms.iter().find(|h| h.name == "a").unwrap();
+    let b = out.histograms.iter().find(|h| h.name == "b").unwrap();
+    assert_eq!(a.total, 128);
+    assert_eq!(b.total, 128);
+    assert_eq!(a.bars.len(), 2, "H on q0 yields both outcomes");
+    let count0 = |h: &Histogram| {
+        h.bars
+            .iter()
+            .find(|x| x.label == "0")
+            .map_or(0, |x| x.count)
+    };
+    assert_eq!(count0(a), count0(b), "b must mirror a under feedback");
+}
+
+#[wasm_bindgen_test]
 async fn sample_is_reproducible() {
     let opts = r#"{ "shots": 64, "seed": 99 }"#;
     let a = sample(BELL, options(opts)).await.unwrap();

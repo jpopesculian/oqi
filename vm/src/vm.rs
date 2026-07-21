@@ -198,6 +198,16 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     /// Span of the instruction (or block) currently executing, used to
     /// locate a runtime error in the source. Defaults to the empty sentinel.
     current_span: Span,
+    /// Shot-sampling "capture" mode: snapshot the amplitudes at the first
+    /// measurement (into `captured_state`) before it collapses. Set by
+    /// [`Vm::run_capture`].
+    capture: bool,
+    captured_state: Option<Vec<Complex64>>,
+    /// Shot-sampling "inject" mode: replay the program with pre-sampled
+    /// measurement outcomes. Quantum ops (gate/reset/barrier/delay) become
+    /// no-ops and `measure` returns the injected bit per qubit, so the
+    /// classical program runs quantum-free. Set by [`Vm::run_inject`].
+    inject: Option<Vec<bool>>,
 }
 
 impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
@@ -265,6 +275,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             opaque_cal: None,
             pulse_globals: HashMap::new(),
             current_span: Span::default(),
+            capture: false,
+            captured_state: None,
+            inject: None,
         }
     }
 
@@ -317,6 +330,39 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         self.run_inner(inputs)
             .await
             .map_err(|kind| VmError::new(kind).with_span(self.current_span))
+    }
+
+    /// Run once to snapshot the pre-measurement state: the amplitudes at the
+    /// first measurement (before it collapses), or `None` if the program never
+    /// measures or the backend has no addressable state vector. Used by the
+    /// shot-sampling fast path together with [`Vm::run_inject`]; only sound
+    /// when the program is sample-safe (no quantum op after a measurement — see
+    /// [`oqi_compile::bytecode::is_sample_safe`]).
+    pub async fn run_capture(
+        &mut self,
+        inputs: HashMap<SymbolId, Value>,
+    ) -> std::result::Result<Option<Vec<Complex64>>, VmError> {
+        self.capture = true;
+        self.captured_state = None;
+        let r = self.run_with_inputs(inputs).await;
+        self.capture = false;
+        r.map(|_| self.captured_state.take())
+    }
+
+    /// Replay the program classically with pre-sampled measurement outcomes
+    /// (`basis[q]` = the measured value of global qubit `q`): quantum ops are
+    /// no-ops, `measure` returns the injected bits, and the classical program
+    /// (including branches on measured values) runs to produce the outputs of
+    /// one shot. Cheap — no backend work.
+    pub async fn run_inject(
+        &mut self,
+        inputs: HashMap<SymbolId, Value>,
+        basis: Vec<bool>,
+    ) -> std::result::Result<RunResult, VmError> {
+        self.inject = Some(basis);
+        let r = self.run_with_inputs(inputs).await;
+        self.inject = None;
+        r
     }
 
     /// The execution body, raising spanless [`VmErrorKind`]s. The span of the
@@ -541,6 +587,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 args,
                 qubits,
             } => {
+                // Inject (shot replay): gates are no-ops — the state is
+                // already captured and outcomes are pre-sampled.
+                if self.inject.is_some() {
+                    return Ok(());
+                }
                 let call_span = self.current_span;
                 let r = self
                     .exec_gate_call(*gate, modifiers, args, qubits, frame)
@@ -599,6 +650,37 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     }
                     return Ok(());
                 }
+                // Inject (shot replay): return the pre-sampled outcomes for
+                // this register's qubits; the backend is untouched.
+                if let Some(basis) = self.inject.as_ref() {
+                    // Read the injected bits first (borrows `basis` ⊂ self),
+                    // then record/store (needs `&mut self`).
+                    let outcomes: Vec<bool> = qs
+                        .iter()
+                        .map(|&q| basis.get(q as usize).copied().unwrap_or(false))
+                        .collect();
+                    let mut bits: u128 = 0;
+                    for (i, (&q, &b)) in qs.iter().zip(&outcomes).enumerate() {
+                        self.measurements.push((q, b));
+                        if b {
+                            bits |= 1u128 << i;
+                        }
+                    }
+                    if let Some(d) = dest {
+                        let v = if qs.len() == 1 {
+                            Value::bit(bits & 1 != 0)
+                        } else {
+                            Value::bitreg_u128(bits, qs.len() as u32)
+                        };
+                        self.set(frame, *d, v);
+                    }
+                    return Ok(());
+                }
+                // Capture (fast-path snapshot): stash the amplitudes at the
+                // first measurement, before it collapses.
+                if self.capture && self.captured_state.is_none() {
+                    self.captured_state = self.backend.amplitudes().await;
+                }
                 let outcomes = self.backend.measure_all(&qs).await;
                 let mut bits: u128 = 0;
                 for (i, (&q, &b)) in qs.iter().zip(&outcomes).enumerate() {
@@ -621,6 +703,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 Ok(())
             }
             BcOp::Reset { qubit } => {
+                // Inject (shot replay): quantum no-op.
+                if self.inject.is_some() {
+                    return Ok(());
+                }
                 // Defcal dispatch: `reset $n` runs a matching reset defcal.
                 if self.pulse.is_some()
                     && let BcOperand::HardwareQubit(n) = qubit
@@ -642,6 +728,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 Ok(())
             }
             BcOp::Barrier { qubits } => {
+                // Inject (shot replay): quantum no-op.
+                if self.inject.is_some() {
+                    return Ok(());
+                }
                 // A barrier in a timing pass synchronizes all timelines.
                 if let Some(t) = self.timing.as_mut() {
                     t.sync();
@@ -652,6 +742,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 Ok(())
             }
             BcOp::Delay { duration, qubits } => {
+                // Inject (shot replay): quantum no-op.
+                if self.inject.is_some() {
+                    return Ok(());
+                }
                 let d = self.eval(frame, duration)?;
                 let dur = match d {
                     Value::Scalar(s) => s.value().as_duration(),

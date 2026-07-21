@@ -599,10 +599,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     }
                     return Ok(());
                 }
+                let outcomes = self.backend.measure_all(&qs).await;
                 let mut bits: u128 = 0;
-                for (i, q) in qs.iter().enumerate() {
-                    let b = self.backend.measure(*q).await;
-                    self.measurements.push((*q, b));
+                for (i, (&q, &b)) in qs.iter().zip(&outcomes).enumerate() {
+                    self.measurements.push((q, b));
                     if b {
                         bits |= 1 << i;
                     }

@@ -403,6 +403,36 @@ impl QuantumBackend for GpuSim {
         outcome
     }
 
+    async fn measure_all(&mut self, qubits: &[u32]) -> Vec<bool> {
+        // One readback for the whole register: sample and collapse each qubit
+        // on the host copy in turn (equivalent to sequential `measure`), then
+        // one upload. Turns a per-qubit GPU round-trip into a single pair.
+        let mut amps = self.read_state().await;
+        let mut outcomes = Vec::with_capacity(qubits.len());
+        for &qubit in qubits {
+            let bit = 1usize << qubit;
+            let p_one: f64 = amps
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| i & bit != 0)
+                .map(|(_, a)| a.norm_sqr())
+                .sum();
+            let outcome = self.rng.next_f64() < p_one;
+            let norm = if outcome { p_one } else { 1.0 - p_one };
+            let scale = if norm > 0.0 { 1.0 / norm.sqrt() } else { 0.0 };
+            for (i, a) in amps.iter_mut().enumerate() {
+                if (i & bit != 0) == outcome {
+                    *a *= scale;
+                } else {
+                    *a = Complex::new(0.0, 0.0);
+                }
+            }
+            outcomes.push(outcome);
+        }
+        self.write_state(&amps);
+        outcomes
+    }
+
     async fn reset(&mut self, qubit: u32) {
         if self.measure(qubit).await {
             self.apply_x(qubit);

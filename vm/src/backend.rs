@@ -81,6 +81,20 @@ pub trait QuantumBackend {
     /// the outcome.
     async fn measure(&mut self, qubit: u32) -> bool;
 
+    /// Measure several qubits in the Z basis (in order), collapsing after
+    /// each, returning one outcome per qubit. Equivalent to calling
+    /// [`measure`](Self::measure) for each in turn (projective measurements on
+    /// distinct qubits commute); the default does exactly that. Backends with
+    /// a costly per-measurement path (e.g. a GPU readback) override this to
+    /// snapshot the state once and sample every qubit from that copy.
+    async fn measure_all(&mut self, qubits: &[u32]) -> Vec<bool> {
+        let mut out = Vec::with_capacity(qubits.len());
+        for &q in qubits {
+            out.push(self.measure(q).await);
+        }
+        out
+    }
+
     /// Reset `qubit` to |0⟩.
     async fn reset(&mut self, qubit: u32);
 
@@ -139,6 +153,10 @@ impl QuantumBackend for Box<dyn QuantumBackend> {
 
     async fn measure(&mut self, qubit: u32) -> bool {
         (**self).measure(qubit).await
+    }
+
+    async fn measure_all(&mut self, qubits: &[u32]) -> Vec<bool> {
+        (**self).measure_all(qubits).await
     }
 
     async fn reset(&mut self, qubit: u32) {

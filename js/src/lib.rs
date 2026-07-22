@@ -14,7 +14,7 @@ use std::path::Path;
 use async_trait::async_trait;
 use oqi_compile::bytecode::{self, BcModule};
 use oqi_compile::classical::{
-    BitReg, Duration, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy,
+    Array, BitReg, Duration, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy,
 };
 use oqi_compile::duration::TableTimings;
 use oqi_compile::resolve::IncludeResolver;
@@ -181,6 +181,7 @@ enum InputValue {
     Bool(bool),
     Number(f64),
     Text(String),
+    Array(Vec<InputValue>),
 }
 
 /// Which simulator backend to run on.
@@ -653,18 +654,19 @@ fn coerce_inputs(
             .value_ty()
             .ok_or_else(|| JsError::new(&format!("input `{name}` has no value type")))?;
         let value =
-            coerce_scalar(&format!("input `{name}`"), &input, ty).map_err(|m| JsError::new(&m))?;
+            coerce_value(&format!("input `{name}`"), &input, ty).map_err(|m| JsError::new(&m))?;
         map.insert(sym.id, value);
     }
     Ok(map)
 }
 
-/// Coerce a raw JS value to the declared scalar type `ty`. Shared by
+/// Coerce a raw JS value to the declared type `ty`. Shared by
 /// [`coerce_inputs`] and extern return values; `what` names the value in
 /// error messages. Angles are radians (wrapped mod 2π and quantized to the
 /// declared width); bit registers are MSB-first "0101" strings of the
-/// declared width.
-fn coerce_scalar(what: &str, raw: &InputValue, ty: ValueTy) -> Result<Value, String> {
+/// declared width. Array types accept a JSON array (nesting allowed and
+/// flattened row-major) whose elements coerce to the element type.
+fn coerce_value(what: &str, raw: &InputValue, ty: ValueTy) -> Result<Value, String> {
     Ok(match ty {
         ValueTy::Scalar(PrimitiveTy::Int(w)) => Value::int(raw.to_i128(what)?, w),
         ValueTy::Scalar(PrimitiveTy::Uint(w)) => Value::uint(raw.to_u128(what)?, w),
@@ -678,8 +680,41 @@ fn coerce_scalar(what: &str, raw: &InputValue, ty: ValueTy) -> Result<Value, Str
                 .into()
         }
         ValueTy::Scalar(PrimitiveTy::BitReg(w)) => Value::bitreg(raw.to_bitreg(what, w)?, w),
+        ValueTy::Array(aty) => {
+            if !matches!(raw, InputValue::Array(_)) {
+                return Err(format!("{what} must be a JSON array of `{}` values", aty.ty()));
+            }
+            let mut leaves: Vec<&InputValue> = Vec::new();
+            collect_leaves(raw, &mut leaves);
+            let elem_ty = aty.ty();
+            let elems = leaves
+                .into_iter()
+                .enumerate()
+                .map(|(i, leaf)| {
+                    match coerce_value(&format!("{what}[{i}]"), leaf, ValueTy::Scalar(elem_ty))? {
+                        Value::Scalar(s) => Ok(s.into_value()),
+                        _ => unreachable!("a scalar type coerces to a scalar value"),
+                    }
+                })
+                .collect::<Result<Vec<Primitive>, String>>()?;
+            // `Array::new` validates the element count against the shape.
+            Value::Array(Array::new(elems, aty).map_err(|e| format!("{what}: {e:?}"))?)
+        }
         _ => return Err(format!("{what} has type `{ty}`, unsupported by the JS API")),
     })
+}
+
+/// Flatten a nested JS array into its scalar leaves, row-major, so both
+/// `[1,2,3]` and `[[1,2],[3,4]]` feed a multi-dimensional `array[...]`.
+fn collect_leaves<'a>(raw: &'a InputValue, out: &mut Vec<&'a InputValue>) {
+    match raw {
+        InputValue::Array(items) => {
+            for item in items {
+                collect_leaves(item, out);
+            }
+        }
+        scalar => out.push(scalar),
+    }
 }
 
 impl InputValue {
@@ -717,7 +752,9 @@ impl InputValue {
             InputValue::Text(s) => s
                 .parse()
                 .map_err(|_| format!("{what}: `{s}` is not a float")),
-            InputValue::Bool(_) => Err(format!("{what} must be a number or a decimal string")),
+            InputValue::Bool(_) | InputValue::Array(_) => {
+                Err(format!("{what} must be a number or a decimal string"))
+            }
         }
     }
 
@@ -826,7 +863,7 @@ impl ExternProvider for JsExterns {
                 "returned a value that is not a boolean, number, or string",
             )
         })?;
-        coerce_scalar("return value", &raw, *ty)
+        coerce_value("return value", &raw, *ty)
             .map(Some)
             .map_err(|m| extern_err(name, m))
     }

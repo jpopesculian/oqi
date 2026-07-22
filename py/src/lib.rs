@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use num_complex::Complex;
 use oqi_compile::bytecode::{self, BcModule};
 use oqi_compile::classical::{
-    BitReg, Duration, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy,
+    Array, BitReg, Duration, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy,
 };
 use oqi_compile::duration::TableTimings;
 use oqi_compile::resolve::IncludeResolver;
@@ -27,7 +27,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyTuple};
+use pyo3::types::{PyBool, PyDict, PyList, PyTuple};
 
 /// Name used for the root source in rendered diagnostics.
 const SOURCE_NAME: &str = "<source>";
@@ -293,12 +293,46 @@ fn coerce_scalar(what: &str, v: &Bound<'_, PyAny>, ty: ValueTy) -> Result<Value,
                 .into()
         }
         ValueTy::Scalar(PrimitiveTy::BitReg(w)) => Value::bitreg(to_bitreg(what, v, w)?, w),
+        ValueTy::Array(aty) => {
+            if !(v.is_instance_of::<PyList>() || v.is_instance_of::<PyTuple>()) {
+                return Err(format!("{what} must be a list of `{}` values", aty.ty()));
+            }
+            let mut leaves = Vec::new();
+            collect_leaves(v, &mut leaves);
+            let elem_ty = ValueTy::Scalar(aty.ty());
+            let elems = leaves
+                .iter()
+                .enumerate()
+                .map(|(i, item)| match coerce_scalar(&format!("{what}[{i}]"), item, elem_ty)? {
+                    Value::Scalar(s) => Ok(s.into_value()),
+                    _ => unreachable!("a scalar type coerces to a scalar value"),
+                })
+                .collect::<Result<Vec<Primitive>, String>>()?;
+            // `Array::new` validates the element count against the shape.
+            Value::Array(Array::new(elems, aty).map_err(|e| format!("{what}: {e:?}"))?)
+        }
         _ => {
             return Err(format!(
                 "{what} has type `{ty}`, unsupported by the Python API"
             ));
         }
     })
+}
+
+/// Flatten a nested Python `list`/`tuple` into its scalar leaves, row-major, so
+/// both `[1, 2, 3]` and `[[1, 2], [3, 4]]` feed a multi-dimensional `array[…]`.
+fn collect_leaves<'py>(v: &Bound<'py, PyAny>, out: &mut Vec<Bound<'py, PyAny>>) {
+    if let Ok(list) = v.cast::<PyList>() {
+        for item in list.iter() {
+            collect_leaves(&item, out);
+        }
+    } else if let Ok(tuple) = v.cast::<PyTuple>() {
+        for item in tuple.iter() {
+            collect_leaves(&item, out);
+        }
+    } else {
+        out.push(v.clone());
+    }
 }
 
 fn to_i128(what: &str, v: &Bound<'_, PyAny>) -> Result<i128, String> {

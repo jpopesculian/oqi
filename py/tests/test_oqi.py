@@ -63,6 +63,25 @@ def test_int_input_drives_branch():
     assert oqi.run(src, inputs={"n": 0}).measurements == [(0, False)]
 
 
+ARRAY_SUM = (
+    "OPENQASM 3.0;\n"
+    "input array[int, 3] xs;\n"
+    "output int total;\n"
+    "total = xs[0] + xs[1] + xs[2];\n"
+)
+
+
+def test_array_input():
+    assert oqi.run(ARRAY_SUM, inputs={"xs": [1, 2, 3]}).outputs["total"] == 6
+    # tuples are accepted too
+    assert oqi.run(ARRAY_SUM, inputs={"xs": (4, 5, 6)}).outputs["total"] == 15
+
+
+def test_array_input_wrong_length_rejected():
+    with pytest.raises(oqi.OqiError, match=r"input .xs."):
+        oqi.run(ARRAY_SUM, inputs={"xs": [1, 2]})
+
+
 INC = (
     "OPENQASM 3.0;\n"
     "qubit q;\n"

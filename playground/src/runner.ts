@@ -1,7 +1,7 @@
 // Main-thread client for the wasm worker: spawns it, matches responses to
 // requests by id, and supports Stop via terminate + respawn.
 
-export type InputValue = boolean | number | string;
+export type InputValue = boolean | number | string | InputValue[];
 
 export type BackendChoice = 'cpu' | 'gpu' | 'auto';
 export type Precision = 'f32' | 'f64';

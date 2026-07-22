@@ -140,6 +140,28 @@ async fn bad_input_rejected() {
     assert!(error_message(err).contains("no input named `nope`"));
 }
 
+const ARRAY_SUM: &str = "OPENQASM 3.0;\n\
+    input array[int, 3] xs;\n\
+    output int total;\n\
+    total = xs[0] + xs[1] + xs[2];\n";
+
+#[wasm_bindgen_test]
+async fn array_input_accepted() {
+    let out = run(ARRAY_SUM, options(r#"{ "inputs": { "xs": [1, 2, 3] } }"#))
+        .await
+        .unwrap();
+    assert_eq!(output(&out, "total").as_f64().unwrap(), 6.0);
+}
+
+#[wasm_bindgen_test]
+async fn array_input_wrong_length_rejected() {
+    let err = run(ARRAY_SUM, options(r#"{ "inputs": { "xs": [1, 2] } }"#))
+        .await
+        .unwrap_err();
+    // `Array::new` rejects a length that doesn't match the declared shape.
+    assert!(error_message(err).contains("input `xs`"));
+}
+
 const INC: &str = r#"
 OPENQASM 3.0;
 qubit q;

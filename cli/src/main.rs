@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::{Parser, Subcommand, ValueEnum};
-use oqi_compile::classical::{Duration, PrimitiveTy, Value, ValueTy};
+use oqi_compile::classical::{Array, Duration, Primitive, PrimitiveTy, Value, ValueTy};
 use oqi_compile::duration::TableTimings;
 use oqi_compile::error::CompileError;
 use oqi_compile::resolve::DefaultIncludeResolver;
@@ -200,7 +200,8 @@ enum Command {
         #[arg(long, default_value_t = 1024)]
         max_rank: usize,
 
-        /// Supply a value for a declared input (repeatable)
+        /// Supply a value for a declared input (repeatable). Arrays take a
+        /// comma-separated list, optionally bracketed: `NAME=1,2,3`.
         #[arg(long = "input", value_name = "NAME=VALUE")]
         input: Vec<String>,
 
@@ -477,38 +478,73 @@ fn parse_inputs(
             .value_ty()
             .ok_or_else(|| format!("input `{name}` has no value type"))?;
         let value = match ty {
-            ValueTy::Scalar(PrimitiveTy::Int(w)) => Value::int(
-                raw.parse()
-                    .map_err(|_| format!("input `{name}`: `{raw}` is not an integer"))?,
-                w,
-            ),
-            ValueTy::Scalar(PrimitiveTy::Uint(w)) => Value::uint(
-                raw.parse()
-                    .map_err(|_| format!("input `{name}`: `{raw}` is not an unsigned integer"))?,
-                w,
-            ),
-            ValueTy::Scalar(PrimitiveTy::Float(w)) => Value::float(
-                raw.parse()
-                    .map_err(|_| format!("input `{name}`: `{raw}` is not a float"))?,
-                w,
-            ),
-            ValueTy::Scalar(PrimitiveTy::Bit) | ValueTy::Scalar(PrimitiveTy::Bool) => {
-                let b = match raw {
-                    "0" | "false" => false,
-                    "1" | "true" => true,
-                    _ => {
-                        return Err(format!(
-                            "input `{name}`: `{raw}` is not a bit (use 0/1/true/false)"
-                        ));
-                    }
+            // `array[T, N]` accepts a comma-separated list, optionally bracketed
+            // (`1,2,3` or `[1,2,3]`), flattened row-major for multi-dim arrays.
+            ValueTy::Array(aty) => {
+                let inner = raw
+                    .trim()
+                    .strip_prefix('[')
+                    .and_then(|s| s.strip_suffix(']'))
+                    .unwrap_or(raw)
+                    .trim();
+                let parts: Vec<&str> = if inner.is_empty() {
+                    Vec::new()
+                } else {
+                    inner.split(',').collect()
                 };
-                Value::bit(b)
+                let elem_ty = ValueTy::Scalar(aty.ty());
+                let elems = parts
+                    .iter()
+                    .map(|part| match parse_scalar(name, part.trim(), elem_ty)? {
+                        Value::Scalar(s) => Ok(s.into_value()),
+                        _ => unreachable!("a scalar type parses to a scalar value"),
+                    })
+                    .collect::<Result<Vec<Primitive>, String>>()?;
+                Value::Array(
+                    Array::new(elems, aty).map_err(|e| format!("input `{name}`: {e:?}"))?,
+                )
             }
-            _ => return Err(format!("input `{name}` has a type unsupported on the CLI")),
+            scalar_ty => parse_scalar(name, raw, scalar_ty)?,
         };
         map.insert(sym.id, value);
     }
     Ok(map)
+}
+
+/// Parse a raw `--input` string into a scalar [`Value`] of type `ty`. Also
+/// used per-element when parsing `array[…]` inputs. Handles int/uint/float/
+/// bit/bool; other scalar types are unsupported on the CLI.
+fn parse_scalar(name: &str, raw: &str, ty: ValueTy) -> Result<Value, String> {
+    Ok(match ty {
+        ValueTy::Scalar(PrimitiveTy::Int(w)) => Value::int(
+            raw.parse()
+                .map_err(|_| format!("input `{name}`: `{raw}` is not an integer"))?,
+            w,
+        ),
+        ValueTy::Scalar(PrimitiveTy::Uint(w)) => Value::uint(
+            raw.parse()
+                .map_err(|_| format!("input `{name}`: `{raw}` is not an unsigned integer"))?,
+            w,
+        ),
+        ValueTy::Scalar(PrimitiveTy::Float(w)) => Value::float(
+            raw.parse()
+                .map_err(|_| format!("input `{name}`: `{raw}` is not a float"))?,
+            w,
+        ),
+        ValueTy::Scalar(PrimitiveTy::Bit) | ValueTy::Scalar(PrimitiveTy::Bool) => {
+            let b = match raw {
+                "0" | "false" => false,
+                "1" | "true" => true,
+                _ => {
+                    return Err(format!(
+                        "input `{name}`: `{raw}` is not a bit (use 0/1/true/false)"
+                    ));
+                }
+            };
+            Value::bit(b)
+        }
+        _ => return Err(format!("input `{name}` has a type unsupported on the CLI")),
+    })
 }
 
 /// Render a compiler diagnostic with source context and return failure.

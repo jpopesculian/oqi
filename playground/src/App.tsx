@@ -41,7 +41,14 @@ function parseShots(text: string): number {
   return n;
 }
 
-/** Blank → `{}`; otherwise a JSON object of boolean|number|string values. */
+/** A scalar (bool/number/string) or an array of valid inputs (for `array[…]`). */
+function isValidInput(value: unknown): value is InputValue {
+  const kind = typeof value;
+  if (kind === 'boolean' || kind === 'number' || kind === 'string') return true;
+  return Array.isArray(value) && value.every(isValidInput);
+}
+
+/** Blank → `{}`; otherwise a JSON object of scalar or array input values. */
 function parseInputs(text: string): Record<string, InputValue> {
   const trimmed = text.trim();
   if (trimmed === '') return {};
@@ -50,9 +57,10 @@ function parseInputs(text: string): Record<string, InputValue> {
     throw new Error('inputs must be a JSON object');
   }
   for (const [key, value] of Object.entries(parsed)) {
-    const kind = typeof value;
-    if (kind !== 'boolean' && kind !== 'number' && kind !== 'string') {
-      throw new Error(`inputs.${key} must be a boolean, number, or string`);
+    if (!isValidInput(value)) {
+      throw new Error(
+        `inputs.${key} must be a boolean, number, string, or array of them`,
+      );
     }
   }
   return parsed as Record<string, InputValue>;

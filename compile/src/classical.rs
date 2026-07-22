@@ -1,5 +1,5 @@
 pub use oqi_classical::{
-    ArrayDim, ArrayRefShape, ArrayRefTy, ArrayShape, ArrayTy, BaseArray, BaseArrayRef,
+    Array, ArrayDim, ArrayRefShape, ArrayRefTy, ArrayShape, ArrayTy, BaseArray, BaseArrayRef,
     BaseArrayRefTy, BaseArrayTy, BaseScalar, BaseValue, BaseValueTy, BitReg, Duration,
     DurationUnit, FloatWidth, IntWidth, Primitive, PrimitiveTy, RefAccess, Scalar, Value, ValueTy,
     adim, ashape, iw,

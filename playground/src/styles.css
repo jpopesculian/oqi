@@ -161,6 +161,12 @@ body {
   font-family: var(--mono);
 }
 
+.editor .cm-error-span {
+  background: #ff6b6b26;
+  text-decoration: wavy underline var(--error);
+  text-underline-offset: 3px;
+}
+
 .inline-error {
   padding: 6px 14px;
   color: var(--error);

@@ -25,6 +25,12 @@ export interface Histogram {
   bars: HistoBar[];
 }
 
+/** Byte-offset range into the source for an error's offending span. */
+export interface ErrorSpan {
+  start: number;
+  end: number;
+}
+
 export interface SampleResult {
   shots: number;
   /** The backend that actually ran (`auto` reports `cpu` or `gpu`). */
@@ -38,12 +44,28 @@ export interface SampleResult {
 type WorkerReply =
   | { type: 'ready' }
   | { type: 'result'; id: number; ok: true; value: SampleResult }
-  | { type: 'result'; id: number; ok: false; error: string };
+  | {
+      type: 'result';
+      id: number;
+      ok: false;
+      error: string;
+      span: ErrorSpan | null;
+    };
 
 export class RunnerStoppedError extends Error {
   constructor() {
     super('stopped');
     this.name = 'RunnerStoppedError';
+  }
+}
+
+/** A failed run: the rendered diagnostic message plus its source span, if any. */
+export class RunError extends Error {
+  span: ErrorSpan | null;
+  constructor(message: string, span: ErrorSpan | null) {
+    super(message);
+    this.name = 'RunError';
+    this.span = span;
   }
 }
 
@@ -80,7 +102,7 @@ export class Runner {
       if (msg.ok) {
         entry.resolve(msg.value);
       } else {
-        entry.reject(new Error(msg.error));
+        entry.reject(new RunError(msg.error, msg.span));
       }
     };
   }

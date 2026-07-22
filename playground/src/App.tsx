@@ -4,8 +4,10 @@ import { EXAMPLES } from './examples';
 import { InputsPane } from './InputsPane';
 import { ResultsPane, type Phase } from './ResultsPane';
 import {
+  RunError,
   Runner,
   RunnerStoppedError,
+  type ErrorSpan,
   type InputValue,
   type SampleResult,
 } from './runner';
@@ -80,6 +82,7 @@ export function App() {
   const [result, setResult] = useState<SampleResult | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
+  const [errorSpan, setErrorSpan] = useState<ErrorSpan | null>(null);
   const [inputsError, setInputsError] = useState<string | null>(null);
   const [seedError, setSeedError] = useState<string | null>(null);
   const [shotsError, setShotsError] = useState<string | null>(null);
@@ -119,6 +122,7 @@ export function App() {
     setSeedError(null);
     setShotsError(null);
     setRunError(null);
+    setErrorSpan(null);
 
     let inputs: Record<string, InputValue>;
     try {
@@ -168,6 +172,7 @@ export function App() {
           return;
         }
         setRunError(err instanceof Error ? err.message : String(err));
+        setErrorSpan(err instanceof RunError ? err.span : null);
         setPhase('idle');
       },
     );
@@ -188,6 +193,7 @@ export function App() {
     setResult(null);
     setElapsedMs(null);
     setRunError(null);
+    setErrorSpan(null);
     setInputsError(null);
     setSeedError(null);
     setShotsError(null);
@@ -213,7 +219,11 @@ export function App() {
         <div className="left">
           <div className="source-pane">
             <div className="pane-title">OpenQASM</div>
-            <SourceEditor value={source} onChange={setSource} />
+            <SourceEditor
+              value={source}
+              onChange={setSource}
+              errorSpan={errorSpan}
+            />
           </div>
           <InputsPane
             value={inputsText}

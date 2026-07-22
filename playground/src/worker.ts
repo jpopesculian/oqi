@@ -25,6 +25,12 @@ self.onmessage = async (event: MessageEvent<RunRequest>) => {
     self.postMessage({ type: 'result', id: msg.id, ok: true, value });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    self.postMessage({ type: 'result', id: msg.id, ok: false, error });
+    // Diagnostic errors carry a `{ start, end }` byte-offset span for the
+    // offending source; plain errors don't.
+    const span =
+      err && typeof err === 'object' && 'span' in err
+        ? (err as { span: unknown }).span
+        : null;
+    self.postMessage({ type: 'result', id: msg.id, ok: false, error, span });
   }
 };

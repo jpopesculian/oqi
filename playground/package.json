@@ -11,6 +11,8 @@
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",
     "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.1",
+    "@codemirror/view": "^6.43.6",
     "@uiw/react-codemirror": "^4.25.11",
     "oqi-js": "file:../js/pkg",
     "react": "^19.2.7",

@@ -53,13 +53,34 @@ impl IncludeResolver for LibOnlyResolver {
     }
 }
 
-/// Render any workspace diagnostic against the root source as a `JsError`.
-fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> JsError {
-    JsError::new(&oqi_diagnostics::render_to_string(
+/// Render any workspace diagnostic against the root source as a thrown JS
+/// `Error`. The rendered diagnostic is the `message`; when the primary label
+/// has a real source span, it's attached as a `{ start, end }` byte-offset
+/// `span` property so callers (e.g. the playground) can highlight it.
+fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> JsValue {
+    let err = js_sys::Error::new(&oqi_diagnostics::render_to_string(
         diag,
         Path::new(SOURCE_NAME),
         source,
-    ))
+    ));
+    if let Some(label) = diag.labels().into_iter().find(|l| l.primary) {
+        // A `0..0` span is the "no location" sentinel; skip empty spans too.
+        if label.span.end > label.span.start {
+            let obj = js_sys::Object::new();
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("start"),
+                &JsValue::from_f64(label.span.start as f64),
+            );
+            let _ = js_sys::Reflect::set(
+                &obj,
+                &JsValue::from_str("end"),
+                &JsValue::from_f64(label.span.end as f64),
+            );
+            let _ = js_sys::Reflect::set(&err, &JsValue::from_str("span"), &obj);
+        }
+    }
+    err.into()
 }
 
 /// Source → bytecode module; same pipeline the CLI drives in `run`.
@@ -67,7 +88,7 @@ fn build_module(
     source: &str,
     timings: Option<&HashMap<String, String>>,
     dt: Option<&str>,
-) -> Result<BcModule, JsError> {
+) -> Result<BcModule, JsValue> {
     let mut options = CompileOptions {
         source_name: Some(Path::new(SOURCE_NAME).to_path_buf()),
         ..Default::default()
@@ -129,7 +150,7 @@ pub struct CompileResult {
 
 /// Compile an OpenQASM 3 program to bytecode.
 #[wasm_bindgen]
-pub fn compile(source: &str) -> Result<CompileResult, JsError> {
+pub fn compile(source: &str) -> Result<CompileResult, JsValue> {
     let module = build_module(source, None, None)?;
     let bytes = bytecode::to_bytes(&module)
         .map_err(|e| JsError::new(&format!("bytecode encoding failed: {e:?}")))?;
@@ -289,7 +310,7 @@ struct RunOutput {
 /// `durationof` resolution (defcal bodies included); `dt` sets the device
 /// time unit. Returns `{ measurements, outputs, statevector? }`.
 #[wasm_bindgen]
-pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsError> {
+pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsValue> {
     let opts: RunOptions = if options.is_undefined() || options.is_null() {
         RunOptions::default()
     } else {
@@ -347,7 +368,7 @@ pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsError> {
         statevector,
     };
     serde_wasm_bindgen::to_value(&out)
-        .map_err(|e| JsError::new(&format!("result serialization failed: {e}")))
+        .map_err(|e| JsError::new(&format!("result serialization failed: {e}")).into())
 }
 
 /// A backend chosen for a run, boxed for the VM, plus the names of what
@@ -366,13 +387,13 @@ async fn select_backend(
     num_qubits: u32,
     seed: u64,
     source: &str,
-) -> Result<Chosen, JsError> {
+) -> Result<Chosen, JsValue> {
     fn cpu(
         precision: Precision,
         num_qubits: u32,
         seed: u64,
         source: &str,
-    ) -> Result<Chosen, JsError> {
+    ) -> Result<Chosen, JsValue> {
         let (backend, precision): (Box<dyn QuantumBackend>, &'static str) = match precision {
             Precision::F64 => (
                 Box::new(
@@ -421,7 +442,8 @@ async fn select_backend(
         #[cfg(not(feature = "gpu"))]
         Backend::Gpu => Err(JsError::new(
             "this build has no GPU backend (compile oqi-js with `--features gpu`)",
-        )),
+        )
+        .into()),
         #[cfg(not(feature = "gpu"))]
         Backend::Auto => cpu(precision, num_qubits, seed, source),
     }
@@ -436,7 +458,7 @@ async fn select_backend(
 /// RNG stream advances — so a given `seed` reproduces the whole histogram.
 /// Returns `{ shots, backend, histograms: [{ name, total, bars: [{ label, count }] }] }`.
 #[wasm_bindgen]
-pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsError> {
+pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsValue> {
     let opts: RunOptions = if options.is_undefined() || options.is_null() {
         RunOptions::default()
     } else {
@@ -536,7 +558,7 @@ pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsError
         histograms,
     };
     serde_wasm_bindgen::to_value(&out)
-        .map_err(|e| JsError::new(&format!("result serialization failed: {e}")))
+        .map_err(|e| JsError::new(&format!("result serialization failed: {e}")).into())
 }
 
 /// Tally one shot's outputs into the running histograms; on the first shot,

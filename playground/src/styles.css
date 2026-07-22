@@ -193,9 +193,21 @@ body {
   color: var(--fg-dim);
 }
 
+.run-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.run-time {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
 .backend-badge {
   display: inline-block;
-  margin-bottom: 12px;
   padding: 3px 10px;
   border-radius: 999px;
   font-family: var(--mono);

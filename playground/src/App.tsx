@@ -78,12 +78,14 @@ export function App() {
   const [backendSel, setBackendSel] = useState<BackendSel>('cpu-f32');
   const [phase, setPhase] = useState<Phase>('booting');
   const [result, setResult] = useState<SampleResult | null>(null);
+  const [elapsedMs, setElapsedMs] = useState<number | null>(null);
   const [runError, setRunError] = useState<string | null>(null);
   const [inputsError, setInputsError] = useState<string | null>(null);
   const [seedError, setSeedError] = useState<string | null>(null);
   const [shotsError, setShotsError] = useState<string | null>(null);
 
   const runnerRef = useRef<Runner | null>(null);
+  const handleRunRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     const runner = new Runner();
@@ -95,6 +97,18 @@ export function App() {
       runnerRef.current = null;
       runner.dispose();
     };
+  }, []);
+
+  // Ctrl/Cmd+Enter runs, from anywhere on the page (incl. the editor).
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault();
+        handleRunRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   const handleRun = () => {
@@ -130,7 +144,9 @@ export function App() {
 
     setPhase('running');
     setResult(null);
+    setElapsedMs(null);
     const chosen = BACKENDS[backendSel];
+    const start = performance.now();
     runner
       .run(source, {
         inputs,
@@ -142,6 +158,7 @@ export function App() {
       .then(
       (res) => {
         setResult(res);
+        setElapsedMs(performance.now() - start);
         setPhase('idle');
       },
       (err: unknown) => {
@@ -156,6 +173,8 @@ export function App() {
     );
   };
 
+  handleRunRef.current = handleRun;
+
   const handleStop = () => {
     runnerRef.current?.stop();
   };
@@ -167,6 +186,7 @@ export function App() {
     setInputsText(example.inputs);
     setSeed(example.seed);
     setResult(null);
+    setElapsedMs(null);
     setRunError(null);
     setInputsError(null);
     setSeedError(null);
@@ -201,7 +221,12 @@ export function App() {
             error={inputsError}
           />
         </div>
-        <ResultsPane phase={phase} result={result} error={runError} />
+        <ResultsPane
+          phase={phase}
+          result={result}
+          error={runError}
+          elapsedMs={elapsedMs}
+        />
       </div>
     </div>
   );

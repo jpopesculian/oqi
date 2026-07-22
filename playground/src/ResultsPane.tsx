@@ -7,9 +7,17 @@ interface Props {
   phase: Phase;
   result: SampleResult | null;
   error: string | null;
+  elapsedMs: number | null;
 }
 
-export function ResultsPane({ phase, result, error }: Props) {
+/** Human-readable run duration, e.g. `240ms`, `1.5s`, `30s`. */
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const s = ms / 1000;
+  return s < 10 ? `${s.toFixed(1)}s` : `${Math.round(s)}s`;
+}
+
+export function ResultsPane({ phase, result, error, elapsedMs }: Props) {
   return (
     <div className="results-pane">
       <div className="pane-title">Results</div>
@@ -20,7 +28,7 @@ export function ResultsPane({ phase, result, error }: Props) {
           <pre className="diagnostic">{error}</pre>
         )}
         {phase === 'idle' && error === null && result !== null && (
-          <Histograms result={result} />
+          <Histograms result={result} elapsedMs={elapsedMs} />
         )}
         {phase === 'idle' && error === null && result === null && (
           <div className="hint">Press Run to sample the program.</div>
@@ -50,14 +58,25 @@ function BackendBadge({
   );
 }
 
-function Histograms({ result }: { result: SampleResult }) {
+function Histograms({
+  result,
+  elapsedMs,
+}: {
+  result: SampleResult;
+  elapsedMs: number | null;
+}) {
   return (
     <>
-      <BackendBadge
-        backend={result.backend}
-        precision={result.precision}
-        shots={result.shots}
-      />
+      <div className="run-summary">
+        <BackendBadge
+          backend={result.backend}
+          precision={result.precision}
+          shots={result.shots}
+        />
+        {elapsedMs !== null && (
+          <span className="run-time">{formatDuration(elapsedMs)}</span>
+        )}
+      </div>
       {result.histograms.length === 0 ? (
         <div className="hint">The program produced no outputs.</div>
       ) : (

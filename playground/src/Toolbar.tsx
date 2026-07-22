@@ -45,7 +45,12 @@ export function Toolbar({
           Stop
         </button>
       ) : (
-        <button className="run" onClick={onRun} disabled={phase !== 'idle'}>
+        <button
+          className="run"
+          onClick={onRun}
+          disabled={phase !== 'idle'}
+          title="Run (Ctrl+Enter)"
+        >
           Run
         </button>
       )}

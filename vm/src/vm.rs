@@ -376,13 +376,17 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         // Seed declared inputs; reject missing ones and type mismatches.
         let reg_types = &self.module.procedures[entry.0 as usize].register_types;
         for (sym, reg) in &self.module.inputs {
-            let value = inputs.remove(sym).ok_or(VmErrorKind::MissingInput(*sym))?;
+            let value = inputs.remove(sym).ok_or_else(|| {
+                VmErrorKind::MissingInput(self.module.symbols.get(*sym).name.clone())
+            })?;
             let want = reg_types[reg.0 as usize];
             regs[reg.0 as usize] = Some(value.cast(want)?);
         }
         // Any leftover entries name symbols that aren't declared inputs.
         if let Some(sym) = inputs.keys().next() {
-            return Err(VmErrorKind::UnknownInput(*sym));
+            return Err(VmErrorKind::UnknownInput(
+                self.module.symbols.get(*sym).name.clone(),
+            ));
         }
 
         let mut frame = Frame {

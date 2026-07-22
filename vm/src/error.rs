@@ -1,6 +1,5 @@
 use std::fmt;
 
-use oqi_compile::symbol::SymbolId;
 use oqi_lex::Span;
 
 /// The kind of error raised while executing a bytecode module, independent
@@ -10,10 +9,10 @@ use oqi_lex::Span;
 pub enum VmErrorKind {
     /// A register was read before being assigned a value.
     UnsetRegister(u32),
-    /// A declared `input` was not given a value before running.
-    MissingInput(SymbolId),
-    /// A value was supplied for a symbol that isn't a declared `input`.
-    UnknownInput(SymbolId),
+    /// A declared `input` (named here) was not given a value before running.
+    MissingInput(String),
+    /// A value was supplied for a name that isn't a declared `input`.
+    UnknownInput(String),
     /// A `Call` targeted an `extern` the provider doesn't implement.
     UnknownExtern(String),
     /// An `extern` call's host implementation failed: it threw/rejected,
@@ -58,11 +57,11 @@ impl fmt::Display for VmErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             VmErrorKind::UnsetRegister(r) => write!(f, "register r{r} read before assignment"),
-            VmErrorKind::MissingInput(s) => {
-                write!(f, "no value supplied for input symbol {}", s.0)
+            VmErrorKind::MissingInput(name) => {
+                write!(f, "no value supplied for input `{name}`")
             }
-            VmErrorKind::UnknownInput(s) => {
-                write!(f, "value supplied for symbol {} which is not an input", s.0)
+            VmErrorKind::UnknownInput(name) => {
+                write!(f, "value supplied for `{name}`, which is not a declared input")
             }
             VmErrorKind::UnknownExtern(name) => {
                 write!(f, "extern function `{name}` is not provided")

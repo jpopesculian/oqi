@@ -71,7 +71,10 @@ pub fn compile_source_with_options(
     options: CompileOptions,
 ) -> Result<sir::Program> {
     let ast = oqi_parse::parse(source).map_err(|e| {
-        CompileError::new(ErrorKind::Unsupported(format!("parse error: {e:?}")))
+        // Carry the parser's span through so the error renders with a location
+        // (and callers can highlight it) instead of the `0..0` fallback.
+        CompileError::new(ErrorKind::Unsupported(format!("parse error: {}", e.message)))
+            .with_span(e.span)
             .with_path(options.source_name.clone())
     })?;
     compile_ast(&ast, include_resolver, options)

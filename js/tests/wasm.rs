@@ -114,6 +114,25 @@ fn include_path_rejected() {
 }
 
 #[wasm_bindgen_test]
+fn syntax_error_carries_span() {
+    // A missing `;` is a parse error; its source span must reach JS as a
+    // non-empty `{ start, end }` property so the playground can highlight it.
+    let err = oqi_js::compile("OPENQASM 3.0\n")
+        .err()
+        .expect("expected compile error");
+    let span = js_sys::Reflect::get(&err, &JsValue::from_str("span")).unwrap();
+    assert!(!span.is_undefined(), "syntax error should carry a span");
+    let field = |k: &str| {
+        js_sys::Reflect::get(&span, &JsValue::from_str(k))
+            .unwrap()
+            .as_f64()
+            .unwrap()
+    };
+    let (start, end) = (field("start"), field("end"));
+    assert!(end > start, "span should be non-empty, got {start}..{end}");
+}
+
+#[wasm_bindgen_test]
 async fn bad_input_rejected() {
     let err = run(BELL, options(r#"{ "inputs": { "nope": 1 } }"#))
         .await

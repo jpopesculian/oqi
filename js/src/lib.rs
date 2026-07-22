@@ -64,20 +64,35 @@ fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> JsValue {
         source,
     ));
     if let Some(label) = diag.labels().into_iter().find(|l| l.primary) {
-        // A `0..0` span is the "no location" sentinel; skip empty spans too.
-        if label.span.end > label.span.start {
-            let obj = js_sys::Object::new();
-            let _ = js_sys::Reflect::set(
-                &obj,
-                &JsValue::from_str("start"),
-                &JsValue::from_f64(label.span.start as f64),
-            );
-            let _ = js_sys::Reflect::set(
-                &obj,
-                &JsValue::from_str("end"),
-                &JsValue::from_f64(label.span.end as f64),
-            );
-            let _ = js_sys::Reflect::set(&err, &JsValue::from_str("span"), &obj);
+        let mut start = label.span.start;
+        let mut end = label.span.end;
+        // A `0..0` span is the "no location" sentinel; skip it.
+        if (start != 0 || end != 0) && start <= source.len() && end <= source.len() {
+            // Widen a zero-width span (e.g. a parser "expected ';'") to one
+            // character so the editor has a visible range. Prefer the char
+            // *before* the gap — for a missing `;` the position sits on the
+            // following newline, and the token before it is what's relevant.
+            if end == start {
+                if let Some(c) = source[..start].chars().next_back() {
+                    start -= c.len_utf8();
+                } else if let Some(c) = source[start..].chars().next() {
+                    end = start + c.len_utf8();
+                }
+            }
+            if end > start {
+                let obj = js_sys::Object::new();
+                let _ = js_sys::Reflect::set(
+                    &obj,
+                    &JsValue::from_str("start"),
+                    &JsValue::from_f64(start as f64),
+                );
+                let _ = js_sys::Reflect::set(
+                    &obj,
+                    &JsValue::from_str("end"),
+                    &JsValue::from_f64(end as f64),
+                );
+                let _ = js_sys::Reflect::set(&err, &JsValue::from_str("span"), &obj);
+            }
         }
     }
     err.into()

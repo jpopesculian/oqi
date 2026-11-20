@@ -315,7 +315,9 @@ impl GpuSim {
             .expect("map_async callback dropped")
             .expect("buffer map failed");
 
-        let data = slice.get_mapped_range();
+        let data = slice
+            .get_mapped_range()
+            .expect("buffer mapped just above");
         let floats: &[f32] = bytemuck::cast_slice(&data);
         let out = (0..self.len)
             .map(|k| Complex::new(floats[2 * k] as f64, floats[2 * k + 1] as f64))

@@ -159,28 +159,16 @@ fn fmt_instr(f: &mut fmt::Formatter<'_>, instr: &BcInstr) -> fmt::Result {
 
 fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
     match op {
-        BcOp::Add { dest, lhs, rhs } => fmt_bin(f, "add", dest, lhs, rhs),
-        BcOp::Sub { dest, lhs, rhs } => fmt_bin(f, "sub", dest, lhs, rhs),
-        BcOp::Mul { dest, lhs, rhs } => fmt_bin(f, "mul", dest, lhs, rhs),
-        BcOp::Div { dest, lhs, rhs } => fmt_bin(f, "div", dest, lhs, rhs),
-        BcOp::Mod { dest, lhs, rhs } => fmt_bin(f, "mod", dest, lhs, rhs),
-        BcOp::Pow { dest, lhs, rhs } => fmt_bin(f, "pow", dest, lhs, rhs),
-        BcOp::BitAnd { dest, lhs, rhs } => fmt_bin(f, "and", dest, lhs, rhs),
-        BcOp::BitOr { dest, lhs, rhs } => fmt_bin(f, "or", dest, lhs, rhs),
-        BcOp::BitXor { dest, lhs, rhs } => fmt_bin(f, "xor", dest, lhs, rhs),
-        BcOp::Shl { dest, lhs, rhs } => fmt_bin(f, "shl", dest, lhs, rhs),
-        BcOp::Shr { dest, lhs, rhs } => fmt_bin(f, "shr", dest, lhs, rhs),
-        BcOp::LogAnd { dest, lhs, rhs } => fmt_bin(f, "logand", dest, lhs, rhs),
-        BcOp::LogOr { dest, lhs, rhs } => fmt_bin(f, "logor", dest, lhs, rhs),
-        BcOp::Eq { dest, lhs, rhs } => fmt_bin(f, "eq", dest, lhs, rhs),
-        BcOp::Neq { dest, lhs, rhs } => fmt_bin(f, "neq", dest, lhs, rhs),
-        BcOp::Lt { dest, lhs, rhs } => fmt_bin(f, "lt", dest, lhs, rhs),
-        BcOp::Gt { dest, lhs, rhs } => fmt_bin(f, "gt", dest, lhs, rhs),
-        BcOp::Le { dest, lhs, rhs } => fmt_bin(f, "le", dest, lhs, rhs),
-        BcOp::Ge { dest, lhs, rhs } => fmt_bin(f, "ge", dest, lhs, rhs),
-        BcOp::Neg { dest, src } => fmt_un(f, "neg", dest, src),
-        BcOp::BitNot { dest, src } => fmt_un(f, "not", dest, src),
-        BcOp::LogNot { dest, src } => fmt_un(f, "lnot", dest, src),
+        BcOp::Binary { op, dest, lhs, rhs } => {
+            write!(f, "{} = {} ", fmt_reg(*dest), mnemonic(op))?;
+            fmt_operand(f, lhs)?;
+            write!(f, ", ")?;
+            fmt_operand(f, rhs)
+        }
+        BcOp::Unary { op, dest, src } => {
+            write!(f, "{} = {} ", fmt_reg(*dest), mnemonic(op))?;
+            fmt_operand(f, src)
+        }
         BcOp::Cast {
             dest,
             target_ty,
@@ -434,22 +422,10 @@ fn fmt_terminator(f: &mut fmt::Formatter<'_>, term: &BcTerminator) -> fmt::Resul
     }
 }
 
-fn fmt_bin(
-    f: &mut fmt::Formatter<'_>,
-    name: &str,
-    dest: &Reg,
-    lhs: &BcOperand,
-    rhs: &BcOperand,
-) -> fmt::Result {
-    write!(f, "{} = {} ", fmt_reg(*dest), name)?;
-    fmt_operand(f, lhs)?;
-    write!(f, ", ")?;
-    fmt_operand(f, rhs)
-}
-
-fn fmt_un(f: &mut fmt::Formatter<'_>, name: &str, dest: &Reg, src: &BcOperand) -> fmt::Result {
-    write!(f, "{} = {} ", fmt_reg(*dest), name)?;
-    fmt_operand(f, src)
+/// An operator's mnemonic: its variant name in lower case (`add`, `lte`,
+/// `bitnot`, `sin`, …).
+fn mnemonic(op: &impl fmt::Debug) -> String {
+    format!("{op:?}").to_lowercase()
 }
 
 /// Render `[i0, i1, …]` for an element access's per-dimension indices.
@@ -496,7 +472,7 @@ fn fmt_qubit_source(f: &mut fmt::Formatter<'_>, source: &QubitSource) -> fmt::Re
 fn fmt_call_target(f: &mut fmt::Formatter<'_>, t: &BcCallTarget) -> fmt::Result {
     match t {
         BcCallTarget::Symbol(s) => write!(f, "s{}", s.0),
-        BcCallTarget::Intrinsic(i) => write!(f, "{i:?}"),
+        BcCallTarget::Intrinsic(i) => write!(f, "{i}"),
     }
 }
 

@@ -60,64 +60,9 @@ impl fmt::Display for SymbolKind {
     }
 }
 
-impl fmt::Display for BinOp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            BinOp::Add => write!(f, "+"),
-            BinOp::Sub => write!(f, "-"),
-            BinOp::Mul => write!(f, "*"),
-            BinOp::Div => write!(f, "/"),
-            BinOp::Mod => write!(f, "%"),
-            BinOp::Pow => write!(f, "**"),
-            BinOp::BitAnd => write!(f, "&"),
-            BinOp::BitOr => write!(f, "|"),
-            BinOp::BitXor => write!(f, "^"),
-            BinOp::Shl => write!(f, "<<"),
-            BinOp::Shr => write!(f, ">>"),
-            BinOp::LogAnd => write!(f, "&&"),
-            BinOp::LogOr => write!(f, "||"),
-            BinOp::Eq => write!(f, "=="),
-            BinOp::Neq => write!(f, "!="),
-            BinOp::Lt => write!(f, "<"),
-            BinOp::Gt => write!(f, ">"),
-            BinOp::Lte => write!(f, "<="),
-            BinOp::Gte => write!(f, ">="),
-        }
-    }
-}
-
-impl fmt::Display for UnOp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            UnOp::Neg => write!(f, "-"),
-            UnOp::BitNot => write!(f, "~"),
-            UnOp::LogNot => write!(f, "!"),
-        }
-    }
-}
-
 impl fmt::Display for Intrinsic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Intrinsic::Sin => write!(f, "sin"),
-            Intrinsic::Cos => write!(f, "cos"),
-            Intrinsic::Tan => write!(f, "tan"),
-            Intrinsic::Arcsin => write!(f, "arcsin"),
-            Intrinsic::Arccos => write!(f, "arccos"),
-            Intrinsic::Arctan => write!(f, "arctan"),
-            Intrinsic::Exp => write!(f, "exp"),
-            Intrinsic::Log => write!(f, "log"),
-            Intrinsic::Sqrt => write!(f, "sqrt"),
-            Intrinsic::Ceiling => write!(f, "ceiling"),
-            Intrinsic::Floor => write!(f, "floor"),
-            Intrinsic::Mod => write!(f, "mod"),
-            Intrinsic::Popcount => write!(f, "popcount"),
-            Intrinsic::Rotl => write!(f, "rotl"),
-            Intrinsic::Rotr => write!(f, "rotr"),
-            Intrinsic::Real => write!(f, "real"),
-            Intrinsic::Imag => write!(f, "imag"),
-            Intrinsic::Sizeof => write!(f, "sizeof"),
-        }
+        f.write_str(self.name())
     }
 }
 
@@ -137,6 +82,7 @@ impl fmt::Display for ErrorKind {
                 write!(f, "designator must be a constant expression")
             }
             ErrorKind::NonConstantExpression => write!(f, "expression must be constant"),
+            ErrorKind::InvalidType(msg) => write!(f, "invalid type: {msg}"),
             ErrorKind::IncludeNotFound(path) => write!(f, "include file not found: {path}"),
             ErrorKind::IncludeCycle(chain) => {
                 write!(f, "include cycle: {}", chain.join(" -> "))

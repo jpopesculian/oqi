@@ -89,7 +89,7 @@ impl fmt::Display for VmErrorKind {
                 f,
                 "gate broadcast over registers of differing lengths: {lengths:?}"
             ),
-            VmErrorKind::Classical(e) => write!(f, "classical error: {e:?}"),
+            VmErrorKind::Classical(e) => write!(f, "classical error: {e}"),
             VmErrorKind::QubitOutOfRange { qubit, num_qubits } => write!(
                 f,
                 "qubit index {qubit} is out of range (the program allocates {num_qubits} qubit(s))"

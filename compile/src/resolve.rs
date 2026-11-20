@@ -204,7 +204,7 @@ impl Resolver {
     }
 
     pub fn resolve_call(&self, name: &str, span: Span) -> Result<CallTarget> {
-        if let Some(intrinsic) = lookup_intrinsic(name) {
+        if let Some(intrinsic) = Intrinsic::lookup(name) {
             return Ok(CallTarget::Intrinsic(intrinsic));
         }
         let id = self.resolve(name, span)?;
@@ -305,30 +305,6 @@ fn normalize_path(path: PathBuf) -> PathBuf {
     }
 
     normalized
-}
-
-pub(crate) fn lookup_intrinsic(name: &str) -> Option<Intrinsic> {
-    match name {
-        "sin" => Some(Intrinsic::Sin),
-        "cos" => Some(Intrinsic::Cos),
-        "tan" => Some(Intrinsic::Tan),
-        "arcsin" => Some(Intrinsic::Arcsin),
-        "arccos" => Some(Intrinsic::Arccos),
-        "arctan" => Some(Intrinsic::Arctan),
-        "exp" => Some(Intrinsic::Exp),
-        "log" => Some(Intrinsic::Log),
-        "sqrt" => Some(Intrinsic::Sqrt),
-        "ceiling" => Some(Intrinsic::Ceiling),
-        "floor" => Some(Intrinsic::Floor),
-        "mod" => Some(Intrinsic::Mod),
-        "popcount" => Some(Intrinsic::Popcount),
-        "sizeof" => Some(Intrinsic::Sizeof),
-        "rotl" => Some(Intrinsic::Rotl),
-        "rotr" => Some(Intrinsic::Rotr),
-        "real" => Some(Intrinsic::Real),
-        "imag" => Some(Intrinsic::Imag),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -568,7 +544,10 @@ mod tests {
         r.declare("sin", SymbolKind::Subroutine, Type::Void, span(0, 3))
             .unwrap();
         let target = r.resolve_call("sin", Default::default()).unwrap();
-        assert!(matches!(target, CallTarget::Intrinsic(Intrinsic::Sin)));
+        assert!(matches!(
+            target,
+            CallTarget::Intrinsic(Intrinsic::Unary(crate::sir::UnOp::Sin))
+        ));
     }
 
     #[test]

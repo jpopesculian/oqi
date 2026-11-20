@@ -13,7 +13,7 @@ mod value;
 pub use array::{Array, ArrayDim, ArrayShape, ArrayTy, adim, ashape};
 pub use array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
 pub use bitreg::BitReg;
-pub use duration::{Duration, DurationUnit};
+pub use duration::{Duration, DurationUnit, DurationUnitParseError};
 pub use error::{Error, Result};
 pub use index::Index;
 pub use primitive::{FloatWidth, IntWidth, Primitive, PrimitiveTy, iw};

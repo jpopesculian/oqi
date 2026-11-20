@@ -4,7 +4,7 @@ use oqi_classical::{Value, ValueTy};
 use oqi_lex::Span;
 use serde::{Deserialize, Serialize};
 
-use crate::sir::Intrinsic;
+use crate::sir::{BinOp, Intrinsic, UnOp};
 use crate::symbol::{SymbolId, SymbolKind};
 
 // ── IDs ──────────────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ pub struct BcVersion {
 }
 
 impl BcVersion {
-    pub const CURRENT: BcVersion = BcVersion { major: 3, minor: 0 };
+    pub const CURRENT: BcVersion = BcVersion { major: 4, minor: 0 };
 }
 
 /// Global quantum memory: every named register is statically allocated
@@ -320,111 +320,14 @@ pub enum BcCallTarget {
 #[derive(Clone, Serialize, Deserialize)]
 pub enum BcOp {
     // ── Classical arithmetic / bit / comparison (TAC) ──────────────
-    Add {
+    Binary {
+        op: BinOp,
         dest: Reg,
         lhs: BcOperand,
         rhs: BcOperand,
     },
-    Sub {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Mul {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Div {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Mod {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Pow {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    BitAnd {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    BitOr {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    BitXor {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Shl {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Shr {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    LogAnd {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    LogOr {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Eq {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Neq {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Lt {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Gt {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Le {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-    Ge {
-        dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
-    },
-
-    Neg {
-        dest: Reg,
-        src: BcOperand,
-    },
-    BitNot {
-        dest: Reg,
-        src: BcOperand,
-    },
-    LogNot {
+    Unary {
+        op: UnOp,
         dest: Reg,
         src: BcOperand,
     },

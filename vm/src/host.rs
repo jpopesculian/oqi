@@ -41,11 +41,9 @@ impl HostValue {
     pub fn extern_arg(value: &Value) -> HostValue {
         if let Value::Scalar(s) = value {
             match s.value() {
-                Primitive::Angle(_) => {
-                    if let Ok(f) = s.clone().cast(PrimitiveTy::Float(FloatWidth::F64))
-                        && let Primitive::Float(radians) = f.value()
-                    {
-                        return HostValue::Float(*radians);
+                angle @ Primitive::Angle(_) => {
+                    if let Some(radians) = angle.as_float(FloatWidth::F64) {
+                        return HostValue::Float(radians);
                     }
                 }
                 Primitive::BitReg(reg) => {
@@ -174,7 +172,7 @@ pub fn coerce(what: &str, raw: &HostValue, ty: ValueTy) -> Result<Value, String>
         ValueTy::Scalar(PrimitiveTy::Bit | PrimitiveTy::Bool) => Value::bit(raw.to_bool(what)?),
         ValueTy::Scalar(PrimitiveTy::Angle(w)) => {
             Scalar::new(Primitive::float(raw.to_f64(what)?), PrimitiveTy::Angle(w))
-                .map_err(|e| format!("{what}: not representable as `{ty}`: {e:?}"))?
+                .map_err(|e| format!("{what}: not representable as `{ty}`: {e}"))?
                 .into()
         }
         ValueTy::Scalar(PrimitiveTy::BitReg(w)) => Value::bitreg(raw.to_bitreg(what, w)?, w),
@@ -196,7 +194,7 @@ pub fn coerce(what: &str, raw: &HostValue, ty: ValueTy) -> Result<Value, String>
                 )
                 .collect::<Result<Vec<Primitive>, String>>()?;
             // `Array::new` validates the element count against the shape.
-            Value::Array(Array::new(elems, aty).map_err(|e| format!("{what}: {e:?}"))?)
+            Value::Array(Array::new(elems, aty).map_err(|e| format!("{what}: {e}"))?)
         }
         _ => {
             return Err(format!(

@@ -1,23 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use oqi_classical::{
-    Index as ClassicalIndex,
-    ops::{
-        Add as ClassicalAdd, Arccos as ClassicalArccos, Arcsin as ClassicalArcsin,
-        Arctan as ClassicalArctan, BinOp as ClassicalBinOp, BitAnd as ClassicalBitAnd,
-        BitNot as ClassicalBitNot, BitOr as ClassicalBitOr, BitXor as ClassicalBitXor,
-        Ceiling as ClassicalCeiling, Cos as ClassicalCos, Div as ClassicalDiv, Eq as ClassicalEq,
-        Exp as ClassicalExp, Floor as ClassicalFloor, Gt as ClassicalGt, Gte as ClassicalGte,
-        Imag as ClassicalImag, Log as ClassicalLog, LogAnd as ClassicalLogAnd,
-        LogNot as ClassicalLogNot, LogOr as ClassicalLogOr, Lt as ClassicalLt, Lte as ClassicalLte,
-        Mul as ClassicalMul, Neg as ClassicalNeg, Neq as ClassicalNeq,
-        Popcount as ClassicalPopcount, Pow as ClassicalPow, Real as ClassicalReal,
-        Rem as ClassicalRem, Rotl as ClassicalRotl, Rotr as ClassicalRotr, Shl as ClassicalShl,
-        Shr as ClassicalShr, Sin as ClassicalSin, Sizeof as ClassicalSizeof,
-        SizeofDim as ClassicalSizeofDim, Sqrt as ClassicalSqrt, Sub as ClassicalSub,
-        Tan as ClassicalTan, UnOp as ClassicalUnOp,
-    },
-};
+use oqi_classical::{Index as ClassicalIndex, ops};
 use oqi_parse::ast;
 
 use crate::duration::{TableTimings, resolve_durationof};
@@ -27,13 +10,13 @@ use crate::resolve::{IncludeResolver, IncludeSource, Resolver};
 use crate::sir;
 use crate::symbol::{SymbolId, SymbolKind};
 use crate::types::{
-    CompileOptions, Type, UnsizedType, eval_const_expr, eval_designator, parse_bitstring_literal,
-    parse_float_literal, parse_imag_literal, parse_int_literal, parse_timing_literal,
-    resolve_array_ref_type, resolve_old_style_type, resolve_qubit_type, resolve_scalar_type,
-    resolve_type,
+    CompileOptions, Type, UnsizedType, bin_op, eval_const_expr, eval_designator, invalid_type,
+    parse_bitstring_literal, parse_float_literal, parse_imag_literal, parse_int_literal,
+    parse_timing_literal, resolve_array_ref_type, resolve_old_style_type, resolve_qubit_type,
+    resolve_scalar_type, resolve_type, un_op,
 };
 use crate::{
-    classical::{ArrayTy, Primitive, Scalar, Value, ValueTy, ashape, iw},
+    classical::{ArrayShape, ArrayTy, Primitive, Scalar, Value, ValueTy, iw},
     types::SystemWidth,
 };
 
@@ -1021,7 +1004,7 @@ impl Lowerer {
             } => {
                 let l = self.lower_expr(left)?;
                 let r = self.lower_expr(right)?;
-                let sir_op = map_bin_op(op);
+                let sir_op = bin_op(*op);
                 // A same-family unsized operand collapses to the other (sized)
                 // operand's type, so the op runs at a single concrete width
                 // (e.g. `v + 1` with `v: uint[8]` stays uint[8]). Shifts are
@@ -1045,7 +1028,7 @@ impl Lowerer {
 
             ast::Expr::UnaryOp { op, operand, .. } => {
                 let inner = self.lower_expr(operand)?;
-                let sir_op = map_un_op(op);
+                let sir_op = un_op(*op);
                 let ty = unary_result_type(&sir_op, &inner.ty);
                 Ok(sir::Expr {
                     kind: sir::ExprKind::Unary(sir::Unary {
@@ -1440,7 +1423,7 @@ impl Lowerer {
                 e => self.lower_expr(e),
             })
             .collect::<Result<Vec<_>>>()?;
-        let ty = synth_array_literal_ty(&items);
+        let ty = synth_array_literal_ty(&items).map_err(|e| invalid_type(e, al.span))?;
         Ok(sir::Expr {
             kind: sir::ExprKind::ArrayLiteral(sir::ArrayLiteral {
                 items,
@@ -1745,38 +1728,6 @@ impl Lowerer {
     }
 }
 
-fn map_bin_op(op: &ast::BinOp) -> sir::BinOp {
-    match op {
-        ast::BinOp::Add => sir::BinOp::Add,
-        ast::BinOp::Sub => sir::BinOp::Sub,
-        ast::BinOp::Mul => sir::BinOp::Mul,
-        ast::BinOp::Div => sir::BinOp::Div,
-        ast::BinOp::Mod => sir::BinOp::Mod,
-        ast::BinOp::Pow => sir::BinOp::Pow,
-        ast::BinOp::BitAnd => sir::BinOp::BitAnd,
-        ast::BinOp::BitOr => sir::BinOp::BitOr,
-        ast::BinOp::BitXor => sir::BinOp::BitXor,
-        ast::BinOp::Shl => sir::BinOp::Shl,
-        ast::BinOp::Shr => sir::BinOp::Shr,
-        ast::BinOp::LogAnd => sir::BinOp::LogAnd,
-        ast::BinOp::LogOr => sir::BinOp::LogOr,
-        ast::BinOp::Eq => sir::BinOp::Eq,
-        ast::BinOp::Neq => sir::BinOp::Neq,
-        ast::BinOp::Lt => sir::BinOp::Lt,
-        ast::BinOp::Gt => sir::BinOp::Gt,
-        ast::BinOp::Lte => sir::BinOp::Lte,
-        ast::BinOp::Gte => sir::BinOp::Gte,
-    }
-}
-
-fn map_un_op(op: &ast::UnOp) -> sir::UnOp {
-    match op {
-        ast::UnOp::Neg => sir::UnOp::Neg,
-        ast::UnOp::BitNot => sir::UnOp::BitNot,
-        ast::UnOp::LogNot => sir::UnOp::LogNot,
-    }
-}
-
 fn compound_to_bin_op(op: &ast::AssignOp) -> Option<sir::BinOp> {
     match op {
         ast::AssignOp::Assign => None,
@@ -1795,42 +1746,6 @@ fn compound_to_bin_op(op: &ast::AssignOp) -> Option<sir::BinOp> {
 }
 
 // ── Type inference ──────────────────────────────────────────────────────
-
-fn classical_binary_return_ty(
-    op: &sir::BinOp,
-    lhs: ValueTy,
-    rhs: ValueTy,
-) -> oqi_classical::Result<ValueTy> {
-    match op {
-        sir::BinOp::Add => ClassicalAdd::return_ty(lhs, rhs),
-        sir::BinOp::Sub => ClassicalSub::return_ty(lhs, rhs),
-        sir::BinOp::Mul => ClassicalMul::return_ty(lhs, rhs),
-        sir::BinOp::Div => ClassicalDiv::return_ty(lhs, rhs),
-        sir::BinOp::Mod => ClassicalRem::return_ty(lhs, rhs),
-        sir::BinOp::Pow => ClassicalPow::return_ty(lhs, rhs),
-        sir::BinOp::BitAnd => ClassicalBitAnd::return_ty(lhs, rhs),
-        sir::BinOp::BitOr => ClassicalBitOr::return_ty(lhs, rhs),
-        sir::BinOp::BitXor => ClassicalBitXor::return_ty(lhs, rhs),
-        sir::BinOp::Shl => ClassicalShl::return_ty(lhs, rhs),
-        sir::BinOp::Shr => ClassicalShr::return_ty(lhs, rhs),
-        sir::BinOp::LogAnd => ClassicalLogAnd::return_ty(lhs, rhs),
-        sir::BinOp::LogOr => ClassicalLogOr::return_ty(lhs, rhs),
-        sir::BinOp::Eq => ClassicalEq::return_ty(lhs, rhs),
-        sir::BinOp::Neq => ClassicalNeq::return_ty(lhs, rhs),
-        sir::BinOp::Lt => ClassicalLt::return_ty(lhs, rhs),
-        sir::BinOp::Gt => ClassicalGt::return_ty(lhs, rhs),
-        sir::BinOp::Lte => ClassicalLte::return_ty(lhs, rhs),
-        sir::BinOp::Gte => ClassicalGte::return_ty(lhs, rhs),
-    }
-}
-
-fn classical_unary_return_ty(op: &sir::UnOp, arg: ValueTy) -> oqi_classical::Result<ValueTy> {
-    match op {
-        sir::UnOp::Neg => ClassicalNeg::return_ty(arg),
-        sir::UnOp::BitNot => ClassicalBitNot::return_ty(arg),
-        sir::UnOp::LogNot => ClassicalLogNot::return_ty(arg),
-    }
-}
 
 fn type_mismatch(expected: &Type, got: &Type, span: oqi_lex::Span) -> CompileError {
     CompileError::new(ErrorKind::TypeMismatch {
@@ -1862,7 +1777,7 @@ fn binary_result_type(
     let (Some(lhs), Some(rhs)) = (left.value_ty(), right.value_ty()) else {
         return Err(type_mismatch(left, right, span));
     };
-    classical_binary_return_ty(op, lhs, rhs)
+    op.return_ty(lhs, rhs)
         .map(Type::from)
         .map_err(|_| type_mismatch(left, right, span))
 }
@@ -1870,11 +1785,11 @@ fn binary_result_type(
 fn unary_result_type(op: &sir::UnOp, operand: &Type) -> Type {
     operand
         .value_ty()
-        .and_then(|value_ty| classical_unary_return_ty(op, value_ty).ok())
+        .and_then(|value_ty| op.return_ty(value_ty).ok())
         .map(Type::from)
         .unwrap_or_else(|| match op {
             sir::UnOp::LogNot => Type::Classical(ValueTy::bool()),
-            sir::UnOp::Neg | sir::UnOp::BitNot => operand.clone(),
+            _ => operand.clone(),
         })
 }
 
@@ -2047,22 +1962,22 @@ fn index_result_type(base_ty: &Type, index: &sir::IndexOp<sir::Expr>) -> Type {
     base_ty.clone()
 }
 
-fn synth_array_literal_ty(items: &[sir::Expr]) -> Type {
+fn synth_array_literal_ty(items: &[sir::Expr]) -> oqi_classical::Result<Type> {
     let Some(first) = items.first() else {
-        return Type::Void;
+        return Ok(Type::Void);
     };
     let len = items.len();
-    match &first.ty {
+    Ok(match &first.ty {
         Type::Classical(ValueTy::Array(inner)) => {
             let mut shape = vec![len];
             shape.extend_from_slice(inner.shape().get());
-            Type::from(ArrayTy::new(inner.ty(), ashape(shape)))
+            Type::from(ArrayTy::new(inner.ty(), ArrayShape::new(shape)?))
         }
         Type::Classical(ValueTy::Scalar(prim)) => {
-            Type::from(ArrayTy::new(*prim, ashape(vec![len])))
+            Type::from(ArrayTy::new(*prim, ArrayShape::new(vec![len])?))
         }
         _ => first.ty.clone(),
-    }
+    })
 }
 
 fn intrinsic_result_type(
@@ -2070,29 +1985,25 @@ fn intrinsic_result_type(
     args: &[sir::Expr],
     system_width: SystemWidth,
 ) -> Result<Type> {
-    use sir::Intrinsic::*;
+    let arg_ty = |arg: &sir::Expr| intrinsic_arg_type(intrinsic, &arg.ty);
     match intrinsic {
-        Sin | Cos | Tan | Arcsin | Arccos | Arctan | Exp | Log | Sqrt | Ceiling | Floor
-        | Popcount | Real | Imag => {
+        sir::Intrinsic::Unary(op) => {
             let [arg] = args else {
                 return Err(intrinsic_arity_error(intrinsic, 1, args.len()));
             };
-            let arg_ty = intrinsic_arg_type(intrinsic, &arg.ty)?;
-            classical_intrinsic_unary_return_ty(intrinsic, arg_ty)
+            op.return_ty(arg_ty(arg)?)
                 .map(Type::from)
                 .map_err(classical_intrinsic_error)
         }
-        Mod | Rotl | Rotr => {
+        sir::Intrinsic::Binary(op) => {
             let [lhs, rhs] = args else {
                 return Err(intrinsic_arity_error(intrinsic, 2, args.len()));
             };
-            let lhs_ty = intrinsic_arg_type(intrinsic, &lhs.ty)?;
-            let rhs_ty = intrinsic_arg_type(intrinsic, &rhs.ty)?;
-            classical_intrinsic_binary_return_ty(intrinsic, lhs_ty, rhs_ty)
+            op.return_ty(arg_ty(lhs)?, arg_ty(rhs)?)
                 .map(Type::from)
                 .map_err(classical_intrinsic_error)
         }
-        Sizeof => {
+        sir::Intrinsic::Sizeof => {
             let (value, dim) = match args {
                 [value] => (value, None),
                 [value, dim] => (value, Some(dim)),
@@ -2103,71 +2014,29 @@ fn intrinsic_result_type(
                     ))));
                 }
             };
-            let value_ty = intrinsic_arg_type(intrinsic, &value.ty)?;
-            if let Some(dim) = dim {
-                let dim_ty = intrinsic_arg_type(intrinsic, &dim.ty)?;
-                ClassicalSizeofDim::return_ty(value_ty, dim_ty)
-                    .map_err(classical_intrinsic_error)?;
-                if let sir::ExprKind::Literal(value) = &dim.kind {
-                    let Some(dim) = value.as_int(iw(128)).and_then(|i| usize::try_from(i).ok())
-                    else {
-                        return Err(CompileError::new(ErrorKind::Unsupported(format!(
-                            "intrinsic `{intrinsic}` requires a non-negative integer dimension, got `{}`",
-                            dim.ty
-                        ))));
-                    };
-                    // For unspecified-length array refs the concrete sizes
-                    // aren't known until run time, but the rank is — validate
-                    // the literal dimension against the rank instead.
-                    if dim > value_ty.sizeof_rank().unwrap_or(0) {
-                        return Err(CompileError::new(ErrorKind::Unsupported(format!(
-                            "intrinsic `{intrinsic}` does not support dimension {dim} for argument type `{value_ty}`"
-                        ))));
-                    }
+            let value_ty = arg_ty(value)?;
+            let dim_ty = dim.map(arg_ty).transpose()?;
+            ops::sizeof_ty(value_ty, dim_ty).map_err(classical_intrinsic_error)?;
+            if let Some(dim) = dim
+                && let sir::ExprKind::Literal(value) = &dim.kind
+            {
+                let Some(dim) = value.as_int(iw(128)).and_then(|i| usize::try_from(i).ok()) else {
+                    return Err(CompileError::new(ErrorKind::Unsupported(format!(
+                        "intrinsic `{intrinsic}` requires a non-negative integer dimension, got `{}`",
+                        dim.ty
+                    ))));
+                };
+                // For unspecified-length array refs the concrete sizes
+                // aren't known until run time, but the rank is — validate
+                // the literal dimension against the rank instead.
+                if dim > value_ty.sizeof_rank().unwrap_or(0) {
+                    return Err(CompileError::new(ErrorKind::Unsupported(format!(
+                        "intrinsic `{intrinsic}` does not support dimension {dim} for argument type `{value_ty}`"
+                    ))));
                 }
-            } else {
-                ClassicalSizeof::return_ty(value_ty).map_err(classical_intrinsic_error)?;
             }
             Ok(Type::Classical(ValueTy::uint(system_width.iw())))
         }
-    }
-}
-
-fn classical_intrinsic_unary_return_ty(
-    intrinsic: &sir::Intrinsic,
-    arg: ValueTy,
-) -> oqi_classical::Result<ValueTy> {
-    use sir::Intrinsic::*;
-    match intrinsic {
-        Sin => ClassicalSin::return_ty(arg),
-        Cos => ClassicalCos::return_ty(arg),
-        Tan => ClassicalTan::return_ty(arg),
-        Arcsin => ClassicalArcsin::return_ty(arg),
-        Arccos => ClassicalArccos::return_ty(arg),
-        Arctan => ClassicalArctan::return_ty(arg),
-        Exp => ClassicalExp::return_ty(arg),
-        Log => ClassicalLog::return_ty(arg),
-        Sqrt => ClassicalSqrt::return_ty(arg),
-        Ceiling => ClassicalCeiling::return_ty(arg),
-        Floor => ClassicalFloor::return_ty(arg),
-        Popcount => ClassicalPopcount::return_ty(arg),
-        Real => ClassicalReal::return_ty(arg),
-        Imag => ClassicalImag::return_ty(arg),
-        intrinsic => unreachable!("unsupported unary intrinsic: {intrinsic:?}"),
-    }
-}
-
-fn classical_intrinsic_binary_return_ty(
-    intrinsic: &sir::Intrinsic,
-    lhs: ValueTy,
-    rhs: ValueTy,
-) -> oqi_classical::Result<ValueTy> {
-    use sir::Intrinsic::*;
-    match intrinsic {
-        Mod => ClassicalRem::return_ty(lhs, rhs),
-        Rotl => ClassicalRotl::return_ty(lhs, rhs),
-        Rotr => ClassicalRotr::return_ty(lhs, rhs),
-        intrinsic => unreachable!("unsupported binary intrinsic: {intrinsic:?}"),
     }
 }
 
@@ -2180,7 +2049,7 @@ fn intrinsic_arg_type(intrinsic: &sir::Intrinsic, ty: &Type) -> Result<ValueTy> 
 }
 
 fn classical_intrinsic_error(err: oqi_classical::Error) -> CompileError {
-    CompileError::new(ErrorKind::Unsupported(format!("{err:?}")))
+    CompileError::new(ErrorKind::Unsupported(err.to_string()))
 }
 
 fn intrinsic_arity_error(
@@ -2675,11 +2544,12 @@ mod tests {
     }
 
     #[test]
-    fn type_cast_angle_to_float_valid() {
-        let source = "angle[32] a; float[64](a);";
-        let program = compile_inline(source).expect("angle -> float should be valid");
-        let e = find_expr_stmt(&program);
-        assert_eq!(e.ty, Type::Classical(ValueTy::float(FloatWidth::F64)));
+    fn type_cast_angle_to_float_invalid() {
+        // docs/types.rst, "Allowed casts": angle -> float is "No".
+        let Err(err) = compile_inline("angle[32] a; float[64](a);") else {
+            panic!("angle -> float is not an allowed cast");
+        };
+        assert!(matches!(err.kind, ErrorKind::TypeMismatch { .. }));
     }
 
     #[test]
@@ -2771,7 +2641,7 @@ mod tests {
     #[test]
     fn type_intrinsic_ceiling_uses_classical_return_ty() {
         let result = intrinsic_result_type(
-            &sir::Intrinsic::Ceiling,
+            &sir::Intrinsic::Unary(sir::UnOp::Ceiling),
             &[typed_expr(Type::Classical(ValueTy::float(FloatWidth::F32)))],
             Default::default(),
         )
@@ -2782,7 +2652,7 @@ mod tests {
     #[test]
     fn type_intrinsic_sin_angle_uses_classical_return_ty() {
         let result = intrinsic_result_type(
-            &sir::Intrinsic::Sin,
+            &sir::Intrinsic::Unary(sir::UnOp::Sin),
             &[typed_expr(Type::Classical(ValueTy::angle(iw(32))))],
             Default::default(),
         )
@@ -2793,7 +2663,7 @@ mod tests {
     #[test]
     fn type_intrinsic_mod_uses_classical_promotion() {
         let result = intrinsic_result_type(
-            &sir::Intrinsic::Mod,
+            &sir::Intrinsic::Binary(sir::BinOp::Mod),
             &[
                 typed_expr(Type::Classical(ValueTy::uint(iw(8)))),
                 typed_expr(Type::Classical(ValueTy::uint(iw(16)))),
@@ -2807,7 +2677,7 @@ mod tests {
     #[test]
     fn type_intrinsic_popcount_uses_input_width() {
         let result = intrinsic_result_type(
-            &sir::Intrinsic::Popcount,
+            &sir::Intrinsic::Unary(sir::UnOp::Popcount),
             &[typed_expr(Type::Classical(ValueTy::bitreg(8)))],
             Default::default(),
         )
@@ -2818,7 +2688,7 @@ mod tests {
     #[test]
     fn type_intrinsic_real_uses_classical_return_ty() {
         let result = intrinsic_result_type(
-            &sir::Intrinsic::Real,
+            &sir::Intrinsic::Unary(sir::UnOp::Real),
             &[typed_expr(Type::Classical(ValueTy::complex(
                 FloatWidth::F32,
             )))],
@@ -2831,7 +2701,7 @@ mod tests {
     #[test]
     fn type_intrinsic_imag_uses_classical_promotion() {
         let result = intrinsic_result_type(
-            &sir::Intrinsic::Imag,
+            &sir::Intrinsic::Unary(sir::UnOp::Imag),
             &[typed_expr(Type::Classical(ValueTy::int(iw(8))))],
             Default::default(),
         )
@@ -2899,7 +2769,7 @@ mod tests {
     }
 
     #[test]
-    fn type_index_into_array_returns_array_ref() {
+    fn type_index_into_array_returns_sub_array() {
         let index = sir::IndexOp {
             kind: sir::IndexKind::Items(vec![sir::IndexItem::Single(Box::new(sir::Expr {
                 kind: sir::ExprKind::Literal(Primitive::int(0)),
@@ -2917,10 +2787,9 @@ mod tests {
         );
         assert_eq!(
             result,
-            Type::Classical(ValueTy::array_ref(
+            Type::Classical(ValueTy::array(
                 crate::classical::PrimitiveTy::Uint(crate::classical::iw(8)),
-                crate::classical::ArrayRefShape::Fixed(crate::classical::ashape(vec![3])),
-                crate::classical::RefAccess::Mutable,
+                crate::classical::ashape(vec![3]),
             ))
         );
     }

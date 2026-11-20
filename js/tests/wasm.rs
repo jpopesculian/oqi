@@ -503,9 +503,9 @@ async fn input_coercion_matches_the_other_front_doors() {
         input angle[32] theta;\n\
         input bit[4] mask;\n\
         output bit[4] copy;\n\
-        output float[64] radians;\n\
+        output float[64] sine;\n\
         copy = mask;\n\
-        radians = float[64](theta);\n";
+        sine = sin(theta);\n";
     let out = run(
         src,
         options(r#"{ "inputs": { "theta": 0.5, "mask": "0110" } }"#),
@@ -513,7 +513,7 @@ async fn input_coercion_matches_the_other_front_doors() {
     .await
     .unwrap();
     assert_eq!(output(&out, "copy").as_str().unwrap(), "\"0110\"");
-    assert!((output(&out, "radians").as_f64().unwrap() - 0.5).abs() < 1e-6);
+    assert!((output(&out, "sine").as_f64().unwrap() - 0.5f64.sin()).abs() < 1e-6);
 
     let err = run(
         src,

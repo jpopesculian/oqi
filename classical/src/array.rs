@@ -32,18 +32,23 @@ impl Array {
         self.ty
     }
 
-    pub fn new(mut values: Vec<Primitive>, ty: ArrayTy) -> Result<Self> {
+    /// Build an array from `values`, converting each to the element type.
+    pub fn new(values: Vec<Primitive>, ty: ArrayTy) -> Result<Self> {
         if values.len() != ty.shape().total() {
-            return Err(Error::UnsupportedCast {
-                from: Box::new(ty.with_shape(shape![values.len()]).into()),
-                to: Box::new(ty.into()),
+            return Err(Error::LengthMismatch {
+                expected: ty.shape().total(),
+                received: values.len(),
             });
         }
-        for value in values.iter_mut() {
-            let cur = std::mem::replace(value, Primitive::Bit(false));
-            *value = cur.as_ty(ty.ty())?;
-        }
+        let values = values
+            .into_iter()
+            .map(|value| value.as_ty(ty.ty()))
+            .collect::<Result<_>>()?;
         Ok(Array::new_unchecked(values, ty))
+    }
+
+    pub fn into_values(self) -> Vec<Primitive> {
+        self.values
     }
 
     #[inline]
@@ -67,7 +72,7 @@ impl Array {
     #[inline]
     pub fn cast(self, to: ArrayTy) -> Result<Self> {
         self.ty.cast(to)?;
-        Self::new(self.values().to_vec(), to)
+        Self::new(self.values, to)
     }
 }
 
@@ -126,18 +131,20 @@ impl fmt::Display for Array {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// The rank of an array: `1..=ArrayDim::MAX` dimensions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ArrayDim(usize);
 
 impl ArrayDim {
-    const MAX: usize = 16;
+    /// docs/types.rst: arrays have "a maximum of 7 total dimensions".
+    pub const MAX: usize = 7;
+
     #[inline]
     pub const fn new(dim: usize) -> Result<Self> {
-        if dim == 0 || dim > 16 {
-            return Err(Error::BadDimensions {
+        if dim == 0 || dim > Self::MAX {
+            return Err(Error::InvalidRank {
                 received: dim,
-                min: 1,
-                max: 16,
+                max: Self::MAX,
             });
         }
         Ok(Self(dim))
@@ -149,35 +156,16 @@ impl ArrayDim {
     }
 }
 
+/// Shorthand for a rank known to be valid.
+///
+/// # Panics
+/// If `value` is not in `1..=ArrayDim::MAX`; use [`ArrayDim::new`] for ranks
+/// that come from a program.
 pub fn adim(value: usize) -> ArrayDim {
     ArrayDim::new(value).unwrap()
 }
 
-impl PartialEq<usize> for ArrayDim {
-    fn eq(&self, other: &usize) -> bool {
-        self.get() == *other
-    }
-}
-
-impl PartialEq<ArrayDim> for usize {
-    fn eq(&self, other: &ArrayDim) -> bool {
-        *self == other.get()
-    }
-}
-
-impl PartialOrd<usize> for ArrayDim {
-    fn partial_cmp(&self, other: &usize) -> Option<std::cmp::Ordering> {
-        self.get().partial_cmp(other)
-    }
-}
-
-impl PartialOrd<ArrayDim> for usize {
-    fn partial_cmp(&self, other: &ArrayDim) -> Option<std::cmp::Ordering> {
-        self.partial_cmp(&other.get())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ArrayShape {
     shape: [usize; ArrayDim::MAX],
     dim: ArrayDim,
@@ -222,42 +210,25 @@ impl ArrayShape {
     }
 }
 
-impl PartialEq<Vec<usize>> for ArrayShape {
-    fn eq(&self, other: &Vec<usize>) -> bool {
-        self.get() == other.as_slice()
-    }
-}
-
-impl PartialEq<ArrayShape> for Vec<usize> {
-    fn eq(&self, other: &ArrayShape) -> bool {
-        self.as_slice() == other.get()
-    }
-}
-
-impl<'a> PartialEq<&'a [usize]> for ArrayShape {
-    fn eq(&self, other: &&'a [usize]) -> bool {
-        self.get() == *other
-    }
-}
-
-impl PartialEq<ArrayShape> for &'_ [usize] {
-    fn eq(&self, other: &ArrayShape) -> bool {
-        *self == other.get()
-    }
-}
-
+/// Shorthand for a shape known to be valid.
+///
+/// # Panics
+/// If `values` does not have `1..=ArrayDim::MAX` dimensions; use
+/// [`ArrayShape::new`] for shapes that come from a program.
 pub fn ashape(values: Vec<usize>) -> ArrayShape {
     ArrayShape::new(values).unwrap()
 }
 
+#[cfg(test)]
 macro_rules! shape {
     ($($dim:expr),+) => {
         crate::array::ashape(vec![$($dim),+])
     }
 }
+#[cfg(test)]
 pub(crate) use shape;
 
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ArrayTy {
     ty: PrimitiveTy,
     shape: ArrayShape,
@@ -289,31 +260,16 @@ impl ArrayTy {
         self.ty
     }
 
+    /// The type of a reference to an array of this type.
     #[inline]
-    pub const fn as_ref(&self) -> ArrayRefTy {
-        ArrayRefTy::new(
-            self.ty,
-            ArrayRefShape::Fixed(self.shape),
-            RefAccess::Readonly,
-        )
-    }
-
-    #[inline]
-    pub const fn as_ref_mut(&self) -> ArrayRefTy {
-        ArrayRefTy::new(
-            self.ty,
-            ArrayRefShape::Fixed(self.shape),
-            RefAccess::Mutable,
-        )
+    pub const fn as_ref(&self, access: RefAccess) -> ArrayRefTy {
+        ArrayRefTy::new(self.ty, ArrayRefShape::Fixed(self.shape), access)
     }
 
     #[inline]
     pub fn cast(self, to: ArrayTy) -> Result<Self> {
         if self.shape.total() != to.shape.total() {
-            return Err(Error::UnsupportedCast {
-                from: Box::new(self.ty().into()),
-                to: Box::new(to.into()),
-            });
+            return Err(Error::unsupported_cast(self, to));
         }
         self.ty.cast(to.ty)?;
         Ok(self)
@@ -376,6 +332,31 @@ mod tests {
         let array = Array::new_unchecked(vec![], ArrayTy::new(PrimitiveTy::Duration, shape![2, 0]));
 
         assert_eq!(array.to_string(), "{{}, {}}");
+    }
+
+    #[test]
+    fn ranks_run_from_one_to_seven() {
+        // docs/types.rst: "a maximum of 7 total dimensions".
+        assert!(ArrayDim::new(0).is_err());
+        assert!(ArrayDim::new(1).is_ok());
+        assert!(ArrayDim::new(7).is_ok());
+        assert!(matches!(
+            ArrayDim::new(8),
+            Err(Error::InvalidRank {
+                received: 8,
+                max: 7
+            })
+        ));
+        assert!(ArrayShape::new(vec![2; 7]).is_ok());
+        assert!(ArrayShape::new(vec![2; 8]).is_err());
+        assert!(ArrayShape::new(vec![]).is_err());
+    }
+
+    #[test]
+    fn building_an_array_checks_the_element_count() {
+        let ty = ArrayTy::new(Uint(iw(8)), shape![2, 2]);
+        let err = Array::new(vec![Primitive::uint(1_u128); 3], ty).unwrap_err();
+        assert_eq!(err.to_string(), "expected 4 array elements, got 3");
     }
 
     #[test]

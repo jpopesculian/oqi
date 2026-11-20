@@ -54,8 +54,14 @@ source → parse → resolve (includes) → lower → cfg → ssa → bytecode �
   - `types.rs`, `symbol.rs`, `scope.rs` — type system, symbol table, scoping.
   - `openpulse.rs` — OpenPulse types (port, frame, waveform).
 - **`classical/`** (`oqi-classical`) — classical value/type system (ints up to
-  128 bits, floats, complex, arrays, bit registers of any width) and all
-  scalar operations under `classical/src/ops/`. Used by both compile and vm.
+  128 bits, floats, complex, arrays, bit registers of any width) and the
+  operators under `classical/src/ops/`. An operator is a value (`ops::BinOp`,
+  `ops::UnOp`): `return_ty` type-checks it and `apply` evaluates it, both from
+  the same per-operator signature, so the SIR, the bytecode (`BcOp::Binary` /
+  `BcOp::Unary`) and the VM all carry the one enum and never dispatch on it
+  themselves. `PrimitiveTy::cast` is the spec's allowed-casts table; operator
+  promotions (e.g. `angle + float`) are separate and not casts. Used by both
+  compile and vm.
 - **`quantum/`** (`oqi-quantum`) — quantum memory model and complex-amplitude math.
 - **`vm/`** (`oqi-vm`) — interprets bytecode. Two pluggable extension points:
   `QuantumBackend` (the `StateVectorSim`, or future GPU/hardware) and
@@ -92,7 +98,9 @@ in `diagnostic.rs`. `oqi_diagnostics::emit` renders an error against source.
   PEP-723 inline deps, run with `uv run` or equivalent):
   `scripts/generate_lexer_fixtures.py`, `scripts/generate_parser_fixtures.py`.
   `scripts/antlr_generated/` holds the generated reference lexer/parser.
-- Many ops in `classical/src/ops/` carry their own unit tests inline.
+- `classical/src/ops/tests/` holds the operator tests, one module per operator;
+  `agreement.rs` there checks that type-checking and evaluation accept exactly
+  the same operands.
 
 ## Reference material
 

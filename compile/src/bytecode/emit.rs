@@ -755,36 +755,17 @@ impl<'a> EmitCtx<'a> {
             SsaExprKind::Binary(Binary { op, left, right }) => {
                 let lhs = self.lower_expr_to_operand(left, instrs, reg_map)?;
                 let rhs = self.lower_expr_to_operand(right, instrs, reg_map)?;
-                let bc = match op {
-                    crate::sir::BinOp::Add => BcOp::Add { dest, lhs, rhs },
-                    crate::sir::BinOp::Sub => BcOp::Sub { dest, lhs, rhs },
-                    crate::sir::BinOp::Mul => BcOp::Mul { dest, lhs, rhs },
-                    crate::sir::BinOp::Div => BcOp::Div { dest, lhs, rhs },
-                    crate::sir::BinOp::Mod => BcOp::Mod { dest, lhs, rhs },
-                    crate::sir::BinOp::Pow => BcOp::Pow { dest, lhs, rhs },
-                    crate::sir::BinOp::BitAnd => BcOp::BitAnd { dest, lhs, rhs },
-                    crate::sir::BinOp::BitOr => BcOp::BitOr { dest, lhs, rhs },
-                    crate::sir::BinOp::BitXor => BcOp::BitXor { dest, lhs, rhs },
-                    crate::sir::BinOp::Shl => BcOp::Shl { dest, lhs, rhs },
-                    crate::sir::BinOp::Shr => BcOp::Shr { dest, lhs, rhs },
-                    crate::sir::BinOp::LogAnd => BcOp::LogAnd { dest, lhs, rhs },
-                    crate::sir::BinOp::LogOr => BcOp::LogOr { dest, lhs, rhs },
-                    crate::sir::BinOp::Eq => BcOp::Eq { dest, lhs, rhs },
-                    crate::sir::BinOp::Neq => BcOp::Neq { dest, lhs, rhs },
-                    crate::sir::BinOp::Lt => BcOp::Lt { dest, lhs, rhs },
-                    crate::sir::BinOp::Gt => BcOp::Gt { dest, lhs, rhs },
-                    crate::sir::BinOp::Lte => BcOp::Le { dest, lhs, rhs },
-                    crate::sir::BinOp::Gte => BcOp::Ge { dest, lhs, rhs },
+                let bc = BcOp::Binary {
+                    op: *op,
+                    dest,
+                    lhs,
+                    rhs,
                 };
                 instrs.push(BcInstr { op: bc, span });
             }
             SsaExprKind::Unary(crate::sir::Unary { op, operand }) => {
                 let src = self.lower_expr_to_operand(operand, instrs, reg_map)?;
-                let bc = match op {
-                    crate::sir::UnOp::Neg => BcOp::Neg { dest, src },
-                    crate::sir::UnOp::BitNot => BcOp::BitNot { dest, src },
-                    crate::sir::UnOp::LogNot => BcOp::LogNot { dest, src },
-                };
+                let bc = BcOp::Unary { op: *op, dest, src };
                 instrs.push(BcInstr { op: bc, span });
             }
             SsaExprKind::Cast(Cast { target_ty, operand }) => {
@@ -820,7 +801,7 @@ impl<'a> EmitCtx<'a> {
                     .collect::<Result<_>>()?;
                 let callee = match callee {
                     CallTarget::Symbol(s) => BcCallTarget::Symbol(*s),
-                    CallTarget::Intrinsic(i) => BcCallTarget::Intrinsic(i.clone()),
+                    CallTarget::Intrinsic(i) => BcCallTarget::Intrinsic(*i),
                 };
                 // A void call (statement position) yields no value, so it
                 // has no destination — mirroring the bare gate-call path.

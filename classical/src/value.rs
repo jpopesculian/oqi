@@ -33,6 +33,8 @@ impl Value {
         }
     }
 
+    /// Cast to `ty` under the language's cast rules. Arrays and array
+    /// references cast element-wise into a new owned array.
     pub fn cast(self, ty: ValueTy) -> Result<Self> {
         match (self, ty) {
             (Value::Scalar(s), ValueTy::Scalar(ty)) => Ok(Value::Scalar(s.cast(ty)?)),
@@ -41,8 +43,19 @@ impl Value {
             (Value::Array(ar), ValueTy::ArrayRef(ty)) => {
                 Ok(Value::Array(ar.into_ref_mut().cast(ty)?))
             }
-            (Value::ArrayRef(ar), ValueTy::Array(ty)) => Ok(Value::Array(ar.cast(ty.as_ref())?)),
+            (Value::ArrayRef(ar), ValueTy::Array(ty)) => {
+                Ok(Value::Array(ar.cast(ty.as_ref(RefAccess::Readonly))?))
+            }
             (value, ty) => Err(Error::unsupported_cast(value.ty(), ty)),
+        }
+    }
+
+    /// Materialise an array reference into (a copy of) the array it views;
+    /// scalars and owned arrays pass through.
+    pub fn into_owned(self) -> Result<Self> {
+        match self {
+            Value::ArrayRef(ar) => ar.to_owned().map(Value::Array),
+            owned => Ok(owned),
         }
     }
 
@@ -155,7 +168,7 @@ impl fmt::Display for Value {
     }
 }
 
-#[derive(Clone, Debug, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ValueTy {
     Scalar(PrimitiveTy),
     Array(ArrayTy),
@@ -175,14 +188,32 @@ impl ValueTy {
                 Ok(ValueTy::ArrayRef(to))
             }
             (ValueTy::Array(from), ValueTy::ArrayRef(to)) => {
-                from.as_ref_mut().cast(to)?;
+                from.as_ref(RefAccess::Mutable).cast(to)?;
                 Ok(ValueTy::ArrayRef(to))
             }
             (ValueTy::ArrayRef(from), ValueTy::Array(to)) => {
-                from.cast(to.as_ref())?;
+                from.cast(to.as_ref(RefAccess::Readonly))?;
                 Ok(ValueTy::Array(to))
             }
             (from, to) => Err(Error::unsupported_cast(from, to)),
+        }
+    }
+
+    /// Whether a value of this type can stand in for one of `other`
+    /// without conversion (see [`PrimitiveTy::is_compatible`] and
+    /// [`ArrayRefShape::is_compatible`]).
+    pub fn is_compatible(&self, other: &ValueTy) -> bool {
+        match (self, other) {
+            (ValueTy::Scalar(a), ValueTy::Scalar(b)) => a.is_compatible(*b),
+            (ValueTy::Array(a), ValueTy::Array(b)) => {
+                a.ty().is_compatible(b.ty()) && a.shape() == b.shape()
+            }
+            (ValueTy::ArrayRef(a), ValueTy::ArrayRef(b)) => {
+                a.ty().is_compatible(b.ty())
+                    && a.shape().is_compatible(&b.shape())
+                    && a.access() == b.access()
+            }
+            _ => false,
         }
     }
 
@@ -203,7 +234,7 @@ impl ValueTy {
         match self {
             ValueTy::Scalar(ty) if dim == 0 => ty.bit_count().map(|bw| bw as usize),
             ValueTy::Array(ty) => {
-                if dim == ty.shape().dim() {
+                if dim == ty.shape().dim().get() {
                     ty.ty().bit_count().map(|bw| bw as usize)
                 } else {
                     ty.shape().get().get(dim).copied()
@@ -211,7 +242,7 @@ impl ValueTy {
             }
             ValueTy::ArrayRef(ty) => match ty.shape() {
                 ArrayRefShape::Fixed(shape) => {
-                    if dim == shape.dim() {
+                    if dim == shape.dim().get() {
                         ty.ty().bit_count().map(|bw| bw as usize)
                     } else {
                         shape.get().get(dim).copied()

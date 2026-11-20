@@ -69,7 +69,7 @@ impl BitReg {
         }
     }
 
-    pub fn iter_bits(&self) -> BitIter<'_> {
+    pub(crate) fn iter_bits(&self) -> BitIter<'_> {
         BitIter { reg: self, pos: 0 }
     }
 
@@ -104,18 +104,6 @@ impl BitReg {
             let new_pos = slice.start as usize + (i + amount) % len;
             self.set_bit(new_pos, bit);
         }
-    }
-
-    pub fn rotr(&mut self, slice: Range<u32>, amount: usize) {
-        let len = (slice.end - slice.start) as usize;
-        if len == 0 {
-            return;
-        }
-        let amount = amount % len;
-        if amount == 0 {
-            return;
-        }
-        self.rotl(slice, len - amount);
     }
 
     pub fn as_u128(&self) -> u128 {
@@ -222,7 +210,7 @@ impl From<Box<[u8]>> for BitReg {
     }
 }
 
-pub struct BitIter<'a> {
+pub(crate) struct BitIter<'a> {
     reg: &'a BitReg,
     pos: usize,
 }
@@ -615,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn rotr_inverse_of_rotl() {
+    fn rotl_by_the_complement_is_the_inverse() {
         let mut a = BitReg::zeros(200);
         for i in 0..200 {
             if i % 3 == 0 {
@@ -624,7 +612,7 @@ mod tests {
         }
         let original = a.clone();
         a.rotl(0..200, 17);
-        a.rotr(0..200, 17);
+        a.rotl(0..200, 200 - 17);
         assert_eq!(a, original);
     }
 

@@ -7,10 +7,19 @@ use crate::types::Type;
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
     UndefinedName(String),
-    DuplicateDefinition { name: String, prior: Span },
-    TypeMismatch { expected: Box<Type>, got: Box<Type> },
+    DuplicateDefinition {
+        name: String,
+        prior: Span,
+    },
+    TypeMismatch {
+        expected: Box<Type>,
+        got: Box<Type>,
+    },
     NonConstantDesignator,
     NonConstantExpression,
+    /// A type whose width or rank is out of range (`int[200]`, an array of
+    /// eight dimensions).
+    InvalidType(String),
     IncludeNotFound(String),
     IncludeCycle(Vec<String>),
     MissingSourceContext,
@@ -18,7 +27,10 @@ pub enum ErrorKind {
     InvalidGateBody(String),
     Unsupported(String),
     InvalidLiteral(String),
-    QubitIndexOutOfRange { index: i128, len: usize },
+    QubitIndexOutOfRange {
+        index: i128,
+        len: usize,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -206,13 +206,13 @@ def test_angle_and_bitreg_inputs():
         "input angle[32] theta;\n"
         "input bit[4] mask;\n"
         "output bit[4] copy;\n"
-        "output float[64] radians;\n"
+        "output float[64] sine;\n"
         "copy = mask;\n"
-        "radians = float[64](theta);\n"
+        "sine = sin(theta);\n"
     )
     out = oqi.run(src, inputs={"theta": 0.5, "mask": "0110"})
     assert out.outputs["copy"] == '"0110"'
-    assert out.outputs["radians"] == pytest.approx(0.5, abs=1e-6)
+    assert out.outputs["sine"] == pytest.approx(math.sin(0.5), abs=1e-6)
 
     with pytest.raises(oqi.OqiError, match="4-character string of 0s and 1s"):
         oqi.run(src, inputs={"theta": 0.5, "mask": "01"})

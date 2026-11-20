@@ -5,7 +5,6 @@ use crate::{
     bitreg::BitReg,
     duration::Duration,
     error::{Error, Result},
-    value::ValueTy,
 };
 use num_complex::{Complex32, Complex64, c64};
 use serde::{Deserialize, Serialize};
@@ -92,13 +91,7 @@ impl Primitive {
     #[inline]
     pub fn as_int(&self, bits: IntWidth) -> Option<i128> {
         let v = match self {
-            Self::Bit(b) => {
-                if *b {
-                    1
-                } else {
-                    0
-                }
-            }
+            Self::Bit(b) => i128::from(*b),
             Self::BitReg(reg) => reg.as_u128() as i128,
             Self::Int(v) => *v,
             Self::Float(v) => *v as i128,
@@ -113,13 +106,7 @@ impl Primitive {
     #[inline]
     pub fn as_uint(&self, bits: IntWidth) -> Option<u128> {
         let v = match self {
-            Self::Bit(b) => {
-                if *b {
-                    1
-                } else {
-                    0
-                }
-            }
+            Self::Bit(b) => u128::from(*b),
             Self::Int(v) => *v as u128,
             Self::Float(v) => *v as u128,
             Self::Complex(c) => c.re as u128,
@@ -134,13 +121,7 @@ impl Primitive {
     #[inline]
     pub fn as_float(&self, width: FloatWidth) -> Option<f64> {
         let v = match self {
-            Self::Bit(b) => {
-                if *b {
-                    1.0
-                } else {
-                    0.0
-                }
-            }
+            Self::Bit(b) => f64::from(*b),
             Self::Float(v) => *v,
             Self::Int(v) => *v as f64,
             Self::Uint(v) => *v as f64,
@@ -158,7 +139,7 @@ impl Primitive {
     #[inline]
     pub fn as_complex(&self, width: FloatWidth) -> Option<Complex64> {
         let v = match self {
-            Self::Bit(b) => c64(if *b { 1.0 } else { 0.0 }, 0.0),
+            Self::Bit(b) => c64(f64::from(*b), 0.0),
             Self::Complex(c) => *c,
             Self::Int(v) => c64(*v as f64, 0.0),
             Self::Uint(v) => c64(*v as f64, 0.0),
@@ -201,55 +182,13 @@ impl Primitive {
     #[inline]
     pub fn as_bitreg(&self, width: u32) -> Option<BitReg> {
         let reg = match self {
-            Self::Bit(b) => BitReg::from(if *b { 1u128 } else { 0 }),
+            Self::Bit(b) => BitReg::from(u128::from(*b)),
             Self::Uint(v) => BitReg::from(*v),
             Self::Int(v) => BitReg::from(*v as u128),
             Self::BitReg(reg) => reg.clone(),
             _ => return None,
         };
         Some(reg.resize(width))
-    }
-
-    pub fn assert_fits(self, ty: PrimitiveTy) -> Result<Self> {
-        let Some(bw) = ty.int_width() else {
-            return Ok(self);
-        };
-        let overflow = match &self {
-            Self::Uint(v) => *v >> bw.get() != 0,
-            Self::Int(v) => {
-                let shifted = *v >> (bw.get() - 1);
-                shifted != 0 && shifted != -1
-            }
-            _ => false,
-        };
-        if overflow {
-            Err(Error::Overflow)
-        } else {
-            Ok(self)
-        }
-    }
-
-    pub fn resize(self, ty: PrimitiveTy) -> Primitive {
-        match ty {
-            PrimitiveTy::BitReg(width) => match self {
-                Self::BitReg(reg) => Self::BitReg(reg.resize(width)),
-                Self::Uint(v) => Self::BitReg(BitReg::from(v).resize(width)),
-                Self::Int(v) => Self::BitReg(BitReg::from(v as u128).resize(width)),
-                other => other,
-            },
-            _ => {
-                let Some(bw) = ty.int_width() else {
-                    return self;
-                };
-                match self {
-                    Self::Uint(v) => Self::Uint(resize_uint(v, bw)),
-                    Self::Int(v) => Self::Int(resize_int(v, bw)),
-                    Self::BitReg(reg) => Self::Uint(resize_uint(reg.as_u128(), bw)),
-                    Self::Angle(v) => Self::Angle(turns::Angle(resize_angle(v.0, bw))),
-                    other => other,
-                }
-            }
-        }
     }
 
     #[inline]
@@ -371,7 +310,7 @@ impl fmt::Debug for Primitive {
     }
 }
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub enum FloatWidth {
     F32,
     F64,
@@ -386,20 +325,22 @@ impl FloatWidth {
     }
 }
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Debug, Serialize, Deserialize)]
+/// Bit width of an `int`, `uint` or `angle`: `1..=IntWidth::MAX`.
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
 pub struct IntWidth(u32);
 
 impl IntWidth {
+    /// Integers are carried in 128-bit machine words.
+    pub const MAX: u32 = 128;
     pub const B128: IntWidth = IntWidth(128);
     pub const B64: IntWidth = IntWidth(64);
 
     #[inline]
     pub const fn new(bits: u32) -> Result<Self> {
-        if bits == 0 || bits > 128 {
-            Err(Error::BadDimensions {
+        if bits == 0 || bits > Self::MAX {
+            Err(Error::InvalidWidth {
                 received: bits as usize,
-                min: 1,
-                max: 128,
+                max: Self::MAX as usize,
             })
         } else {
             Ok(Self(bits))
@@ -411,30 +352,11 @@ impl IntWidth {
     }
 }
 
-impl PartialEq<u32> for IntWidth {
-    fn eq(&self, other: &u32) -> bool {
-        self.get() == *other
-    }
-}
-
-impl PartialEq<IntWidth> for u32 {
-    fn eq(&self, other: &IntWidth) -> bool {
-        *self == other.get()
-    }
-}
-
-impl PartialOrd<u32> for IntWidth {
-    fn partial_cmp(&self, other: &u32) -> Option<std::cmp::Ordering> {
-        self.get().partial_cmp(other)
-    }
-}
-
-impl PartialOrd<IntWidth> for u32 {
-    fn partial_cmp(&self, other: &IntWidth) -> Option<std::cmp::Ordering> {
-        self.partial_cmp(&other.get())
-    }
-}
-
+/// Shorthand for a width known to be valid (a literal in the source).
+///
+/// # Panics
+/// If `bits` is not in `1..=IntWidth::MAX`; use [`IntWidth::new`] for
+/// widths that come from a program.
 #[inline]
 pub fn iw(bits: u32) -> IntWidth {
     IntWidth::new(bits).unwrap()
@@ -468,7 +390,7 @@ impl fmt::Display for Primitive {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PrimitiveTy {
     Bool,
     Bit,
@@ -504,84 +426,43 @@ impl PrimitiveTy {
         }
     }
 
+    /// Whether a value of this type can stand in for one of `other`
+    /// without conversion: the same type, or the scalar `bit`/`bool` pair,
+    /// which the spec makes interchangeable.
+    pub fn is_compatible(self, other: PrimitiveTy) -> bool {
+        use PrimitiveTy::*;
+        self == other || matches!((self, other), (Bit, Bool) | (Bool, Bit))
+    }
+
+    /// Check a cast against the spec's table of allowed casts
+    /// (docs/types.rst, "Allowed casts"), returning the target type.
+    ///
+    /// `complex` is not in that table; it follows the other standard types
+    /// (C99): everything numeric converts to it, and it converts to `bool`.
+    /// Scalar `bit` is accepted wherever `bool` is as a cast *target*
+    /// (`val != 0`), the two being interchangeable.
     pub fn cast(self, ty: PrimitiveTy) -> Result<Self> {
         use PrimitiveTy::*;
-        match (self, ty) {
-            // no-op
-            (Bit, Bit) | (Bit, Bool) | (Bool, Bit) | (Bool, Bool) | (Duration, Duration)
-            // Bit-like <-> Unsigned-like
-            | (Bit | Bool, Uint(_) )
-            | (Uint(_) , Bit | Bool)
-            // Bit-like <-> Signed
-            | (Bit | Bool, Int(_))
-            // Bit-like <-> Float
-            | (Bit | Bool, Float(_))
-            | (Float(_), Bit | Bool)
-            // Bit-like <-> Complex
-            | (Bit | Bool, Complex(_))
-            | (Complex(_), Bit | Bool)
-            // Unsigned-like <-> Unsigned-like
-            | (Uint(_) , Uint(_) )
-            // Unsigned-like <-> Signed
-            | (Uint(_) , Int(_))
-            | (Int(_), Uint(_) )
-            // Signed <-> Signed
-            | (Int(_), Int(_))
-
-            // Integer-like -> Float
-            | (Uint(_) , Float(_))
-            | (Int(_), Float(_))
-            // Float -> Integer-like
-            | (Float(_), Uint(_) )
-            | (Float(_), Int(_))
-            // Float <-> Float
-            | (Float(_), Float(_))
-            // Float <-> Angle
-            | (Float(_), Angle(_))
-            | (Angle(_), Float(_))
-            // Complex <-> Angle
-            | (Complex(_), Angle(_))
-            | (Angle(_), Complex(_))
-
-            // Numeric -> Complex
-            | (Uint(_) , Complex(_))
-            | (Int(_), Complex(_))
-            | (Float(_), Complex(_))
-            // Complex <-> Complex
-            | (Complex(_), Complex(_))
-
-            // Angle <-> Angle
-            | (Angle(_), Angle(_)) => {},
-
-            // Bitreg-like <-> Bitreg-like (require equal bit-count)
-            (BitReg(a), BitReg(b)) if a == b => {}
-            (Uint(a), BitReg(b)) | (BitReg(b), Uint(a)) if a == b => {}
-            (Int(a), BitReg(b)) | (BitReg(b), Int(a)) if a == b => {}
-            (Angle(a), BitReg(b)) | (BitReg(b), Angle(a)) if a == b => {}
-            _ => {
-                return Err(Error::UnsupportedCast {
-                    from: Box::new(ValueTy::Scalar(self)),
-                    to: Box::new(ValueTy::Scalar(ty)),
-                });
+        let allowed = match (self, ty) {
+            (Bit | Bool, Bit | Bool) | (Duration, Duration) => true,
+            (Bool, Int(_) | Uint(_) | Float(_) | Complex(_) | BitReg(_)) => true,
+            (Bit, Int(_) | Uint(_)) => true,
+            (Int(_) | Uint(_), Bit | Bool | Int(_) | Uint(_) | Float(_) | Complex(_)) => true,
+            (Float(_), Bool | Int(_) | Uint(_) | Float(_) | Angle(_) | Complex(_)) => true,
+            (Complex(_), Bool | Complex(_)) => true,
+            (Angle(_), Bit | Bool | Angle(_)) => true,
+            (BitReg(_), Bool) => true,
+            // Register-like types reinterpret their bits, at equal width only.
+            (BitReg(a), BitReg(b)) => a == b,
+            (Uint(a) | Int(a) | Angle(a), BitReg(b)) | (BitReg(b), Uint(a) | Int(a) | Angle(a)) => {
+                a.get() == b
             }
-        }
-        Ok(ty)
-    }
-}
-
-impl PartialEq for PrimitiveTy {
-    fn eq(&self, other: &Self) -> bool {
-        use PrimitiveTy::*;
-        match (self, other) {
-            (Bit, Bit) | (Bit, Bool) | (Bool, Bit) | (Bool, Bool) => true,
-            (BitReg(a), BitReg(b)) if a == b => true,
-            (Int(a), Int(b)) if a == b => true,
-            (Uint(a), Uint(b)) if a == b => true,
-            (Float(a), Float(b)) if a == b => true,
-            (Complex(a), Complex(b)) if a == b => true,
-            (Duration, Duration) => true,
-            (Angle(a), Angle(b)) if a == b => true,
             _ => false,
+        };
+        if allowed {
+            Ok(ty)
+        } else {
+            Err(Error::unsupported_cast(self, ty))
         }
     }
 }
@@ -707,6 +588,18 @@ mod tests {
     use super::*;
     use FloatWidth::*;
     use PrimitiveTy::*;
+
+    #[test]
+    fn int_widths_run_from_one_to_128() {
+        assert!(IntWidth::new(0).is_err());
+        assert!(IntWidth::new(1).is_ok());
+        assert!(IntWidth::new(128).is_ok());
+        let err = IntWidth::new(200).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "a width of 200 bits is not supported (must be between 1 and 128)"
+        );
+    }
 
     // --- Uint <-> Uint ---
 
@@ -975,16 +868,75 @@ mod tests {
     }
 
     #[test]
-    fn angle_to_float_returns_some() {
+    fn angle_does_not_cast_to_float() {
+        // docs/types.rst, "Allowed casts": angle -> float is "No".
         let s = Primitive::Angle(turns::Angle(42_u128));
-        assert!(s.cast(Angle(iw(8)), Float(F64)).is_ok());
+        assert!(s.cast(Angle(iw(8)), Float(F64)).is_err());
     }
 
     #[test]
-    fn angle_to_float_uses_angle_width() {
+    fn angle_converts_to_radians_by_its_width() {
+        // The conversion operators use when promoting `angle` to `float`.
         let s = Primitive::Angle(turns::Angle(0b0100_0000_u128 << 120));
-        let r = s.cast(Angle(iw(8)), Float(F64)).unwrap();
+        let r = s.as_ty(Float(F64)).unwrap();
         assert!((r.as_float(F64).unwrap() - core::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    /// Every (from, to) pair of the spec's "Allowed casts" table, with
+    /// `complex` following the other standard types.
+    #[test]
+    fn cast_table_matches_the_spec() {
+        let w = iw(8);
+        let kinds = [
+            ("bool", Bool),
+            ("int", Int(w)),
+            ("uint", Uint(w)),
+            ("float", Float(F64)),
+            ("angle", Angle(w)),
+            ("bit", Bit),
+            ("duration", Duration),
+        ];
+        // Rows and columns in the order of `kinds`; `-` is the identity.
+        let table = [
+            "-YYYNYN", // bool
+            "Y-YYNYN", // int
+            "YY-YNYN", // uint
+            "YYY-YNN", // float
+            "YNNN-YN", // angle
+            "YYYNN-N", // bit (bit -> angle needs a register of equal width)
+            "NNNNNN-", // duration
+        ];
+        for ((from_name, from), row) in kinds.iter().zip(table) {
+            for ((to_name, to), cell) in kinds.iter().zip(row.chars()) {
+                let allowed = from.cast(*to).is_ok();
+                assert_eq!(
+                    allowed,
+                    cell != 'N',
+                    "{from_name} -> {to_name} should be {cell}"
+                );
+            }
+        }
+        // Registers reinterpret their bits at equal width only; any
+        // register tests against zero; a bool widens into any register.
+        for sized in [Int(w), Uint(w), Angle(w), BitReg(8)] {
+            assert!(BitReg(8).cast(sized).is_ok());
+            assert!(sized.cast(BitReg(8)).is_ok());
+            assert!(sized.cast(BitReg(4)).is_err() || sized == BitReg(8));
+        }
+        assert!(BitReg(8).cast(BitReg(4)).is_err());
+        assert!(BitReg(8).cast(Bool).is_ok());
+        assert!(Bool.cast(BitReg(8)).is_ok());
+        assert!(Bit.cast(BitReg(8)).is_err());
+        // Complex: numeric types convert in, only `bool` out.
+        for numeric in [Bool, Int(w), Uint(w), Float(F64), Complex(F64)] {
+            assert!(numeric.cast(Complex(F64)).is_ok());
+        }
+        for target in [Int(w), Uint(w), Float(F64), Angle(w), Bit, Duration] {
+            assert!(Complex(F64).cast(target).is_err());
+        }
+        assert!(Complex(F64).cast(Bool).is_ok());
+        assert!(Angle(w).cast(Complex(F64)).is_err());
+        assert!(Bit.cast(Complex(F64)).is_err());
     }
 
     #[test]

@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::array::{Array, ArrayDim, ArrayShape, ArrayTy};
@@ -10,15 +12,48 @@ use crate::{
     primitive::{Primitive, PrimitiveTy, angle_bits, angle_from_bits, resize_int},
 };
 
+/// One step of indexing into an array dimension or a bit register.
+/// Negative positions count from the end.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Index {
     Item(isize),
+    /// `start`, `start + step`, … up to but excluding `end`.
     Slice {
         start: Option<isize>,
         step: Option<isize>,
         end: Option<isize>,
     },
     Select(Vec<isize>),
+}
+
+impl fmt::Display for Index {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bound = |f: &mut fmt::Formatter<'_>, bound: &Option<isize>| match bound {
+            Some(i) => write!(f, "{i}"),
+            None => Ok(()),
+        };
+        match self {
+            Index::Item(i) => write!(f, "{i}"),
+            Index::Slice { start, step, end } => {
+                bound(f, start)?;
+                f.write_str(":")?;
+                if let Some(step) = step {
+                    write!(f, "{step}:")?;
+                }
+                bound(f, end)
+            }
+            Index::Select(items) => {
+                f.write_str("{")?;
+                for (i, item) in items.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{item}")?;
+                }
+                f.write_str("}")
+            }
+        }
+    }
 }
 
 fn resolve_index(index: isize, dim: usize, exclusive: bool) -> Option<usize> {
@@ -34,12 +69,24 @@ fn resolve_index(index: isize, dim: usize, exclusive: bool) -> Option<usize> {
     })
 }
 
-fn is_valid_slice(start: usize, step: isize, end: usize) -> bool {
-    if step == 0 {
-        false
-    } else {
-        if step > 0 { start <= end } else { end <= start }
-    }
+/// Resolve a slice against a dimension of size `dim` to concrete
+/// `(start, step, end)` positions, `end` exclusive. `None` if a bound is out
+/// of range, the step is zero, or the step points away from `end`.
+fn resolve_slice(
+    start: Option<isize>,
+    step: Option<isize>,
+    end: Option<isize>,
+    dim: usize,
+) -> Option<SliceIter> {
+    let start = resolve_index(start.unwrap_or(0), dim, false)?;
+    let end = resolve_index(end.unwrap_or(dim as isize), dim, true)?;
+    let step = step.unwrap_or(1);
+    let valid = match step {
+        0 => false,
+        1.. => start <= end,
+        _ => end <= start,
+    };
+    valid.then_some(SliceIter { start, step, end })
 }
 
 impl Index {
@@ -55,15 +102,8 @@ impl Index {
                 shape[1..].to_vec()
             }
             Self::Slice { start, step, end } => {
-                let start = resolve_index(start.unwrap_or(0), dim, false)?;
-                let end = resolve_index(end.unwrap_or(dim as isize), dim, true)?;
-                let step = step.unwrap_or(1);
-                if !is_valid_slice(start, step, end) {
-                    return None;
-                }
                 let mut new_shape = shape.to_vec();
-                let range = end as isize - start as isize;
-                new_shape[0] = ((range + step - step.signum()) / step) as usize;
+                new_shape[0] = resolve_slice(*start, *step, *end, dim)?.len();
                 new_shape
             }
             Self::Select(indices) => {
@@ -92,13 +132,8 @@ impl Index {
                 Some(result)
             }
             Self::Slice { start, step, end } => {
-                let start = resolve_index(start.unwrap_or(0), dim, false)?;
-                let end = resolve_index(end.unwrap_or(dim as isize), dim, true)?;
-                let step = step.unwrap_or(1);
-                if !is_valid_slice(start, step, end) {
-                    return None;
-                }
-                let original = start as isize + *index.first()? as isize * step;
+                let slice = resolve_slice(*start, *step, *end, dim)?;
+                let original = slice.start as isize + *index.first()? as isize * slice.step;
                 if original < 0 || original as usize >= dim {
                     return None;
                 }
@@ -119,17 +154,11 @@ impl Index {
         }
     }
 
-    pub fn iter(&self, dim: usize) -> Option<IndexIter> {
+    fn iter(&self, dim: usize) -> Option<IndexIter> {
         Some(match self {
             Self::Item(i) => IndexIter::Item(Some(resolve_index(*i, dim, false)?)),
             Self::Slice { start, step, end } => {
-                let start = resolve_index(start.unwrap_or(0), dim, false)?;
-                let end = resolve_index(end.unwrap_or(dim as isize), dim, true)?;
-                let step = step.unwrap_or(1);
-                if !is_valid_slice(start, step, end) {
-                    return None;
-                }
-                IndexIter::Slice(SliceIter { start, step, end })
+                IndexIter::Slice(resolve_slice(*start, *step, *end, dim)?)
             }
             Self::Select(indices) => {
                 let resolved = indices
@@ -142,7 +171,7 @@ impl Index {
     }
 }
 
-pub enum IndexIter {
+enum IndexIter {
     Item(Option<usize>),
     Slice(SliceIter),
     Select(std::vec::IntoIter<usize>),
@@ -162,20 +191,16 @@ impl Iterator for IndexIter {
 impl ExactSizeIterator for IndexIter {
     fn len(&self) -> usize {
         match self {
-            Self::Item(opt) => {
-                if opt.is_some() {
-                    1
-                } else {
-                    0
-                }
-            }
+            Self::Item(opt) => usize::from(opt.is_some()),
             Self::Slice(iter) => iter.len(),
             Self::Select(vec_iter) => vec_iter.len(),
         }
     }
 }
 
-pub struct SliceIter {
+/// The positions of a resolved slice (see [`resolve_slice`], which
+/// guarantees a non-zero step pointing towards `end`).
+struct SliceIter {
     start: usize,
     step: isize,
     end: usize,
@@ -264,14 +289,11 @@ impl PrimitiveTy {
         }
 
         let error = || index_error((*self).into(), indices);
-        let Some(dim) = self.bit_count().map(|bw| bw as usize) else {
+        let (Some(width), [index]) = (self.bit_count(), indices) else {
             return Err(error());
         };
-        if indices.len() != 1 {
-            return Err(error());
-        }
-
-        match &indices[0] {
+        let dim = width as usize;
+        match index {
             Index::Item(i) => {
                 resolve_index(*i, dim, false).ok_or_else(error)?;
                 Ok(PrimitiveTy::Bit)
@@ -381,6 +403,36 @@ impl ArrayRefTy {
 }
 
 impl Scalar {
+    /// The bits of a bit-indexable scalar (`bit[n]`, `uint[n]`, `int[n]`,
+    /// `angle[n]`) as a register, with its width.
+    fn to_bits(&self) -> Option<(BitReg, u32)> {
+        let width = self.ty().bit_count()?;
+        let reg = match self.value() {
+            Primitive::Uint(v) => BitReg::from(*v),
+            Primitive::BitReg(reg) => reg.clone(),
+            Primitive::Int(v) => BitReg::from(*v as u128),
+            Primitive::Angle(a) => BitReg::from(angle_bits(*a, width)),
+            _ => return None,
+        };
+        Some((reg, width))
+    }
+
+    /// Inverse of [`to_bits`](Self::to_bits): this scalar's representation
+    /// with `reg` as its bits.
+    fn with_bits(&self, reg: BitReg) -> Option<Primitive> {
+        Some(match (self.value(), self.ty()) {
+            (Primitive::Uint(_), _) => Primitive::Uint(reg.as_u128()),
+            (Primitive::BitReg(_), _) => Primitive::BitReg(reg),
+            (Primitive::Int(_), PrimitiveTy::Int(bw)) => {
+                Primitive::Int(resize_int(reg.as_u128() as i128, bw))
+            }
+            (Primitive::Angle(_), PrimitiveTy::Angle(bw)) => {
+                Primitive::Angle(angle_from_bits(reg.as_u128(), bw.get()))
+            }
+            _ => return None,
+        })
+    }
+
     pub fn get(&self, indices: &[Index]) -> Result<Scalar> {
         if indices.is_empty() {
             return Ok(self.clone());
@@ -388,48 +440,27 @@ impl Scalar {
 
         let value_ty = ValueTy::Scalar(self.ty());
         let error = || index_error(value_ty, indices);
-        let Some(dim) = self.ty().bit_count().map(|bw| bw as usize) else {
+        let (Some((reg, width)), [index]) = (self.to_bits(), indices) else {
             return Err(error());
         };
-        if indices.len() != 1 {
-            return Err(error());
-        }
-
-        let reg: BitReg = match self.value() {
-            Primitive::Uint(v) => BitReg::from(*v),
-            Primitive::BitReg(reg) => reg.clone(),
-            Primitive::Int(v) => BitReg::from(*v as u128),
-            Primitive::Angle(a) => BitReg::from(angle_bits(*a, dim as u32)),
-            _ => return Err(error()),
-        };
-
-        match &indices[0] {
+        let dim = width as usize;
+        match index {
             Index::Item(i) => {
                 let position = resolve_index(*i, dim, false).ok_or_else(error)?;
-                Ok(Scalar::new_unchecked(
-                    Primitive::Bit(reg.get_bit(position)),
-                    PrimitiveTy::Bit,
-                ))
+                Ok(Scalar::bit(reg.get_bit(position)))
             }
             other => {
                 let iter = other.iter(dim).ok_or_else(error)?;
                 let new_width = iter.len() as u32;
-                let new_reg = reg.get_bits(iter);
-                Ok(Scalar::new_unchecked(
-                    Primitive::BitReg(new_reg),
-                    PrimitiveTy::BitReg(new_width),
-                ))
+                Ok(Scalar::bitreg(reg.get_bits(iter), new_width))
             }
         }
     }
 
     pub fn set(&mut self, indices: &[Index], value: Scalar) -> Result<()> {
         if indices.is_empty() {
-            if self.ty() != value.ty() {
-                return Err(Error::UnexpectedTy {
-                    expected: Box::new(self.ty().into()),
-                    received: Box::new(value.ty().into()),
-                });
+            if !self.ty().is_compatible(value.ty()) {
+                return Err(Error::unexpected_ty(self.ty(), value.ty()));
             }
             *self = value;
             return Ok(());
@@ -437,77 +468,35 @@ impl Scalar {
 
         let value_ty = ValueTy::Scalar(self.ty());
         let error = || index_error(value_ty, indices);
-        let Some(width) = self.ty().bit_count() else {
+        let (Some((mut reg, width)), [index]) = (self.to_bits(), indices) else {
             return Err(error());
         };
         let dim = width as usize;
-        if indices.len() != 1 {
-            return Err(error());
-        }
-
-        let mut reg: BitReg = match self.value() {
-            Primitive::Uint(v) => BitReg::from(*v),
-            Primitive::BitReg(reg) => reg.clone(),
-            Primitive::Int(v) => BitReg::from(*v as u128),
-            Primitive::Angle(a) => BitReg::from(angle_bits(*a, width)),
-            _ => return Err(error()),
-        };
-
-        match &indices[0] {
+        match index {
             Index::Item(i) => {
-                let set = match value.value() {
-                    Primitive::Bit(b) => *b,
-                    _ => {
-                        return Err(Error::UnexpectedTy {
-                            expected: Box::new(PrimitiveTy::Bit.into()),
-                            received: Box::new(value.ty().into()),
-                        });
-                    }
+                let Primitive::Bit(bit) = value.value() else {
+                    return Err(Error::unexpected_ty(PrimitiveTy::Bit, value.ty()));
                 };
-                let Some(idx) = resolve_index(*i, dim, false) else {
-                    return Err(error());
-                };
-                reg.set_bit(idx, set);
+                let position = resolve_index(*i, dim, false).ok_or_else(error)?;
+                reg.set_bit(position, *bit);
             }
             other => {
                 let iter = other.iter(dim).ok_or_else(error)?;
-                let (other_reg, value_width) = match (value.value(), value.ty()) {
-                    (Primitive::BitReg(b), PrimitiveTy::BitReg(bw)) => (b.clone(), bw),
-                    (Primitive::Uint(b), PrimitiveTy::Uint(bw)) => (BitReg::from(*b), bw.get()),
-                    (Primitive::Int(b), PrimitiveTy::Int(bw)) => {
-                        (BitReg::from(*b as u128), bw.get())
-                    }
-                    _ => {
-                        return Err(Error::UnexpectedTy {
-                            expected: Box::new(self.ty().into()),
-                            received: Box::new(value.ty().into()),
-                        });
-                    }
-                };
+                let mismatch = || Error::unexpected_ty(self.ty(), value.ty());
+                // Registers and integers supply bits; an angle needs a cast.
+                let (bits, value_width) = value
+                    .to_bits()
+                    .filter(|_| !matches!(value.ty(), PrimitiveTy::Angle(_)))
+                    .ok_or_else(mismatch)?;
                 if iter.len() != value_width as usize {
-                    return Err(Error::UnexpectedTy {
-                        expected: Box::new(self.ty().into()),
-                        received: Box::new(value.ty().into()),
-                    });
+                    return Err(mismatch());
                 }
-                let other_bits = other_reg.iter_bits().take(value_width as usize);
-                reg.set_bits(iter.zip(other_bits));
+                let bits = bits.iter_bits().take(value_width as usize);
+                reg.set_bits(iter.zip(bits));
             }
         }
 
-        let new_value = match self.value() {
-            Primitive::Uint(_) => Primitive::Uint(reg.as_u128()),
-            Primitive::BitReg(_) => Primitive::BitReg(reg),
-            Primitive::Int(_) => {
-                let int_bw = self
-                    .ty()
-                    .int_width()
-                    .expect("self is Int so int_width must be Some");
-                Primitive::Int(resize_int(reg.as_u128() as i128, int_bw))
-            }
-            Primitive::Angle(_) => Primitive::Angle(angle_from_bits(reg.as_u128(), width)),
-            _ => return Err(error()),
-        };
+        let new_value = self.with_bits(reg).ok_or_else(error)?;
         *self = Scalar::new_unchecked(new_value, self.ty());
         Ok(())
     }
@@ -571,10 +560,10 @@ impl Array {
                     Ok(())
                 }
                 Value::ArrayRef(ar) => {
-                    *self = ar.cast(self.ty().as_ref_mut())?;
+                    *self = ar.cast(self.ty().as_ref(RefAccess::Mutable))?;
                     Ok(())
                 }
-                Value::Scalar(s) => Err(Error::unsupported_cast(s.ty().into(), self.ty().into())),
+                Value::Scalar(s) => Err(Error::unsupported_cast(s.ty(), self.ty())),
             };
         }
 
@@ -594,10 +583,7 @@ impl Array {
                 return Err(error());
             }
             let Value::Scalar(value) = value else {
-                return Err(Error::UnexpectedTy {
-                    expected: Box::new(self.ty().ty().into()),
-                    received: Box::new(value.ty()),
-                });
+                return Err(Error::unexpected_ty(self.ty().ty(), value.ty()));
             };
             let pos = resolve_array_position(&shapes, array_indices, vec![]).ok_or_else(error)?;
             let flat = multi_to_flat(shape.get(), &pos);
@@ -671,6 +657,9 @@ impl ArrayRef {
 }
 
 impl Value {
+    /// Index into the value. An owned array yields an owned element or
+    /// sub-array (a copy: writing to it does not write to `self`); an array
+    /// reference yields a narrower reference to the same array.
     pub fn get(&self, indices: &[Index]) -> Result<Value> {
         if indices.is_empty() {
             return Ok(self.clone());
@@ -678,18 +667,15 @@ impl Value {
 
         match self {
             Value::Scalar(s) => s.get(indices).map(Value::Scalar),
-            Value::Array(a) => a.clone().into_ref_mut().get(indices),
+            Value::Array(a) => a.get(indices),
             Value::ArrayRef(ar) => ar.get(indices),
         }
     }
 
     pub fn set(&mut self, indices: &[Index], value: Value) -> Result<()> {
         if indices.is_empty() {
-            if self.ty() != value.ty() {
-                return Err(Error::UnexpectedTy {
-                    expected: Box::new(self.ty()),
-                    received: Box::new(value.ty()),
-                });
+            if !self.ty().is_compatible(&value.ty()) {
+                return Err(Error::unexpected_ty(self.ty(), value.ty()));
             }
             *self = value;
             return Ok(());
@@ -698,10 +684,7 @@ impl Value {
         match self {
             Value::Scalar(s) => {
                 let Value::Scalar(value) = value else {
-                    return Err(Error::UnexpectedTy {
-                        expected: Box::new(self.ty()),
-                        received: Box::new(value.ty()),
-                    });
+                    return Err(Error::unexpected_ty(s.ty(), value.ty()));
                 };
                 s.set(indices, value)
             }
@@ -719,13 +702,7 @@ impl ValueTy {
 
         match self {
             ValueTy::Scalar(s) => s.get(indices).map(ValueTy::Scalar),
-            ValueTy::Array(a) => match a.get(indices)? {
-                ValueTy::Scalar(ty) => Ok(ValueTy::Scalar(ty)),
-                ValueTy::Array(ty) => Ok(ValueTy::ArrayRef(ty.as_ref_mut())),
-                ValueTy::ArrayRef(_) => {
-                    unreachable!("array indexing on ArrayTy cannot yield ArrayRef")
-                }
-            },
+            ValueTy::Array(a) => a.get(indices),
             ValueTy::ArrayRef(a) => a.get(indices),
         }
     }
@@ -973,7 +950,7 @@ mod tests {
     fn get_item_returns_row() {
         let val = arr(&[0, 1, 2, 3, 4, 5], shape![2, 3]);
         let result = val.get(&[Index::Item(0)]).unwrap();
-        assert!(matches!(result, Value::ArrayRef(_)));
+        assert!(matches!(result, Value::Array(_)));
         assert_eq!(to_u8s(&result), vec![0, 1, 2]);
     }
 
@@ -981,7 +958,7 @@ mod tests {
     fn get_item_second_row() {
         let val = arr(&[0, 1, 2, 3, 4, 5], shape![2, 3]);
         let result = val.get(&[Index::Item(1)]).unwrap();
-        assert!(matches!(result, Value::ArrayRef(_)));
+        assert!(matches!(result, Value::Array(_)));
         assert_eq!(to_u8s(&result), vec![3, 4, 5]);
     }
 
@@ -989,14 +966,45 @@ mod tests {
     fn array_ref_displays_indexed_sub_array() {
         // An ArrayRef produced by indexing must display the sub-array it
         // refers to, not its whole backing store.
-        let val = arr(&[1, 2, 3, 4], shape![2, 2]);
-        let row0 = val.get(&[Index::Item(0)]).unwrap();
+        let Value::Array(array) = arr(&[1, 2, 3, 4], shape![2, 2]) else {
+            unreachable!()
+        };
+        let row0 = Value::ArrayRef(array.into_ref())
+            .get(&[Index::Item(0)])
+            .unwrap();
         assert!(matches!(row0, Value::ArrayRef(_)));
         assert_eq!(row0.to_string(), "{1, 2}");
 
         let val3 = arr(&[1, 2, 3, 4, 5, 6], shape![3, 2]);
         let row1 = val3.get(&[Index::Item(1)]).unwrap();
         assert_eq!(row1.to_string(), "{3, 4}");
+    }
+
+    #[test]
+    fn indexing_an_owned_array_yields_an_owned_copy() {
+        // The row is a value in its own right: writing to it must not look
+        // like (or silently fail to be) a write into the array it came from.
+        let val = arr(&[0, 1, 2, 3, 4, 5], shape![2, 3]);
+        let mut row = val.get(&[Index::Item(1)]).unwrap();
+        assert!(matches!(row, Value::Array(_)));
+        assert_eq!(row.ty(), val.ty().get(&[Index::Item(1)]).unwrap());
+
+        row.set(&[Index::Item(0)], sc(9)).unwrap();
+        assert_eq!(to_u8s(&row), vec![9, 4, 5]);
+        assert_eq!(to_u8s(&val), vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn indexing_an_array_ref_yields_a_ref_that_writes_through() {
+        let Value::Array(array) = arr(&[0, 1, 2, 3, 4, 5], shape![2, 3]) else {
+            unreachable!()
+        };
+        let whole = Value::ArrayRef(array.into_ref_mut());
+        let mut row = whole.get(&[Index::Item(1)]).unwrap();
+        assert!(matches!(row, Value::ArrayRef(_)));
+
+        row.set(&[Index::Item(0)], sc(9)).unwrap();
+        assert_eq!(to_u8s(&whole), vec![0, 1, 2, 9, 4, 5]);
     }
 
     #[test]
@@ -1016,7 +1024,7 @@ mod tests {
             end: Some(4),
         };
         let result = val.get(&[idx]).unwrap();
-        assert!(matches!(result, Value::ArrayRef(_)));
+        assert!(matches!(result, Value::Array(_)));
         assert_eq!(to_u8s(&result), vec![1, 2, 3]);
     }
 
@@ -1024,7 +1032,7 @@ mod tests {
     fn get_select() {
         let val = arr(&[0, 1, 2, 3, 4], shape![5]);
         let result = val.get(&[Index::Select(vec![3, 1, 4])]).unwrap();
-        assert!(matches!(result, Value::ArrayRef(_)));
+        assert!(matches!(result, Value::Array(_)));
         assert_eq!(to_u8s(&result), vec![3, 1, 4]);
     }
 
@@ -1910,22 +1918,9 @@ mod tests {
             ArrayTy::new(PrimitiveTy::Uint(iw(8)), shape![2, 3]),
         ));
 
-        match v.ty().get(&[Index::Item(1)]).unwrap() {
-            ValueTy::ArrayRef(ty) => {
-                assert_eq!(ty.shape(), shape![3]);
-                assert_eq!(ty.access(), RefAccess::Mutable);
-                assert!(matches!(ty.ty(), PrimitiveTy::Uint(width) if width.get() == 8));
-            }
-            other => panic!("expected array ref type, got {other:?}"),
-        }
-        match v.get(&[Index::Item(1)]).unwrap().ty() {
-            ValueTy::ArrayRef(ty) => {
-                assert_eq!(ty.shape(), shape![3]);
-                assert_eq!(ty.access(), RefAccess::Mutable);
-                assert!(matches!(ty.ty(), PrimitiveTy::Uint(width) if width.get() == 8));
-            }
-            other => panic!("expected array ref value type, got {other:?}"),
-        }
+        let row = ValueTy::array(PrimitiveTy::Uint(iw(8)), shape![3]);
+        assert_eq!(v.ty().get(&[Index::Item(1)]).unwrap(), row);
+        assert_eq!(v.get(&[Index::Item(1)]).unwrap().ty(), row);
     }
 
     #[test]

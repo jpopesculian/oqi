@@ -1,18 +1,15 @@
-use oqi_classical::ops::{
-    BinOp as ClassicalBinOp, Sizeof as ClassicalSizeof, SizeofDim as ClassicalSizeofDim,
-    UnOp as ClassicalUnOp,
-};
+use oqi_classical::ops;
+use oqi_lex::Span;
 use oqi_parse::ast;
 use serde::{Deserialize, Serialize};
 
 use crate::classical::{
-    ArrayRefShape, ArrayRefTy, ArrayTy, Duration, DurationUnit, IntWidth, PrimitiveTy, RefAccess,
-    Value, ValueTy, adim, ashape, iw, value_as_usize,
+    ArrayDim, ArrayRefShape, ArrayRefTy, ArrayShape, ArrayTy, Duration, DurationUnit, IntWidth,
+    PrimitiveTy, RefAccess, Value, ValueTy, iw, value_as_usize,
 };
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::openpulse;
-use crate::resolve::lookup_intrinsic;
-use crate::sir::Intrinsic;
+use crate::sir::{BinOp, Intrinsic, UnOp};
 use crate::symbol::SymbolTable;
 
 pub use crate::classical::FloatWidth;
@@ -237,11 +234,15 @@ pub(crate) fn eval_const_expr(
         } => {
             let lv = eval_const_expr(left, symbols, options)?;
             let rv = eval_const_expr(right, symbols, options)?;
-            const_binop(lv, *op, rv, *span)
+            bin_op(*op)
+                .apply(lv, rv)
+                .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(*span))
         }
         ast::Expr::UnaryOp { op, operand, span } => {
             let v = eval_const_expr(operand, symbols, options)?;
-            const_unary(*op, v, *span)
+            un_op(*op)
+                .apply(v)
+                .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(*span))
         }
         ast::Expr::Call { name, args, span } => {
             const_intrinsic_call(name.name, args, symbols, options, *span)
@@ -259,40 +260,38 @@ pub(crate) fn eval_const_expr(
     }
 }
 
-/// Apply a binary operation to two const values using classical ops.
-fn const_binop(lv: Value, op: ast::BinOp, rv: Value, span: oqi_lex::Span) -> Result<Value> {
-    let result = match op {
-        ast::BinOp::Add => lv.add_(rv),
-        ast::BinOp::Sub => lv.sub_(rv),
-        ast::BinOp::Mul => lv.mul_(rv),
-        ast::BinOp::Div => lv.div_(rv),
-        ast::BinOp::Mod => lv.rem_(rv),
-        ast::BinOp::Pow => lv.pow_(rv),
-        ast::BinOp::BitAnd => lv.and_(rv),
-        ast::BinOp::BitOr => lv.or_(rv),
-        ast::BinOp::BitXor => lv.xor_(rv),
-        ast::BinOp::Shl => lv.shl_(rv),
-        ast::BinOp::Shr => lv.shr_(rv),
-        ast::BinOp::LogAnd => lv.land_(rv),
-        ast::BinOp::LogOr => lv.lor_(rv),
-        ast::BinOp::Eq => lv.eq_(rv),
-        ast::BinOp::Neq => lv.neq_(rv),
-        ast::BinOp::Lt => lv.lt_(rv),
-        ast::BinOp::Gt => lv.gt_(rv),
-        ast::BinOp::Lte => lv.lte_(rv),
-        ast::BinOp::Gte => lv.gte_(rv),
-    };
-    result.map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))
+/// The classical operator an AST binary operator denotes.
+pub(crate) fn bin_op(op: ast::BinOp) -> BinOp {
+    match op {
+        ast::BinOp::Add => BinOp::Add,
+        ast::BinOp::Sub => BinOp::Sub,
+        ast::BinOp::Mul => BinOp::Mul,
+        ast::BinOp::Div => BinOp::Div,
+        ast::BinOp::Mod => BinOp::Mod,
+        ast::BinOp::Pow => BinOp::Pow,
+        ast::BinOp::BitAnd => BinOp::BitAnd,
+        ast::BinOp::BitOr => BinOp::BitOr,
+        ast::BinOp::BitXor => BinOp::BitXor,
+        ast::BinOp::Shl => BinOp::Shl,
+        ast::BinOp::Shr => BinOp::Shr,
+        ast::BinOp::LogAnd => BinOp::LogAnd,
+        ast::BinOp::LogOr => BinOp::LogOr,
+        ast::BinOp::Eq => BinOp::Eq,
+        ast::BinOp::Neq => BinOp::Neq,
+        ast::BinOp::Lt => BinOp::Lt,
+        ast::BinOp::Gt => BinOp::Gt,
+        ast::BinOp::Lte => BinOp::Lte,
+        ast::BinOp::Gte => BinOp::Gte,
+    }
 }
 
-/// Apply a unary operation to a const value.
-fn const_unary(op: ast::UnOp, v: Value, span: oqi_lex::Span) -> Result<Value> {
-    let result = match op {
-        ast::UnOp::Neg => v.neg_(),
-        ast::UnOp::BitNot => v.not_(),
-        ast::UnOp::LogNot => v.lnot_(),
-    };
-    result.map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))
+/// The classical operator an AST unary operator denotes.
+pub(crate) fn un_op(op: ast::UnOp) -> UnOp {
+    match op {
+        ast::UnOp::Neg => UnOp::Neg,
+        ast::UnOp::BitNot => UnOp::BitNot,
+        ast::UnOp::LogNot => UnOp::LogNot,
+    }
 }
 
 fn const_intrinsic_call(
@@ -300,62 +299,21 @@ fn const_intrinsic_call(
     args: &[ast::Expr<'_>],
     symbols: &SymbolTable,
     options: &CompileOptions,
-    span: oqi_lex::Span,
+    span: Span,
 ) -> Result<Value> {
-    let Some(intrinsic) = lookup_intrinsic(name) else {
-        return Err(CompileError::new(ErrorKind::NonConstantExpression).with_span(span));
-    };
-    match intrinsic {
-        Intrinsic::Sin => const_unary_intrinsic(args, symbols, options, span, Value::sin_),
-        Intrinsic::Cos => const_unary_intrinsic(args, symbols, options, span, Value::cos_),
-        Intrinsic::Tan => const_unary_intrinsic(args, symbols, options, span, Value::tan_),
-        Intrinsic::Arcsin => const_unary_intrinsic(args, symbols, options, span, Value::arcsin_),
-        Intrinsic::Arccos => const_unary_intrinsic(args, symbols, options, span, Value::arccos_),
-        Intrinsic::Arctan => const_unary_intrinsic(args, symbols, options, span, Value::arctan_),
-        Intrinsic::Exp => const_unary_intrinsic(args, symbols, options, span, Value::exp_),
-        Intrinsic::Log => const_unary_intrinsic(args, symbols, options, span, Value::log_),
-        Intrinsic::Sqrt => const_unary_intrinsic(args, symbols, options, span, Value::sqrt_),
-        Intrinsic::Ceiling => const_unary_intrinsic(args, symbols, options, span, Value::ceiling_),
-        Intrinsic::Floor => const_unary_intrinsic(args, symbols, options, span, Value::floor_),
-        Intrinsic::Mod => const_binary_intrinsic(args, symbols, options, span, Value::rem_),
-        Intrinsic::Popcount => {
-            const_unary_intrinsic(args, symbols, options, span, Value::popcount_)
-        }
-        Intrinsic::Rotl => const_binary_intrinsic(args, symbols, options, span, Value::rotl_),
-        Intrinsic::Rotr => const_binary_intrinsic(args, symbols, options, span, Value::rotr_),
-        Intrinsic::Real => const_unary_intrinsic(args, symbols, options, span, Value::real_),
-        Intrinsic::Imag => const_unary_intrinsic(args, symbols, options, span, Value::imag_),
-        Intrinsic::Sizeof => const_sizeof(args, symbols, options, span),
+    let non_const = || CompileError::new(ErrorKind::NonConstantExpression).with_span(span);
+    let intrinsic = Intrinsic::lookup(name).ok_or_else(non_const)?;
+    if intrinsic == Intrinsic::Sizeof {
+        return const_sizeof(args, symbols, options, span);
     }
-}
-
-fn const_unary_intrinsic(
-    args: &[ast::Expr<'_>],
-    symbols: &SymbolTable,
-    options: &CompileOptions,
-    span: oqi_lex::Span,
-    op: impl FnOnce(Value) -> oqi_classical::Result<Value>,
-) -> Result<Value> {
-    let [arg] = args else {
-        return Err(CompileError::new(ErrorKind::NonConstantExpression).with_span(span));
-    };
-    let arg = eval_const_expr(arg, symbols, options)?;
-    op(arg).map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))
-}
-
-fn const_binary_intrinsic(
-    args: &[ast::Expr<'_>],
-    symbols: &SymbolTable,
-    options: &CompileOptions,
-    span: oqi_lex::Span,
-    op: impl FnOnce(Value, Value) -> oqi_classical::Result<Value>,
-) -> Result<Value> {
-    let [lhs, rhs] = args else {
-        return Err(CompileError::new(ErrorKind::NonConstantExpression).with_span(span));
-    };
-    let lhs = eval_const_expr(lhs, symbols, options)?;
-    let rhs = eval_const_expr(rhs, symbols, options)?;
-    op(lhs, rhs).map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))
+    let args = args
+        .iter()
+        .map(|arg| eval_const_expr(arg, symbols, options))
+        .collect::<Result<Vec<_>>>()?;
+    intrinsic
+        .apply(args)
+        .ok_or_else(non_const)?
+        .map_err(|_| non_const())
 }
 
 fn const_sizeof(
@@ -383,41 +341,27 @@ fn const_sizeof(
             symbols.get(sym_id).ty.value_ty().ok_or_else(|| {
                 CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
             })?;
-        return const_sizeof_ty(value_ty, dim_value.as_ref(), span);
+        return const_sizeof_ty(value_ty, dim_value, span);
     }
 
-    let value = eval_const_expr(value_expr, symbols, options)?;
-    match dim_value {
-        Some(dim) => value
-            .sizeof_dim_(dim)
-            .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span)),
-        None => value
-            .sizeof_()
-            .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span)),
-    }
+    let value_ty = eval_const_expr(value_expr, symbols, options)?.ty();
+    const_sizeof_ty(value_ty, dim_value, span)
 }
 
-fn const_sizeof_ty(value_ty: ValueTy, dim: Option<&Value>, span: oqi_lex::Span) -> Result<Value> {
-    let size = match dim {
-        Some(dim) => {
-            ClassicalSizeofDim::return_ty(value_ty, dim.ty())
-                .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?;
-            let dim = value_as_usize(dim).ok_or_else(|| {
-                CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
-            })?;
-            value_ty.size(dim).ok_or_else(|| {
-                CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
-            })?
-        }
-        None => {
-            ClassicalSizeof::return_ty(value_ty)
-                .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))?;
-            value_ty.size(0).ok_or_else(|| {
-                CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
-            })?
-        }
-    };
-    Ok(Value::uint(size as u128, iw(64)))
+fn const_sizeof_ty(value_ty: ValueTy, dim: Option<Value>, span: Span) -> Result<Value> {
+    ops::sizeof(value_ty, dim)
+        .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))
+}
+
+/// A type error from the classical layer (an out-of-range width or rank).
+pub(crate) fn invalid_type(err: oqi_classical::Error, span: Span) -> CompileError {
+    CompileError::new(ErrorKind::InvalidType(err.to_string())).with_span(span)
+}
+
+/// The width an `int`/`uint`/`angle` designator asks for.
+fn int_width(designator: &ast::Expr<'_>, width: usize) -> Result<IntWidth> {
+    IntWidth::new(u32::try_from(width).unwrap_or(u32::MAX))
+        .map_err(|e| invalid_type(e, designator.span()))
 }
 
 #[inline]
@@ -543,7 +487,7 @@ pub(crate) fn resolve_scalar_type(
         }
         ast::ScalarType::Int(Some(expr), _) => {
             let width = eval_designator(expr, symbols, options)?;
-            Ok(Type::Classical(ValueTy::int(iw(width as u32))))
+            Ok(Type::Classical(ValueTy::int(int_width(expr, width)?)))
         }
 
         ast::ScalarType::Uint(None, _) => {
@@ -551,7 +495,7 @@ pub(crate) fn resolve_scalar_type(
         }
         ast::ScalarType::Uint(Some(expr), _) => {
             let width = eval_designator(expr, symbols, options)?;
-            Ok(Type::Classical(ValueTy::uint(iw(width as u32))))
+            Ok(Type::Classical(ValueTy::uint(int_width(expr, width)?)))
         }
 
         ast::ScalarType::Float(None, _) => {
@@ -569,7 +513,7 @@ pub(crate) fn resolve_scalar_type(
         }
         ast::ScalarType::Angle(Some(expr), _) => {
             let width = eval_designator(expr, symbols, options)?;
-            Ok(Type::Classical(ValueTy::angle(iw(width as u32))))
+            Ok(Type::Classical(ValueTy::angle(int_width(expr, width)?)))
         }
 
         ast::ScalarType::Complex(None, _) => {
@@ -613,7 +557,8 @@ pub(crate) fn resolve_type(
             for dim_expr in &arr.dimensions {
                 dims.push(eval_designator(dim_expr, symbols, options)?);
             }
-            Ok(Type::Classical(ValueTy::array(element, ashape(dims))))
+            let shape = ArrayShape::new(dims).map_err(|e| invalid_type(e, arr.span))?;
+            Ok(Type::Classical(ValueTy::array(element, shape)))
         }
     }
 }
@@ -677,17 +622,19 @@ pub(crate) fn resolve_array_ref_type(
             for e in exprs {
                 fixed.push(eval_designator(e, symbols, options)?);
             }
+            let shape = ArrayShape::new(fixed).map_err(|e| invalid_type(e, arr_ref.span))?;
             Ok(Type::Classical(ValueTy::array_ref(
                 element,
-                ArrayRefShape::Fixed(ashape(fixed)),
+                ArrayRefShape::Fixed(shape),
                 access,
             )))
         }
         ast::ArrayRefDims::Dim(expr) => {
             let rank = eval_designator(expr, symbols, options)?;
+            let rank = ArrayDim::new(rank).map_err(|e| invalid_type(e, expr.span()))?;
             Ok(Type::Classical(ValueTy::array_ref(
                 element,
-                ArrayRefShape::Dim(adim(rank)),
+                ArrayRefShape::Dim(rank),
                 access,
             )))
         }
@@ -697,7 +644,7 @@ pub(crate) fn resolve_array_ref_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::classical::{PrimitiveTy, iw};
+    use crate::classical::{PrimitiveTy, ashape, iw};
 
     fn span(start: usize, end: usize) -> oqi_lex::Span {
         oqi_lex::span(start, end)

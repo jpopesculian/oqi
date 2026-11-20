@@ -29,10 +29,10 @@ use crate::classical::{
 };
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{
-    BinOp, CalibrationArg, CalibrationBody, CalibrationDecl, CalibrationOperand, CalibrationTarget,
+    CalibrationArg, CalibrationBody, CalibrationDecl, CalibrationOperand, CalibrationTarget,
     CallTarget, Expr, ExprKind, GateDecl, GateModifier, IndexItem, IndexKind, IndexOp, Intrinsic,
     LValue, MeasureExpr, MeasureExprKind, Program, QubitOperand, RValue, Stmt, StmtKind,
-    SwitchLabels, UnOp,
+    SwitchLabels,
 };
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::{CompileOptions, Type};
@@ -816,11 +816,13 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             ExprKind::Binary(b) => {
                 let lv = self.eval_const_expr(&b.left, frame)?;
                 let rv = self.eval_const_expr(&b.right, frame)?;
-                apply_binop(b.op, lv, rv, expr.span)
+                b.op.apply(lv, rv)
+                    .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
             }
             ExprKind::Unary(u) => {
                 let v = self.eval_const_expr(&u.operand, frame)?;
-                apply_unop(u.op, v, expr.span)
+                u.op.apply(v)
+                    .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
             }
             ExprKind::Cast(c) => {
                 let v = self.eval_const_expr(&c.operand, frame)?;
@@ -856,46 +858,10 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             .iter()
             .map(|a| self.eval_const_expr(a, frame))
             .collect::<Result<_>>()?;
-        let map_err = |_| err(ErrorKind::NonConstantExpression, span);
-        match i {
-            Intrinsic::Sin => one_arg(vals, span)?.sin_().map_err(map_err),
-            Intrinsic::Cos => one_arg(vals, span)?.cos_().map_err(map_err),
-            Intrinsic::Tan => one_arg(vals, span)?.tan_().map_err(map_err),
-            Intrinsic::Arcsin => one_arg(vals, span)?.arcsin_().map_err(map_err),
-            Intrinsic::Arccos => one_arg(vals, span)?.arccos_().map_err(map_err),
-            Intrinsic::Arctan => one_arg(vals, span)?.arctan_().map_err(map_err),
-            Intrinsic::Exp => one_arg(vals, span)?.exp_().map_err(map_err),
-            Intrinsic::Log => one_arg(vals, span)?.log_().map_err(map_err),
-            Intrinsic::Sqrt => one_arg(vals, span)?.sqrt_().map_err(map_err),
-            Intrinsic::Ceiling => one_arg(vals, span)?.ceiling_().map_err(map_err),
-            Intrinsic::Floor => one_arg(vals, span)?.floor_().map_err(map_err),
-            Intrinsic::Popcount => one_arg(vals, span)?.popcount_().map_err(map_err),
-            Intrinsic::Real => one_arg(vals, span)?.real_().map_err(map_err),
-            Intrinsic::Imag => one_arg(vals, span)?.imag_().map_err(map_err),
-            Intrinsic::Mod => {
-                let [l, r] = two_args(vals, span)?;
-                l.rem_(r).map_err(map_err)
-            }
-            Intrinsic::Rotl => {
-                let [l, r] = two_args(vals, span)?;
-                l.rotl_(r).map_err(map_err)
-            }
-            Intrinsic::Rotr => {
-                let [l, r] = two_args(vals, span)?;
-                l.rotr_(r).map_err(map_err)
-            }
-            Intrinsic::Sizeof => match vals.len() {
-                1 => {
-                    let [v] = one_arg_array(vals, span)?;
-                    v.sizeof_().map_err(map_err)
-                }
-                2 => {
-                    let [v, d] = two_args(vals, span)?;
-                    v.sizeof_dim_(d).map_err(map_err)
-                }
-                _ => Err(err(ErrorKind::NonConstantExpression, span)),
-            },
-        }
+        let non_const = || err(ErrorKind::NonConstantExpression, span);
+        i.apply(vals)
+            .ok_or_else(non_const)?
+            .map_err(|_| non_const())
     }
 }
 
@@ -1107,70 +1073,6 @@ fn value_to_duration(v: &Value, span: Span) -> Result<Duration> {
         .ok()
         .and_then(|s| s.value().as_duration())
         .ok_or_else(mismatch)
-}
-
-fn apply_binop(op: BinOp, lv: Value, rv: Value, span: Span) -> Result<Value> {
-    let map_err = |_| err(ErrorKind::NonConstantExpression, span);
-    match op {
-        BinOp::Add => lv.add_(rv).map_err(map_err),
-        BinOp::Sub => lv.sub_(rv).map_err(map_err),
-        BinOp::Mul => lv.mul_(rv).map_err(map_err),
-        BinOp::Div => lv.div_(rv).map_err(map_err),
-        BinOp::Mod => lv.rem_(rv).map_err(map_err),
-        BinOp::Pow => lv.pow_(rv).map_err(map_err),
-        BinOp::BitAnd => lv.and_(rv).map_err(map_err),
-        BinOp::BitOr => lv.or_(rv).map_err(map_err),
-        BinOp::BitXor => lv.xor_(rv).map_err(map_err),
-        BinOp::Shl => lv.shl_(rv).map_err(map_err),
-        BinOp::Shr => lv.shr_(rv).map_err(map_err),
-        BinOp::LogAnd => lv.land_(rv).map_err(map_err),
-        BinOp::LogOr => lv.lor_(rv).map_err(map_err),
-        BinOp::Eq => lv.eq_(rv).map_err(map_err),
-        BinOp::Neq => lv.neq_(rv).map_err(map_err),
-        BinOp::Lt => lv.lt_(rv).map_err(map_err),
-        BinOp::Gt => lv.gt_(rv).map_err(map_err),
-        BinOp::Lte => lv.lte_(rv).map_err(map_err),
-        BinOp::Gte => lv.gte_(rv).map_err(map_err),
-    }
-}
-
-fn apply_unop(op: UnOp, v: Value, span: Span) -> Result<Value> {
-    let map_err = |_| err(ErrorKind::NonConstantExpression, span);
-    match op {
-        UnOp::Neg => v.neg_().map_err(map_err),
-        UnOp::BitNot => v.not_().map_err(map_err),
-        UnOp::LogNot => v.lnot_().map_err(map_err),
-    }
-}
-
-fn one_arg(vs: Vec<Value>, span: Span) -> Result<Value> {
-    let mut it = vs.into_iter();
-    let v = it
-        .next()
-        .ok_or_else(|| err(ErrorKind::NonConstantExpression, span))?;
-    if it.next().is_some() {
-        return Err(err(ErrorKind::NonConstantExpression, span));
-    }
-    Ok(v)
-}
-
-fn one_arg_array(vs: Vec<Value>, span: Span) -> Result<[Value; 1]> {
-    let v = one_arg(vs, span)?;
-    Ok([v])
-}
-
-fn two_args(vs: Vec<Value>, span: Span) -> Result<[Value; 2]> {
-    let mut it = vs.into_iter();
-    let a = it
-        .next()
-        .ok_or_else(|| err(ErrorKind::NonConstantExpression, span))?;
-    let b = it
-        .next()
-        .ok_or_else(|| err(ErrorKind::NonConstantExpression, span))?;
-    if it.next().is_some() {
-        return Err(err(ErrorKind::NonConstantExpression, span));
-    }
-    Ok([a, b])
 }
 
 fn err(kind: ErrorKind, span: Span) -> CompileError {
@@ -1814,11 +1716,13 @@ fn eval_cal_expr(
         ExprKind::Binary(b) => {
             let lv = eval_cal_expr(&b.left, params, table)?;
             let rv = eval_cal_expr(&b.right, params, table)?;
-            apply_binop(b.op, lv, rv, expr.span)
+            b.op.apply(lv, rv)
+                .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
         }
         ExprKind::Unary(u) => {
             let v = eval_cal_expr(&u.operand, params, table)?;
-            apply_unop(u.op, v, expr.span)
+            u.op.apply(v)
+                .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
         }
         ExprKind::Cast(c) => {
             let v = eval_cal_expr(&c.operand, params, table)?;

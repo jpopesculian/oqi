@@ -1,452 +1,363 @@
-mod add;
-mod arccos;
-mod arcsin;
-mod arctan;
-mod bitand;
-mod bitnot;
-mod bitor;
-mod bitxor;
-mod ceiling;
-mod cos;
-mod div;
-mod eq;
-mod exp;
-mod floor;
-mod gt;
-mod gte;
-mod imag;
-mod log;
-mod logand;
-mod lognot;
-mod logor;
-mod lt;
-mod lte;
-mod mul;
-mod neg;
-mod neq;
-mod popcount;
-mod pow;
-mod real;
-mod rem;
-mod rotl;
-mod rotr;
-mod shl;
-mod shr;
-mod sin;
-mod sizeof;
-mod sizeof_dim;
-mod sqrt;
-mod sub;
-mod tan;
+//! Classical operators as values.
+//!
+//! [`BinOp`] and [`UnOp`] name an operation; `return_ty` type-checks it and
+//! `apply` evaluates it. Each operator has one *signature* (which operand
+//! types it is defined on, what they are converted to, and the result
+//! type). The checker is that signature; the evaluator consults it before
+//! computing, and `tests/agreement.rs` checks that every signature has an
+//! evaluation, so the two cannot disagree about what is supported.
+//!
+//! Binary operators lift over arrays: element-wise for array ∘ array and
+//! array ∘ scalar, except `*` between two arrays, which is a matrix product.
+//! Unary operators are scalar-only.
 
-pub use add::Add;
-pub use arccos::Arccos;
-pub use arcsin::Arcsin;
-pub use arctan::Arctan;
-pub use bitand::BitAnd;
-pub use bitnot::BitNot;
-pub use bitor::BitOr;
-pub use bitxor::BitXor;
-pub use ceiling::Ceiling;
-pub use cos::Cos;
-pub use div::Div;
-pub use eq::Eq;
-pub use exp::Exp;
-pub use floor::Floor;
-pub use gt::Gt;
-pub use gte::Gte;
-pub use imag::Imag;
-pub use log::Log;
-pub use logand::LogAnd;
-pub use lognot::LogNot;
-pub use logor::LogOr;
-pub use lt::Lt;
-pub use lte::Lte;
-pub use mul::Mul;
-pub use neg::Neg;
-pub use neq::Neq;
-pub use popcount::Popcount;
-pub use pow::Pow;
-pub use real::Real;
-pub use rem::Rem;
-pub use rotl::Rotl;
-pub use rotr::Rotr;
-pub use shl::Shl;
-pub use shr::Shr;
-pub use sin::Sin;
-pub use sizeof::Sizeof;
-pub use sizeof_dim::SizeofDim;
-pub use sqrt::Sqrt;
-pub use sub::Sub;
-pub use tan::Tan;
+mod arith;
+mod bits;
+mod cmp;
+mod math;
+mod sizeof;
+#[cfg(test)]
+mod tests;
+
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+pub use sizeof::{sizeof, sizeof_ty};
 
 use crate::{
     Error, Result,
-    array::{Array, ArrayTy},
-    array_ref::{ArrayRef, ArrayRefTy},
-    primitive::PrimitiveTy,
+    array::{Array, ArrayDim, ArrayTy},
+    array_ref::{ArrayRefShape, ArrayRefTy, RefAccess},
+    primitive::{Primitive, PrimitiveTy},
     scalar::Scalar,
     value::{Value, ValueTy},
 };
 
-pub trait BinOp {
-    const NAME: &'static str;
-    const IS_FUNC: bool = false;
+/// A binary operator, or a two-argument built-in function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    /// `%`, and the built-in `mod(a, b)`.
+    Mod,
+    Pow,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    /// The built-in `rotl(value, distance)`.
+    Rotl,
+    /// The built-in `rotr(value, distance)`.
+    Rotr,
+    LogAnd,
+    LogOr,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Lte,
+    Gte,
+}
 
-    // given the inputs, get lhs cast, rhs cast and ouput type
-    fn scalar_check(
-        lht: PrimitiveTy,
-        rht: PrimitiveTy,
-    ) -> Result<(PrimitiveTy, PrimitiveTy, PrimitiveTy)> {
-        Err(Error::unsupported_scalar_binop(
-            Self::NAME,
-            lht,
-            rht,
-            Self::IS_FUNC,
-        ))
-    }
+/// A unary operator, or a one-argument built-in function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum UnOp {
+    Neg,
+    BitNot,
+    LogNot,
+    Sin,
+    Cos,
+    Tan,
+    Arcsin,
+    Arccos,
+    Arctan,
+    Exp,
+    Log,
+    Sqrt,
+    Ceiling,
+    Floor,
+    Popcount,
+    Real,
+    Imag,
+}
 
-    fn scalar_op(lhs: Scalar, rhs: Scalar, _out: PrimitiveTy) -> Result<Scalar> {
-        Err(Error::unsupported_scalar_binop(
-            Self::NAME,
-            lhs.ty(),
-            rhs.ty(),
-            Self::IS_FUNC,
-        ))
-    }
+/// Operand conversions and result type of a binary operator on scalars.
+type BinSignature = (PrimitiveTy, PrimitiveTy, PrimitiveTy);
+/// Operand conversion and result type of a unary operator.
+type UnSignature = (PrimitiveTy, PrimitiveTy);
 
-    fn arr_arr_check(lhs: ArrayTy, rhs: ArrayTy) -> Result<(ArrayTy, ArrayTy, ArrayTy)> {
-        if lhs.shape() != rhs.shape() {
-            return Err(Error::unsupported_binop(
-                Self::NAME,
-                lhs.into(),
-                rhs.into(),
-                Self::IS_FUNC,
-            ));
-        }
-        let (lhc, rhc, out) = Self::scalar_check(lhs.ty(), rhs.ty())?;
-        let lhc = lhs.with_ty(lhc);
-        let rhc = rhs.with_ty(rhc);
-        let out = lhs.with_ty(out);
-        Ok((lhc, rhc, out))
-    }
-
-    fn arr_scalar_check(lhs: ArrayTy, rhs: PrimitiveTy) -> Result<(ArrayTy, PrimitiveTy, ArrayTy)> {
-        let (lhc, rhc, out) = Self::scalar_check(lhs.ty(), rhs)?;
-        let lhc = lhs.with_ty(lhc);
-        let out = lhs.with_ty(out);
-        Ok((lhc, rhc, out))
-    }
-
-    fn scalar_arr_check(lhs: PrimitiveTy, rhs: ArrayTy) -> Result<(PrimitiveTy, ArrayTy, ArrayTy)> {
-        let (lhc, rhc, out) = Self::scalar_check(lhs, rhs.ty())?;
-        let rhc = rhs.with_ty(rhc);
-        let out = rhs.with_ty(out);
-        Ok((lhc, rhc, out))
-    }
-
-    fn arr_arr_op(lhs: Array, rhs: Array, out: ArrayTy) -> Result<Array> {
-        let scalar_out_ty = out.ty();
-        let values = lhs
-            .scalars()
-            .zip(rhs.scalars())
-            .map(|(a, b)| Ok(Self::scalar_op(a, b, scalar_out_ty)?.into_value()))
-            .collect::<Result<Vec<_>>>()?;
-        Array::new(values, out)
-    }
-
-    fn arr_scalar_op(lhs: Array, rhs: Scalar, out: ArrayTy) -> Result<Array> {
-        let scalar_out_ty = out.ty();
-        let values = lhs
-            .scalars()
-            .map(|a| Ok(Self::scalar_op(a, rhs.clone(), scalar_out_ty)?.into_value()))
-            .collect::<Result<Vec<_>>>()?;
-        Array::new(values, out)
-    }
-
-    fn scalar_arr_op(lhs: Scalar, rhs: Array, out: ArrayTy) -> Result<Array> {
-        let scalar_out_ty = out.ty();
-        let values = rhs
-            .scalars()
-            .map(|b| Ok(Self::scalar_op(lhs.clone(), b, scalar_out_ty)?.into_value()))
-            .collect::<Result<Vec<_>>>()?;
-        Array::new(values, out)
-    }
-
-    fn arr_ref_arr_check(
-        lhs: ArrayRefTy,
-        rhs: ArrayTy,
-    ) -> Result<(ArrayRefTy, ArrayTy, ArrayRefTy)> {
-        if lhs.shape() != rhs.shape() {
-            return Err(Error::unsupported_binop(
-                Self::NAME,
-                lhs.into(),
-                rhs.into(),
-                Self::IS_FUNC,
-            ));
-        }
-        let (lhc, rhc, out) = Self::scalar_check(lhs.ty(), rhs.ty())?;
-        let lhc = lhs.with_ty(lhc);
-        let rhc = rhs.with_ty(rhc);
-        let out = lhs.with_ty(out);
-        Ok((lhc, rhc, out))
-    }
-
-    fn arr_arr_ref_check(
-        lhs: ArrayTy,
-        rhs: ArrayRefTy,
-    ) -> Result<(ArrayTy, ArrayRefTy, ArrayRefTy)> {
-        if lhs.shape() != rhs.shape() {
-            return Err(Error::unsupported_binop(
-                Self::NAME,
-                lhs.into(),
-                rhs.into(),
-                Self::IS_FUNC,
-            ));
-        }
-        let (lhc, rhc, out) = Self::scalar_check(lhs.ty(), rhs.ty())?;
-        let lhc = lhs.with_ty(lhc);
-        let rhc = rhs.with_ty(rhc);
-        let out = rhs.with_ty(out);
-        Ok((lhc, rhc, out))
-    }
-
-    fn arr_ref_arr_ref_check(
-        lhs: ArrayRefTy,
-        rhs: ArrayRefTy,
-    ) -> Result<(ArrayRefTy, ArrayRefTy, ArrayRefTy)> {
-        if lhs.shape() != rhs.shape() {
-            return Err(Error::unsupported_binop(
-                Self::NAME,
-                lhs.into(),
-                rhs.into(),
-                Self::IS_FUNC,
-            ));
-        }
-        let (lhc, rhc, out) = Self::scalar_check(lhs.ty(), rhs.ty())?;
-        let lhc = lhs.with_ty(lhc);
-        let rhc = rhs.with_ty(rhc);
-        let out = lhs.with_ty(out);
-        Ok((lhc, rhc, out))
-    }
-
-    fn arr_ref_scalar_check(
-        lhs: ArrayRefTy,
-        rhs: PrimitiveTy,
-    ) -> Result<(ArrayRefTy, PrimitiveTy, ArrayRefTy)> {
-        let (lhc, rhc, out) = Self::scalar_check(lhs.ty(), rhs)?;
-        let lhc = lhs.with_ty(lhc);
-        let out = lhs.with_ty(out);
-        Ok((lhc, rhc, out))
-    }
-
-    fn scalar_arr_ref_check(
-        lhs: PrimitiveTy,
-        rhs: ArrayRefTy,
-    ) -> Result<(PrimitiveTy, ArrayRefTy, ArrayRefTy)> {
-        let (lhc, rhc, out) = Self::scalar_check(lhs, rhs.ty())?;
-        let rhc = rhs.with_ty(rhc);
-        let out = rhs.with_ty(out);
-        Ok((lhc, rhc, out))
-    }
-
-    fn arr_ref_arr_ref_op(lhs: ArrayRef, rhs: ArrayRef, out: ArrayRefTy) -> Result<Array> {
-        let lhs = lhs.to_owned()?;
-        let rhs = rhs.to_owned()?;
-        let out = lhs.ty().with_ty(out.ty());
-        Self::arr_arr_op(lhs, rhs, out)
-    }
-
-    fn arr_arr_ref_op(lhs: Array, rhs: ArrayRef, out: ArrayRefTy) -> Result<Array> {
-        let rhs = rhs.to_owned()?;
-        let out = lhs.ty().with_ty(out.ty());
-        Self::arr_arr_op(lhs, rhs, out)
-    }
-
-    fn arr_ref_arr_op(lhs: ArrayRef, rhs: Array, out: ArrayRefTy) -> Result<Array> {
-        let lhs = lhs.to_owned()?;
-        let out = lhs.ty().with_ty(out.ty());
-        Self::arr_arr_op(lhs, rhs, out)
-    }
-
-    fn arr_ref_scalar_op(lhs: ArrayRef, rhs: Scalar, out: ArrayRefTy) -> Result<Array> {
-        let lhs = lhs.to_owned()?;
-        let out = lhs.ty().with_ty(out.ty());
-        Self::arr_scalar_op(lhs, rhs, out)
-    }
-
-    fn scalar_arr_ref_op(lhs: Scalar, rhs: ArrayRef, out: ArrayRefTy) -> Result<Array> {
-        let rhs = rhs.to_owned()?;
-        let out = rhs.ty().with_ty(out.ty());
-        Self::scalar_arr_op(lhs, rhs, out)
-    }
-
-    fn check(lhs: ValueTy, rhs: ValueTy) -> Result<(ValueTy, ValueTy, ValueTy)> {
-        use crate::value::ValueTy::*;
-        match (lhs, rhs) {
-            (Scalar(lht), Scalar(rht)) => Self::scalar_check(lht, rht)
-                .map(|(lht, rht, out)| (Scalar(lht), Scalar(rht), Scalar(out))),
-            (Array(lh_aty), Array(rh_aty)) => Self::arr_arr_check(lh_aty, rh_aty)
-                .map(|(lhc, rhc, out)| (Array(lhc), Array(rhc), Array(out))),
-            (Array(lh_aty), Scalar(rh_sty)) => Self::arr_scalar_check(lh_aty, rh_sty)
-                .map(|(lhc, rhc, out)| (Array(lhc), Scalar(rhc), Array(out))),
-            (Scalar(lh_sty), Array(rh_aty)) => Self::scalar_arr_check(lh_sty, rh_aty)
-                .map(|(lhc, rhc, out)| (Scalar(lhc), Array(rhc), Array(out))),
-            (ArrayRef(lh_aty), ArrayRef(rh_aty)) => Self::arr_ref_arr_ref_check(lh_aty, rh_aty)
-                .map(|(lhc, rhc, out)| (ArrayRef(lhc), ArrayRef(rhc), ArrayRef(out))),
-            (ArrayRef(lh_aty), Array(rh_aty)) => Self::arr_ref_arr_check(lh_aty, rh_aty)
-                .map(|(lhc, rhc, out)| (ArrayRef(lhc), Array(rhc), ArrayRef(out))),
-            (Array(lh_aty), ArrayRef(rh_aty)) => Self::arr_arr_ref_check(lh_aty, rh_aty)
-                .map(|(lhc, rhc, out)| (Array(lhc), ArrayRef(rhc), ArrayRef(out))),
-            (ArrayRef(lh_aty), Scalar(rh_sty)) => Self::arr_ref_scalar_check(lh_aty, rh_sty)
-                .map(|(lhc, rhc, out)| (ArrayRef(lhc), Scalar(rhc), ArrayRef(out))),
-            (Scalar(lh_sty), ArrayRef(rh_aty)) => Self::scalar_arr_ref_check(lh_sty, rh_aty)
-                .map(|(lhc, rhc, out)| (Scalar(lhc), ArrayRef(rhc), ArrayRef(out))),
+impl BinOp {
+    /// The operator as spelled in source: `+`, `<<`, `rotl`, ….
+    pub const fn name(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Mod => "%",
+            BinOp::Pow => "**",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
+            BinOp::Rotl => "rotl",
+            BinOp::Rotr => "rotr",
+            BinOp::LogAnd => "&&",
+            BinOp::LogOr => "||",
+            BinOp::Eq => "==",
+            BinOp::Neq => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::Lte => "<=",
+            BinOp::Gte => ">=",
         }
     }
 
-    fn op(lhs: Value, rhs: Value, out: ValueTy) -> Result<Value> {
+    /// Whether the operation is written as a call (`rotl(a, b)`) rather
+    /// than infix (`a + b`).
+    pub const fn is_func(self) -> bool {
+        matches!(self, BinOp::Rotl | BinOp::Rotr)
+    }
+
+    /// The type of `lhs op rhs`, or an error if the operator is not
+    /// defined for those operands.
+    pub fn return_ty(self, lhs: ValueTy, rhs: ValueTy) -> Result<ValueTy> {
+        Ok(self.check(lhs, rhs)?.2)
+    }
+
+    /// Evaluate `lhs op rhs`.
+    pub fn apply(self, lhs: Value, rhs: Value) -> Result<Value> {
+        // References are read once, up front: every array below is owned.
+        let (lhs, rhs) = (lhs.into_owned()?, rhs.into_owned()?);
+        let (lhs_elem, rhs_elem, out) = self.check(lhs.ty(), rhs.ty())?;
+        let (lhs, rhs) = (convert(lhs, lhs_elem)?, convert(rhs, rhs_elem)?);
+        let elementwise = |out: ArrayTy, values: Result<Vec<Primitive>>| {
+            Array::new(values?, out).map(Value::Array)
+        };
         match (lhs, rhs, out) {
-            (Value::Scalar(lh_s), Value::Scalar(rh_s), ValueTy::Scalar(out_ty)) => {
-                Self::scalar_op(lh_s, rh_s, out_ty).map(Value::Scalar)
+            (Value::Scalar(l), Value::Scalar(r), ValueTy::Scalar(out)) => {
+                self.scalar(&l, &r, out).map(Value::Scalar)
             }
-            (Value::Array(lh_a), Value::Array(rh_a), ValueTy::Array(out)) => {
-                Self::arr_arr_op(lh_a, rh_a, out).map(Value::Array)
+            (Value::Array(l), Value::Array(r), ValueTy::Array(out)) if self == BinOp::Mul => {
+                arith::matmul(&l, &r, out).map(Value::Array)
             }
-            (Value::Array(lh_a), Value::Scalar(rh_s), ValueTy::Array(out_aty)) => {
-                Self::arr_scalar_op(lh_a, rh_s, out_aty).map(Value::Array)
-            }
-            (Value::Scalar(lh_s), Value::Array(rh_a), ValueTy::Array(out_aty)) => {
-                Self::scalar_arr_op(lh_s, rh_a, out_aty).map(Value::Array)
-            }
-            (Value::Array(lh_a), Value::Array(rh_a), ValueTy::ArrayRef(out)) => {
-                let out = lh_a.ty().with_ty(out.ty());
-                Self::arr_arr_op(lh_a, rh_a, out).map(Value::Array)
-            }
-            (Value::Array(lh_a), Value::Scalar(rh_s), ValueTy::ArrayRef(out_aty)) => {
-                let out = lh_a.ty().with_ty(out_aty.ty());
-                Self::arr_scalar_op(lh_a, rh_s, out).map(Value::Array)
-            }
-            (Value::Scalar(lh_s), Value::Array(rh_a), ValueTy::ArrayRef(out_aty)) => {
-                let out = rh_a.ty().with_ty(out_aty.ty());
-                Self::scalar_arr_op(lh_s, rh_a, out).map(Value::Array)
-            }
-            (Value::ArrayRef(lh_a), Value::ArrayRef(rh_a), ValueTy::ArrayRef(out)) => {
-                Self::arr_ref_arr_ref_op(lh_a, rh_a, out).map(Value::Array)
-            }
-            (Value::ArrayRef(lh_a), Value::Array(rh_a), ValueTy::ArrayRef(out)) => {
-                Self::arr_ref_arr_op(lh_a, rh_a, out).map(Value::Array)
-            }
-            (Value::Array(lh_a), Value::ArrayRef(rh_a), ValueTy::ArrayRef(out)) => {
-                Self::arr_arr_ref_op(lh_a, rh_a, out).map(Value::Array)
-            }
-            (Value::ArrayRef(lh_a), Value::Scalar(rh_s), ValueTy::ArrayRef(out_aty)) => {
-                Self::arr_ref_scalar_op(lh_a, rh_s, out_aty).map(Value::Array)
-            }
-            (Value::Scalar(lh_s), Value::ArrayRef(rh_a), ValueTy::ArrayRef(out_aty)) => {
-                Self::scalar_arr_ref_op(lh_s, rh_a, out_aty).map(Value::Array)
-            }
-            (lhs, _, out) => Err(Error::unsupported_cast(lhs.ty(), out)),
+            (Value::Array(l), Value::Array(r), ValueTy::Array(out)) => elementwise(
+                out,
+                l.scalars()
+                    .zip(r.scalars())
+                    .map(|(l, r)| self.eval(&l, &r, out.ty()))
+                    .collect(),
+            ),
+            (Value::Array(l), Value::Scalar(r), ValueTy::Array(out)) => elementwise(
+                out,
+                l.scalars().map(|l| self.eval(&l, &r, out.ty())).collect(),
+            ),
+            (Value::Scalar(l), Value::Array(r), ValueTy::Array(out)) => elementwise(
+                out,
+                r.scalars().map(|r| self.eval(&l, &r, out.ty())).collect(),
+            ),
+            (lhs, rhs, _) => Err(self.unsupported(lhs.ty(), rhs.ty())),
         }
     }
 
-    fn checked_op(lhs: Value, rhs: Value) -> Result<Value> {
-        let (lhs_ty, rhs_ty, out_ty) = Self::check(lhs.ty(), rhs.ty())?;
-        let lhs = lhs.cast(lhs_ty)?;
-        let rhs = rhs.cast(rhs_ty)?;
-        Self::op(lhs, rhs, out_ty)
+    /// The element types the operands are converted to, and the result
+    /// type. A result involving an array reference is itself typed as a
+    /// reference: it is the only array type that can carry a `#dim` shape.
+    fn check(self, lhs: ValueTy, rhs: ValueTy) -> Result<(PrimitiveTy, PrimitiveTy, ValueTy)> {
+        let unsupported = || self.unsupported(lhs, rhs);
+        let ((lhs_elem, lhs_shape), (rhs_elem, rhs_shape)) = (parts(lhs), parts(rhs));
+        let (lhs_elem, rhs_elem, out) =
+            self.signature(lhs_elem, rhs_elem).ok_or_else(unsupported)?;
+        let shape = match (lhs_shape, rhs_shape) {
+            (None, None) => return Ok((lhs_elem, rhs_elem, ValueTy::Scalar(out))),
+            (Some(shape), None) | (None, Some(shape)) => shape,
+            (Some(l), Some(r)) => self.array_shape(l, r).ok_or_else(unsupported)?,
+        };
+        let access = [lhs, rhs].into_iter().find_map(|ty| match ty {
+            ValueTy::ArrayRef(ty) => Some(ty.access()),
+            _ => None,
+        });
+        let out = match (shape, access) {
+            (ArrayRefShape::Fixed(shape), None) => ValueTy::Array(ArrayTy::new(out, shape)),
+            (shape, access) => ValueTy::ArrayRef(ArrayRefTy::new(
+                out,
+                shape,
+                access.unwrap_or(RefAccess::Readonly),
+            )),
+        };
+        Ok((lhs_elem, rhs_elem, out))
     }
 
-    fn return_ty(lht: ValueTy, rht: ValueTy) -> Result<ValueTy> {
-        Self::check(lht, rht).map(|(_, _, out)| out)
+    /// The result shape of an array ∘ array operation.
+    fn array_shape(self, lhs: ArrayRefShape, rhs: ArrayRefShape) -> Option<ArrayRefShape> {
+        use ArrayRefShape::{Dim, Fixed};
+        match (self, lhs, rhs) {
+            (BinOp::Mul, Fixed(l), Fixed(r)) => arith::matmul_shape(l, r).map(Fixed),
+            (BinOp::Mul, l, r) => {
+                let rank = arith::matmul_rank(l.dim().get(), r.dim().get());
+                ArrayDim::new(rank).ok().map(Dim)
+            }
+            // Element-wise: prefer whichever side knows its sizes.
+            (_, Dim(_), Fixed(_)) => lhs.is_compatible(&rhs).then_some(rhs),
+            _ => lhs.is_compatible(&rhs).then_some(lhs),
+        }
+    }
+
+    /// How the operator applies to scalar operands, or `None` if it is not
+    /// defined for them. The single source of truth for what is supported.
+    fn signature(self, lhs: PrimitiveTy, rhs: PrimitiveTy) -> Option<BinSignature> {
+        use BinOp::*;
+        match self {
+            Add | Sub | Mul | Div | Mod | Pow => arith::signature(self, lhs, rhs),
+            BitAnd | BitOr | BitXor | Shl | Shr | Rotl | Rotr => bits::signature(self, lhs, rhs),
+            LogAnd | LogOr | Eq | Neq | Lt | Gt | Lte | Gte => cmp::signature(self, lhs, rhs),
+        }
+    }
+
+    /// Evaluate on operands already converted per [`signature`](Self::signature).
+    fn eval(self, lhs: &Scalar, rhs: &Scalar, out: PrimitiveTy) -> Result<Primitive> {
+        use BinOp::*;
+        match self {
+            Add | Sub | Mul | Div | Mod | Pow => arith::eval(self, lhs, rhs, out),
+            BitAnd | BitOr | BitXor | Shl | Shr | Rotl | Rotr => bits::eval(self, lhs, rhs),
+            LogAnd | LogOr | Eq | Neq | Lt | Gt | Lte | Gte => cmp::eval(self, lhs, rhs),
+        }
+    }
+
+    fn scalar(self, lhs: &Scalar, rhs: &Scalar, out: PrimitiveTy) -> Result<Scalar> {
+        Scalar::new(self.eval(lhs, rhs, out)?, out)
+    }
+
+    fn unsupported(self, lhs: impl Into<ValueTy>, rhs: impl Into<ValueTy>) -> Error {
+        Error::UnsupportedOp {
+            op: self.name(),
+            is_func: self.is_func(),
+            args: vec![lhs.into(), rhs.into()],
+        }
     }
 }
 
-pub trait UnOp {
-    const NAME: &'static str;
-    const IS_FUNC: bool = false;
-
-    // given the input, get cast and ouput type
-    fn scalar_check(arg: PrimitiveTy) -> Result<(PrimitiveTy, PrimitiveTy)>;
-    fn scalar_op(arg: Scalar, out: PrimitiveTy) -> Result<Scalar>;
-    fn arr_check(arg: ArrayTy) -> Result<(ArrayTy, ArrayTy)> {
-        // as of right now, we don't support any array unops
-        Err(Error::unsupported_unop(
-            Self::NAME,
-            arg.ty().into(),
-            Self::IS_FUNC,
-        ))
-    }
-    fn arr_ref_check(arg: ArrayRefTy) -> Result<(ArrayTy, ArrayTy)> {
-        // as of right now, we don't support any array unops
-        Err(Error::unsupported_unop(
-            Self::NAME,
-            arg.ty().into(),
-            Self::IS_FUNC,
-        ))
-    }
-    fn arr_op(arg: Array, out: ArrayTy) -> Result<Array> {
-        let scalar_out_ty = out.ty();
-        let values = arg
-            .scalars()
-            .map(|scalar| Ok(Self::scalar_op(scalar, scalar_out_ty)?.into_value()))
-            .collect::<Result<Vec<_>>>()?;
-        Array::new(values, out)
-    }
-    fn arr_ref_op(arg: ArrayRef, out: ArrayTy) -> Result<Array> {
-        let scalar_out_ty = out.ty();
-        let values = arg
-            .array()
-            .borrow()?
-            .scalars()
-            .map(|scalar| Ok(Self::scalar_op(scalar, scalar_out_ty)?.into_value()))
-            .collect::<Result<Vec<_>>>()?;
-        Array::new(values, out)
+impl UnOp {
+    /// The operator as spelled in source: `-`, `~`, `sin`, ….
+    pub const fn name(self) -> &'static str {
+        match self {
+            UnOp::Neg => "-",
+            UnOp::BitNot => "~",
+            UnOp::LogNot => "!",
+            UnOp::Sin => "sin",
+            UnOp::Cos => "cos",
+            UnOp::Tan => "tan",
+            UnOp::Arcsin => "arcsin",
+            UnOp::Arccos => "arccos",
+            UnOp::Arctan => "arctan",
+            UnOp::Exp => "exp",
+            UnOp::Log => "log",
+            UnOp::Sqrt => "sqrt",
+            UnOp::Ceiling => "ceiling",
+            UnOp::Floor => "floor",
+            UnOp::Popcount => "popcount",
+            UnOp::Real => "real",
+            UnOp::Imag => "imag",
+        }
     }
 
-    fn check(arg: ValueTy) -> Result<(ValueTy, ValueTy)> {
-        use crate::value::ValueTy::*;
+    /// Whether the operation is written as a call (`sin(x)`) rather than
+    /// prefix (`-x`).
+    pub const fn is_func(self) -> bool {
+        !matches!(self, UnOp::Neg | UnOp::BitNot | UnOp::LogNot)
+    }
+
+    /// The type of `op arg`, or an error if the operator is not defined
+    /// for that operand.
+    pub fn return_ty(self, arg: ValueTy) -> Result<ValueTy> {
+        self.check(arg).map(|(_, out)| ValueTy::Scalar(out))
+    }
+
+    /// Evaluate `op arg`.
+    pub fn apply(self, arg: Value) -> Result<Value> {
+        let (operand, out) = self.check(arg.ty())?;
+        let Value::Scalar(arg) = arg else {
+            unreachable!("unary operators only type-check on scalars");
+        };
+        let arg = Scalar::new(arg.into_value(), operand)?;
+        Scalar::new(self.eval(&arg)?, out).map(Value::Scalar)
+    }
+
+    fn check(self, arg: ValueTy) -> Result<UnSignature> {
         match arg {
-            Scalar(ty) => {
-                Self::scalar_check(ty).map(|(arg_ty, out_ty)| (Scalar(arg_ty), Scalar(out_ty)))
-            }
-            Array(aty) => {
-                Self::arr_check(aty).map(|(arg_ty, out_ty)| (Array(arg_ty), Array(out_ty)))
-            }
-            ArrayRef(ar_ty) => {
-                Self::arr_ref_check(ar_ty).map(|(arg_ty, out_ty)| (Array(arg_ty), Array(out_ty)))
-            }
+            ValueTy::Scalar(ty) => self.signature(ty),
+            ValueTy::Array(_) | ValueTy::ArrayRef(_) => None,
+        }
+        .ok_or_else(|| self.unsupported(arg))
+    }
+
+    /// How the operator applies to its operand, or `None` if it is not
+    /// defined for it. The single source of truth for what is supported.
+    fn signature(self, arg: PrimitiveTy) -> Option<UnSignature> {
+        match self {
+            UnOp::Neg => arith::neg_signature(arg),
+            UnOp::BitNot | UnOp::Popcount => bits::unary_signature(self, arg),
+            UnOp::LogNot => cmp::not_signature(arg),
+            _ => math::signature(self, arg),
         }
     }
 
-    fn op(arg: Value, out: ValueTy) -> Result<Value> {
-        match (arg, out) {
-            (Value::Scalar(arg), ValueTy::Scalar(out)) => {
-                Self::scalar_op(arg, out).map(Value::Scalar)
-            }
-            (Value::Array(arg), ValueTy::Array(out)) => Self::arr_op(arg, out).map(Value::Array),
-            (Value::ArrayRef(arg), ValueTy::Array(out)) => {
-                Self::arr_ref_op(arg, out).map(Value::Array)
-            }
-            (arg, out) => Err(Error::unsupported_cast(arg.ty(), out)),
+    /// Evaluate on an operand already converted per [`signature`](Self::signature).
+    fn eval(self, arg: &Scalar) -> Result<Primitive> {
+        match self {
+            UnOp::Neg => arith::neg(arg),
+            UnOp::BitNot | UnOp::Popcount => bits::unary_eval(self, arg),
+            UnOp::LogNot => cmp::not(arg),
+            _ => math::eval(self, arg),
         }
     }
 
-    fn checked_op(arg: Value) -> Result<Value> {
-        let (arg_ty, out_ty) = Self::check(arg.ty())?;
-        let arg = arg.cast(arg_ty)?;
-        Self::op(arg, out_ty)
-    }
-
-    fn return_ty(arg: ValueTy) -> Result<ValueTy> {
-        Self::check(arg).map(|(_, out)| out)
+    fn unsupported(self, arg: impl Into<ValueTy>) -> Error {
+        Error::UnsupportedOp {
+            op: self.name(),
+            is_func: self.is_func(),
+            args: vec![arg.into()],
+        }
     }
 }
 
-pub(crate) fn unsupported_scalar_binop<O: BinOp>(lhs: PrimitiveTy, rhs: PrimitiveTy) -> Error {
-    Error::unsupported_scalar_binop(O::NAME, lhs, rhs, O::IS_FUNC)
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
 }
 
-pub(crate) fn unsupported_scalar_unop<O: UnOp>(arg: PrimitiveTy) -> Error {
-    Error::unsupported_scalar_unop(O::NAME, arg, O::IS_FUNC)
+impl fmt::Display for UnOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// An operand type as its element type and, for an array or array
+/// reference, its shape.
+fn parts(ty: ValueTy) -> (PrimitiveTy, Option<ArrayRefShape>) {
+    match ty {
+        ValueTy::Scalar(elem) => (elem, None),
+        ValueTy::Array(array) => (array.ty(), Some(array.shape().into())),
+        ValueTy::ArrayRef(array) => (array.ty(), Some(array.shape())),
+    }
+}
+
+/// Convert the element(s) of an owned operand to `elem`. This is the
+/// conversion an operator's signature asks for (a promotion such as
+/// `angle -> float`), not a user-level cast, so the cast table does not apply.
+fn convert(value: Value, elem: PrimitiveTy) -> Result<Value> {
+    match value {
+        Value::Scalar(scalar) => Scalar::new(scalar.into_value(), elem).map(Value::Scalar),
+        Value::Array(array) => {
+            let ty = array.ty().with_ty(elem);
+            Array::new(array.into_values(), ty).map(Value::Array)
+        }
+        Value::ArrayRef(array) => convert(Value::Array(array.to_owned()?), elem),
+    }
 }

@@ -13,7 +13,7 @@ use std::cmp::Ordering;
 use oqi_lex::Span;
 
 use crate::bytecode::ProcOwner;
-use crate::classical::{Primitive, PrimitiveTy, ValueTy};
+use crate::classical::{IntWidth, Primitive, PrimitiveTy, ValueTy};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{
     self, Alias, ArrayLiteral, Assignment, BinOp, Binary, BoxStmt, CalibrationBody, Call, Cast,
@@ -635,6 +635,7 @@ impl<'a> CfgBuilder<'a> {
         let header_bb = self.new_block(span);
         let body_bb = self.new_block(span);
         let latch_bb = self.new_block(span);
+        let advance_bb = self.new_block(span);
         let after_bb = self.new_block(span);
 
         self.terminate(Terminator::Goto(header_bb));
@@ -647,10 +648,6 @@ impl<'a> CfgBuilder<'a> {
             Some(s) => self.lower_expr(*s)?,
             None => block_literal_int(&var_ty, 1, span),
         };
-        // Caveat: for a descending range over an unsigned loop var with
-        // `end == 0`, `var >= end` is a tautology after `var` wraps —
-        // the evaluator must compute the advance in signed arithmetic
-        // for the exit test to fire.
         let cmp_op = match const_step_sign(&step_expr) {
             Some(Ordering::Greater) => BinOp::Lte,
             Some(Ordering::Less) => BinOp::Gte,
@@ -670,19 +667,21 @@ impl<'a> CfgBuilder<'a> {
         };
 
         let end_block = self.lower_expr(*end)?;
-        let cond = BlockExpr {
+        let in_range = |value: BlockExpr, end: BlockExpr| BlockExpr {
             kind: BlockExprKind::Binary(Binary {
                 op: cmp_op,
-                left: Box::new(block_var_expr(var, var_ty.clone(), span)),
-                right: Box::new(end_block),
+                left: Box::new(value),
+                right: Box::new(end),
             }),
             ty: Type::Classical(ValueTy::bool()),
             span,
         };
+        let var_expr = || block_var_expr(var, var_ty.clone(), span);
+        // The header admits the first value.
         self.set_terminator(
             header_bb,
             Terminator::Branch {
-                cond,
+                cond: in_range(var_expr(), end_block.clone()),
                 then_bb: body_bb,
                 else_bb: after_bb,
             },
@@ -699,17 +698,41 @@ impl<'a> CfgBuilder<'a> {
 
         self.frames.pop();
 
-        self.current = Some(latch_bb);
+        // The latch admits each further value *before* advancing to it,
+        // testing `var + step` in a type wide enough to hold it: in the
+        // loop variable's own type the sum can leave the range it is being
+        // tested against (255 + 1 in a `uint[8]` is 0 again, or an overflow
+        // in an `int[8]`), and a range ending at the type's limit would
+        // never see its exit.
+        let next = BlockExpr {
+            kind: BlockExprKind::Binary(Binary {
+                op: BinOp::Add,
+                left: Box::new(widen_int(var_expr())),
+                right: Box::new(widen_int(step_expr.clone())),
+            }),
+            ty: widen_int(var_expr()).ty,
+            span,
+        };
+        self.set_terminator(
+            latch_bb,
+            Terminator::Branch {
+                cond: in_range(next, widen_int(end_block)),
+                then_bb: advance_bb,
+                else_bb: after_bb,
+            },
+        );
+
+        self.current = Some(advance_bb);
         // Synthesized advance assignment `var = var + step`. Like the
         // init above, this is a synthetic statement with the
         // for-statement's span and no annotations.
         let advance = BlockExpr {
             kind: BlockExprKind::Binary(Binary {
                 op: BinOp::Add,
-                left: Box::new(block_var_expr(var, var_ty.clone(), span)),
+                left: Box::new(var_expr()),
                 right: Box::new(step_expr),
             }),
-            ty: var_ty,
+            ty: var_ty.clone(),
             span,
         };
         self.append(BlockStmt {
@@ -719,7 +742,7 @@ impl<'a> CfgBuilder<'a> {
             }),
             span,
         });
-        self.terminate(Terminator::Goto(header_bb));
+        self.terminate(Terminator::Goto(body_bb));
 
         self.current = Some(after_bb);
         Ok(())
@@ -977,6 +1000,39 @@ fn const_step_sign(e: &BlockExpr) -> Option<Ordering> {
             const_step_sign(&u.operand).map(Ordering::reverse)
         }
         _ => None,
+    }
+}
+
+/// An integer expression as an `int[128]`, in which adding two integers of
+/// any narrower width cannot overflow. Anything else is returned as is.
+fn widen_int(e: BlockExpr) -> BlockExpr {
+    let narrow = match e.ty.scalar_ty() {
+        Some(PrimitiveTy::Int(w) | PrimitiveTy::Uint(w)) => w.get() < IntWidth::MAX,
+        _ => false,
+    };
+    if !narrow {
+        return e;
+    }
+    let wide = Type::Classical(ValueTy::int(IntWidth::B128));
+    let span = e.span;
+    let kind = match e.kind {
+        BlockExprKind::Literal(Primitive::Int(i)) => BlockExprKind::Literal(Primitive::Int(i)),
+        BlockExprKind::Literal(Primitive::Uint(u)) => {
+            BlockExprKind::Literal(Primitive::Int(u as i128))
+        }
+        kind => BlockExprKind::Cast(Cast {
+            target_ty: wide.clone(),
+            operand: Box::new(BlockExpr {
+                kind,
+                ty: e.ty,
+                span,
+            }),
+        }),
+    };
+    BlockExpr {
+        kind,
+        ty: wide,
+        span,
     }
 }
 

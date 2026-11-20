@@ -405,8 +405,12 @@ fn dominance_frontiers(
             continue;
         }
         for &p in &preds[bb_idx] {
+            // Walk up from each predecessor to the join's immediate
+            // dominator. A loop header is reached on the way up from its
+            // back edge, and so lands in its own frontier: a value defined
+            // in the header needs a phi there too.
             let mut runner = p;
-            while runner != idom[bb_idx] && runner != bb {
+            while runner != idom[bb_idx] {
                 df[runner.0].insert(bb);
                 let next = idom[runner.0];
                 if next == runner {
@@ -1183,7 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn for_range_header_phi_has_two_sources() {
+    fn for_range_body_phis_merge_entry_and_back_edge() {
         let (program, ssa) = build(
             r#"
                 int sum = 0;
@@ -1194,30 +1198,34 @@ mod tests {
         );
         let i_sym = lookup_symbol(&program, "i");
         let sum_sym = lookup_symbol(&program, "sum");
-        let i_phis: Vec<&Phi> = ssa
+        // The loop body is the header branch's `then` target and the
+        // target of the back edge; it also *defines* `sum`, so it is in
+        // its own dominance frontier and needs a phi for it.
+        let body = ssa
             .blocks
             .iter()
-            .flat_map(|b| b.phis.iter())
-            .filter(|p| p.dest.symbol == i_sym)
-            .collect();
-        let sum_phis: Vec<&Phi> = ssa
-            .blocks
-            .iter()
-            .flat_map(|b| b.phis.iter())
-            .filter(|p| p.dest.symbol == sum_sym)
-            .collect();
-        assert_eq!(i_phis.len(), 1, "expected one phi for loop var `i`");
-        assert_eq!(
-            i_phis[0].sources.len(),
-            2,
-            "for-loop var phi must merge init + advance"
-        );
-        assert_eq!(sum_phis.len(), 1, "expected one phi for accumulator `sum`");
-        assert_eq!(
-            sum_phis[0].sources.len(),
-            2,
-            "for-loop accumulator phi must merge pre-loop + body"
-        );
+            .find_map(|b| match &b.terminator {
+                SsaTerminator::Branch { then_bb, .. } => Some(*then_bb),
+                _ => None,
+            })
+            .expect("for-loop header branch");
+        let body_phi = |sym| {
+            let phis: Vec<&Phi> = ssa.blocks[body.0]
+                .phis
+                .iter()
+                .filter(|p| p.dest.symbol == sym)
+                .collect();
+            assert_eq!(phis.len(), 1, "one phi per variable at the loop body");
+            phis[0]
+        };
+        for (sym, what) in [(i_sym, "init + advance"), (sum_sym, "pre-loop + body")] {
+            let phi = body_phi(sym);
+            assert_eq!(phi.sources.len(), 2, "phi must merge {what}");
+            assert_ne!(
+                phi.sources[0].1.version, phi.sources[1].1.version,
+                "entry and back-edge versions must be distinct"
+            );
+        }
     }
 
     #[test]

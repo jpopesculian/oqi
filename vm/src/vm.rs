@@ -2,23 +2,21 @@
 //!
 //! Executes a [`BcModule`] by walking each procedure's basic blocks and
 //! following terminators. Classical work is delegated to `oqi-classical`
-//! (`checked_op`, `Value::cast`, array indexing); quantum work to a
+//! (operators, `Value::cast`, array indexing); quantum work to a
 //! pluggable [`QuantumBackend`]; `extern` calls to an [`ExternProvider`].
 
 use std::collections::HashMap;
 
 use num_complex::Complex64;
-use oqi_classical::ops::{BinOp, UnOp};
 use oqi_classical::{
     Array, ArrayTy, Duration, DurationUnit, FloatWidth, Index, Primitive, PrimitiveTy, Scalar,
-    Value, ValueTy, iw, ops,
+    Value, ValueTy, iw,
 };
 use oqi_compile::bytecode::{
     BcAliasSegment, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCallTarget, BcGateModifier,
     BcModule, BcOp, BcOperand, BcTerminator, BlockId, ProcId, ProcOwner, QubitSource, Reg,
     is_sample_safe,
 };
-use oqi_compile::sir::Intrinsic;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
 use oqi_lex::Span;
 
@@ -538,31 +536,17 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 
     async fn exec_op(&mut self, op: &BcOp, frame: &mut Frame) -> KindResult<()> {
         match op {
-            // ── Binary classical ops ──────────────────────────────────
-            BcOp::Add { dest, lhs, rhs } => self.bin::<ops::Add>(frame, *dest, lhs, rhs),
-            BcOp::Sub { dest, lhs, rhs } => self.bin::<ops::Sub>(frame, *dest, lhs, rhs),
-            BcOp::Mul { dest, lhs, rhs } => self.bin::<ops::Mul>(frame, *dest, lhs, rhs),
-            BcOp::Div { dest, lhs, rhs } => self.bin::<ops::Div>(frame, *dest, lhs, rhs),
-            BcOp::Mod { dest, lhs, rhs } => self.bin::<ops::Rem>(frame, *dest, lhs, rhs),
-            BcOp::Pow { dest, lhs, rhs } => self.bin::<ops::Pow>(frame, *dest, lhs, rhs),
-            BcOp::BitAnd { dest, lhs, rhs } => self.bin::<ops::BitAnd>(frame, *dest, lhs, rhs),
-            BcOp::BitOr { dest, lhs, rhs } => self.bin::<ops::BitOr>(frame, *dest, lhs, rhs),
-            BcOp::BitXor { dest, lhs, rhs } => self.bin::<ops::BitXor>(frame, *dest, lhs, rhs),
-            BcOp::Shl { dest, lhs, rhs } => self.bin::<ops::Shl>(frame, *dest, lhs, rhs),
-            BcOp::Shr { dest, lhs, rhs } => self.bin::<ops::Shr>(frame, *dest, lhs, rhs),
-            BcOp::LogAnd { dest, lhs, rhs } => self.bin::<ops::LogAnd>(frame, *dest, lhs, rhs),
-            BcOp::LogOr { dest, lhs, rhs } => self.bin::<ops::LogOr>(frame, *dest, lhs, rhs),
-            BcOp::Eq { dest, lhs, rhs } => self.bin::<ops::Eq>(frame, *dest, lhs, rhs),
-            BcOp::Neq { dest, lhs, rhs } => self.bin::<ops::Neq>(frame, *dest, lhs, rhs),
-            BcOp::Lt { dest, lhs, rhs } => self.bin::<ops::Lt>(frame, *dest, lhs, rhs),
-            BcOp::Gt { dest, lhs, rhs } => self.bin::<ops::Gt>(frame, *dest, lhs, rhs),
-            BcOp::Le { dest, lhs, rhs } => self.bin::<ops::Lte>(frame, *dest, lhs, rhs),
-            BcOp::Ge { dest, lhs, rhs } => self.bin::<ops::Gte>(frame, *dest, lhs, rhs),
-
-            // ── Unary classical ops ───────────────────────────────────
-            BcOp::Neg { dest, src } => self.un::<ops::Neg>(frame, *dest, src),
-            BcOp::BitNot { dest, src } => self.un::<ops::BitNot>(frame, *dest, src),
-            BcOp::LogNot { dest, src } => self.un::<ops::LogNot>(frame, *dest, src),
+            // ── Classical operators ───────────────────────────────────
+            BcOp::Binary { op, dest, lhs, rhs } => {
+                let (lhs, rhs) = (self.eval(frame, lhs)?, self.eval(frame, rhs)?);
+                self.set(frame, *dest, op.apply(lhs, rhs)?);
+                Ok(())
+            }
+            BcOp::Unary { op, dest, src } => {
+                let value = op.apply(self.eval(frame, src)?)?;
+                self.set(frame, *dest, value);
+                Ok(())
+            }
             BcOp::Cast {
                 dest,
                 target_ty,
@@ -938,7 +922,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     .iter()
                     .map(|a| self.eval(frame, a))
                     .collect::<KindResult<_>>()?;
-                let v = eval_intrinsic(i, &vals)?;
+                let v = i.apply(vals).ok_or_else(|| {
+                    VmErrorKind::Type(format!("wrong number of arguments for `{i}`"))
+                })??;
                 if let Some(d) = dest {
                     self.set(frame, d, v);
                 }
@@ -1506,27 +1492,6 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 
     // ── Helpers ───────────────────────────────────────────────────────
 
-    fn bin<O: BinOp>(
-        &mut self,
-        frame: &mut Frame,
-        dest: Reg,
-        lhs: &BcOperand,
-        rhs: &BcOperand,
-    ) -> KindResult<()> {
-        let l = self.eval(frame, lhs)?;
-        let r = self.eval(frame, rhs)?;
-        let v = O::checked_op(l, r)?;
-        self.set(frame, dest, v);
-        Ok(())
-    }
-
-    fn un<O: UnOp>(&mut self, frame: &mut Frame, dest: Reg, src: &BcOperand) -> KindResult<()> {
-        let v = self.eval(frame, src)?;
-        let v = O::checked_op(v)?;
-        self.set(frame, dest, v);
-        Ok(())
-    }
-
     fn set(&self, frame: &mut Frame, reg: Reg, value: Value) {
         frame.regs[reg.0 as usize] = Some(value);
     }
@@ -1845,44 +1810,4 @@ fn is_pulse_intrinsic(name: &str) -> bool {
         name,
         "newframe" | "gaussian" | "play" | "capture" | "shift_phase" | "threshold"
     )
-}
-
-/// Evaluate an intrinsic call against the classical op library.
-fn eval_intrinsic(i: &Intrinsic, args: &[Value]) -> KindResult<Value> {
-    let arg0 = || -> KindResult<Value> {
-        args.first()
-            .cloned()
-            .ok_or_else(|| VmErrorKind::Type("intrinsic missing argument".into()))
-    };
-    let arg = |n: usize| -> KindResult<Value> {
-        args.get(n)
-            .cloned()
-            .ok_or_else(|| VmErrorKind::Type("intrinsic missing argument".into()))
-    };
-    Ok(match i {
-        Intrinsic::Sin => ops::Sin::checked_op(arg0()?)?,
-        Intrinsic::Cos => ops::Cos::checked_op(arg0()?)?,
-        Intrinsic::Tan => ops::Tan::checked_op(arg0()?)?,
-        Intrinsic::Arcsin => ops::Arcsin::checked_op(arg0()?)?,
-        Intrinsic::Arccos => ops::Arccos::checked_op(arg0()?)?,
-        Intrinsic::Arctan => ops::Arctan::checked_op(arg0()?)?,
-        Intrinsic::Exp => ops::Exp::checked_op(arg0()?)?,
-        Intrinsic::Log => ops::Log::checked_op(arg0()?)?,
-        Intrinsic::Sqrt => ops::Sqrt::checked_op(arg0()?)?,
-        Intrinsic::Ceiling => ops::Ceiling::checked_op(arg0()?)?,
-        Intrinsic::Floor => ops::Floor::checked_op(arg0()?)?,
-        Intrinsic::Popcount => ops::Popcount::checked_op(arg0()?)?,
-        Intrinsic::Real => ops::Real::checked_op(arg0()?)?,
-        Intrinsic::Imag => ops::Imag::checked_op(arg0()?)?,
-        Intrinsic::Mod => ops::Rem::checked_op(arg0()?, arg(1)?)?,
-        Intrinsic::Rotl => ops::Rotl::checked_op(arg0()?, arg(1)?)?,
-        Intrinsic::Rotr => ops::Rotr::checked_op(arg0()?, arg(1)?)?,
-        Intrinsic::Sizeof => {
-            if args.len() >= 2 {
-                ops::SizeofDim::checked_op(arg0()?, arg(1)?)?
-            } else {
-                ops::Sizeof::checked_op(arg0()?)?
-            }
-        }
-    })
 }

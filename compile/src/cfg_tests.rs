@@ -2,11 +2,12 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::cfg::{self, BasicBlockId, Cfg, ProgramCfgs, Terminator};
+use crate::classical::{IntWidth, ValueTy};
 use crate::error::{CompileError, ErrorKind};
 use crate::lower::compile_source;
 use crate::resolve::DefaultIncludeResolver;
 use crate::sir;
-use crate::types::CompileOptions;
+use crate::types::{CompileOptions, Type};
 
 fn compile(src: &str) -> sir::Program {
     compile_source(
@@ -358,7 +359,7 @@ fn switch_dispatches_to_each_case_then_merges() {
 // ── For (Range desugar) ──────────────────────────────────────────────
 
 #[test]
-fn for_range_loop_desugars_to_header_body_latch() {
+fn for_range_loop_desugars_to_header_body_latch_advance() {
     let p = compile(
         r#"
             int sum = 0;
@@ -385,21 +386,51 @@ fn for_range_loop_desugars_to_header_body_latch() {
         unreachable!()
     };
 
-    // Body falls through to a latch block that goes back to header.
+    // Body falls through to a latch block, which tests the *next* value
+    // (`i + step`, widened so it cannot overflow) before advancing to it.
     let Terminator::Goto(latch_id) = top.blocks[body_bb.0].terminator else {
         panic!("body should goto latch");
     };
-    let Terminator::Goto(latch_succ) = top.blocks[latch_id.0].terminator else {
-        panic!("latch should goto header");
+    let latch = &top.blocks[latch_id.0];
+    assert!(latch.stmts.is_empty(), "the latch only tests");
+    let Terminator::Branch {
+        cond,
+        then_bb: advance_id,
+        else_bb: latch_exit,
+    } = &latch.terminator
+    else {
+        panic!("latch should branch on whether the next value is in range");
     };
-    assert_eq!(latch_succ, header_id, "latch must go back to header");
-
-    // Latch contains a synthesized i = i + step assignment.
+    let cfg::BlockExprKind::Binary(test) = &cond.kind else {
+        panic!("latch condition should be a comparison");
+    };
+    assert!(matches!(test.op, sir::BinOp::Lte));
+    let cfg::BlockExprKind::Binary(next) = &test.left.kind else {
+        panic!("latch should compare `i + step`");
+    };
+    assert!(matches!(next.op, sir::BinOp::Add));
     assert_eq!(
-        top.blocks[latch_id.0].stmts.len(),
-        1,
-        "latch should hold the synthetic step assignment"
+        test.left.ty,
+        Type::Classical(ValueTy::int(IntWidth::B128)),
+        "the next value is computed where it cannot overflow"
     );
+
+    // The advance block holds the synthesized `i = i + step` and re-enters
+    // the body directly; both exits leave to the same block.
+    let advance = &top.blocks[advance_id.0];
+    assert_eq!(advance.stmts.len(), 1, "advance holds the step assignment");
+    let Terminator::Goto(advance_succ) = advance.terminator else {
+        panic!("advance should goto body");
+    };
+    assert_eq!(advance_succ, body_bb, "advance must re-enter the body");
+    let Terminator::Branch {
+        else_bb: header_exit,
+        ..
+    } = top.blocks[header_id.0].terminator
+    else {
+        unreachable!()
+    };
+    assert_eq!(*latch_exit, header_exit);
 }
 
 /// Comparison op of the (single) Branch terminator in `cfg`.

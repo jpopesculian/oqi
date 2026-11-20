@@ -1,7 +1,10 @@
+use oqi_classical::ops;
 use oqi_lex::Span;
 use serde::{Deserialize, Serialize};
 
-use crate::classical::Primitive;
+pub use oqi_classical::ops::{BinOp, UnOp};
+
+use crate::classical::{Primitive, Value};
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::Type;
 
@@ -283,36 +286,6 @@ pub struct ArrayLiteral<E> {
 
 // ── Supporting types (2.5) ───────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    Pow,
-    BitAnd,
-    BitOr,
-    BitXor,
-    Shl,
-    Shr,
-    LogAnd,
-    LogOr,
-    Eq,
-    Neq,
-    Lt,
-    Gt,
-    Lte,
-    Gte,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UnOp {
-    Neg,
-    BitNot,
-    LogNot,
-}
-
 #[derive(Clone)]
 pub enum GateModifier<E> {
     Inv,
@@ -412,26 +385,65 @@ pub enum CallTarget {
     Intrinsic(Intrinsic),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A built-in function, as the classical operation it performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Intrinsic {
-    Sin,
-    Cos,
-    Tan,
-    Arcsin,
-    Arccos,
-    Arctan,
-    Exp,
-    Log,
-    Sqrt,
-    Ceiling,
-    Floor,
-    Mod,
-    Popcount,
-    Rotl,
-    Rotr,
-    Real,
-    Imag,
+    Unary(UnOp),
+    Binary(BinOp),
     Sizeof,
+}
+
+impl Intrinsic {
+    /// Every built-in function (docs/types.rst, "Built-in constant
+    /// expression functions", plus `real`, `imag` and `sizeof`).
+    const ALL: [Intrinsic; 18] = [
+        Intrinsic::Unary(UnOp::Sin),
+        Intrinsic::Unary(UnOp::Cos),
+        Intrinsic::Unary(UnOp::Tan),
+        Intrinsic::Unary(UnOp::Arcsin),
+        Intrinsic::Unary(UnOp::Arccos),
+        Intrinsic::Unary(UnOp::Arctan),
+        Intrinsic::Unary(UnOp::Exp),
+        Intrinsic::Unary(UnOp::Log),
+        Intrinsic::Unary(UnOp::Sqrt),
+        Intrinsic::Unary(UnOp::Ceiling),
+        Intrinsic::Unary(UnOp::Floor),
+        Intrinsic::Unary(UnOp::Popcount),
+        Intrinsic::Unary(UnOp::Real),
+        Intrinsic::Unary(UnOp::Imag),
+        Intrinsic::Binary(BinOp::Mod),
+        Intrinsic::Binary(BinOp::Rotl),
+        Intrinsic::Binary(BinOp::Rotr),
+        Intrinsic::Sizeof,
+    ];
+
+    /// The name the built-in is called by.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Intrinsic::Unary(op) => op.name(),
+            // `mod(a, b)` is the function spelling of `a % b`.
+            Intrinsic::Binary(BinOp::Mod) => "mod",
+            Intrinsic::Binary(op) => op.name(),
+            Intrinsic::Sizeof => "sizeof",
+        }
+    }
+
+    /// The built-in called `name`, if there is one.
+    pub fn lookup(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|i| i.name() == name)
+    }
+
+    /// Evaluate the built-in on its arguments; `None` if it does not take
+    /// that many.
+    pub fn apply(self, args: Vec<Value>) -> Option<oqi_classical::Result<Value>> {
+        let mut args = args.into_iter();
+        Some(match (self, args.next(), args.next(), args.next()) {
+            (Intrinsic::Unary(op), Some(arg), None, None) => op.apply(arg),
+            (Intrinsic::Binary(op), Some(lhs), Some(rhs), None) => op.apply(lhs, rhs),
+            (Intrinsic::Sizeof, Some(value), dim, None) => ops::sizeof(value.ty(), dim),
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone)]

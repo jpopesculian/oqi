@@ -180,40 +180,15 @@ impl_from_angle!(
 
 impl fmt::Display for Scalar {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.value() {
-            Primitive::Bit(v) => {
-                if matches!(self.ty(), PrimitiveTy::Bool) {
-                    write!(f, "{}", v)
-                } else {
-                    write!(f, "{}", if *v { 1 } else { 0 })
-                }
-            }
-            Primitive::Uint(v) => write!(f, "{}", v),
-            Primitive::Int(v) => write!(f, "{}", v),
-            Primitive::Float(v) => write!(f, "{}", v),
-            Primitive::Duration(v) => write!(f, "{}", v),
-            Primitive::Angle(v) => {
-                let (num, den) = v.to_frac();
-                if num == 0 {
-                    write!(f, "0")
-                } else if den == 1 && num == 1 {
-                    write!(f, "π")
-                } else if num == 1 {
-                    write!(f, "(π/{})", den)
-                } else if den == 1 {
-                    write!(f, "({}*π)", num)
-                } else {
-                    write!(f, "({}*π/{})", num, den)
-                }
-            }
-            Primitive::Complex(v) => write!(f, "({}+{}im)", v.re, v.im),
-            Primitive::BitReg(reg) => {
-                let bw = self.ty().bit_count().unwrap_or(reg.default_width());
+        match (self.value(), self.ty()) {
+            (Primitive::Bit(v), PrimitiveTy::Bool) => write!(f, "{v}"),
+            (Primitive::BitReg(reg), ty) => {
+                let bw = ty.bit_count().unwrap_or(reg.default_width());
                 write!(f, "\"")?;
                 reg.fmt_bits(f, bw)?;
-                write!(f, "\"")?;
-                Ok(())
+                write!(f, "\"")
             }
+            (value, _) => write!(f, "{value}"),
         }
     }
 }

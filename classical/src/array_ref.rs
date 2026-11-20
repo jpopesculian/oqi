@@ -53,17 +53,11 @@ impl ArrayRef {
         })
     }
 
+    /// Copy out the (sub-)array this reference views.
     pub fn to_owned(&self) -> Result<Array> {
         match self.array.borrow()?.get(&self.indices)? {
             Value::Array(array) => Ok(array),
-            Value::Scalar(scalar) => Err(Error::unsupported_cast(
-                scalar.ty().into(),
-                self.ty.to_owned()?.into(),
-            )),
-            Value::ArrayRef(array_ref) => Err(Error::unsupported_cast(
-                array_ref.ty().into(),
-                self.ty.to_owned()?.into(),
-            )),
+            other => Err(Error::unsupported_cast(other.ty(), self.ty.to_owned()?)),
         }
     }
 
@@ -92,7 +86,7 @@ impl fmt::Display for ArrayRef {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RefAccess {
     Readonly,
     Mutable,
@@ -107,7 +101,9 @@ impl fmt::Display for RefAccess {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// The shape of an array reference: fully known, or only its rank
+/// (`#dim = N`, sizes supplied by the referenced array at run time).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ArrayRefShape {
     Fixed(ArrayShape),
     Dim(ArrayDim),
@@ -126,43 +122,15 @@ impl ArrayRefShape {
             ArrayRefShape::Dim(dim) => *dim,
         }
     }
-}
 
-impl PartialEq for ArrayRefShape {
-    fn eq(&self, other: &Self) -> bool {
-        use ArrayRefShape::*;
+    /// Whether arrays of the two shapes can line up element for element:
+    /// equal when both are fully known, otherwise equal in rank (the sizes
+    /// are then checked at run time).
+    pub fn is_compatible(&self, other: &ArrayRefShape) -> bool {
         match (self, other) {
-            (Fixed(s), Fixed(o)) => s == o,
-            (Dim(s), Dim(o)) => s == o,
-            (Fixed(f), Dim(d)) | (Dim(d), Fixed(f)) => f.dim() == *d,
+            (ArrayRefShape::Fixed(a), ArrayRefShape::Fixed(b)) => a == b,
+            _ => self.dim() == other.dim(),
         }
-    }
-}
-
-impl PartialEq<ArrayDim> for ArrayRefShape {
-    fn eq(&self, other: &ArrayDim) -> bool {
-        self.dim() == *other
-    }
-}
-
-impl PartialEq<ArrayRefShape> for ArrayDim {
-    fn eq(&self, other: &ArrayRefShape) -> bool {
-        other == self
-    }
-}
-
-impl PartialEq<ArrayShape> for ArrayRefShape {
-    fn eq(&self, other: &ArrayShape) -> bool {
-        match self {
-            ArrayRefShape::Fixed(shape) => shape == other,
-            _ => false,
-        }
-    }
-}
-
-impl PartialEq<ArrayRefShape> for ArrayShape {
-    fn eq(&self, other: &ArrayRefShape) -> bool {
-        other == self
     }
 }
 
@@ -175,7 +143,7 @@ impl fmt::Display for ArrayRefShape {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ArrayRefTy {
     ty: PrimitiveTy,
     shape: ArrayRefShape,
@@ -199,24 +167,6 @@ impl ArrayRefTy {
     }
 
     #[inline]
-    pub fn readonly(array: ArrayTy) -> Self {
-        Self::new(
-            array.ty(),
-            ArrayRefShape::Fixed(array.shape()),
-            RefAccess::Readonly,
-        )
-    }
-
-    #[inline]
-    pub fn mutable(array: ArrayTy) -> Self {
-        Self::new(
-            array.ty(),
-            ArrayRefShape::Fixed(array.shape()),
-            RefAccess::Mutable,
-        )
-    }
-
-    #[inline]
     pub fn ty(&self) -> PrimitiveTy {
         self.ty
     }
@@ -231,43 +181,28 @@ impl ArrayRefTy {
         Self { shape, ..*self }
     }
 
+    /// The type of the array a fixed-shape reference views. A `#dim`
+    /// reference has no owned type: its sizes are only known at run time.
     pub fn to_owned(self) -> Result<ArrayTy> {
-        let shape = match self.shape {
-            ArrayRefShape::Fixed(shape) => shape,
-            ArrayRefShape::Dim(dim) => {
-                return Err(Error::UnsupportedCast {
-                    from: Box::new(self.ty.into()),
-                    to: Box::new(
-                        ArrayTy::new(self.ty, ArrayShape::new(vec![1; dim.get()])?).into(),
-                    ),
-                });
-            }
-        };
-        Ok(ArrayTy::new(self.ty, shape))
+        match self.shape {
+            ArrayRefShape::Fixed(shape) => Ok(ArrayTy::new(self.ty, shape)),
+            ArrayRefShape::Dim(dim) => Err(Error::unsupported_cast(
+                self,
+                ArrayTy::new(self.ty, ArrayShape::new(vec![1; dim.get()])?),
+            )),
+        }
     }
 
     pub fn cast(self, ty: ArrayRefTy) -> Result<ArrayRefTy> {
-        match (self.shape, ty.shape) {
-            (ArrayRefShape::Fixed(s), ArrayRefShape::Fixed(t)) => {
-                if s.total() != t.total() {
-                    return Err(Error::unsupported_cast(self.into(), ty.into()));
-                }
-            }
-            (this, other) => {
-                if this.dim() != other.dim() {
-                    return Err(Error::unsupported_cast(self.into(), ty.into()));
-                }
-            }
+        let fits = match (self.shape, ty.shape) {
+            (ArrayRefShape::Fixed(s), ArrayRefShape::Fixed(t)) => s.total() == t.total(),
+            (this, other) => this.dim() == other.dim(),
+        };
+        if !fits {
+            return Err(Error::unsupported_cast(self, ty));
         }
         self.ty.cast(ty.ty)?;
         Ok(self)
-    }
-}
-
-impl From<ArrayTy> for ArrayRefTy {
-    #[inline]
-    fn from(array_ty: ArrayTy) -> Self {
-        array_ty.as_ref_mut()
     }
 }
 

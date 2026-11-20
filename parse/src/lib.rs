@@ -1253,44 +1253,38 @@ impl<'a> Parser<'a> {
     // ------------------------------------------------------------------
 
     fn parse_scalar_type(&mut self) -> Result<ScalarType<'a>> {
-        type Designated<'a> = fn(Option<Box<Expr<'a>>>, Span) -> ScalarType<'a>;
-        type Plain<'a> = fn(Span) -> ScalarType<'a>;
-
         let start = self.peek_span();
-        let designated: Designated<'a> = match self.peek() {
-            Some(Token::Bit) => ScalarType::Bit,
-            Some(Token::Int) => ScalarType::Int,
-            Some(Token::Uint) => ScalarType::Uint,
-            Some(Token::Float) => ScalarType::Float,
-            Some(Token::Angle) => ScalarType::Angle,
-            Some(Token::Complex) => {
-                self.advance();
-                let inner = if self.eat(Token::LBracket).is_some() {
-                    let inner = self.parse_scalar_type()?;
-                    self.expect(Token::RBracket, "']'")?;
-                    Some(Box::new(inner))
-                } else {
-                    None
-                };
-                return Ok(ScalarType::Complex(inner, start.to(self.prev_span())));
-            }
-            other => {
-                let plain: Plain<'a> = match other {
-                    Some(Token::Bool) => ScalarType::Bool,
-                    Some(Token::Duration) => ScalarType::Duration,
-                    Some(Token::Stretch) => ScalarType::Stretch,
-                    Some(Token::Waveform) => ScalarType::Waveform,
-                    Some(Token::Port) => ScalarType::Port,
-                    Some(Token::Frame) => ScalarType::Frame,
-                    _ => return Err(self.error("expected scalar type")),
-                };
-                self.advance();
-                return Ok(plain(start));
-            }
+        let sized = |kind| ScalarKind::Sized(kind, None);
+        let mut kind = match self.peek() {
+            Some(Token::Bit) => sized(SizedKind::Bit),
+            Some(Token::Int) => sized(SizedKind::Int),
+            Some(Token::Uint) => sized(SizedKind::Uint),
+            Some(Token::Float) => sized(SizedKind::Float),
+            Some(Token::Angle) => sized(SizedKind::Angle),
+            Some(Token::Complex) => ScalarKind::Complex(None),
+            Some(Token::Bool) => ScalarKind::Bool,
+            Some(Token::Duration) => ScalarKind::Duration,
+            Some(Token::Stretch) => ScalarKind::Stretch,
+            Some(Token::Waveform) => ScalarKind::Waveform,
+            Some(Token::Port) => ScalarKind::Port,
+            Some(Token::Frame) => ScalarKind::Frame,
+            _ => return Err(self.error("expected scalar type")),
         };
         self.advance();
-        let designator = self.opt_designator()?.map(Box::new);
-        Ok(designated(designator, start.to(self.prev_span())))
+        match &mut kind {
+            ScalarKind::Sized(_, designator) => {
+                *designator = self.opt_designator()?.map(Box::new);
+            }
+            ScalarKind::Complex(inner) if self.eat(Token::LBracket).is_some() => {
+                *inner = Some(Box::new(self.parse_scalar_type()?));
+                self.expect(Token::RBracket, "']'")?;
+            }
+            _ => {}
+        }
+        Ok(ScalarType {
+            kind,
+            span: start.to(self.prev_span()),
+        })
     }
 
     fn parse_qubit_type(&mut self) -> Result<QubitType<'a>> {
@@ -1581,7 +1575,13 @@ mod tests {
         let stmt = parse_stmt("int[32] x = 5;");
         match stmt.kind {
             StmtKind::ClassicalDecl { ty, name, init } => {
-                assert!(matches!(ty, TypeExpr::Scalar(ScalarType::Int(Some(_), _))));
+                assert!(matches!(
+                    ty,
+                    TypeExpr::Scalar(ScalarType {
+                        kind: ScalarKind::Sized(SizedKind::Int, Some(_)),
+                        ..
+                    })
+                ));
                 assert_eq!(name.name, "x");
                 assert!(init.is_some());
             }
@@ -1857,7 +1857,10 @@ mod tests {
             StmtKind::ClassicalDecl { ty, .. } => {
                 assert!(matches!(
                     ty,
-                    ast::TypeExpr::Scalar(ast::ScalarType::Waveform(_))
+                    ast::TypeExpr::Scalar(ast::ScalarType {
+                        kind: ast::ScalarKind::Waveform,
+                        ..
+                    })
                 ));
             }
             _ => panic!("expected classical decl"),
@@ -2216,7 +2219,7 @@ cphase(π / 2) q[0], q[1];
                     StmtKind::ClassicalDecl {
                         ty: TypeExpr::Scalar(ty),
                         ..
-                    } => ty.span(),
+                    } => ty.span,
                     StmtKind::QuantumDecl { ty, .. } => ty.span,
                     other => panic!("unexpected {other:?}"),
                 },

@@ -826,26 +826,23 @@ impl Format for ast::ArrayLiteral<'_> {
 
 impl Format for ast::ScalarType<'_> {
     fn format(&self, p: &mut Printer<'_>) {
-        p.comments_before(self.span().start);
+        p.comments_before(self.span.start);
 
-        use ast::ScalarType::*;
-        let (keyword, designator) = match self {
-            Bit(designator, _) => ("bit", designator),
-            Int(designator, _) => ("int", designator),
-            Uint(designator, _) => ("uint", designator),
-            Float(designator, _) => ("float", designator),
-            Angle(designator, _) => ("angle", designator),
-            Bool(_) => return p.write("bool"),
-            Duration(_) => return p.write("duration"),
-            Stretch(_) => return p.write("stretch"),
-            Waveform(_) => return p.write("waveform"),
-            Port(_) => return p.write("port"),
-            Frame(_) => return p.write("frame"),
-            Complex(None, _) => return p.write("complex"),
-            Complex(Some(inner), _) => return put!(p, "complex[", inner, "]"),
-        };
-        p.write(keyword);
-        p.designator(designator.as_deref());
+        use ast::ScalarKind::*;
+        match &self.kind {
+            Sized(kind, designator) => {
+                p.write(kind.as_str());
+                p.designator(designator.as_deref());
+            }
+            Complex(None) => p.write("complex"),
+            Complex(Some(inner)) => put!(p, "complex[", inner, "]"),
+            Bool => p.write("bool"),
+            Duration => p.write("duration"),
+            Stretch => p.write("stretch"),
+            Waveform => p.write("waveform"),
+            Port => p.write("port"),
+            Frame => p.write("frame"),
+        }
     }
 }
 

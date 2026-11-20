@@ -449,74 +449,57 @@ pub fn parse_dt(spec: &str) -> Result<Duration> {
 
 /// Resolve an AST scalar type to an IR `Type`.
 pub(crate) fn resolve_scalar_type(ty: &ast::ScalarType<'_>, scope: &Resolver) -> Result<Type> {
-    match ty {
-        ast::ScalarType::Bool(_) => Ok(Type::Classical(ValueTy::bool())),
-        ast::ScalarType::Duration(_) => Ok(Type::Classical(ValueTy::duration())),
-        ast::ScalarType::Stretch(_) => Ok(Type::Stretch),
+    use ast::{ScalarKind, SizedKind};
 
-        ast::ScalarType::Bit(None, _) => Ok(Type::Classical(ValueTy::bit())),
-        ast::ScalarType::Bit(Some(expr), _) => {
-            let n = eval_designator(expr, scope)?;
-            Ok(Type::Classical(ValueTy::bitreg(n as u32)))
-        }
+    let system = &scope.options().system_width;
+    let classical = match &ty.kind {
+        ScalarKind::Bool => ValueTy::bool(),
+        ScalarKind::Duration => ValueTy::duration(),
+        ScalarKind::Stretch => return Ok(Type::Stretch),
 
-        ast::ScalarType::Int(None, _) => Ok(Type::Classical(ValueTy::int(
-            scope.options().system_width.iw(),
-        ))),
-        ast::ScalarType::Int(Some(expr), _) => {
+        ScalarKind::Sized(kind, None) => match kind {
+            SizedKind::Bit => ValueTy::bit(),
+            SizedKind::Int => ValueTy::int(system.iw()),
+            SizedKind::Uint => ValueTy::uint(system.iw()),
+            SizedKind::Float => ValueTy::float(system.fw()),
+            SizedKind::Angle => ValueTy::angle(system.iw()),
+        },
+        ScalarKind::Sized(kind, Some(expr)) => {
             let width = eval_designator(expr, scope)?;
-            Ok(Type::Classical(ValueTy::int(int_width(expr, width)?)))
-        }
-
-        ast::ScalarType::Uint(None, _) => Ok(Type::Classical(ValueTy::uint(
-            scope.options().system_width.iw(),
-        ))),
-        ast::ScalarType::Uint(Some(expr), _) => {
-            let width = eval_designator(expr, scope)?;
-            Ok(Type::Classical(ValueTy::uint(int_width(expr, width)?)))
-        }
-
-        ast::ScalarType::Float(None, _) => Ok(Type::Classical(ValueTy::float(
-            scope.options().system_width.fw(),
-        ))),
-        ast::ScalarType::Float(Some(expr), _) => {
-            let width = eval_designator(expr, scope)?;
-            Ok(Type::Classical(ValueTy::float(
-                float_width_from_system_width(width),
-            )))
-        }
-
-        ast::ScalarType::Angle(None, _) => Ok(Type::Classical(ValueTy::angle(
-            scope.options().system_width.iw(),
-        ))),
-        ast::ScalarType::Angle(Some(expr), _) => {
-            let width = eval_designator(expr, scope)?;
-            Ok(Type::Classical(ValueTy::angle(int_width(expr, width)?)))
-        }
-
-        ast::ScalarType::Complex(None, _) => Ok(Type::Classical(ValueTy::complex(
-            scope.options().system_width.fw(),
-        ))),
-        ast::ScalarType::Complex(Some(inner), _) => {
-            let inner_ty = resolve_scalar_type(inner, scope)?;
-            match inner_ty.scalar_ty() {
-                Some(PrimitiveTy::Float(fw)) => Ok(Type::Classical(ValueTy::complex(fw))),
-                _ => Err(CompileError::at(
-                    ErrorKind::Unsupported("complex designator must be a float type".to_string()),
-                    ty.span(),
-                )),
+            match kind {
+                SizedKind::Bit => ValueTy::bitreg(width as u32),
+                SizedKind::Int => ValueTy::int(int_width(expr, width)?),
+                SizedKind::Uint => ValueTy::uint(int_width(expr, width)?),
+                SizedKind::Float => ValueTy::float(float_width_from_system_width(width)),
+                SizedKind::Angle => ValueTy::angle(int_width(expr, width)?),
             }
         }
 
-        ast::ScalarType::Waveform(_) => Ok(Type::Openpulse(openpulse::PrimitiveTy::Waveform(
-            scope.options().system_width.fw(),
-        ))),
-        ast::ScalarType::Port(_) => Ok(Type::Openpulse(openpulse::PrimitiveTy::Port)),
-        ast::ScalarType::Frame(_) => Ok(Type::Openpulse(openpulse::PrimitiveTy::Frame(
-            scope.options().system_width.fw(),
-            scope.options().system_width.iw(),
-        ))),
-    }
+        ScalarKind::Complex(None) => ValueTy::complex(system.fw()),
+        ScalarKind::Complex(Some(inner)) => match resolve_scalar_type(inner, scope)?.scalar_ty() {
+            Some(PrimitiveTy::Float(fw)) => ValueTy::complex(fw),
+            _ => {
+                return Err(CompileError::at(
+                    ErrorKind::Unsupported("complex designator must be a float type".to_string()),
+                    ty.span,
+                ));
+            }
+        },
+
+        ScalarKind::Waveform => {
+            return Ok(Type::Openpulse(openpulse::PrimitiveTy::Waveform(
+                system.fw(),
+            )));
+        }
+        ScalarKind::Port => return Ok(Type::Openpulse(openpulse::PrimitiveTy::Port)),
+        ScalarKind::Frame => {
+            return Ok(Type::Openpulse(openpulse::PrimitiveTy::Frame(
+                system.fw(),
+                system.iw(),
+            )));
+        }
+    };
+    Ok(Type::Classical(classical))
 }
 
 /// Resolve an AST type expression to an IR `Type`.
@@ -618,6 +601,18 @@ mod tests {
         oqi_lex::Span::new(start, end)
     }
 
+    fn scalar<'a>(kind: ast::ScalarKind<'a>, span: oqi_lex::Span) -> ast::ScalarType<'a> {
+        ast::ScalarType { kind, span }
+    }
+
+    fn sized<'a>(
+        kind: ast::SizedKind,
+        designator: Option<ast::Expr<'a>>,
+        span: oqi_lex::Span,
+    ) -> ast::ScalarType<'a> {
+        scalar(ast::ScalarKind::Sized(kind, designator.map(Box::new)), span)
+    }
+
     /// The global scope, with only the built-in names in it.
     fn global_scope() -> Resolver {
         let options = CompileOptions {
@@ -661,7 +656,7 @@ mod tests {
     #[test]
     fn test_resolve_scalar_bool() {
         let scope = global_scope();
-        let ty = ast::ScalarType::Bool(span(0, 4));
+        let ty = scalar(ast::ScalarKind::Bool, span(0, 4));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::bool())
@@ -671,7 +666,7 @@ mod tests {
     #[test]
     fn test_resolve_scalar_bit_no_designator() {
         let scope = global_scope();
-        let ty = ast::ScalarType::Bit(None, span(0, 3));
+        let ty = sized(ast::SizedKind::Bit, None, span(0, 3));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::bit())
@@ -682,7 +677,7 @@ mod tests {
     fn test_resolve_scalar_bit_with_designator() {
         let scope = global_scope();
         let expr = ast::Expr::IntLiteral("4", ast::IntEncoding::Decimal, span(4, 5));
-        let ty = ast::ScalarType::Bit(Some(Box::new(expr)), span(0, 6));
+        let ty = sized(ast::SizedKind::Bit, Some(expr), span(0, 6));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::bitreg(4))
@@ -692,7 +687,7 @@ mod tests {
     #[test]
     fn test_resolve_scalar_int_no_designator() {
         let scope = global_scope();
-        let ty = ast::ScalarType::Int(None, span(0, 3));
+        let ty = sized(ast::SizedKind::Int, None, span(0, 3));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::int(iw(64)))
@@ -703,7 +698,7 @@ mod tests {
     fn test_resolve_scalar_int_with_designator() {
         let scope = global_scope();
         let expr = ast::Expr::IntLiteral("8", ast::IntEncoding::Decimal, span(4, 5));
-        let ty = ast::ScalarType::Int(Some(Box::new(expr)), span(0, 6));
+        let ty = sized(ast::SizedKind::Int, Some(expr), span(0, 6));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::int(iw(8)))
@@ -714,7 +709,7 @@ mod tests {
     fn test_resolve_scalar_uint_with_designator() {
         let scope = global_scope();
         let expr = ast::Expr::IntLiteral("16", ast::IntEncoding::Decimal, span(5, 7));
-        let ty = ast::ScalarType::Uint(Some(Box::new(expr)), span(0, 8));
+        let ty = sized(ast::SizedKind::Uint, Some(expr), span(0, 8));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::uint(iw(16)))
@@ -724,7 +719,7 @@ mod tests {
     #[test]
     fn test_resolve_scalar_float_no_designator() {
         let scope = global_scope();
-        let ty = ast::ScalarType::Float(None, span(0, 5));
+        let ty = sized(ast::SizedKind::Float, None, span(0, 5));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::float(FloatWidth::F64))
@@ -735,7 +730,7 @@ mod tests {
     fn test_resolve_scalar_float_32() {
         let scope = global_scope();
         let expr = ast::Expr::IntLiteral("32", ast::IntEncoding::Decimal, span(6, 8));
-        let ty = ast::ScalarType::Float(Some(Box::new(expr)), span(0, 9));
+        let ty = sized(ast::SizedKind::Float, Some(expr), span(0, 9));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::float(FloatWidth::F32))
@@ -750,7 +745,7 @@ mod tests {
             ..Default::default()
         };
         let scope = Resolver::new(crate::resolve::DefaultIncludeResolver, options);
-        let ty = ast::ScalarType::Angle(None, span(0, 5));
+        let ty = sized(ast::SizedKind::Angle, None, span(0, 5));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::angle(iw(32)))
@@ -760,7 +755,7 @@ mod tests {
     #[test]
     fn test_resolve_scalar_complex_no_designator() {
         let scope = global_scope();
-        let ty = ast::ScalarType::Complex(None, span(0, 7));
+        let ty = scalar(ast::ScalarKind::Complex(None), span(0, 7));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::complex(FloatWidth::F64))
@@ -771,8 +766,8 @@ mod tests {
     fn test_resolve_scalar_complex_with_float32() {
         let scope = global_scope();
         let inner_expr = ast::Expr::IntLiteral("32", ast::IntEncoding::Decimal, span(14, 16));
-        let inner = ast::ScalarType::Float(Some(Box::new(inner_expr)), span(8, 17));
-        let ty = ast::ScalarType::Complex(Some(Box::new(inner)), span(0, 18));
+        let inner = sized(ast::SizedKind::Float, Some(inner_expr), span(8, 17));
+        let ty = scalar(ast::ScalarKind::Complex(Some(Box::new(inner))), span(0, 18));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::complex(FloatWidth::F32))
@@ -782,7 +777,7 @@ mod tests {
     #[test]
     fn test_resolve_scalar_duration() {
         let scope = global_scope();
-        let ty = ast::ScalarType::Duration(span(0, 8));
+        let ty = scalar(ast::ScalarKind::Duration, span(0, 8));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::duration())
@@ -792,19 +787,20 @@ mod tests {
     #[test]
     fn test_resolve_scalar_stretch() {
         let scope = global_scope();
-        let ty = ast::ScalarType::Stretch(span(0, 7));
+        let ty = scalar(ast::ScalarKind::Stretch, span(0, 7));
         assert_eq!(resolve_scalar_type(&ty, &scope).unwrap(), Type::Stretch);
     }
 
     #[test]
     fn test_resolve_array_type() {
         let scope = global_scope();
-        let elem = ast::ScalarType::Float(
-            Some(Box::new(ast::Expr::IntLiteral(
+        let elem = sized(
+            ast::SizedKind::Float,
+            Some(ast::Expr::IntLiteral(
                 "64",
                 ast::IntEncoding::Decimal,
                 span(12, 14),
-            ))),
+            )),
             span(6, 15),
         );
         let dim1 = ast::Expr::IntLiteral("3", ast::IntEncoding::Decimal, span(17, 18));

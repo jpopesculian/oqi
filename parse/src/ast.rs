@@ -585,36 +585,42 @@ pub struct ArrayLiteral<'a> {
 // ---- Type types ----
 
 #[derive(Debug)]
-pub enum ScalarType<'a> {
-    Bit(Option<Box<Expr<'a>>>, Span),
-    Int(Option<Box<Expr<'a>>>, Span),
-    Uint(Option<Box<Expr<'a>>>, Span),
-    Float(Option<Box<Expr<'a>>>, Span),
-    Angle(Option<Box<Expr<'a>>>, Span),
-    Bool(Span),
-    Duration(Span),
-    Stretch(Span),
-    Complex(Option<Box<ScalarType<'a>>>, Span),
-    Waveform(Span),
-    Port(Span),
-    Frame(Span),
+pub struct ScalarType<'a> {
+    pub kind: ScalarKind<'a>,
+    pub span: Span,
 }
 
-impl<'a> ScalarType<'a> {
-    pub fn span(&self) -> Span {
+#[derive(Debug)]
+pub enum ScalarKind<'a> {
+    /// A type that takes an optional `[designator]`.
+    Sized(SizedKind, Option<Box<Expr<'a>>>),
+    /// `complex`, optionally `complex[float[n]]`.
+    Complex(Option<Box<ScalarType<'a>>>),
+    Bool,
+    Duration,
+    Stretch,
+    Waveform,
+    Port,
+    Frame,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SizedKind {
+    Bit,
+    Int,
+    Uint,
+    Float,
+    Angle,
+}
+
+impl SizedKind {
+    pub const fn as_str(self) -> &'static str {
         match self {
-            ScalarType::Bit(_, s)
-            | ScalarType::Int(_, s)
-            | ScalarType::Uint(_, s)
-            | ScalarType::Float(_, s)
-            | ScalarType::Angle(_, s)
-            | ScalarType::Bool(s)
-            | ScalarType::Duration(s)
-            | ScalarType::Stretch(s)
-            | ScalarType::Complex(_, s)
-            | ScalarType::Waveform(s)
-            | ScalarType::Port(s)
-            | ScalarType::Frame(s) => *s,
+            SizedKind::Bit => "bit",
+            SizedKind::Int => "int",
+            SizedKind::Uint => "uint",
+            SizedKind::Float => "float",
+            SizedKind::Angle => "angle",
         }
     }
 }

@@ -22,14 +22,11 @@ use crate::classical::{
     Duration, DurationUnit, FloatWidth, Primitive, PrimitiveTy, Value, ValueTy,
 };
 use crate::error::{CompileError, ErrorKind, Result};
-use crate::sir::{
-    Expr, ExprKind, IndexItem, IndexKind, IndexOp, LValue, MeasureExprKind, Program, QubitOperand,
-    RValue, Stmt, StmtKind, SwitchLabels,
-};
+use crate::sir::{Expr, ExprKind, LValue, Program, RValue, RangeExpr, Stmt, StmtKind};
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::{CompileOptions, Type};
 
-use super::{CalibrationBody, Frame, QubitRef, ResolveCtx, Timings, resolve_qubit_operands};
+use super::{Frame, QubitRef, ResolveCtx, Timings, resolve_qubit_operands};
 
 const EPS_NS: f64 = 1e-9;
 
@@ -450,7 +447,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                 span,
             ));
         }
-        let crate::sir::ForIterable::Range { start, step, end } = &f.iterable else {
+        let crate::sir::ForIterable::Range(RangeExpr { start, step, end }) = &f.iterable else {
             // The CFG lowering has the same restriction.
             return Err(CompileError::at(
                 ErrorKind::InvalidContext(
@@ -1118,287 +1115,58 @@ fn stmts_have_subroutine_call(stmts: &[Stmt], subs: &[crate::sir::SubroutineDecl
     })
 }
 
+/// Whether `pred` holds for any expression anywhere in `stmts`, nested
+/// bodies and `durationof` scopes included.
 fn any_expr_in_stmts(stmts: &[Stmt], pred: &mut dyn FnMut(&Expr) -> bool) -> bool {
-    stmts.iter().any(|s| stmt_any_expr(s, pred))
-}
-
-fn stmt_any_expr(stmt: &Stmt, pred: &mut dyn FnMut(&Expr) -> bool) -> bool {
-    let ops_any = |ops: &[QubitOperand<Expr>], pred: &mut dyn FnMut(&Expr) -> bool| {
-        ops.iter().any(|o| match o {
-            QubitOperand::Indexed { indices, .. } => {
-                indices.iter().any(|i| index_any_expr(i, pred))
-            }
-            QubitOperand::Hardware(_) => false,
-        })
-    };
-    match &stmt.kind {
-        StmtKind::Alias(a) => a.value.iter().any(|e| expr_any(e, pred)),
-        StmtKind::GateCall(gc) => {
-            gc.modifiers.iter().any(|m| match m {
-                crate::sir::GateModifier::Pow(e) => expr_any(e, pred),
-                _ => false,
-            }) || gc.args.iter().any(|e| expr_any(e, pred))
-                || ops_any(&gc.qubits, pred)
-                || gc.duration.as_ref().is_some_and(|e| expr_any(e, pred))
-        }
-        StmtKind::Measure(m) => measure_any_expr(&m.measure, pred),
-        StmtKind::Reset(op) => ops_any(std::slice::from_ref(op), pred),
-        StmtKind::Barrier(ops) | StmtKind::Nop(ops) => ops_any(ops, pred),
-        StmtKind::Delay(d) => expr_any(&d.duration, pred) || ops_any(&d.operands, pred),
-        StmtKind::Box(b) => {
-            b.duration.as_ref().is_some_and(|e| expr_any(e, pred))
-                || any_expr_in_stmts(&b.body, pred)
-        }
-        StmtKind::Assignment(a) => match &a.value {
-            RValue::Expr(e) => expr_any(e, pred),
-            RValue::Measure(m) => measure_any_expr(m, pred),
-        },
-        StmtKind::If(i) => {
-            expr_any(&i.condition, pred)
-                || any_expr_in_stmts(&i.then_body, pred)
-                || i.else_body
-                    .as_ref()
-                    .is_some_and(|b| any_expr_in_stmts(b, pred))
-        }
-        StmtKind::For(f) => {
-            let it = match &f.iterable {
-                crate::sir::ForIterable::Range { start, step, end } => [start, step, end]
-                    .into_iter()
-                    .flatten()
-                    .any(|e| expr_any(e, pred)),
-                crate::sir::ForIterable::Set(v) => v.iter().any(|e| expr_any(e, pred)),
-                crate::sir::ForIterable::Expr(e) => expr_any(e, pred),
-            };
-            it || any_expr_in_stmts(&f.body, pred)
-        }
-        StmtKind::While(w) => expr_any(&w.condition, pred) || any_expr_in_stmts(&w.body, pred),
-        StmtKind::Switch(s) => {
-            expr_any(&s.target, pred)
-                || s.cases.iter().any(|c| {
-                    (match &c.labels {
-                        SwitchLabels::Values(v) => v.iter().any(|e| expr_any(e, pred)),
-                        SwitchLabels::Default => false,
-                    }) || any_expr_in_stmts(&c.body, pred)
-                })
-        }
-        StmtKind::Return(Some(rv)) => match rv {
-            RValue::Expr(e) => expr_any(e, pred),
-            RValue::Measure(m) => measure_any_expr(m, pred),
-        },
-        StmtKind::ExprStmt(e) => expr_any(e, pred),
-        StmtKind::Cal(CalibrationBody::OpenPulse(body)) => any_expr_in_stmts(body, pred),
-        StmtKind::Return(None)
-        | StmtKind::Break
-        | StmtKind::Continue
-        | StmtKind::End
-        | StmtKind::Pragma(_)
-        | StmtKind::Cal(CalibrationBody::Opaque(_)) => false,
-    }
-}
-
-fn measure_any_expr(
-    m: &crate::sir::MeasureExpr<Expr>,
-    pred: &mut dyn FnMut(&Expr) -> bool,
-) -> bool {
-    match &m.kind {
-        MeasureExprKind::Measure { operand } => match operand {
-            QubitOperand::Indexed { indices, .. } => {
-                indices.iter().any(|i| index_any_expr(i, pred))
-            }
-            QubitOperand::Hardware(_) => false,
-        },
-        MeasureExprKind::QuantumCall { args, qubits, .. } => {
-            args.iter().any(|e| expr_any(e, pred))
-                || qubits.iter().any(|o| match o {
-                    QubitOperand::Indexed { indices, .. } => {
-                        indices.iter().any(|i| index_any_expr(i, pred))
-                    }
-                    QubitOperand::Hardware(_) => false,
-                })
-        }
-    }
-}
-
-fn index_any_expr(op: &IndexOp<Expr>, pred: &mut dyn FnMut(&Expr) -> bool) -> bool {
-    match &op.kind {
-        IndexKind::Set(exprs) => exprs.iter().any(|e| expr_any(e, pred)),
-        IndexKind::Items(items) => items.iter().any(|it| match it {
-            IndexItem::Single(e) => expr_any(e, pred),
-            IndexItem::Range(r) => [&r.start, &r.step, &r.end]
+    stmts.iter().any(|stmt| {
+        stmt.exprs().into_iter().any(|e| expr_any(e, pred))
+            || stmt
+                .bodies()
                 .into_iter()
-                .flatten()
-                .any(|e| expr_any(e, pred)),
-        }),
-    }
+                .any(|body| any_expr_in_stmts(body, pred))
+    })
 }
 
 fn expr_any(e: &Expr, pred: &mut dyn FnMut(&Expr) -> bool) -> bool {
-    if pred(e) {
-        return true;
-    }
-    match &e.kind {
-        ExprKind::Binary(b) => expr_any(&b.left, pred) || expr_any(&b.right, pred),
-        ExprKind::Unary(u) => expr_any(&u.operand, pred),
-        ExprKind::Cast(c) => expr_any(&c.operand, pred),
-        ExprKind::Index(ix) => expr_any(&ix.base, pred) || index_any_expr(&ix.index, pred),
-        ExprKind::Call(c) => c.args.iter().any(|a| expr_any(a, pred)),
-        ExprKind::ArrayLiteral(al) => al.items.iter().any(|a| expr_any(a, pred)),
-        ExprKind::DurationOf(stmts) => any_expr_in_stmts(stmts, pred),
-        ExprKind::Literal(_) | ExprKind::Var(_) | ExprKind::HardwareQubit(_) => false,
-    }
+    pred(e)
+        || e.children().into_iter().any(|child| expr_any(child, pred))
+        || matches!(&e.kind, ExprKind::DurationOf(scope) if any_expr_in_stmts(scope, pred))
 }
 
 // ── Rewrite ─────────────────────────────────────────────────────────────
 
 /// Replace every reference to a stretch variable with its resolved constant.
 /// Duration variables derived from stretches keep their assignments — the
-/// rewritten RHS is concrete arithmetic the VM evaluates identically.
+/// rewritten RHS is concrete arithmetic the VM evaluates identically. Loop
+/// bodies are rewritten too: the walk unrolled them, but the VM runs the
+/// single SIR body.
 fn rewrite_stretch_vars(stmts: &mut [Stmt], values: &HashMap<SymbolId, Duration>) {
     for stmt in stmts {
-        rewrite_stmt(stmt, values);
-    }
-}
-
-fn rewrite_stmt(stmt: &mut Stmt, values: &HashMap<SymbolId, Duration>) {
-    let ops = |ops: &mut [QubitOperand<Expr>], values: &HashMap<SymbolId, Duration>| {
-        for o in ops {
-            if let QubitOperand::Indexed { indices, .. } = o {
-                for i in indices {
-                    rewrite_index(i, values);
-                }
-            }
+        for e in stmt.exprs_mut() {
+            rewrite_expr(e, values);
         }
-    };
-    match &mut stmt.kind {
-        StmtKind::Alias(a) => {
-            for e in &mut a.value {
-                rewrite_expr(e, values);
-            }
-        }
-        StmtKind::GateCall(gc) => {
-            for m in &mut gc.modifiers {
-                if let crate::sir::GateModifier::Pow(e) = m {
-                    rewrite_expr(e, values);
-                }
-            }
-            for a in &mut gc.args {
-                rewrite_expr(a, values);
-            }
-            ops(&mut gc.qubits, values);
-            if let Some(d) = &mut gc.duration {
-                rewrite_expr(d, values);
-            }
-        }
-        StmtKind::Measure(m) => rewrite_measure(&mut m.measure, values),
-        StmtKind::Reset(op) => ops(std::slice::from_mut(op), values),
-        StmtKind::Barrier(o) | StmtKind::Nop(o) => ops(o, values),
-        StmtKind::Delay(d) => {
-            rewrite_expr(&mut d.duration, values);
-            ops(&mut d.operands, values);
-        }
-        StmtKind::Box(b) => {
-            if let Some(e) = &mut b.duration {
-                rewrite_expr(e, values);
-            }
-            rewrite_stretch_vars(&mut b.body, values);
-        }
-        StmtKind::Assignment(a) => match &mut a.value {
-            RValue::Expr(e) => rewrite_expr(e, values),
-            RValue::Measure(m) => rewrite_measure(m, values),
-        },
-        StmtKind::Return(Some(RValue::Expr(e))) => rewrite_expr(e, values),
-        StmtKind::Return(Some(RValue::Measure(m))) => rewrite_measure(m, values),
-        StmtKind::ExprStmt(e) => rewrite_expr(e, values),
-        // Unrolled loops: the single SIR body must also be rewritten, or
-        // the VM would zero-seed the surviving stretch variables.
-        StmtKind::For(f) => {
-            match &mut f.iterable {
-                crate::sir::ForIterable::Range { start, step, end } => {
-                    for e in [start, step, end].into_iter().flatten() {
-                        rewrite_expr(e, values);
-                    }
-                }
-                crate::sir::ForIterable::Set(v) => {
-                    for e in v {
-                        rewrite_expr(e, values);
-                    }
-                }
-                crate::sir::ForIterable::Expr(e) => rewrite_expr(e, values),
-            }
-            rewrite_stretch_vars(&mut f.body, values);
-        }
-        // Remaining straight-line kinds carry no rewritable expressions
-        // (other control flow errored during the walk).
-        _ => {}
-    }
-}
-
-fn rewrite_measure(m: &mut crate::sir::MeasureExpr<Expr>, values: &HashMap<SymbolId, Duration>) {
-    if let MeasureExprKind::QuantumCall { args, .. } = &mut m.kind {
-        for a in args {
-            rewrite_expr(a, values);
-        }
-    }
-}
-
-fn rewrite_index(op: &mut IndexOp<Expr>, values: &HashMap<SymbolId, Duration>) {
-    match &mut op.kind {
-        IndexKind::Set(exprs) => {
-            for e in exprs {
-                rewrite_expr(e, values);
-            }
-        }
-        IndexKind::Items(items) => {
-            for it in items {
-                match it {
-                    IndexItem::Single(e) => rewrite_expr(e, values),
-                    IndexItem::Range(r) => {
-                        for e in [&mut r.start, &mut r.step, &mut r.end]
-                            .into_iter()
-                            .flatten()
-                        {
-                            rewrite_expr(e, values);
-                        }
-                    }
-                }
-            }
+        for body in stmt.bodies_mut() {
+            rewrite_stretch_vars(body, values);
         }
     }
 }
 
 fn rewrite_expr(expr: &mut Expr, values: &HashMap<SymbolId, Duration>) {
-    if let ExprKind::Var(sid) = &expr.kind
-        && let Some(d) = values.get(sid)
-    {
-        expr.kind = ExprKind::Literal(Primitive::from(*d));
-        expr.ty = Type::Classical(ValueTy::duration());
-        return;
-    }
     match &mut expr.kind {
-        ExprKind::Binary(b) => {
-            rewrite_expr(&mut b.left, values);
-            rewrite_expr(&mut b.right, values);
-        }
-        ExprKind::Unary(u) => rewrite_expr(&mut u.operand, values),
-        ExprKind::Cast(c) => rewrite_expr(&mut c.operand, values),
-        ExprKind::Index(ix) => {
-            rewrite_expr(&mut ix.base, values);
-            rewrite_index(&mut ix.index, values);
-        }
-        ExprKind::Call(c) => {
-            for a in &mut c.args {
-                rewrite_expr(a, values);
-            }
-        }
-        ExprKind::ArrayLiteral(al) => {
-            for e in &mut al.items {
-                rewrite_expr(e, values);
+        ExprKind::Var(sid) => {
+            if let Some(d) = values.get(sid) {
+                expr.kind = ExprKind::Literal(Primitive::from(*d));
+                expr.ty = Type::Classical(ValueTy::duration());
             }
         }
         // Scopes retained by Pass 1 (stretchy durationof): their stretch
         // references become literals so Pass 5 can fold the scope.
-        ExprKind::DurationOf(stmts) => rewrite_stretch_vars(stmts, values),
-        ExprKind::Literal(_) | ExprKind::Var(_) | ExprKind::HardwareQubit(_) => {}
+        ExprKind::DurationOf(scope) => rewrite_stretch_vars(scope, values),
+        _ => {
+            for child in expr.children_mut() {
+                rewrite_expr(child, values);
+            }
+        }
     }
 }
 

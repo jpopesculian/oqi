@@ -29,6 +29,9 @@ pub enum ErrorKind {
     IncludeCycle(Vec<String>),
     MissingSourceContext,
     InvalidContext(String),
+    /// A declaration (named by the payload) that the spec only allows in
+    /// the global scope, made in a local one.
+    NotGlobalScope(&'static str),
     InvalidGateBody(String),
     Unsupported(String),
     InvalidLiteral(String),

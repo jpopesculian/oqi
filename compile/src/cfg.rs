@@ -4,22 +4,29 @@
 //! the top-level body, every subroutine, every gate, and every structured
 //! OpenPulse calibration body. Opaque defcal bodies are skipped.
 //!
-//! The CFG is owned: each [`BasicBlock`] holds cloned statements lifted out of
-//! SIR. The original program is left untouched so SIR analyses can keep using
-//! it after CFG construction.
-
-use std::cmp::Ordering;
+//! A [`BasicBlock`] holds straight-line SIR statements — the kinds with no
+//! control flow of their own — and ends in a [`Terminator`]. `if`, `while`,
+//! `for`, `switch`, `break`, `continue`, `return`, `end` and `box` are
+//! lowered to blocks and terminators; a `box` is a local scope of its
+//! enclosing body (docs/scope.rst), so its statements become blocks of the
+//! same graph.
+//!
+//! Two kinds of nested statement lists stay inside the statements and
+//! expressions that own them, each built into a `Cfg` of its own (with
+//! [`build_body`]) when bytecode is emitted: the scope of a `durationof`
+//! and the body of an inline `cal` block.
 
 use oqi_lex::Span;
 
 use crate::bytecode::ProcOwner;
-use crate::classical::{IntWidth, Primitive, PrimitiveTy, ValueTy};
+use crate::classical::{
+    ArrayRefShape, ArrayShape, ArrayTy, IntWidth, Primitive, PrimitiveTy, ValueTy,
+};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{
-    self, Alias, ArrayLiteral, Assignment, BinOp, Binary, BoxStmt, CalibrationBody, Call, Cast,
-    Delay, Expr, ExprKind, For, ForIterable, GateCall, GateModifier, If, Index, IndexItem,
-    IndexKind, IndexOp, LValue, Measure, MeasureExpr, MeasureExprKind, QubitOperand, RValue, Stmt,
-    StmtKind, SwitchCase, SwitchLabels, UnOp, Unary, While,
+    self, ArrayLiteral, Assignment, BinOp, Binary, CalibrationBody, Call, CallTarget, Cast, Expr,
+    ExprKind, For, ForIterable, Index, IndexItem, IndexKind, IndexOp, Intrinsic, LValue, RValue,
+    RangeExpr, Stmt, StmtKind, SwitchCase, SwitchLabels,
 };
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::Type;
@@ -30,73 +37,11 @@ pub struct BasicBlockId(pub usize);
 #[derive(Clone)]
 pub struct BasicBlock {
     pub id: BasicBlockId,
-    pub stmts: Vec<BlockStmt>,
+    /// Straight-line statements only: every control-flow kind of
+    /// [`StmtKind`] has become a [`Terminator`].
+    pub stmts: Vec<Stmt>,
     pub terminator: Terminator,
     pub span: Span,
-}
-
-#[derive(Clone)]
-pub struct BlockStmt {
-    pub kind: BlockStmtKind,
-    pub span: Span,
-}
-
-/// The non-control-flow subset of [`sir::StmtKind`]. Statements that can appear
-/// inside a [`BasicBlock`]: control-flow constructs become [`Terminator`]s and
-/// are statically excluded here. `Box` and `Cal` bodies are themselves nested
-/// [`Cfg`]s so the no-control-flow invariant holds recursively. All embedded
-/// expressions use [`BlockExpr`] (no `DurationOf(Vec<Stmt>)` smuggling control
-/// flow through expression position).
-#[derive(Clone)]
-pub enum BlockStmtKind {
-    Alias(Alias<BlockExpr>),
-    GateCall(GateCall<BlockExpr>),
-    Measure(Measure<BlockExpr>),
-    Reset(QubitOperand<BlockExpr>),
-    Barrier(Vec<QubitOperand<BlockExpr>>),
-    Delay(Delay<BlockExpr>),
-    Box(BlockBoxStmt),
-    Assignment(Assignment<BlockExpr>),
-    Pragma(String),
-    Cal(BlockCalibrationBody),
-    ExprStmt(BlockExpr),
-    Nop(Vec<QubitOperand<BlockExpr>>),
-}
-
-#[derive(Clone)]
-pub struct BlockBoxStmt {
-    pub duration: Option<BlockExpr>,
-    pub body: Cfg,
-}
-
-#[derive(Clone)]
-pub enum BlockCalibrationBody {
-    Opaque(String),
-    OpenPulse(Cfg),
-}
-
-/// The non-control-flow subset of [`sir::Expr`]. Mirrors `Expr` except
-/// `DurationOf` holds a nested [`Cfg`] instead of `Vec<Stmt>`, so no
-/// control flow can hide inside an expression position.
-#[derive(Clone)]
-pub struct BlockExpr {
-    pub kind: BlockExprKind,
-    pub ty: Type,
-    pub span: Span,
-}
-
-#[derive(Clone)]
-pub enum BlockExprKind {
-    Literal(Primitive),
-    Var(SymbolId),
-    HardwareQubit(usize),
-    Binary(Binary<BlockExpr>),
-    Unary(Unary<BlockExpr>),
-    Cast(Cast<BlockExpr>),
-    Index(Index<BlockExpr>),
-    Call(Call<BlockExpr>),
-    DurationOf(Cfg),
-    ArrayLiteral(ArrayLiteral<BlockExpr>),
 }
 
 #[derive(Clone)]
@@ -105,7 +50,7 @@ pub enum Terminator {
     Goto(BasicBlockId),
     /// Two-way branch on a boolean condition.
     Branch {
-        cond: BlockExpr,
+        cond: Expr,
         then_bb: BasicBlockId,
         else_bb: BasicBlockId,
     },
@@ -113,68 +58,27 @@ pub enum Terminator {
     /// match, control goes to `default` (the source `default` case, or the
     /// merge block after the switch when there is none).
     Switch {
-        target: BlockExpr,
-        cases: Vec<(Vec<BlockExpr>, BasicBlockId)>,
+        target: Expr,
+        cases: Vec<(Vec<Expr>, BasicBlockId)>,
         default: BasicBlockId,
     },
+    /// Entry to a `box[duration] { ... }`. The contents run from `body` and
+    /// fall through to `after`; a timing pass counts `duration` and goes
+    /// straight to `after` instead (docs/delays.rst: the box is pinned to
+    /// that duration).
+    Box {
+        duration: Expr,
+        body: BasicBlockId,
+        after: BasicBlockId,
+    },
     /// Explicit `return` from a subroutine (or implicit fall-off-the-end).
-    Return(Option<RValue<BlockExpr>>),
+    Return(Option<RValue>),
     /// OpenQASM `end;` — program halt.
     End,
     /// Block has no successors and is statically unreachable. Used as a
     /// placeholder while constructing the graph and for blocks following a
     /// terminator within the same source body.
     Unreachable,
-}
-
-impl Terminator {
-    /// Iterate the block ids this terminator can transfer control to.
-    /// Allocation-free.
-    pub fn successors(&self) -> Successors<'_> {
-        let inner = match self {
-            Terminator::Goto(t) => SuccessorsInner::One(Some(*t)),
-            Terminator::Branch {
-                then_bb, else_bb, ..
-            } => SuccessorsInner::Two(Some(*then_bb), Some(*else_bb)),
-            Terminator::Switch { cases, default, .. } => SuccessorsInner::Switch {
-                cases: cases.iter(),
-                default: Some(*default),
-            },
-            Terminator::Return(_) | Terminator::End | Terminator::Unreachable => {
-                SuccessorsInner::Empty
-            }
-        };
-        Successors(inner)
-    }
-}
-
-/// Iterator returned by [`Terminator::successors`]. Opaque wrapper:
-/// callers should only obtain a `Successors` via the terminator method.
-pub struct Successors<'a>(SuccessorsInner<'a>);
-
-enum SuccessorsInner<'a> {
-    Empty,
-    One(Option<BasicBlockId>),
-    Two(Option<BasicBlockId>, Option<BasicBlockId>),
-    Switch {
-        cases: std::slice::Iter<'a, (Vec<BlockExpr>, BasicBlockId)>,
-        default: Option<BasicBlockId>,
-    },
-}
-
-impl Iterator for Successors<'_> {
-    type Item = BasicBlockId;
-
-    fn next(&mut self) -> Option<BasicBlockId> {
-        match &mut self.0 {
-            SuccessorsInner::Empty => None,
-            SuccessorsInner::One(slot) => slot.take(),
-            SuccessorsInner::Two(a, b) => a.take().or_else(|| b.take()),
-            SuccessorsInner::Switch { cases, default } => {
-                cases.next().map(|(_, bb)| *bb).or_else(|| default.take())
-            }
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -186,12 +90,6 @@ pub struct Cfg {
     pub blocks: Vec<BasicBlock>,
     /// Sole entry block. No predecessors; all control flow enters here.
     pub entry: BasicBlockId,
-    /// Synthetic "fall-off-the-end" exit block. Always present, always
-    /// terminated by `Return(None)`. Reachable when the body finishes
-    /// without an explicit `return`/`end`; otherwise dangling (no
-    /// predecessors). Analyses that walk from `entry` simply won't
-    /// visit it in the dangling case.
-    pub exit: BasicBlockId,
     pub owner: ProcOwner,
 }
 
@@ -203,51 +101,33 @@ pub struct ProgramCfgs {
     pub calibrations: Vec<Option<Cfg>>,
 }
 
-pub fn build_program(program: &sir::Program) -> Result<ProgramCfgs> {
-    let top_level = build_body(
-        program.body.clone(),
-        ProcOwner::TopLevel,
-        false,
-        &program.symbols,
-    )?;
+/// Build the graph of every body in `program`. `symbols` starts as the
+/// program's symbol table and gains the hidden variables `for` loops
+/// iterate with.
+pub fn build_program(program: &sir::Program, symbols: &mut SymbolTable) -> Result<ProgramCfgs> {
+    let top_level = build_body(&program.body, ProcOwner::TopLevel, false, symbols)?;
     let subroutines = program
         .subroutines
         .iter()
-        .map(|s| {
-            build_body(
-                s.body.clone(),
-                ProcOwner::Subroutine(s.symbol),
-                true,
-                &program.symbols,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
+        .map(|s| build_body(&s.body, ProcOwner::Subroutine(s.symbol), true, symbols))
+        .collect::<Result<_>>()?;
     let gates = program
         .gates
         .iter()
-        .map(|g| {
-            build_body(
-                g.body.clone(),
-                ProcOwner::Gate(g.symbol),
-                false,
-                &program.symbols,
-            )
-        })
-        .collect::<Result<Vec<_>>>()?;
+        .map(|g| build_body(&g.body, ProcOwner::Gate(g.symbol), false, symbols))
+        .collect::<Result<_>>()?;
     let calibrations = program
         .calibrations
         .iter()
         .enumerate()
         .map(|(i, c)| match &c.body {
-            CalibrationBody::OpenPulse(stmts) => Ok(Some(build_body(
-                stmts.clone(),
-                ProcOwner::Calibration(i as u32),
-                c.return_ty.is_some(),
-                &program.symbols,
-            )?)),
+            CalibrationBody::OpenPulse(stmts) => {
+                let owner = ProcOwner::Calibration(i as u32);
+                build_body(stmts, owner, c.return_ty.is_some(), symbols).map(Some)
+            }
             CalibrationBody::Opaque(_) => Ok(None),
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<_>>()?;
     Ok(ProgramCfgs {
         top_level,
         subroutines,
@@ -258,68 +138,52 @@ pub fn build_program(program: &sir::Program) -> Result<ProgramCfgs> {
 
 /// Construct a [`Cfg`] from a body of SIR statements.
 ///
-/// Always emits a synthetic [`Cfg::exit`] block with a
-/// [`Terminator::Return(None)`] terminator. If the body finishes with
-/// `current` still open (no explicit `return`/`end` reached), that
-/// trailing block is wired to `exit` via `Goto`. If the body ends in an
-/// explicit terminator, `exit` is unreachable — it still exists as a
-/// canonical "fall-off-the-end" anchor for downstream analyses, but no
-/// predecessor edges point at it.
-fn build_body(
-    stmts: Vec<Stmt>,
+/// The last block is a synthetic "fall-off-the-end" exit, terminated by
+/// [`Terminator::Return(None)`]. A body that finishes without an explicit
+/// `return`/`end` jumps to it; otherwise it has no predecessors.
+pub fn build_body(
+    stmts: &[Stmt],
     owner: ProcOwner,
     allow_return: bool,
-    symbols: &SymbolTable,
+    symbols: &mut SymbolTable,
 ) -> Result<Cfg> {
-    let mut b = CfgBuilder::new(allow_return, symbols);
+    let mut b = CfgBuilder {
+        blocks: Vec::new(),
+        current: None,
+        frames: Vec::new(),
+        allow_return,
+        symbols,
+    };
     let entry = b.new_block(Span::default());
     b.current = Some(entry);
     b.lower_stmts(stmts)?;
     let exit = b.new_block(Span::default());
-    if let Some(cur) = b.current.take() {
-        b.set_terminator(cur, Terminator::Goto(exit));
-    }
-    b.set_terminator(exit, Terminator::Return(None));
+    b.terminate(Terminator::Goto(exit));
+    b.blocks[exit.0].terminator = Terminator::Return(None);
     Ok(Cfg {
         blocks: b.blocks,
         entry,
-        exit,
         owner,
     })
 }
 
-struct LoopFrame {
-    /// Where `continue` jumps. For `while`, the header. For `for`, the latch.
-    continue_target: BasicBlockId,
-    /// Where `break` jumps.
+/// Where `break` and `continue` go from inside a loop or switch.
+struct Frame {
     break_target: BasicBlockId,
-}
-
-enum FrameKind {
-    Loop(LoopFrame),
-    Switch { break_target: BasicBlockId },
+    /// `None` for a switch: `continue` belongs to the loop around it.
+    continue_target: Option<BasicBlockId>,
 }
 
 struct CfgBuilder<'a> {
     blocks: Vec<BasicBlock>,
     /// `None` after a terminator, until a new statement opens a fresh block.
     current: Option<BasicBlockId>,
-    frames: Vec<FrameKind>,
+    frames: Vec<Frame>,
     allow_return: bool,
-    symbols: &'a SymbolTable,
+    symbols: &'a mut SymbolTable,
 }
 
-impl<'a> CfgBuilder<'a> {
-    fn new(allow_return: bool, symbols: &'a SymbolTable) -> Self {
-        Self {
-            blocks: Vec::new(),
-            current: None,
-            frames: Vec::new(),
-            allow_return,
-            symbols,
-        }
-    }
-
+impl CfgBuilder<'_> {
     fn new_block(&mut self, span: Span) -> BasicBlockId {
         let id = BasicBlockId(self.blocks.len());
         self.blocks.push(BasicBlock {
@@ -331,65 +195,63 @@ impl<'a> CfgBuilder<'a> {
         id
     }
 
-    fn set_terminator(&mut self, block: BasicBlockId, term: Terminator) {
-        self.blocks[block.0].terminator = term;
-    }
-
-    fn append(&mut self, stmt: BlockStmt) {
-        let cur = match self.current {
-            Some(c) => c,
-            None => {
-                // Dead code path: open a fresh block so subsequent stmts have
-                // somewhere to live. It has no incoming edges.
-                let id = self.new_block(stmt.span);
-                self.current = Some(id);
-                id
-            }
+    fn append(&mut self, stmt: Stmt) {
+        // After a terminator this is dead code: it goes in a fresh block
+        // with no incoming edges.
+        let current = match self.current {
+            Some(current) => current,
+            None => self.new_block(stmt.span),
         };
-        self.blocks[cur.0].stmts.push(stmt);
+        self.current = Some(current);
+        self.blocks[current.0].stmts.push(stmt);
     }
 
+    /// `symbol = value;`, synthesized (no annotations).
+    fn assign(&mut self, symbol: SymbolId, value: Expr, span: Span) {
+        self.append(Stmt {
+            kind: StmtKind::Assignment(Assignment {
+                target: LValue::Var(symbol),
+                value: RValue::Expr(Box::new(value)),
+            }),
+            annotations: Vec::new(),
+            span,
+        });
+    }
+
+    /// End the current block, if one is open.
     fn terminate(&mut self, term: Terminator) {
-        if let Some(cur) = self.current.take() {
-            self.set_terminator(cur, term);
+        if let Some(current) = self.current.take() {
+            self.blocks[current.0].terminator = term;
         }
     }
 
-    fn innermost_loop(&self) -> Option<&LoopFrame> {
-        self.frames.iter().rev().find_map(|f| match f {
-            FrameKind::Loop(l) => Some(l),
-            FrameKind::Switch { .. } => None,
-        })
+    /// End the current block with a jump to a new block and continue there.
+    fn goto_new_block(&mut self, span: Span) -> BasicBlockId {
+        let block = self.new_block(span);
+        self.terminate(Terminator::Goto(block));
+        self.current = Some(block);
+        block
     }
 
-    fn innermost_break(&self) -> Option<BasicBlockId> {
-        self.frames.last().map(|f| match f {
-            FrameKind::Loop(l) => l.break_target,
-            FrameKind::Switch { break_target } => *break_target,
-        })
+    fn lower_stmts(&mut self, stmts: &[Stmt]) -> Result<()> {
+        stmts.iter().try_for_each(|stmt| self.lower_stmt(stmt))
     }
 
-    fn lower_stmts(&mut self, stmts: Vec<Stmt>) -> Result<()> {
-        for stmt in stmts {
-            self.lower_stmt(stmt)?;
-        }
-        Ok(())
-    }
-
-    fn lower_stmt(&mut self, stmt: Stmt) -> Result<()> {
-        let Stmt { kind, span, .. } = stmt;
-        match kind {
-            StmtKind::If(If {
+    fn lower_stmt(&mut self, stmt: &Stmt) -> Result<()> {
+        let span = stmt.span;
+        let invalid =
+            |message: &str| CompileError::at(ErrorKind::InvalidContext(message.into()), span);
+        match &stmt.kind {
+            StmtKind::If(sir::If {
                 condition,
                 then_body,
                 else_body,
             }) => {
-                let cond = self.lower_expr(condition)?;
                 let then_bb = self.new_block(span);
                 let else_bb = self.new_block(span);
                 let after_bb = self.new_block(span);
                 self.terminate(Terminator::Branch {
-                    cond,
+                    cond: condition.clone(),
                     then_bb,
                     else_bb,
                 });
@@ -402,652 +264,412 @@ impl<'a> CfgBuilder<'a> {
                 }
                 self.terminate(Terminator::Goto(after_bb));
                 self.current = Some(after_bb);
-                Ok(())
             }
-            StmtKind::While(While { condition, body }) => {
-                let cond = self.lower_expr(condition)?;
-                let header_bb = self.new_block(span);
+            StmtKind::While(sir::While { condition, body }) => {
+                let header_bb = self.goto_new_block(span);
                 let body_bb = self.new_block(span);
                 let after_bb = self.new_block(span);
+                self.terminate(Terminator::Branch {
+                    cond: condition.clone(),
+                    then_bb: body_bb,
+                    else_bb: after_bb,
+                });
+                self.lower_loop_body(body, body_bb, header_bb, after_bb)?;
                 self.terminate(Terminator::Goto(header_bb));
-                self.set_terminator(
-                    header_bb,
-                    Terminator::Branch {
-                        cond,
-                        then_bb: body_bb,
-                        else_bb: after_bb,
-                    },
-                );
-                self.frames.push(FrameKind::Loop(LoopFrame {
-                    continue_target: header_bb,
-                    break_target: after_bb,
-                }));
+                self.current = Some(after_bb);
+            }
+            StmtKind::For(for_loop) => self.lower_for(for_loop, span)?,
+            StmtKind::Switch(sir::Switch { target, cases }) => {
+                self.lower_switch(target, cases, span)?
+            }
+            StmtKind::Box(sir::BoxStmt { duration, body }) => {
+                // A box is a scope of the enclosing body. Only a designated
+                // duration needs a terminator, for timing passes to skip the
+                // contents by.
+                let Some(duration) = duration else {
+                    return self.lower_stmts(body);
+                };
+                let body_bb = self.new_block(span);
+                let after_bb = self.new_block(span);
+                self.terminate(Terminator::Box {
+                    duration: duration.clone(),
+                    body: body_bb,
+                    after: after_bb,
+                });
                 self.current = Some(body_bb);
                 self.lower_stmts(body)?;
-                self.terminate(Terminator::Goto(header_bb));
-                self.frames.pop();
+                self.terminate(Terminator::Goto(after_bb));
                 self.current = Some(after_bb);
-                Ok(())
-            }
-            StmtKind::For(For {
-                var,
-                iterable,
-                body,
-            }) => self.lower_for(var, iterable, body, span),
-            StmtKind::Switch(sir::Switch { target, cases }) => {
-                self.lower_switch(target, cases, span)
             }
             StmtKind::Break => {
-                let target = self.innermost_break().ok_or_else(|| {
-                    CompileError::at(
-                        ErrorKind::InvalidContext("`break` outside of loop or switch".into()),
-                        span,
-                    )
-                })?;
-                self.terminate(Terminator::Goto(target));
-                Ok(())
+                let frame = self.frames.last();
+                let target = frame.ok_or_else(|| invalid("`break` outside of loop or switch"))?;
+                self.terminate(Terminator::Goto(target.break_target));
             }
             StmtKind::Continue => {
-                let target = self
-                    .innermost_loop()
-                    .map(|l| l.continue_target)
-                    .ok_or_else(|| {
-                        CompileError::at(
-                            ErrorKind::InvalidContext("`continue` outside of loop".into()),
-                            span,
-                        )
-                    })?;
+                let mut targets = self.frames.iter().rev().filter_map(|f| f.continue_target);
+                let target = targets
+                    .next()
+                    .ok_or_else(|| invalid("`continue` outside of loop"))?;
                 self.terminate(Terminator::Goto(target));
-                Ok(())
             }
             StmtKind::Return(value) => {
                 if !self.allow_return {
+                    return Err(invalid("`return` outside of subroutine"));
+                }
+                self.terminate(Terminator::Return(value.clone()));
+            }
+            StmtKind::End => self.terminate(Terminator::End),
+            StmtKind::Alias(_)
+            | StmtKind::GateCall(_)
+            | StmtKind::Measure(_)
+            | StmtKind::Reset(_)
+            | StmtKind::Barrier(_)
+            | StmtKind::Delay(_)
+            | StmtKind::Assignment(_)
+            | StmtKind::Pragma(_)
+            | StmtKind::Cal(_)
+            | StmtKind::ExprStmt(_)
+            | StmtKind::Nop(_) => self.append(stmt.clone()),
+        }
+        Ok(())
+    }
+
+    /// Lower a loop body into `body_bb`, with `continue` going to
+    /// `continue_bb` and `break` to `break_bb`. Leaves the body's last
+    /// block open.
+    fn lower_loop_body(
+        &mut self,
+        body: &[Stmt],
+        body_bb: BasicBlockId,
+        continue_bb: BasicBlockId,
+        break_bb: BasicBlockId,
+    ) -> Result<()> {
+        self.frames.push(Frame {
+            break_target: break_bb,
+            continue_target: Some(continue_bb),
+        });
+        self.current = Some(body_bb);
+        let result = self.lower_stmts(body);
+        self.frames.pop();
+        result
+    }
+
+    /// A `for` loop steps a hidden counter, from which the loop variable is
+    /// assigned at the top of each iteration — so assigning the loop
+    /// variable in the body "does not affect the next value that the loop
+    /// variable will take" (docs/classical.rst). What it iterates over is
+    /// evaluated once, on entry.
+    ///
+    /// The counter is an `int[128]`: wide enough that stepping past the last
+    /// value of any narrower loop variable type cannot wrap around (255 + 1
+    /// in a `uint[8]` is 0 again) and re-enter the range.
+    fn lower_for(&mut self, for_loop: &For, span: Span) -> Result<()> {
+        let For {
+            var,
+            iterable,
+            body,
+        } = for_loop;
+        let var_ty = self.symbols.get(*var).ty.clone();
+        let counter = self.symbols.new_temp(counter_ty(), span, None);
+        let counter_expr = || var_expr(counter, counter_ty(), span);
+
+        // The first counter value, the step, the last value (inclusive),
+        // and how the loop variable derives from the counter.
+        let (first, step, last, element) = match iterable {
+            ForIterable::Range(RangeExpr { start, step, end }) => {
+                let end = end.as_deref().ok_or_else(|| {
+                    let message = "a `for` loop range needs an end";
+                    CompileError::at(ErrorKind::InvalidContext(message.into()), span)
+                })?;
+                let first = match start {
+                    Some(start) => widen(start.as_ref().clone()),
+                    None => int_literal(0, span),
+                };
+                let step = match step {
+                    Some(step) => self.once(widen(step.as_ref().clone()), span),
+                    None => int_literal(1, span),
+                };
+                if literal_int(&step) == Some(0) {
+                    let message = "for-loop range step must be non-zero";
                     return Err(CompileError::at(
-                        ErrorKind::InvalidContext("`return` outside of subroutine".into()),
+                        ErrorKind::InvalidContext(message.into()),
                         span,
                     ));
                 }
-                let lowered = match value {
-                    Some(rv) => Some(self.lower_rvalue(rv)?),
-                    None => None,
-                };
-                self.terminate(Terminator::Return(lowered));
-                Ok(())
+                let last = self.once(widen(end.clone()), span);
+                (first, step, last, cast(counter_expr(), var_ty.clone()))
             }
-            StmtKind::End => {
-                self.terminate(Terminator::End);
-                Ok(())
-            }
-            other => {
-                let kind = self.lower_non_cf_stmt(other)?;
-                self.append(BlockStmt { kind, span });
-                Ok(())
-            }
-        }
-    }
-
-    /// Lower a non-control-flow [`StmtKind`] to its [`BlockStmtKind`]
-    /// counterpart. Caller must have already destructured all
-    /// control-flow variants — this function panics on those.
-    fn lower_non_cf_stmt(&mut self, kind: StmtKind) -> Result<BlockStmtKind> {
-        Ok(match kind {
-            StmtKind::Alias(Alias { symbol, value }) => {
-                let value = value
-                    .into_iter()
-                    .map(|e| self.lower_expr(e))
-                    .collect::<Result<Vec<_>>>()?;
-                BlockStmtKind::Alias(Alias { symbol, value })
-            }
-            StmtKind::GateCall(GateCall {
-                gate,
-                modifiers,
-                args,
-                qubits,
-                // Compile-time timing only: the timing pass has already
-                // consumed (and rewritten) the designator by this point.
-                duration: _,
-            }) => {
-                let modifiers = modifiers
-                    .into_iter()
-                    .map(|m| self.lower_gate_modifier(m))
-                    .collect::<Result<Vec<_>>>()?;
-                let args = args
-                    .into_iter()
-                    .map(|e| self.lower_expr(e))
-                    .collect::<Result<Vec<_>>>()?;
-                let qubits = qubits
-                    .into_iter()
-                    .map(|q| self.lower_qubit_operand(q))
-                    .collect::<Result<Vec<_>>>()?;
-                BlockStmtKind::GateCall(GateCall {
-                    gate,
-                    modifiers,
-                    args,
-                    qubits,
-                    duration: None,
-                })
-            }
-            StmtKind::Measure(m) => BlockStmtKind::Measure(self.lower_measure(m)?),
-            StmtKind::Reset(q) => BlockStmtKind::Reset(self.lower_qubit_operand(q)?),
-            StmtKind::Barrier(qs) => {
-                let qs = qs
-                    .into_iter()
-                    .map(|q| self.lower_qubit_operand(q))
-                    .collect::<Result<Vec<_>>>()?;
-                BlockStmtKind::Barrier(qs)
-            }
-            StmtKind::Delay(Delay { duration, operands }) => {
-                let duration = self.lower_expr(duration)?;
-                let operands = operands
-                    .into_iter()
-                    .map(|q| self.lower_qubit_operand(q))
-                    .collect::<Result<Vec<_>>>()?;
-                BlockStmtKind::Delay(Delay { duration, operands })
-            }
-            StmtKind::Assignment(Assignment { target, value }) => {
-                let target = self.lower_lvalue(target)?;
-                let value = self.lower_rvalue(value)?;
-                BlockStmtKind::Assignment(Assignment { target, value })
-            }
-            StmtKind::Pragma(p) => BlockStmtKind::Pragma(p),
-            StmtKind::ExprStmt(e) => BlockStmtKind::ExprStmt(self.lower_expr(e)?),
-            StmtKind::Nop(qs) => {
-                let qs = qs
-                    .into_iter()
-                    .map(|q| self.lower_qubit_operand(q))
-                    .collect::<Result<Vec<_>>>()?;
-                BlockStmtKind::Nop(qs)
-            }
-            StmtKind::Box(BoxStmt { duration, body }) => {
-                let duration = match duration {
-                    Some(e) => Some(self.lower_expr(e)?),
-                    None => None,
-                };
-                let inner = build_body(body, ProcOwner::Box, self.allow_return, self.symbols)?;
-                BlockStmtKind::Box(BlockBoxStmt {
-                    duration,
-                    body: inner,
-                })
-            }
-            StmtKind::Cal(CalibrationBody::Opaque(s)) => {
-                BlockStmtKind::Cal(BlockCalibrationBody::Opaque(s))
-            }
-            StmtKind::Cal(CalibrationBody::OpenPulse(stmts)) => {
-                let inner = build_body(stmts, ProcOwner::InlineCal, false, self.symbols)?;
-                BlockStmtKind::Cal(BlockCalibrationBody::OpenPulse(inner))
-            }
-            StmtKind::If(_)
-            | StmtKind::For(_)
-            | StmtKind::While(_)
-            | StmtKind::Switch(_)
-            | StmtKind::Break
-            | StmtKind::Continue
-            | StmtKind::Return(_)
-            | StmtKind::End => {
-                unreachable!(
-                    "control-flow variants are handled by lower_stmt before reaching this point"
-                )
-            }
-        })
-    }
-
-    fn lower_for(
-        &mut self,
-        var: SymbolId,
-        iterable: ForIterable,
-        body: Vec<Stmt>,
-        span: Span,
-    ) -> Result<()> {
-        let (start, step, end) = match iterable {
-            ForIterable::Range { start, step, end } => (start, step, end),
-            ForIterable::Set(_) | ForIterable::Expr(_) => {
-                return Err(CompileError::at(
-                    ErrorKind::Unsupported(
-                        "CFG construction for non-range for-loops not yet implemented".into(),
-                    ),
+            ForIterable::Set(items) => {
+                // The members are evaluated into an array, then indexed.
+                let element_ty = var_ty.scalar_ty().ok_or_else(|| {
+                    let message = "the loop variable of a set must be a scalar";
+                    CompileError::at(ErrorKind::InvalidContext(message.into()), span)
+                })?;
+                if items.is_empty() {
+                    return Ok(());
+                }
+                let shape = ArrayShape::new(vec![items.len()])
+                    .map_err(|e| crate::types::invalid_type(e, span))?;
+                let values = Expr {
+                    kind: ExprKind::ArrayLiteral(ArrayLiteral {
+                        items: items.clone(),
+                        span,
+                    }),
+                    ty: Type::from(ArrayTy::new(element_ty, shape)),
                     span,
-                ));
+                };
+                let values = self.once(values, span);
+                let last = int_literal(items.len() as i128 - 1, span);
+                let element = element_at(values, counter_expr(), var_ty.clone());
+                (int_literal(0, span), int_literal(1, span), last, element)
+            }
+            ForIterable::Expr(values) => {
+                let values = self.once(values.as_ref().clone(), span);
+                let last = self.last_index(&values, span)?;
+                let item_ty = item_type(&values.ty).unwrap_or_else(|| var_ty.clone());
+                let element = cast(element_at(values, counter_expr(), item_ty), var_ty.clone());
+                (int_literal(0, span), int_literal(1, span), last, element)
             }
         };
-        let end = end.ok_or_else(|| {
-            CompileError::at(
-                ErrorKind::Unsupported(
-                    "CFG construction requires an explicit end in range for-loops".into(),
-                ),
-                span,
-            )
-        })?;
 
-        let var_ty = self.symbols.get(var).ty.clone();
-
-        // Synthesized init assignment `var = start` (defaults to 0 when
-        // the range omits start). Has the for-statement's span and no
-        // annotations — it doesn't correspond to any user-written
-        // statement, so it won't round-trip back to source.
-        let init_expr = match start {
-            Some(s) => self.lower_expr(*s)?,
-            None => block_literal_int(&var_ty, 0, span),
-        };
-        self.append(BlockStmt {
-            kind: BlockStmtKind::Assignment(Assignment {
-                target: LValue::Var(var),
-                value: RValue::Expr(Box::new(init_expr)),
-            }),
-            span,
-        });
-
-        let header_bb = self.new_block(span);
+        self.assign(counter, first, span);
+        let header_bb = self.goto_new_block(span);
         let body_bb = self.new_block(span);
         let latch_bb = self.new_block(span);
-        let advance_bb = self.new_block(span);
         let after_bb = self.new_block(span);
-
-        self.terminate(Terminator::Goto(header_bb));
-
-        // Step expression (defaults to 1), lowered before the header
-        // condition because the comparison direction depends on its
-        // sign: ranges include `end`, counting up for a positive step
-        // and down for a negative one.
-        let step_expr = match step {
-            Some(s) => self.lower_expr(*s)?,
-            None => block_literal_int(&var_ty, 1, span),
-        };
-        let cmp_op =
-            match const_step_sign(&step_expr) {
-                Some(Ordering::Greater) => BinOp::Lte,
-                Some(Ordering::Less) => BinOp::Gte,
-                Some(Ordering::Equal) => {
-                    return Err(CompileError::at(
-                        ErrorKind::InvalidContext("for-loop range step must be non-zero".into()),
-                        span,
-                    ));
-                }
-                None => {
-                    return Err(CompileError::at(ErrorKind::Unsupported(
-                    "CFG construction requires a compile-time constant step in range for-loops"
-                        .into(),
-                ), span));
-                }
-            };
-
-        let end_block = self.lower_expr(*end)?;
-        let in_range = |value: BlockExpr, end: BlockExpr| BlockExpr {
-            kind: BlockExprKind::Binary(Binary {
-                op: cmp_op,
-                left: Box::new(value),
-                right: Box::new(end),
-            }),
-            ty: Type::Classical(ValueTy::bool()),
-            span,
-        };
-        let var_expr = || block_var_expr(var, var_ty.clone(), span);
-        // The header admits the first value.
-        self.set_terminator(
-            header_bb,
-            Terminator::Branch {
-                cond: in_range(var_expr(), end_block.clone()),
-                then_bb: body_bb,
-                else_bb: after_bb,
-            },
-        );
-
-        self.frames.push(FrameKind::Loop(LoopFrame {
-            continue_target: latch_bb,
-            break_target: after_bb,
-        }));
+        self.terminate(Terminator::Branch {
+            cond: in_range(counter_expr(), &step, last, span),
+            then_bb: body_bb,
+            else_bb: after_bb,
+        });
 
         self.current = Some(body_bb);
-        self.lower_stmts(body)?;
+        self.assign(*var, element, span);
+        self.lower_loop_body(body, body_bb, latch_bb, after_bb)?;
         self.terminate(Terminator::Goto(latch_bb));
 
-        self.frames.pop();
-
-        // The latch admits each further value *before* advancing to it,
-        // testing `var + step` in a type wide enough to hold it: in the
-        // loop variable's own type the sum can leave the range it is being
-        // tested against (255 + 1 in a `uint[8]` is 0 again, or an overflow
-        // in an `int[8]`), and a range ending at the type's limit would
-        // never see its exit.
-        let next = BlockExpr {
-            kind: BlockExprKind::Binary(Binary {
-                op: BinOp::Add,
-                left: Box::new(widen_int(var_expr())),
-                right: Box::new(widen_int(step_expr.clone())),
-            }),
-            ty: widen_int(var_expr()).ty,
-            span,
-        };
-        self.set_terminator(
-            latch_bb,
-            Terminator::Branch {
-                cond: in_range(next, widen_int(end_block)),
-                then_bb: advance_bb,
-                else_bb: after_bb,
-            },
-        );
-
-        self.current = Some(advance_bb);
-        // Synthesized advance assignment `var = var + step`. Like the
-        // init above, this is a synthetic statement with the
-        // for-statement's span and no annotations.
-        let advance = BlockExpr {
-            kind: BlockExprKind::Binary(Binary {
-                op: BinOp::Add,
-                left: Box::new(var_expr()),
-                right: Box::new(step_expr),
-            }),
-            ty: var_ty.clone(),
-            span,
-        };
-        self.append(BlockStmt {
-            kind: BlockStmtKind::Assignment(Assignment {
-                target: LValue::Var(var),
-                value: RValue::Expr(Box::new(advance)),
-            }),
-            span,
-        });
-        self.terminate(Terminator::Goto(body_bb));
+        self.current = Some(latch_bb);
+        let next = binary(BinOp::Add, counter_expr(), step, counter_ty(), span);
+        self.assign(counter, next, span);
+        self.terminate(Terminator::Goto(header_bb));
 
         self.current = Some(after_bb);
         Ok(())
     }
 
-    fn lower_switch(&mut self, target: Expr, cases: Vec<SwitchCase>, span: Span) -> Result<()> {
-        let target = self.lower_expr(target)?;
+    /// `value` as an expression that can be read again without evaluating
+    /// it again: a literal as it is, anything else through a hidden variable
+    /// assigned here.
+    fn once(&mut self, value: Expr, span: Span) -> Expr {
+        if matches!(value.kind, ExprKind::Literal(_)) {
+            return value;
+        }
+        let temp = self.symbols.new_temp(value.ty.clone(), span, None);
+        let read = var_expr(temp, value.ty.clone(), span);
+        self.assign(temp, value, span);
+        read
+    }
+
+    /// The last index of the register or one-dimensional array `values`.
+    fn last_index(&mut self, values: &Expr, span: Span) -> Result<Expr> {
+        let len = match values.ty.value_ty() {
+            Some(ValueTy::Scalar(PrimitiveTy::BitReg(n))) => Some(n as usize),
+            Some(ValueTy::Scalar(_)) => None,
+            Some(ValueTy::Array(ty)) => one_dimension(ty.shape().get()),
+            Some(ValueTy::ArrayRef(ty)) => match ty.shape() {
+                ArrayRefShape::Fixed(shape) => one_dimension(shape.get()),
+                // An unspecified-length reference knows its size at run time.
+                ArrayRefShape::Dim(rank) if rank.get() == 1 => {
+                    let uint = Type::Classical(ValueTy::uint(IntWidth::B64));
+                    let len = Expr {
+                        kind: ExprKind::Call(Call {
+                            callee: CallTarget::Intrinsic(Intrinsic::Sizeof),
+                            args: vec![values.clone()],
+                        }),
+                        ty: uint,
+                        span,
+                    };
+                    let last = binary(
+                        BinOp::Sub,
+                        widen(len),
+                        int_literal(1, span),
+                        counter_ty(),
+                        span,
+                    );
+                    return Ok(self.once(last, span));
+                }
+                ArrayRefShape::Dim(_) => None,
+            },
+            None => None,
+        };
+        let len = len.ok_or_else(|| {
+            let message = format!(
+                "a `for` loop iterates over a range, a set, a bit register or a \
+                 one-dimensional array, not `{}`",
+                values.ty
+            );
+            CompileError::at(ErrorKind::InvalidContext(message), values.span)
+        })?;
+        Ok(int_literal(len as i128 - 1, span))
+    }
+
+    fn lower_switch(&mut self, target: &Expr, cases: &[SwitchCase], span: Span) -> Result<()> {
         let after_bb = self.new_block(span);
 
         // Allocate one block per case up front so the dispatcher can reference
         // them all before any case body is lowered.
-        let mut case_blocks: Vec<(Vec<BlockExpr>, BasicBlockId)> = Vec::new();
-        let mut default: Option<BasicBlockId> = None;
-        let mut allocated: Vec<BasicBlockId> = Vec::with_capacity(cases.len());
-        for case in &cases {
+        let mut case_blocks = Vec::new();
+        let mut default = after_bb;
+        let mut bodies = Vec::with_capacity(cases.len());
+        for case in cases {
             let bb_span = case.body.first().map(|s| s.span).unwrap_or(span);
             let bb = self.new_block(bb_span);
-            allocated.push(bb);
+            bodies.push((bb, &case.body));
             match &case.labels {
-                SwitchLabels::Values(vals) => {
-                    let lowered_vals = vals
-                        .iter()
-                        .cloned()
-                        .map(|v| self.lower_expr(v))
-                        .collect::<Result<Vec<_>>>()?;
-                    case_blocks.push((lowered_vals, bb));
-                }
-                SwitchLabels::Default => default = Some(bb),
+                SwitchLabels::Values(values) => case_blocks.push((values.clone(), bb)),
+                SwitchLabels::Default => default = bb,
             }
         }
 
         self.terminate(Terminator::Switch {
-            target,
+            target: target.clone(),
             cases: case_blocks,
-            default: default.unwrap_or(after_bb),
+            default,
         });
 
-        self.frames.push(FrameKind::Switch {
+        self.frames.push(Frame {
             break_target: after_bb,
+            continue_target: None,
         });
-
-        for (case, bb) in cases.into_iter().zip(allocated) {
+        for (bb, body) in bodies {
             self.current = Some(bb);
-            self.lower_stmts(case.body)?;
+            self.lower_stmts(body)?;
             self.terminate(Terminator::Goto(after_bb));
         }
-
         self.frames.pop();
         self.current = Some(after_bb);
         Ok(())
     }
-
-    // ── Expression lowering: sir::Expr → cfg::BlockExpr ────────────────
-
-    fn lower_expr(&mut self, e: Expr) -> Result<BlockExpr> {
-        let Expr { kind, ty, span } = e;
-        Ok(BlockExpr {
-            kind: self.lower_expr_kind(kind)?,
-            ty,
-            span,
-        })
-    }
-
-    fn lower_expr_kind(&mut self, kind: ExprKind) -> Result<BlockExprKind> {
-        Ok(match kind {
-            ExprKind::Literal(p) => BlockExprKind::Literal(p),
-            ExprKind::Var(s) => BlockExprKind::Var(s),
-            ExprKind::HardwareQubit(n) => BlockExprKind::HardwareQubit(n),
-            ExprKind::Binary(Binary { op, left, right }) => {
-                let left = Box::new(self.lower_expr(*left)?);
-                let right = Box::new(self.lower_expr(*right)?);
-                BlockExprKind::Binary(Binary { op, left, right })
-            }
-            ExprKind::Unary(Unary { op, operand }) => {
-                let operand = Box::new(self.lower_expr(*operand)?);
-                BlockExprKind::Unary(Unary { op, operand })
-            }
-            ExprKind::Cast(Cast { target_ty, operand }) => {
-                let operand = Box::new(self.lower_expr(*operand)?);
-                BlockExprKind::Cast(Cast { target_ty, operand })
-            }
-            ExprKind::Index(Index { base, index }) => {
-                let base = Box::new(self.lower_expr(*base)?);
-                let index = self.lower_index_op(index)?;
-                BlockExprKind::Index(Index { base, index })
-            }
-            ExprKind::Call(Call { callee, args }) => {
-                let args = args
-                    .into_iter()
-                    .map(|a| self.lower_expr(a))
-                    .collect::<Result<Vec<_>>>()?;
-                BlockExprKind::Call(Call { callee, args })
-            }
-            ExprKind::DurationOf(stmts) => {
-                let inner = build_body(stmts, ProcOwner::DurationOf, false, self.symbols)?;
-                BlockExprKind::DurationOf(inner)
-            }
-            ExprKind::ArrayLiteral(ArrayLiteral {
-                items,
-                span: lit_span,
-            }) => {
-                let items = items
-                    .into_iter()
-                    .map(|e| self.lower_expr(e))
-                    .collect::<Result<Vec<_>>>()?;
-                BlockExprKind::ArrayLiteral(ArrayLiteral {
-                    items,
-                    span: lit_span,
-                })
-            }
-        })
-    }
-
-    fn lower_qubit_operand(&mut self, q: QubitOperand<Expr>) -> Result<QubitOperand<BlockExpr>> {
-        Ok(match q {
-            QubitOperand::Indexed { symbol, indices } => {
-                let indices = indices
-                    .into_iter()
-                    .map(|i| self.lower_index_op(i))
-                    .collect::<Result<Vec<_>>>()?;
-                QubitOperand::Indexed { symbol, indices }
-            }
-            QubitOperand::Hardware(n) => QubitOperand::Hardware(n),
-        })
-    }
-
-    fn lower_lvalue(&mut self, lv: LValue<Expr>) -> Result<LValue<BlockExpr>> {
-        Ok(match lv {
-            LValue::Var(s) => LValue::Var(s),
-            LValue::Indexed { symbol, indices } => {
-                let indices = indices
-                    .into_iter()
-                    .map(|i| self.lower_index_op(i))
-                    .collect::<Result<Vec<_>>>()?;
-                LValue::Indexed { symbol, indices }
-            }
-        })
-    }
-
-    fn lower_rvalue(&mut self, rv: RValue<Expr>) -> Result<RValue<BlockExpr>> {
-        Ok(match rv {
-            RValue::Expr(e) => RValue::Expr(Box::new(self.lower_expr(*e)?)),
-            RValue::Measure(m) => RValue::Measure(Box::new(self.lower_measure_expr(*m)?)),
-        })
-    }
-
-    fn lower_measure(&mut self, m: Measure<Expr>) -> Result<Measure<BlockExpr>> {
-        let Measure { measure, target } = m;
-        let measure = self.lower_measure_expr(measure)?;
-        let target = match target {
-            Some(lv) => Some(self.lower_lvalue(lv)?),
-            None => None,
-        };
-        Ok(Measure { measure, target })
-    }
-
-    fn lower_measure_expr(&mut self, m: MeasureExpr<Expr>) -> Result<MeasureExpr<BlockExpr>> {
-        let MeasureExpr { kind, ty, span } = m;
-        let kind = match kind {
-            MeasureExprKind::Measure { operand } => MeasureExprKind::Measure {
-                operand: self.lower_qubit_operand(operand)?,
-            },
-            MeasureExprKind::QuantumCall {
-                callee,
-                args,
-                qubits,
-            } => {
-                let args = args
-                    .into_iter()
-                    .map(|e| self.lower_expr(e))
-                    .collect::<Result<Vec<_>>>()?;
-                let qubits = qubits
-                    .into_iter()
-                    .map(|q| self.lower_qubit_operand(q))
-                    .collect::<Result<Vec<_>>>()?;
-                MeasureExprKind::QuantumCall {
-                    callee,
-                    args,
-                    qubits,
-                }
-            }
-        };
-        Ok(MeasureExpr { kind, ty, span })
-    }
-
-    fn lower_index_op(&mut self, io: IndexOp<Expr>) -> Result<IndexOp<BlockExpr>> {
-        let IndexOp { kind, span } = io;
-        let kind = match kind {
-            IndexKind::Set(exprs) => {
-                let exprs = exprs
-                    .into_iter()
-                    .map(|e| self.lower_expr(e))
-                    .collect::<Result<Vec<_>>>()?;
-                IndexKind::Set(exprs)
-            }
-            IndexKind::Items(items) => {
-                let items = items
-                    .into_iter()
-                    .map(|i| self.lower_index_item(i))
-                    .collect::<Result<Vec<_>>>()?;
-                IndexKind::Items(items)
-            }
-        };
-        Ok(IndexOp { kind, span })
-    }
-
-    fn lower_index_item(&mut self, item: IndexItem<Expr>) -> Result<IndexItem<BlockExpr>> {
-        Ok(match item {
-            IndexItem::Single(e) => IndexItem::Single(Box::new(self.lower_expr(*e)?)),
-            IndexItem::Range(r) => {
-                let sir::RangeExpr { start, step, end } = r;
-                let start = match start {
-                    Some(e) => Some(Box::new(self.lower_expr(*e)?)),
-                    None => None,
-                };
-                let step = match step {
-                    Some(e) => Some(Box::new(self.lower_expr(*e)?)),
-                    None => None,
-                };
-                let end = match end {
-                    Some(e) => Some(Box::new(self.lower_expr(*e)?)),
-                    None => None,
-                };
-                IndexItem::Range(sir::RangeExpr { start, step, end })
-            }
-        })
-    }
-
-    fn lower_gate_modifier(&mut self, m: GateModifier<Expr>) -> Result<GateModifier<BlockExpr>> {
-        Ok(match m {
-            GateModifier::Inv => GateModifier::Inv,
-            GateModifier::Pow(e) => GateModifier::Pow(Box::new(self.lower_expr(*e)?)),
-            GateModifier::Ctrl(n) => GateModifier::Ctrl(n),
-            GateModifier::NegCtrl(n) => GateModifier::NegCtrl(n),
-        })
-    }
 }
 
-fn block_var_expr(var: SymbolId, ty: Type, span: Span) -> BlockExpr {
-    BlockExpr {
-        kind: BlockExprKind::Var(var),
+/// The type of a loop counter.
+fn counter_ty() -> Type {
+    Type::Classical(ValueTy::int(IntWidth::B128))
+}
+
+fn var_expr(symbol: SymbolId, ty: Type, span: Span) -> Expr {
+    Expr {
+        kind: ExprKind::Var(symbol),
         ty,
         span,
     }
 }
 
-/// Statically-known sign of a for-range step expression. Constant
-/// steps are folded to a `Literal` during SIR lowering; the `Neg` arm
-/// covers shapes the folder didn't reach.
-fn const_step_sign(e: &BlockExpr) -> Option<Ordering> {
-    match &e.kind {
-        BlockExprKind::Literal(Primitive::Int(i)) => Some(i.cmp(&0)),
-        BlockExprKind::Literal(Primitive::Uint(u)) => Some(u.cmp(&0)),
-        BlockExprKind::Unary(u) if matches!(u.op, UnOp::Neg) => {
-            const_step_sign(&u.operand).map(Ordering::reverse)
-        }
-        _ => None,
-    }
-}
-
-/// An integer expression as an `int[128]`, in which adding two integers of
-/// any narrower width cannot overflow. Anything else is returned as is.
-fn widen_int(e: BlockExpr) -> BlockExpr {
-    let narrow = match e.ty.scalar_ty() {
-        Some(PrimitiveTy::Int(w) | PrimitiveTy::Uint(w)) => w.get() < IntWidth::MAX,
-        _ => false,
-    };
-    if !narrow {
-        return e;
-    }
-    let wide = Type::Classical(ValueTy::int(IntWidth::B128));
-    let span = e.span;
-    let kind = match e.kind {
-        BlockExprKind::Literal(Primitive::Int(i)) => BlockExprKind::Literal(Primitive::Int(i)),
-        BlockExprKind::Literal(Primitive::Uint(u)) => {
-            BlockExprKind::Literal(Primitive::Int(u as i128))
-        }
-        kind => BlockExprKind::Cast(Cast {
-            target_ty: wide.clone(),
-            operand: Box::new(BlockExpr {
-                kind,
-                ty: e.ty,
-                span,
-            }),
-        }),
-    };
-    BlockExpr {
-        kind,
-        ty: wide,
+fn int_literal(value: i128, span: Span) -> Expr {
+    Expr {
+        kind: ExprKind::Literal(Primitive::int(value)),
+        ty: counter_ty(),
         span,
     }
 }
 
-fn block_literal_int(ty: &Type, value: i128, span: Span) -> BlockExpr {
-    let prim = match ty.scalar_ty() {
-        Some(PrimitiveTy::Uint(_)) => Primitive::uint(value as u128),
-        _ => Primitive::int(value),
-    };
-    BlockExpr {
-        kind: BlockExprKind::Literal(prim),
-        ty: ty.clone(),
+/// The value of an integer literal.
+fn literal_int(e: &Expr) -> Option<i128> {
+    match &e.kind {
+        ExprKind::Literal(Primitive::Int(i)) => Some(*i),
+        ExprKind::Literal(Primitive::Uint(u)) => i128::try_from(*u).ok(),
+        _ => None,
+    }
+}
+
+fn binary(op: BinOp, left: Expr, right: Expr, ty: Type, span: Span) -> Expr {
+    Expr {
+        kind: ExprKind::Binary(Binary {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        }),
+        ty,
+        span,
+    }
+}
+
+/// `e` converted to `ty`, if it is not of that type already.
+fn cast(e: Expr, ty: Type) -> Expr {
+    if e.ty == ty {
+        return e;
+    }
+    Expr {
+        span: e.span,
+        kind: ExprKind::Cast(Cast {
+            target_ty: ty.clone(),
+            operand: Box::new(e),
+        }),
+        ty,
+    }
+}
+
+/// An integer expression as a loop-counter value.
+fn widen(e: Expr) -> Expr {
+    match literal_int(&e) {
+        Some(value) => int_literal(value, e.span),
+        None => cast(e, counter_ty()),
+    }
+}
+
+/// Whether `counter` is still within a range ending at `last` (inclusive)
+/// that is walked in steps of `step`.
+fn in_range(counter: Expr, step: &Expr, last: Expr, span: Span) -> Expr {
+    let bool_ty = || Type::Classical(ValueTy::bool());
+    let compare = |op, left: Expr, right: Expr| binary(op, left, right, bool_ty(), span);
+    match literal_int(step) {
+        Some(step) if step > 0 => compare(BinOp::Lte, counter, last),
+        Some(_) => compare(BinOp::Gte, counter, last),
+        // The direction is only known at run time; a zero step walks nothing.
+        None => {
+            let zero = || int_literal(0, span);
+            let up = compare(
+                BinOp::LogAnd,
+                compare(BinOp::Gt, step.clone(), zero()),
+                compare(BinOp::Lte, counter.clone(), last.clone()),
+            );
+            let down = compare(
+                BinOp::LogAnd,
+                compare(BinOp::Lt, step.clone(), zero()),
+                compare(BinOp::Gte, counter, last),
+            );
+            compare(BinOp::LogOr, up, down)
+        }
+    }
+}
+
+/// The length of a one-dimensional shape.
+fn one_dimension(shape: &[usize]) -> Option<usize> {
+    match shape {
+        [len] => Some(*len),
+        _ => None,
+    }
+}
+
+/// The type of one item of the register or one-dimensional array type `ty`.
+pub(crate) fn item_type(ty: &Type) -> Option<Type> {
+    let index = [oqi_classical::Index::Item(0)];
+    ty.value_ty()?.get(&index).ok().map(Type::from)
+}
+
+/// `values[index]`, of type `ty`.
+fn element_at(values: Expr, index: Expr, ty: Type) -> Expr {
+    let span = values.span;
+    Expr {
+        kind: ExprKind::Index(Index {
+            base: Box::new(values),
+            index: IndexOp {
+                kind: IndexKind::Items(vec![IndexItem::Single(Box::new(index))]),
+                span,
+            },
+        }),
+        ty,
         span,
     }
 }
@@ -1056,181 +678,109 @@ fn block_literal_int(ty: &Type, value: i128, span: Span) -> BlockExpr {
 mod tests {
     use super::*;
 
-    fn bool_literal_expr() -> Expr {
+    fn stmt(kind: StmtKind) -> Stmt {
+        Stmt {
+            kind,
+            annotations: vec![],
+            span: Span::default(),
+        }
+    }
+
+    fn pragma(s: &str) -> Stmt {
+        stmt(StmtKind::Pragma(s.into()))
+    }
+
+    fn bool_literal() -> Expr {
         Expr {
-            kind: ExprKind::Literal(Primitive::int(0)),
+            kind: ExprKind::Literal(Primitive::bit(false)),
             ty: Type::Classical(ValueTy::bool()),
             span: Span::default(),
         }
     }
 
-    fn pragma_stmt(s: &str) -> Stmt {
-        Stmt {
-            kind: StmtKind::Pragma(s.into()),
-            annotations: vec![],
-            span: Span::default(),
-        }
+    fn build(stmts: &[Stmt], allow_return: bool) -> Result<Cfg> {
+        build_body(
+            stmts,
+            ProcOwner::TopLevel,
+            allow_return,
+            &mut SymbolTable::new(),
+        )
     }
 
-    fn if_stmt(then_body: Vec<Stmt>, else_body: Vec<Stmt>) -> Stmt {
-        Stmt {
-            kind: StmtKind::If(If {
-                condition: bool_literal_expr(),
-                then_body,
-                else_body: Some(else_body),
-            }),
-            annotations: vec![],
-            span: Span::default(),
-        }
-    }
-
-    /// Locate the single `BlockStmtKind` in the outer CFG that matches a
-    /// predicate. Panics if not found or if more than one matches.
-    fn find_unique_block_stmt<F>(cfg: &Cfg, mut f: F) -> &BlockStmtKind
-    where
-        F: FnMut(&BlockStmtKind) -> bool,
-    {
-        let mut found = None;
-        for block in &cfg.blocks {
-            for stmt in &block.stmts {
-                if f(&stmt.kind) {
-                    assert!(found.is_none(), "expected exactly one matching stmt");
-                    found = Some(&stmt.kind);
-                }
-            }
-        }
-        found.expect("no matching block stmt")
+    fn pragmas(cfg: &Cfg) -> Vec<&str> {
+        let stmts = cfg.blocks.iter().flat_map(|b| &b.stmts);
+        stmts
+            .filter_map(|s| match &s.kind {
+                StmtKind::Pragma(p) => Some(p.as_str()),
+                _ => None,
+            })
+            .collect()
     }
 
     #[test]
-    fn block_stmt_box_contains_inner_cfg() {
-        // box { if (...) { pragma a; } else { pragma b; } }
-        let symbols = SymbolTable::new();
-        let inner_if = if_stmt(vec![pragma_stmt("a")], vec![pragma_stmt("b")]);
-        let box_stmt = Stmt {
-            kind: StmtKind::Box(BoxStmt {
-                duration: None,
-                body: vec![inner_if],
-            }),
-            annotations: vec![],
-            span: Span::default(),
-        };
-        let cfg =
-            build_body(vec![box_stmt], ProcOwner::TopLevel, false, &symbols).expect("build_body");
-
-        let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::Box(_)));
-        let BlockStmtKind::Box(BlockBoxStmt { body, .. }) = inner else {
-            unreachable!()
-        };
-        // The if was lifted into terminators, so the inner CFG has more than
-        // just an entry-and-exit pair.
-        assert!(
-            body.blocks.len() > 2,
-            "expected inner CFG to have multiple blocks (got {})",
-            body.blocks.len()
-        );
-        assert!(matches!(body.owner, ProcOwner::Box));
-    }
-
-    #[test]
-    fn block_stmt_inline_cal_contains_inner_cfg() {
-        // cal { if (...) { pragma a; } else { pragma b; } }
-        let symbols = SymbolTable::new();
-        let inner_if = if_stmt(vec![pragma_stmt("a")], vec![pragma_stmt("b")]);
-        let cal_stmt = Stmt {
-            kind: StmtKind::Cal(CalibrationBody::OpenPulse(vec![inner_if])),
-            annotations: vec![],
-            span: Span::default(),
-        };
-        let cfg =
-            build_body(vec![cal_stmt], ProcOwner::TopLevel, false, &symbols).expect("build_body");
-
-        let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::Cal(_)));
-        let BlockStmtKind::Cal(BlockCalibrationBody::OpenPulse(body)) = inner else {
-            panic!("expected OpenPulse cal body");
-        };
-        assert!(
-            body.blocks.len() > 2,
-            "expected inner CFG to have multiple blocks (got {})",
-            body.blocks.len()
-        );
-        assert!(matches!(body.owner, ProcOwner::InlineCal));
-    }
-
-    #[test]
-    fn block_stmt_opaque_cal_passes_through() {
-        let symbols = SymbolTable::new();
-        let cal_stmt = Stmt {
-            kind: StmtKind::Cal(CalibrationBody::Opaque("raw".into())),
-            annotations: vec![],
-            span: Span::default(),
-        };
-        let cfg =
-            build_body(vec![cal_stmt], ProcOwner::TopLevel, false, &symbols).expect("build_body");
-
-        let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::Cal(_)));
+    fn a_plain_box_is_part_of_the_enclosing_block() {
+        let boxed = stmt(StmtKind::Box(sir::BoxStmt {
+            duration: None,
+            body: vec![pragma("inside")],
+        }));
+        let cfg = build(&[pragma("before"), boxed, pragma("after")], false).unwrap();
+        let entry = &cfg.blocks[cfg.entry.0];
+        assert_eq!(entry.stmts.len(), 3);
         assert!(matches!(
-            inner,
-            BlockStmtKind::Cal(BlockCalibrationBody::Opaque(s)) if s == "raw"
+            entry.terminator,
+            Terminator::Goto(BasicBlockId(1))
         ));
     }
 
     #[test]
-    fn block_expr_durationof_contains_inner_cfg() {
-        // x = durationof({ if (...) { pragma a; } else { pragma b; } });
-        // Build a Pragma statement carrying a Var = durationof(...) Expr in
-        // a way that ends up in a BlockStmt. Easiest: use an ExprStmt whose
-        // expr is the DurationOf.
-        let symbols = SymbolTable::new();
-        let inner_if = if_stmt(vec![pragma_stmt("a")], vec![pragma_stmt("b")]);
-        let duration_expr = Expr {
-            kind: ExprKind::DurationOf(vec![inner_if]),
-            ty: Type::Void,
-            span: Span::default(),
+    fn a_timed_box_branches_around_its_contents() {
+        let boxed = stmt(StmtKind::Box(sir::BoxStmt {
+            duration: Some(bool_literal()),
+            body: vec![pragma("inside")],
+        }));
+        let cfg = build(&[boxed, pragma("after")], false).unwrap();
+        let Terminator::Box { body, after, .. } = &cfg.blocks[cfg.entry.0].terminator else {
+            panic!("expected a box terminator");
         };
-        let expr_stmt = Stmt {
-            kind: StmtKind::ExprStmt(duration_expr),
-            annotations: vec![],
-            span: Span::default(),
-        };
-        let cfg =
-            build_body(vec![expr_stmt], ProcOwner::TopLevel, false, &symbols).expect("build_body");
-
-        let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::ExprStmt(_)));
-        let BlockStmtKind::ExprStmt(BlockExpr {
-            kind: BlockExprKind::DurationOf(inner_cfg),
-            ..
-        }) = inner
-        else {
-            panic!("expected ExprStmt(DurationOf(_))");
-        };
-        assert!(
-            inner_cfg.blocks.len() > 2,
-            "expected inner CFG to have multiple blocks (got {})",
-            inner_cfg.blocks.len()
-        );
-        assert!(matches!(inner_cfg.owner, ProcOwner::DurationOf));
+        assert!(matches!(cfg.blocks[body.0].terminator, Terminator::Goto(t) if t == *after));
+        assert!(matches!(
+            cfg.blocks[body.0].stmts[0].kind,
+            StmtKind::Pragma(_)
+        ));
+        assert_eq!(pragmas(&cfg), ["inside", "after"]);
     }
 
     #[test]
-    fn terminator_branch_uses_block_expr() {
-        // Build a simple `if (lit) {} else {}` and confirm the Branch
-        // terminator's cond is a BlockExpr (statically guaranteed by the
-        // type system — this test mostly documents the invariant and
-        // exercises the lower_expr path for If conditions).
-        let symbols = SymbolTable::new();
-        let if_only = if_stmt(vec![], vec![]);
-        let cfg =
-            build_body(vec![if_only], ProcOwner::TopLevel, false, &symbols).expect("build_body");
+    fn return_leaves_a_box_in_a_subroutine() {
+        let boxed = stmt(StmtKind::Box(sir::BoxStmt {
+            duration: None,
+            body: vec![stmt(StmtKind::Return(None))],
+        }));
+        let cfg = build(std::slice::from_ref(&boxed), true).unwrap();
+        assert!(matches!(
+            cfg.blocks[cfg.entry.0].terminator,
+            Terminator::Return(None)
+        ));
+        assert!(build(&[boxed], false).is_err());
+    }
 
-        let mut found_branch = false;
-        for block in &cfg.blocks {
-            if let Terminator::Branch { cond, .. } = &block.terminator {
-                // Type-checks only because `cond` is `BlockExpr`.
-                let _: &BlockExpr = cond;
-                found_branch = true;
-            }
-        }
-        assert!(found_branch, "expected at least one Branch terminator");
+    #[test]
+    fn nested_bodies_stay_in_their_statements() {
+        // The scope of a `durationof` and an inline `cal` body are not part
+        // of the graph: they are built separately at emission.
+        let branch = stmt(StmtKind::If(sir::If {
+            condition: bool_literal(),
+            then_body: vec![pragma("a")],
+            else_body: None,
+        }));
+        let duration = Expr {
+            kind: ExprKind::DurationOf(vec![branch.clone()]),
+            ty: Type::Classical(ValueTy::duration()),
+            span: Span::default(),
+        };
+        let cal = stmt(StmtKind::Cal(CalibrationBody::OpenPulse(vec![branch])));
+        let cfg = build(&[stmt(StmtKind::ExprStmt(duration)), cal], false).unwrap();
+        assert_eq!(cfg.blocks.len(), 2, "entry and exit only");
+        assert_eq!(cfg.blocks[cfg.entry.0].stmts.len(), 2);
     }
 }

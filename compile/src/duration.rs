@@ -32,7 +32,6 @@ use crate::sir::{
     CalibrationArg, CalibrationBody, CalibrationDecl, CalibrationOperand, CalibrationTarget,
     CallTarget, Expr, ExprKind, GateDecl, GateModifier, IndexItem, IndexKind, IndexOp, Intrinsic,
     LValue, MeasureExpr, MeasureExprKind, Program, QubitOperand, RValue, Stmt, StmtKind,
-    SwitchLabels,
 };
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::{CompileOptions, Type};
@@ -259,212 +258,37 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         Ok(())
     }
 
-    // LValue index expressions (assignment/measure targets) are not visited:
-    // a `durationof` inside an assignment-target index is pathological and
-    // out of scope for this pass.
     fn visit_stmt(&mut self, stmt: &mut Stmt) -> Result<()> {
-        match &mut stmt.kind {
-            StmtKind::Alias(a) => {
-                for e in &mut a.value {
-                    self.visit_expr(e)?;
-                }
-            }
-            StmtKind::GateCall(gc) => {
-                for m in &mut gc.modifiers {
-                    if let GateModifier::Pow(e) = m {
-                        self.visit_expr(e)?;
-                    }
-                }
-                for a in &mut gc.args {
-                    self.visit_expr(a)?;
-                }
-                for q in &mut gc.qubits {
-                    self.visit_qubit_operand(q)?;
-                }
-                if let Some(d) = &mut gc.duration {
-                    self.visit_expr(d)?;
-                }
-            }
-            StmtKind::Measure(m) => self.visit_measure_expr(&mut m.measure)?,
-            StmtKind::Reset(operand) => self.visit_qubit_operand(operand)?,
-            StmtKind::Barrier(operands) | StmtKind::Nop(operands) => {
-                for o in operands {
-                    self.visit_qubit_operand(o)?;
-                }
-            }
-            StmtKind::Delay(d) => {
-                self.visit_expr(&mut d.duration)?;
-                for o in &mut d.operands {
-                    self.visit_qubit_operand(o)?;
-                }
-            }
-            StmtKind::Box(b) => {
-                if let Some(d) = &mut b.duration {
-                    self.visit_expr(d)?;
-                }
-                self.visit_stmts(&mut b.body)?;
-            }
-            StmtKind::Assignment(a) => self.visit_rvalue(&mut a.value)?,
-            StmtKind::If(i) => {
-                self.visit_expr(&mut i.condition)?;
-                self.visit_stmts(&mut i.then_body)?;
-                if let Some(eb) = &mut i.else_body {
-                    self.visit_stmts(eb)?;
-                }
-            }
-            StmtKind::For(f) => {
-                self.visit_for_iterable(&mut f.iterable)?;
-                self.visit_stmts(&mut f.body)?;
-            }
-            StmtKind::While(w) => {
-                self.visit_expr(&mut w.condition)?;
-                self.visit_stmts(&mut w.body)?;
-            }
-            StmtKind::Switch(s) => {
-                self.visit_expr(&mut s.target)?;
-                for c in &mut s.cases {
-                    if let SwitchLabels::Values(v) = &mut c.labels {
-                        for e in v {
-                            self.visit_expr(e)?;
-                        }
-                    }
-                    self.visit_stmts(&mut c.body)?;
-                }
-            }
-            StmtKind::Return(Some(rv)) => self.visit_rvalue(rv)?,
-            StmtKind::ExprStmt(e) => self.visit_expr(e)?,
-            StmtKind::Return(None)
-            | StmtKind::Break
-            | StmtKind::Continue
-            | StmtKind::End
-            | StmtKind::Pragma(_)
-            | StmtKind::Cal(_) => {}
+        // Calibration bodies are timed by their own rules.
+        if matches!(stmt.kind, StmtKind::Cal(_)) {
+            return Ok(());
+        }
+        for e in stmt.exprs_mut() {
+            self.visit_expr(e)?;
+        }
+        for body in stmt.bodies_mut() {
+            self.visit_stmts(body)?;
         }
         Ok(())
-    }
-
-    fn visit_rvalue(&mut self, value: &mut RValue<Expr>) -> Result<()> {
-        match value {
-            RValue::Expr(e) => self.visit_expr(e),
-            RValue::Measure(m) => self.visit_measure_expr(m),
-        }
-    }
-
-    fn visit_measure_expr(&mut self, m: &mut MeasureExpr<Expr>) -> Result<()> {
-        match &mut m.kind {
-            MeasureExprKind::Measure { operand } => self.visit_qubit_operand(operand),
-            MeasureExprKind::QuantumCall { args, qubits, .. } => {
-                for a in args {
-                    self.visit_expr(a)?;
-                }
-                for q in qubits {
-                    self.visit_qubit_operand(q)?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    fn visit_qubit_operand(&mut self, op: &mut QubitOperand<Expr>) -> Result<()> {
-        if let QubitOperand::Indexed { indices, .. } = op {
-            for idx in indices {
-                self.visit_index_op(idx)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn visit_index_op(&mut self, op: &mut IndexOp<Expr>) -> Result<()> {
-        match &mut op.kind {
-            IndexKind::Set(exprs) => {
-                for e in exprs {
-                    self.visit_expr(e)?;
-                }
-            }
-            IndexKind::Items(items) => {
-                for item in items {
-                    match item {
-                        IndexItem::Single(e) => self.visit_expr(e)?,
-                        IndexItem::Range(r) => {
-                            if let Some(e) = &mut r.start {
-                                self.visit_expr(e)?;
-                            }
-                            if let Some(e) = &mut r.step {
-                                self.visit_expr(e)?;
-                            }
-                            if let Some(e) = &mut r.end {
-                                self.visit_expr(e)?;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn visit_for_iterable(&mut self, it: &mut crate::sir::ForIterable) -> Result<()> {
-        match it {
-            crate::sir::ForIterable::Range { start, step, end } => {
-                if let Some(e) = start {
-                    self.visit_expr(e)?;
-                }
-                if let Some(e) = step {
-                    self.visit_expr(e)?;
-                }
-                if let Some(e) = end {
-                    self.visit_expr(e)?;
-                }
-                Ok(())
-            }
-            crate::sir::ForIterable::Set(v) => {
-                for e in v {
-                    self.visit_expr(e)?;
-                }
-                Ok(())
-            }
-            crate::sir::ForIterable::Expr(e) => self.visit_expr(e),
-        }
     }
 
     fn visit_expr(&mut self, expr: &mut Expr) -> Result<()> {
-        // Rewrite durationof in place, then recurse into children.
-        if let ExprKind::DurationOf(stmts) = &expr.kind {
-            // A scope referencing stretch is retained: Pass 4 measures it
-            // affinely and rewrites its stretch variables, then Pass 5
-            // re-runs this rewrite on the by-then concrete scope.
-            if stretch::stmts_have_stretch_var(stmts, self.symbols) {
-                return Ok(());
-            }
-            let duration = self.compute_scope_duration(stmts, expr.span)?;
-            expr.kind = ExprKind::Literal(Primitive::from(duration));
-            expr.ty = Type::Classical(ValueTy::duration());
+        // Rewrite durationof in place; anything else, recurse into.
+        let ExprKind::DurationOf(stmts) = &expr.kind else {
+            return expr
+                .children_mut()
+                .into_iter()
+                .try_for_each(|child| self.visit_expr(child));
+        };
+        // A scope referencing stretch is retained: Pass 4 measures it
+        // affinely and rewrites its stretch variables, then Pass 5
+        // re-runs this rewrite on the by-then concrete scope.
+        if stretch::stmts_have_stretch_var(stmts, self.symbols) {
             return Ok(());
         }
-        match &mut expr.kind {
-            ExprKind::Binary(b) => {
-                self.visit_expr(&mut b.left)?;
-                self.visit_expr(&mut b.right)?;
-            }
-            ExprKind::Unary(u) => self.visit_expr(&mut u.operand)?,
-            ExprKind::Cast(c) => self.visit_expr(&mut c.operand)?,
-            ExprKind::Index(ix) => {
-                self.visit_expr(&mut ix.base)?;
-                self.visit_index_op(&mut ix.index)?;
-            }
-            ExprKind::Call(c) => {
-                for a in &mut c.args {
-                    self.visit_expr(a)?;
-                }
-            }
-            ExprKind::ArrayLiteral(al) => {
-                for e in &mut al.items {
-                    self.visit_expr(e)?;
-                }
-            }
-            ExprKind::Literal(_) | ExprKind::Var(_) | ExprKind::HardwareQubit(_) => {}
-            ExprKind::DurationOf(_) => unreachable!("handled above"),
-        }
+        let duration = self.compute_scope_duration(stmts, expr.span)?;
+        expr.kind = ExprKind::Literal(Primitive::from(duration));
+        expr.ty = Type::Classical(ValueTy::duration());
         Ok(())
     }
 
@@ -593,9 +417,9 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
     fn process_gate_call(
         &self,
         gate: SymbolId,
-        modifiers: &[GateModifier<Expr>],
+        modifiers: &[GateModifier],
         args: &[Expr],
-        qubits: &[QubitOperand<Expr>],
+        qubits: &[QubitOperand],
         designator: Option<&Expr>,
         tracker: &mut Tracker,
         frame: &Frame,
@@ -613,9 +437,9 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
     fn resolve_gate_call_duration(
         &self,
         gate: SymbolId,
-        modifiers: &[GateModifier<Expr>],
+        modifiers: &[GateModifier],
         args: &[Expr],
-        qubits: &[QubitOperand<Expr>],
+        qubits: &[QubitOperand],
         designator: Option<&Expr>,
         frame: &Frame,
         span: Span,
@@ -716,7 +540,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
 
     fn process_measure(
         &self,
-        measure: &MeasureExpr<Expr>,
+        measure: &MeasureExpr,
         tracker: &mut Tracker,
         frame: &Frame,
     ) -> Result<()> {
@@ -729,7 +553,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
     /// touching any clock.
     fn resolve_measure_duration(
         &self,
-        measure: &MeasureExpr<Expr>,
+        measure: &MeasureExpr,
         frame: &Frame,
     ) -> Result<(Vec<QubitRef>, Duration)> {
         match &measure.kind {
@@ -767,7 +591,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
     /// clock.
     fn resolve_reset_duration(
         &self,
-        operand: &QubitOperand<Expr>,
+        operand: &QubitOperand,
         frame: &Frame,
         span: Span,
     ) -> Result<(Vec<QubitRef>, Duration)> {
@@ -781,11 +605,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
         Ok((qr, dur))
     }
 
-    fn resolve_modifier(
-        &self,
-        m: &GateModifier<Expr>,
-        frame: &Frame,
-    ) -> Result<ResolvedGateModifier> {
+    fn resolve_modifier(&self, m: &GateModifier, frame: &Frame) -> Result<ResolvedGateModifier> {
         Ok(match m {
             GateModifier::Inv => ResolvedGateModifier::Inv,
             GateModifier::Pow(expr) => {
@@ -932,7 +752,7 @@ struct Frame {
 // ── Qubit resolution ────────────────────────────────────────────────────
 
 fn resolve_qubit_operands(
-    ops: &[QubitOperand<Expr>],
+    ops: &[QubitOperand],
     symbols: &SymbolTable,
     frame: &Frame,
     span: Span,
@@ -946,7 +766,7 @@ fn resolve_qubit_operands(
 }
 
 fn resolve_qubit_operand(
-    op: &QubitOperand<Expr>,
+    op: &QubitOperand,
     symbols: &SymbolTable,
     frame: &Frame,
     span: Span,
@@ -1004,7 +824,7 @@ fn resolve_qubit_operand(
     }
 }
 
-fn single_index(op: &IndexOp<Expr>, symbols: &SymbolTable, frame: &Frame) -> Result<usize> {
+fn single_index(op: &IndexOp, symbols: &SymbolTable, frame: &Frame) -> Result<usize> {
     let items = match &op.kind {
         IndexKind::Items(items) => items,
         IndexKind::Set(_) => {
@@ -1084,8 +904,8 @@ fn value_to_duration(v: &Value, span: Span) -> Result<Duration> {
 fn stretch_err(span: Span) -> CompileError {
     CompileError::at(
         ErrorKind::InvalidContext(
-            "stretch resolution is not implemented; `stretch` values cannot \
-             be used where timings are resolved at compile time"
+            "a `stretch` value cannot be used here: this position has no \
+             stretch semantics for it to be resolved by"
                 .into(),
         ),
         span,
@@ -1534,7 +1354,7 @@ impl CalWalk<'_> {
     /// Recursive defcal dispatch for a gate call inside a defcal body:
     /// find the called gate's own defcal (same matching rule) and walk its
     /// body against this walk's frame clocks.
-    fn gate_call(&mut self, gc: &crate::sir::GateCall<Expr>, span: Span) -> Result<()> {
+    fn gate_call(&mut self, gc: &crate::sir::GateCall, span: Span) -> Result<()> {
         if gc.duration.is_some() {
             return Err(CompileError::at(
                 ErrorKind::InvalidContext(

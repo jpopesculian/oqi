@@ -1,14 +1,16 @@
-//! Final bytecode IR after SSA.
+//! Final bytecode IR.
 //!
-//! The pipeline is `parse → resolve → lower → cfg → ssa → bytecode`.
+//! The pipeline is `parse → resolve → lower → cfg → bytecode`.
 //! Bytecode is a flat, indexed representation suitable for direct
 //! consumption by a VM:
 //!
-//! - **Phi-free**: SSA phis are deconstructed into parallel
-//!   register-to-register moves at the end of each predecessor block.
-//! - **Nested bodies lifted**: each `box { ... }`, inline `cal { ... }`,
-//!   and `durationof({...})` body becomes its own procedure in the
-//!   module's procedure table, referenced by index.
+//! - **Register-based**: each classical variable of a procedure lives in
+//!   one register of its frame; expressions are three-address instructions
+//!   over registers and pooled constants.
+//! - **Nested bodies lifted**: each inline `cal { ... }` body and
+//!   `durationof({...})` scope becomes its own procedure in the module's
+//!   procedure table, referenced by index, and runs on the frame of the
+//!   procedure it appears in.
 //! - **Constants pooled**: literal values live in a module-level
 //!   `Vec<classical::Value>`; instructions reference them by index.
 //! - **Strings pooled**: pragma payloads, opaque cal text, etc.
@@ -20,8 +22,6 @@ mod analysis;
 mod binary;
 mod disasm;
 mod emit;
-mod phi_elim;
-mod regalloc;
 mod types;
 
 pub use analysis::is_sample_safe;
@@ -71,7 +71,7 @@ mod tests {
     }
 
     #[test]
-    fn phi_eliminated_in_if_else() {
+    fn a_variable_keeps_one_register_across_branches() {
         let module = build_bytecode(
             r#"
                 int c = 0;
@@ -80,22 +80,22 @@ mod tests {
                 int y = x;
             "#,
         );
-        // No phi opcode exists in the bytecode. Check that the merge
-        // block contains at least one Move into a register.
-        let mut found_move = false;
-        for proc in &module.procedures {
-            for block in &proc.blocks {
-                for instr in &block.instrs {
-                    if matches!(instr.op, BcOp::Move { .. }) {
-                        found_move = true;
-                    }
-                }
-            }
-        }
-        assert!(
-            found_move,
-            "phi elimination should have inserted at least one Move"
-        );
+        // Both branches write the register `y` is later read from.
+        let top = &module.procedures[module.entry.0 as usize];
+        let moves = top
+            .blocks
+            .iter()
+            .flat_map(|b| &b.instrs)
+            .filter_map(|i| match &i.op {
+                BcOp::Move { dest, src } => Some((*dest, src)),
+                _ => None,
+            });
+        let moves: Vec<_> = moves.collect();
+        let (_, read) = moves.last().expect("`y = x`");
+        let BcOperand::Reg(x) = read else {
+            panic!("`y` is assigned from a register");
+        };
+        assert_eq!(moves.iter().filter(|(dest, _)| dest == x).count(), 3);
     }
 
     #[test]
@@ -386,38 +386,54 @@ mod tests {
     }
 
     #[test]
-    fn box_lifted_to_separate_proc() {
+    fn box_runs_in_its_enclosing_procedure() {
         let module = build_bytecode(
             r#"
                 include "stdgates.inc";
                 qubit q;
-                box {
-                    int y = 2;
-                    y = y + 1;
+                int n = 2;
+                box[100ns] {
+                    n = n + 1;
+                    h q;
                 }
             "#,
         );
-        // At least two procedures (top-level + box body).
+        // A box is a scope of the procedure it is in, entered through a
+        // terminator a timing pass can skip its contents by.
+        let top = &module.procedures[module.entry.0 as usize];
+        let block = |id: BlockId| top.blocks.iter().find(|b| b.id == id).unwrap();
+        let entry = block(top.entry);
+        let BcTerminator::Box { body, after, .. } = &entry.terminator else {
+            panic!("a timed box is entered through a box terminator");
+        };
+        let body = block(*body);
+        assert!(matches!(body.terminator, BcTerminator::Goto(t) if t == *after));
         assert!(
-            module.procedures.len() >= 2,
-            "expected ≥2 procedures, got {}",
-            module.procedures.len()
+            body.instrs
+                .iter()
+                .any(|i| matches!(i.op, BcOp::GateCall { .. }))
         );
-        // Top-level should contain a Box opcode referencing some proc.
-        let mut found_box_ref: Option<ProcId> = None;
-        for block in &module.procedures[0].blocks {
-            for instr in &block.instrs {
-                if let BcOp::Box { body, .. } = &instr.op {
-                    found_box_ref = Some(*body);
-                }
-            }
+        // `n` is one register, written before the box and inside it.
+        let writes = |block: &BcBlock| {
+            let dests = block.instrs.iter().filter_map(|i| match &i.op {
+                BcOp::Move { dest, .. } | BcOp::Binary { dest, .. } => Some(*dest),
+                _ => None,
+            });
+            dests.collect::<Vec<_>>()
+        };
+        assert_eq!(writes(entry), writes(body));
+    }
+
+    #[test]
+    fn a_gate_in_a_box_after_a_measurement_is_not_sample_safe() {
+        // The box's contents are part of the entry procedure, so the
+        // feedback analysis sees them.
+        for boxed in ["box { x q; }", "box[100ns] { x q; }"] {
+            let src = format!(r#"include "stdgates.inc"; qubit q; bit c = measure q; {boxed}"#);
+            assert!(!is_sample_safe(&build_bytecode(&src)), "{boxed}");
         }
-        let body_id = found_box_ref.expect("expected a Box opcode in top-level");
-        // The referenced procedure should be a Box owner.
-        assert!(matches!(
-            module.procedures[body_id.0 as usize].owner,
-            ProcOwner::Box
-        ));
+        let src = r#"include "stdgates.inc"; qubit q; box { x q; } bit c = measure q;"#;
+        assert!(is_sample_safe(&build_bytecode(src)));
     }
 
     #[test]

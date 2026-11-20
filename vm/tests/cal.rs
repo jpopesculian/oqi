@@ -209,19 +209,20 @@ fn defcal_fixture_dispatches_to_pulse_handler() {
         .expect("output c");
     assert_eq!(c, "1");
 
-    // Handles: ports d0=1, d1=2; frames drive0=3, drive1=4, cr1=5,
-    // meas0=6; waveforms mint 7.. per gaussian call.
+    // Handles are minted in order of first use: port d0=1, frame drive0=2,
+    // port d1=3, frames drive1=4, cr1=5, meas0=6; waveforms mint 7.. per
+    // gaussian call.
     let expected = vec![
-        // Inline cal block: entry CalLoads (symbol order), then newframes.
+        // Inline cal block: each port is resolved where it is first read.
         Event::Port("d0".into()),
-        Event::Port("d1".into()),
         Event::NewFrame {
             port: 1,
             frequency: 5.0e9,
             phase: 0.0,
-        }, // drive0=3
+        }, // drive0=2
+        Event::Port("d1".into()),
         Event::NewFrame {
-            port: 2,
+            port: 3,
             frequency: 5.1e9,
             phase: 0.0,
         }, // drive1=4
@@ -238,12 +239,12 @@ fn defcal_fixture_dispatches_to_pulse_handler() {
         // x $0
         gaussian_wf(), // 7
         Event::Play {
-            frame: 3,
+            frame: 2,
             waveform: 7,
         },
         // rz(1.5) $1 — generic defcal; theta arrives in radians, negated.
         Event::ShiftPhase {
-            frame: 3,
+            frame: 2,
             phase: -1.5,
         },
         // cx $0, $1 — recursive dispatch of zx90_ix / x defcals.
@@ -254,7 +255,7 @@ fn defcal_fixture_dispatches_to_pulse_handler() {
         },
         gaussian_wf(), // 9: x $0
         Event::Play {
-            frame: 3,
+            frame: 2,
             waveform: 9,
         },
         Event::ShiftPhase {
@@ -268,7 +269,7 @@ fn defcal_fixture_dispatches_to_pulse_handler() {
         },
         gaussian_wf(), // 11: x $0
         Event::Play {
-            frame: 3,
+            frame: 2,
             waveform: 11,
         },
         gaussian_wf(), // 12: x $1

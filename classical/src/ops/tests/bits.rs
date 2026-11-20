@@ -33,10 +33,12 @@ mod bitand {
     }
 
     #[test]
-    fn bit_bitand_returns_none() {
+    fn bit_bitand() {
+        // docs/classical.rst: `bit` supports the bitwise operators.
         let a = Value::Scalar(Scalar::new_unchecked(Primitive::bit(true), Bit));
         let b = Value::Scalar(Scalar::new_unchecked(Primitive::bit(false), Bit));
-        assert!(BinOp::BitAnd.apply(a, b).is_err());
+        let result = BinOp::BitAnd.apply(a, b).unwrap();
+        assert_eq!(result.to_string(), "0");
     }
 
     #[test]
@@ -147,10 +149,12 @@ mod bitor {
     }
 
     #[test]
-    fn bit_bitor_returns_none() {
+    fn bit_bitor() {
+        // docs/classical.rst: `bit` supports the bitwise operators.
         let a = Value::Scalar(Scalar::new_unchecked(Primitive::bit(true), Bit));
         let b = Value::Scalar(Scalar::new_unchecked(Primitive::bit(false), Bit));
-        assert!(BinOp::BitOr.apply(a, b).is_err());
+        let result = BinOp::BitOr.apply(a, b).unwrap();
+        assert_eq!(result.to_string(), "1");
     }
 
     #[test]
@@ -260,10 +264,12 @@ mod bitxor {
     }
 
     #[test]
-    fn bit_bitxor_returns_none() {
+    fn bit_bitxor() {
+        // docs/classical.rst: `bit` supports the bitwise operators.
         let a = Value::Scalar(Scalar::new_unchecked(Primitive::bit(true), Bit));
         let b = Value::Scalar(Scalar::new_unchecked(Primitive::bit(false), Bit));
-        assert!(BinOp::BitXor.apply(a, b).is_err());
+        let result = BinOp::BitXor.apply(a, b).unwrap();
+        assert_eq!(result.to_string(), "1");
     }
 
     #[test]

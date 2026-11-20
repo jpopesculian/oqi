@@ -31,11 +31,31 @@ fn compile_fixture(name: &str) -> sir::Program {
 }
 
 fn build(p: &sir::Program) -> ProgramCfgs {
-    cfg::build_program(p).expect("CFG build should succeed")
+    try_build(p).expect("CFG build should succeed")
 }
 
 fn try_build(p: &sir::Program) -> Result<ProgramCfgs, CompileError> {
-    cfg::build_program(p)
+    cfg::build_program(p, &mut p.symbols.clone())
+}
+
+/// The blocks `term` can transfer control to.
+fn successors(term: &Terminator) -> Vec<BasicBlockId> {
+    match term {
+        Terminator::Goto(t) => vec![*t],
+        Terminator::Branch {
+            then_bb, else_bb, ..
+        } => vec![*then_bb, *else_bb],
+        Terminator::Box { body, after, .. } => vec![*body, *after],
+        Terminator::Switch { cases, default, .. } => {
+            cases.iter().map(|(_, bb)| *bb).chain([*default]).collect()
+        }
+        Terminator::Return(_) | Terminator::End | Terminator::Unreachable => Vec::new(),
+    }
+}
+
+/// The synthetic fall-off-the-end block: always the last one.
+fn exit(cfg: &Cfg) -> BasicBlockId {
+    cfg.blocks.last().expect("a CFG has an exit block").id
 }
 
 /// Walk forward from entry collecting every block reachable through any
@@ -47,9 +67,7 @@ fn reachable(cfg: &Cfg) -> HashSet<BasicBlockId> {
         if !seen.insert(bb) {
             continue;
         }
-        for s in cfg.blocks[bb.0].terminator.successors() {
-            stack.push(s);
-        }
+        stack.extend(successors(&cfg.blocks[bb.0].terminator));
     }
     seen
 }
@@ -72,16 +90,16 @@ fn straight_line_program_has_single_path() {
     // Entry has no control flow, just falls through to exit.
     assert!(matches!(
         top.blocks[top.entry.0].terminator,
-        Terminator::Goto(t) if t == top.exit
+        Terminator::Goto(t) if t == exit(top)
     ));
     assert!(matches!(
-        top.blocks[top.exit.0].terminator,
+        top.blocks[exit(top).0].terminator,
         Terminator::Return(None)
     ));
     // Both blocks reachable.
     let r = reachable(top);
     assert!(r.contains(&top.entry));
-    assert!(r.contains(&top.exit));
+    assert!(r.contains(&exit(top)));
 }
 
 // ── If / Else ────────────────────────────────────────────────────────
@@ -356,10 +374,48 @@ fn switch_dispatches_to_each_case_then_merges() {
     assert_eq!(merge_targets.len(), 1, "all cases must merge to one block");
 }
 
-// ── For (Range desugar) ──────────────────────────────────────────────
+// ── For ──────────────────────────────────────────────────────────────
+
+/// The pieces of the (single) loop in `cfg`: the header's condition, and
+/// its body, latch and exit blocks.
+fn loop_parts(cfg: &Cfg) -> (&sir::Expr, &cfg::BasicBlock, &cfg::BasicBlock, BasicBlockId) {
+    let header = cfg
+        .blocks
+        .iter()
+        .find(|b| matches!(b.terminator, Terminator::Branch { .. }))
+        .expect("a for-loop should produce a header Branch");
+    let Terminator::Branch {
+        cond,
+        then_bb,
+        else_bb,
+    } = &header.terminator
+    else {
+        unreachable!()
+    };
+    let body = &cfg.blocks[then_bb.0];
+    let Terminator::Goto(latch) = body.terminator else {
+        panic!("body should goto latch");
+    };
+    let latch = &cfg.blocks[latch.0];
+    assert!(
+        matches!(latch.terminator, Terminator::Goto(t) if t == header.id),
+        "the latch re-enters the header"
+    );
+    (cond, body, latch, *else_bb)
+}
+
+fn assigned(stmt: &sir::Stmt) -> (crate::symbol::SymbolId, &sir::Expr) {
+    match &stmt.kind {
+        sir::StmtKind::Assignment(sir::Assignment {
+            target: sir::LValue::Var(symbol),
+            value: sir::RValue::Expr(value),
+        }) => (*symbol, value),
+        _ => panic!("expected an assignment to a variable"),
+    }
+}
 
 #[test]
-fn for_range_loop_desugars_to_header_body_latch_advance() {
+fn for_range_loop_steps_a_hidden_counter() {
     let p = compile(
         r#"
             int sum = 0;
@@ -369,81 +425,37 @@ fn for_range_loop_desugars_to_header_body_latch_advance() {
         "#,
     );
     let cfgs = build(&p);
-    let top = &cfgs.top_level;
+    let (cond, body, latch, _) = loop_parts(&cfgs.top_level);
+    let wide = Type::Classical(ValueTy::int(IntWidth::B128));
 
-    // Header has Branch on `i <= 20`.
-    let header_id = top
-        .blocks
-        .iter()
-        .find(|b| matches!(b.terminator, Terminator::Branch { .. }))
-        .expect("for-loop should produce a header Branch")
-        .id;
-
-    let Terminator::Branch {
-        then_bb: body_bb, ..
-    } = top.blocks[header_id.0].terminator
-    else {
-        unreachable!()
-    };
-
-    // Body falls through to a latch block, which tests the *next* value
-    // (`i + step`, widened so it cannot overflow) before advancing to it.
-    let Terminator::Goto(latch_id) = top.blocks[body_bb.0].terminator else {
-        panic!("body should goto latch");
-    };
-    let latch = &top.blocks[latch_id.0];
-    assert!(latch.stmts.is_empty(), "the latch only tests");
-    let Terminator::Branch {
-        cond,
-        then_bb: advance_id,
-        else_bb: latch_exit,
-    } = &latch.terminator
-    else {
-        panic!("latch should branch on whether the next value is in range");
-    };
-    let cfg::BlockExprKind::Binary(test) = &cond.kind else {
-        panic!("latch condition should be a comparison");
+    // The header tests the counter, which is wide enough not to overflow.
+    let sir::ExprKind::Binary(test) = &cond.kind else {
+        panic!("header condition should be a comparison");
     };
     assert!(matches!(test.op, sir::BinOp::Lte));
-    let cfg::BlockExprKind::Binary(next) = &test.left.kind else {
-        panic!("latch should compare `i + step`");
+    let sir::ExprKind::Var(counter) = test.left.kind else {
+        panic!("the header should test the counter");
     };
-    assert!(matches!(next.op, sir::BinOp::Add));
-    assert_eq!(
-        test.left.ty,
-        Type::Classical(ValueTy::int(IntWidth::B128)),
-        "the next value is computed where it cannot overflow"
-    );
+    assert_eq!(test.left.ty, wide);
 
-    // The advance block holds the synthesized `i = i + step` and re-enters
-    // the body directly; both exits leave to the same block.
-    let advance = &top.blocks[advance_id.0];
-    assert_eq!(advance.stmts.len(), 1, "advance holds the step assignment");
-    let Terminator::Goto(advance_succ) = advance.terminator else {
-        panic!("advance should goto body");
-    };
-    assert_eq!(advance_succ, body_bb, "advance must re-enter the body");
-    let Terminator::Branch {
-        else_bb: header_exit,
-        ..
-    } = top.blocks[header_id.0].terminator
-    else {
-        unreachable!()
-    };
-    assert_eq!(*latch_exit, header_exit);
+    // The body starts by giving the loop variable the counter's value.
+    let (var, value) = assigned(&body.stmts[0]);
+    assert_eq!(p.symbols.get(var).name, "i");
+    assert_ne!(var, counter, "assigning `i` must not disturb the iteration");
+    assert!(matches!(&value.kind, sir::ExprKind::Cast(c)
+        if matches!(c.operand.kind, sir::ExprKind::Var(v) if v == counter)));
+
+    // The latch advances the counter by the step.
+    assert_eq!(latch.stmts.len(), 1);
+    let (advanced, next) = assigned(&latch.stmts[0]);
+    assert_eq!(advanced, counter);
+    assert!(matches!(&next.kind, sir::ExprKind::Binary(b) if matches!(b.op, sir::BinOp::Add)));
 }
 
-/// Comparison op of the (single) Branch terminator in `cfg`.
+/// Comparison op of the loop header in `cfg`.
 fn header_cmp_op(cfg: &Cfg) -> sir::BinOp {
-    let header = cfg
-        .blocks
-        .iter()
-        .find(|b| matches!(b.terminator, Terminator::Branch { .. }))
-        .expect("for-loop should produce a header Branch");
-    let Terminator::Branch { cond, .. } = &header.terminator else {
-        unreachable!()
-    };
-    let cfg::BlockExprKind::Binary(b) = &cond.kind else {
+    let (cond, ..) = loop_parts(cfg);
+    let sir::ExprKind::Binary(b) = &cond.kind else {
         panic!("header condition should be a binary comparison");
     };
     b.op
@@ -482,6 +494,18 @@ fn for_range_negative_step_counts_down() {
 }
 
 #[test]
+fn for_range_run_time_step_tests_both_directions() {
+    let p = compile(
+        r#"
+            int step = 2;
+            for int i in [0:step:6] { }
+        "#,
+    );
+    let cfgs = build(&p);
+    assert!(matches!(header_cmp_op(&cfgs.top_level), sir::BinOp::LogOr));
+}
+
+#[test]
 fn for_range_zero_step_is_rejected() {
     let p = compile(
         r#"
@@ -499,20 +523,57 @@ fn for_range_zero_step_is_rejected() {
 }
 
 #[test]
-fn for_set_iterable_returns_unsupported() {
+fn for_set_and_register_loops_index_what_they_iterate() {
+    for src in [
+        "int b = 0; for int i in {1, 5, 10} { b += i; }",
+        r#"bit[4] r = "1010"; int b = 0; for bit x in r { b += int(x); }"#,
+    ] {
+        let p = compile(src);
+        let cfgs = build(&p);
+        let (cond, body, ..) = loop_parts(&cfgs.top_level);
+        assert!(matches!(&cond.kind, sir::ExprKind::Binary(b) if matches!(b.op, sir::BinOp::Lte)));
+        let (_, value) = assigned(&body.stmts[0]);
+        let indexed = match &value.kind {
+            sir::ExprKind::Cast(c) => &c.operand.kind,
+            other => other,
+        };
+        assert!(matches!(indexed, sir::ExprKind::Index(_)), "{src}");
+    }
+}
+
+#[test]
+fn break_and_continue_leave_the_body() {
     let p = compile(
         r#"
-            int b = 0;
-            for int i in {1, 5, 10} {
-                b += i;
+            for int i in [0:9] {
+                if (i == 2) { continue; }
+                if (i == 5) { break; }
             }
         "#,
     );
-    let err = match try_build(&p) {
-        Err(e) => e,
-        Ok(_) => panic!("set-iterable for is not yet supported"),
+    let top = build(&p).top_level;
+    let goes_to = |target: BasicBlockId| {
+        let blocks = top.blocks.iter();
+        blocks.filter(move |b| matches!(b.terminator, Terminator::Goto(t) if t == target))
     };
-    assert!(matches!(err.kind, ErrorKind::Unsupported(_)));
+    let header = top
+        .blocks
+        .iter()
+        .find(|b| matches!(b.terminator, Terminator::Branch { .. }))
+        .expect("a loop header");
+    let Terminator::Branch { else_bb: after, .. } = header.terminator else {
+        unreachable!()
+    };
+    // Only the latch re-enters the header; `continue` and the end of the
+    // body both go to the latch, and `break` to the loop's exit.
+    let latches: Vec<_> = goes_to(header.id)
+        .filter(|b| b.id.0 > header.id.0)
+        .collect();
+    let [latch] = latches.as_slice() else {
+        panic!("expected one latch, got {}", latches.len());
+    };
+    assert_eq!(goes_to(latch.id).count(), 2);
+    assert_eq!(goes_to(after).count(), 1);
 }
 
 // ── Subroutines ──────────────────────────────────────────────────────

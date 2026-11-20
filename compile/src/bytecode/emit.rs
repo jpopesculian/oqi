@@ -1,11 +1,15 @@
 //! SIR → bytecode.
 //!
-//! Builds the control-flow graphs, SSA form and global qubit layout of a
-//! [`sir::Program`], then walks each [`SsaCfg`] in `ProgramSsa`, optionally running phi
-//! elimination first, then converts every [`SsaStmt`](crate::ssa::SsaStmt) into one or more
-//! [`BcInstr`]s. Nested CFGs (Box / inline-Cal / DurationOf) are
-//! recursively lowered to their own procedures and referenced by
-//! [`ProcId`].
+//! Builds the control-flow graph of each body of a [`sir::Program`] and the
+//! global qubit layout, then emits one [`BcProcedure`] per graph: every
+//! block's statements become [`BcInstr`]s and its terminator a
+//! [`BcTerminator`]. Each classical variable lives in one register of its
+//! procedure's frame; sub-expressions are evaluated into temporaries.
+//!
+//! The scope of a `durationof` and the body of an inline `cal` block become
+//! procedures of their own, referenced by [`ProcId`], that run on the frame
+//! of the procedure they appear in and so share its registers and qubit
+//! slots.
 //!
 //! Qubit references are lowered through the [`QubitLayout`]: named
 //! registers and resolved `let` aliases become global quantum memory
@@ -15,80 +19,53 @@
 
 use std::collections::HashMap;
 
-use oqi_classical::{Value, ValueTy};
+use oqi_classical::{RefAccess, Value, ValueTy};
 use oqi_lex::Span;
 
-use crate::cfg;
-use crate::classical::PrimitiveTy;
+use crate::cfg::{self, Cfg, Terminator};
+use crate::classical::{PrimitiveTy, Scalar, iw};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::qubits::{self, QubitLayout, Resolved};
 use crate::sir::{
-    self, Alias, Binary, Call, CallTarget, Cast, Delay, GateCall, GateModifier, Index, IndexItem,
-    IndexKind, IndexOp, MeasureExpr, MeasureExprKind, QubitOperand, RValue,
-};
-use crate::ssa::{
-    self, ProgramSsa, SsaAssignment, SsaBlock, SsaBoxStmt, SsaCalibrationBody, SsaCfg, SsaExpr,
-    SsaExprKind, SsaLValue, SsaMeasure, SsaStmtKind, SsaTerminator, SsaValue,
+    self, CallTarget, Expr, ExprKind, GateModifier, IndexItem, IndexKind, IndexOp, LValue,
+    MeasureExpr, MeasureExprKind, QubitOperand, RValue, Stmt, StmtKind,
 };
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
-
-use super::phi_elim::deconstruct_phis;
-use super::regalloc::{RegMap, allocate_registers, reg_value_ty};
-use super::types::{
-    BcAliasSegment, BcBlock, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCalibration,
-    BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcProcedure, BcSymbol,
-    BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner, QubitRegion, QubitRegionId,
-    QubitSource, QubitTable, Reg, StringId,
-};
 use crate::types::Type;
 
-/// Lower a SIR program to bytecode.
-pub fn emit(program: &sir::Program) -> Result<BcModule, CompileError> {
-    let cfgs = cfg::build_program(program)?;
-    let ssa = ssa::build_program(&cfgs, &program.symbols);
-    emit_ssa(&ssa, program, qubits::build_layout(program))
-}
+use super::types::{
+    BcAliasSegment, BcBlock, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCalibration,
+    BcCallTarget, BcGateModifier, BcIndex, BcInstr, BcModule, BcOp, BcOperand, BcProcedure,
+    BcSymbol, BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner, QubitRegion,
+    QubitRegionId, QubitSource, QubitTable, Reg, StringId,
+};
 
-/// Lower an SSA program to bytecode against the global qubit layout.
-fn emit_ssa(
-    ssa: &ProgramSsa,
-    program: &sir::Program,
-    layout: QubitLayout,
-) -> Result<BcModule, CompileError> {
-    let symbols = &program.symbols;
+/// Lower a SIR program to bytecode.
+pub fn emit(program: &sir::Program) -> Result<BcModule> {
+    // Building the graphs adds the hidden variables of `for` loops.
+    let mut symbols = program.symbols.clone();
+    let cfgs = cfg::build_program(program, &mut symbols)?;
+    let layout = qubits::build_layout(program);
     let mut ctx = EmitCtx::new(symbols, &program.calibrations, layout);
-    let entry = ctx.emit_root(&ssa.top_level, ProcOwner::TopLevel)?;
-    for sub in &ssa.subroutines {
-        ctx.emit_root(sub, sub.owner.clone())?;
-    }
-    for gate in &ssa.gates {
-        ctx.emit_root(gate, gate.owner.clone())?;
-    }
-    let mut cal_procs: Vec<Option<ProcId>> = vec![None; ssa.calibrations.len()];
-    for (i, cal) in ssa.calibrations.iter().enumerate() {
-        if let Some(c) = cal {
-            cal_procs[i] = Some(ctx.emit_root(c, ProcOwner::Calibration(i as u32))?);
-        }
+
+    let entry = ctx.emit_root(&cfgs.top_level)?;
+    for body in cfgs.subroutines.iter().chain(&cfgs.gates) {
+        ctx.emit_root(body)?;
     }
     let calibrations = program
         .calibrations
         .iter()
-        .zip(&cal_procs)
-        .map(|(cal, proc)| ctx.lower_calibration(cal, *proc))
-        .collect();
-    // The grammar string is stored in SIR with its source quotes; strip
-    // them so consumers see the bare grammar name.
-    let calibration_grammar = program.calibration_grammar.as_deref().map(|g| {
-        g.strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .or_else(|| g.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-            .unwrap_or(g)
-            .to_string()
-    });
+        .zip(&cfgs.calibrations)
+        .map(|(cal, body)| {
+            let proc = body.as_ref().map(|body| ctx.emit_root(body)).transpose()?;
+            Ok(ctx.lower_calibration(cal, proc))
+        })
+        .collect::<Result<_>>()?;
 
     Ok(BcModule {
         version: BcVersion::CURRENT,
-        symbols: symbols
+        symbols: ctx
+            .symbols
             .iter()
             .map(|s| BcSymbol {
                 name: s.name.clone(),
@@ -112,13 +89,13 @@ fn emit_ssa(
         inputs: ctx.inputs,
         outputs: ctx.outputs,
         calibrations,
-        calibration_grammar,
+        calibration_grammar: program.calibration_grammar.clone(),
     })
 }
 
-/// Mutable emission state shared across procedures.
+/// Emission state shared across procedures.
 struct EmitCtx<'a> {
-    symbols: &'a SymbolTable,
+    symbols: SymbolTable,
     /// The program's calibration declarations; `ProcOwner::Calibration(i)`
     /// indexes into this for the defcal's signature (args/operands).
     calibrations: &'a [sir::CalibrationDecl],
@@ -127,11 +104,6 @@ struct EmitCtx<'a> {
     qubit_regions: Vec<QubitRegion>,
     /// Resolved ranges of each entry in `qubit_regions`, for dedup.
     region_index: HashMap<Vec<(u32, u32)>, QubitRegionId>,
-    /// Next free frame-local qubit slot for a runtime-bound alias
-    /// (`BcOp::AliasBind`) in the procedure currently being emitted.
-    /// Seeded to the procedure's qubit-parameter count and saved/restored
-    /// across nested procedures (see [`Self::emit_proc`]).
-    alias_slot: u32,
     procedures: Vec<BcProcedure>,
     constants: Vec<Value>,
     /// Postcard encoding of each entry in `constants`, for dedup.
@@ -147,11 +119,6 @@ struct EmitCtx<'a> {
     /// indices, so the simulator must be sized to cover the maximum one
     /// even when no `qubit` registers are declared.
     max_hardware_qubit: Option<u32>,
-    /// True while emitting a calibration (`defcal`) or inline-`cal` body.
-    /// Reads/writes of cal-scope globals in such bodies go through the
-    /// VM's pulse-global store ([`BcOp::CalLoad`]/[`BcOp::CalStore`]).
-    /// Saved/restored across nested procedures like `alias_slot`.
-    in_cal: bool,
 }
 
 /// The base a runtime-alias operand indexes: a declared register /
@@ -183,7 +150,7 @@ impl AliasSrc {
 
 impl<'a> EmitCtx<'a> {
     fn new(
-        symbols: &'a SymbolTable,
+        symbols: SymbolTable,
         calibrations: &'a [sir::CalibrationDecl],
         layout: QubitLayout,
     ) -> Self {
@@ -193,7 +160,6 @@ impl<'a> EmitCtx<'a> {
             layout,
             qubit_regions: Vec::new(),
             region_index: HashMap::new(),
-            alias_slot: 0,
             procedures: Vec::new(),
             constants: Vec::new(),
             const_index: HashMap::new(),
@@ -201,1396 +167,95 @@ impl<'a> EmitCtx<'a> {
             inputs: Vec::new(),
             outputs: Vec::new(),
             max_hardware_qubit: None,
-            in_cal: false,
         }
     }
 
-    /// Build a hardware-qubit operand, recording its index so the
-    /// global memory can be sized to include it.
-    fn hw_qubit(&mut self, n: u32) -> BcOperand {
-        self.max_hardware_qubit = Some(self.max_hardware_qubit.map_or(n, |m| m.max(n)));
-        BcOperand::HardwareQubit(n)
-    }
-
-    /// Emit a top-level CFG (or a recursive nested one); return its
-    /// `ProcId`. Always reserves the slot first so nested emissions
-    /// see a stable id.
-    fn emit_root(&mut self, cfg: &SsaCfg, owner: ProcOwner) -> Result<ProcId> {
+    /// Claim the next procedure id, to be filled in once its body is
+    /// emitted (bodies nested in it take the ids after it).
+    fn reserve_proc(&mut self, owner: ProcOwner) -> ProcId {
         let id = ProcId(self.procedures.len() as u32);
-        // Reserve a placeholder slot. We'll overwrite it after the
-        // body is emitted (so nested CFGs can recurse and grab
-        // smaller ids if they're emitted first).
         self.procedures.push(BcProcedure {
-            owner: owner.clone(),
+            owner,
             register_types: Vec::new(),
             params: Vec::new(),
             num_qubit_slots: 0,
             blocks: Vec::new(),
             entry: BlockId(0),
         });
-        let proc = self.emit_proc(cfg, owner)?;
-        self.procedures[id.0 as usize] = proc;
-        Ok(id)
+        id
     }
 
-    fn emit_proc(&mut self, cfg: &SsaCfg, owner: ProcOwner) -> Result<BcProcedure> {
-        // Phi-eliminate a clone so the source SSA isn't mutated.
-        let cfg = deconstruct_phis(cfg.clone());
-        let mut reg_map = allocate_registers(&cfg, self.symbols);
-
-        // Record the calling convention: the register holding each
-        // classical parameter (read at version 0). Allocating here is
-        // idempotent — a referenced param reuses its existing register,
-        // an unreferenced one gets a fresh slot.
-        let params = self.param_registers(&owner, &mut reg_map);
-
-        // The top-level body's `input` decls and exit reaching defs
-        // become the program's input contract and named outputs.
-        if matches!(owner, ProcOwner::TopLevel) {
-            self.inputs = self.collect_inputs(&mut reg_map);
-            self.outputs = self.collect_outputs(&cfg, &reg_map);
-        }
-
-        // Qubit slots: parameters occupy `[0, n_qubit_params)`; runtime
-        // aliases bound in this body take the slots after them. The
-        // cursor is per-procedure, saved/restored so nested bodies (Box /
-        // Cal / DurationOf, emitted recursively while emitting a block)
-        // don't disturb this one's numbering.
-        let param_base = match &owner {
+    /// Emit a procedure with a frame of its own.
+    fn emit_root(&mut self, cfg: &Cfg) -> Result<ProcId> {
+        let owner = cfg.owner.clone();
+        let id = self.reserve_proc(owner.clone());
+        // Qubit slots: parameters occupy `[0, n)`; runtime aliases bound in
+        // the body take the slots after them.
+        let qubit_params = match &owner {
             ProcOwner::Gate(s) | ProcOwner::Subroutine(s) => self.layout.qubit_param_count(*s),
             ProcOwner::Calibration(i) => self.calibrations[*i as usize].operands.len() as u32,
             _ => 0,
         };
-        let saved_alias_slot = self.alias_slot;
-        self.alias_slot = param_base;
-        let saved_in_cal = self.in_cal;
-        self.in_cal = matches!(owner, ProcOwner::Calibration(_) | ProcOwner::InlineCal);
+        let top_level = matches!(owner, ProcOwner::TopLevel);
 
-        let mut blocks: Vec<BcBlock> = cfg
-            .blocks
-            .iter()
-            .map(|b| self.emit_block(b, &mut reg_map))
-            .collect::<Result<_>>()?;
+        let mut body = ProcEmitter {
+            in_cal: matches!(owner, ProcOwner::Calibration(_)),
+            ctx: self,
+            regs: HashMap::new(),
+            register_types: Vec::new(),
+            alias_slot: qubit_params,
+            instrs: Vec::new(),
+            assigned: Vec::new(),
+            nested: Vec::new(),
+        };
+        let params = body.param_registers(&owner)?;
+        let inputs = match top_level {
+            true => body.input_registers()?,
+            false => Vec::new(),
+        };
+        let blocks = body.emit_blocks(cfg)?;
+        let ProcEmitter {
+            regs,
+            register_types,
+            alias_slot,
+            mut assigned,
+            nested,
+            ..
+        } = body;
 
-        // Cal bodies read cal-scope globals (frames/ports shared across
-        // all cal/defcal bodies) through version-0 registers; seed each
-        // such register at entry from the VM's pulse-global store.
-        // Sorted by symbol id for deterministic bytecode.
-        if self.in_cal {
-            let mut loads: Vec<(SymbolId, Reg)> = reg_map
-                .by_ssa
-                .iter()
-                .filter(|(v, _)| v.version == 0 && self.is_pulse_global(v.symbol))
-                .map(|(v, r)| (v.symbol, *r))
-                .collect();
-            loads.sort_by_key(|(sym, _)| sym.0);
-            if !loads.is_empty() {
-                let entry_id = BlockId(cfg.entry.0 as u32);
-                let entry_block = blocks
-                    .iter_mut()
-                    .find(|b| b.id == entry_id)
-                    .expect("entry block emitted");
-                let span = entry_block.span;
-                entry_block.instrs.splice(
-                    0..0,
-                    loads.into_iter().map(|(symbol, dest)| BcInstr {
-                        op: BcOp::CalLoad { dest, symbol },
-                        span,
-                    }),
-                );
-            }
+        if top_level {
+            // Per docs/directives.rst: if any `output` is declared, only
+            // those variables are outputs; otherwise every variable is. Only
+            // variables the program assigns are reported.
+            let has_outputs = self.symbols.iter().any(|s| s.kind == SymbolKind::Output);
+            let wanted = match has_outputs {
+                true => SymbolKind::Output,
+                false => SymbolKind::Variable,
+            };
+            assigned.sort_by_key(|symbol| symbol.0);
+            assigned.dedup();
+            assigned.retain(|symbol| self.symbols.get(*symbol).kind == wanted);
+            // (A cal-scope global has no register: it is not an output.)
+            let outputs = assigned.iter().filter_map(|s| Some((*s, *regs.get(s)?)));
+            self.outputs = outputs.collect();
+            self.inputs = inputs;
         }
-
-        let num_qubit_slots = self.alias_slot;
-        self.alias_slot = saved_alias_slot;
-        self.in_cal = saved_in_cal;
-
-        Ok(BcProcedure {
+        // Nested bodies run on this procedure's frame.
+        for nested in nested {
+            let nested = &mut self.procedures[nested.0 as usize];
+            nested.register_types = register_types.clone();
+            nested.num_qubit_slots = alias_slot;
+        }
+        self.procedures[id.0 as usize] = BcProcedure {
             owner,
-            register_types: reg_map.types,
+            register_types,
             params,
-            num_qubit_slots,
+            num_qubit_slots: alias_slot,
             blocks,
             entry: BlockId(cfg.entry.0 as u32),
-        })
-    }
-
-    /// The program's input contract: a `(symbol, reg)` for every
-    /// `input`-declared variable. The register is the symbol's version-0
-    /// (entry) value, force-allocated here so even an unread input has a
-    /// seedable slot — mirroring how `param_registers` allocates
-    /// unreferenced parameters. Sorted by symbol id (declaration order).
-    fn collect_inputs(&self, reg_map: &mut RegMap) -> Vec<(SymbolId, Reg)> {
-        let mut inputs: Vec<(SymbolId, Reg)> = self
-            .symbols
-            .iter()
-            .filter(|s| s.kind == SymbolKind::Input)
-            .filter_map(|s| {
-                let ty = s.ty.value_ty()?;
-                let reg = reg_map.alloc(
-                    SsaValue {
-                        symbol: s.id,
-                        version: 0,
-                    },
-                    ty,
-                );
-                Some((s.id, reg))
-            })
-            .collect();
-        inputs.sort_by_key(|(sym, _)| sym.0);
-        inputs
-    }
-
-    /// Resolve the top-level body's exit reaching defs to named program
-    /// outputs. Per OpenQASM 3: if any `output` is declared, only those
-    /// symbols are outputs; otherwise every named classical variable is.
-    /// Only symbols actually assigned at top level (version ≥ 1, with an
-    /// allocated register) are included. Sorted by symbol id for
-    /// deterministic bytecode.
-    fn collect_outputs(&self, cfg: &SsaCfg, reg_map: &RegMap) -> Vec<(SymbolId, Reg)> {
-        let has_outputs = self.symbols.iter().any(|s| s.kind == SymbolKind::Output);
-        let wanted = if has_outputs {
-            SymbolKind::Output
-        } else {
-            SymbolKind::Variable
         };
-        let mut outputs: Vec<(SymbolId, Reg)> = cfg
-            .exit_defs
-            .iter()
-            .filter(|(sym, ssa)| ssa.version >= 1 && self.symbols.get(**sym).kind == wanted)
-            .filter_map(|(sym, ssa)| reg_map.by_ssa.get(ssa).map(|reg| (*sym, *reg)))
-            .collect();
-        outputs.sort_by_key(|(sym, _)| sym.0);
-        outputs
+        Ok(id)
     }
-
-    /// Registers holding the classical parameters of a gate/subroutine/
-    /// defcal, in declaration order. Empty for owners that take no
-    /// classical parameters.
-    fn param_registers(&self, owner: &ProcOwner, reg_map: &mut RegMap) -> Vec<Reg> {
-        let params: Vec<SymbolId> = match owner {
-            ProcOwner::Gate(s) | ProcOwner::Subroutine(s) => {
-                self.layout.classical_params(*s).to_vec()
-            }
-            // Defcal signatures aren't in the layout (several defcals can
-            // share one gate symbol); read the params off the declaration.
-            ProcOwner::Calibration(i) => self.calibrations[*i as usize]
-                .args
-                .iter()
-                .filter_map(|a| match a {
-                    sir::CalibrationArg::Param(sym) => Some(*sym),
-                    sir::CalibrationArg::Expr(_) => None,
-                })
-                .collect(),
-            _ => return Vec::new(),
-        };
-        params
-            .into_iter()
-            .map(|symbol| {
-                let v = SsaValue { symbol, version: 0 };
-                let ty = self
-                    .symbols
-                    .get(symbol)
-                    .ty
-                    .value_ty()
-                    .expect("classical parameter must have a value type");
-                reg_map.alloc(v, ty)
-            })
-            .collect()
-    }
-
-    fn emit_block(&mut self, block: &SsaBlock, reg_map: &mut RegMap) -> Result<BcBlock> {
-        // phi_elim has already cleared phis.
-        debug_assert!(
-            block.phis.is_empty(),
-            "phi_elim must clear all phis before emit_block"
-        );
-
-        let mut instrs: Vec<BcInstr> = Vec::new();
-        for stmt in &block.stmts {
-            self.emit_stmt(stmt, &mut instrs, reg_map)?;
-        }
-        let terminator =
-            self.emit_terminator(&block.terminator, &mut instrs, reg_map, block.span)?;
-
-        Ok(BcBlock {
-            id: BlockId(block.id.0 as u32),
-            instrs,
-            terminator,
-            span: block.span,
-        })
-    }
-
-    fn emit_stmt(
-        &mut self,
-        stmt: &crate::ssa::SsaStmt,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<()> {
-        let span = stmt.span;
-        match &stmt.kind {
-            SsaStmtKind::Alias(Alias { symbol, value }) => {
-                // An operand referencing another runtime-bound alias or a
-                // qubit parameter forces this alias to be runtime-bound too
-                // (parameters are only bound to concrete qubits at call time).
-                let uses_dynamic = value.iter().any(|e| {
-                    qubits::peel_index_chain(e).is_some_and(|(s, _)| {
-                        self.layout.dynamic_alias_of(s).is_some()
-                            || self.layout.param_slot(s).is_some()
-                    })
-                });
-                if uses_dynamic {
-                    self.lower_dynamic_alias(*symbol, value, instrs, reg_map, span)?;
-                } else {
-                    // Static qubit aliases resolve into the layout and
-                    // emit nothing; a non-constant index falls back to a
-                    // runtime bind; classical aliases keep their metadata op.
-                    match self.layout.resolve_alias_value(value, self.symbols)? {
-                        Some(Resolved::Static(reg)) => self.layout.define_alias(*symbol, reg),
-                        Some(Resolved::Dynamic) => {
-                            self.lower_dynamic_alias(*symbol, value, instrs, reg_map, span)?;
-                        }
-                        None => {
-                            let value = value
-                                .iter()
-                                .map(|e| self.lower_expr_to_operand(e, instrs, reg_map))
-                                .collect::<Result<_>>()?;
-                            instrs.push(BcInstr {
-                                op: BcOp::Alias {
-                                    symbol: *symbol,
-                                    value,
-                                },
-                                span,
-                            });
-                        }
-                    }
-                }
-            }
-            SsaStmtKind::GateCall(GateCall {
-                gate,
-                modifiers,
-                args,
-                qubits,
-                duration: _,
-            }) => {
-                // A bare gate-call whose name resolves to a `def` (e.g.
-                // `hadamard_layer ancilla;`) is a subroutine call, not a gate.
-                // Redirect it to a `Call`, binding the classical args followed
-                // by the qubit operands (the order bare syntax always yields).
-                if self.symbols.get(*gate).kind == SymbolKind::Subroutine {
-                    if !modifiers.is_empty() {
-                        return Err(CompileError::at(
-                            ErrorKind::InvalidContext(
-                                "gate modifiers cannot be applied to a subroutine call".into(),
-                            ),
-                            span,
-                        ));
-                    }
-                    let mut call_args: Vec<BcOperand> = args
-                        .iter()
-                        .map(|a| self.lower_expr_to_operand(a, instrs, reg_map))
-                        .collect::<Result<_>>()?;
-                    for q in qubits {
-                        call_args.push(self.lower_qubit_operand(q, instrs, reg_map, span)?);
-                    }
-                    instrs.push(BcInstr {
-                        op: BcOp::Call {
-                            dest: None,
-                            callee: BcCallTarget::Symbol(*gate),
-                            args: call_args,
-                        },
-                        span,
-                    });
-                    return Ok(());
-                }
-                let modifiers: Vec<BcGateModifier> = modifiers
-                    .iter()
-                    .map(|m| self.lower_gate_modifier(m, instrs, reg_map))
-                    .collect::<Result<_>>()?;
-                let args: Vec<BcOperand> = args
-                    .iter()
-                    .map(|a| self.lower_expr_to_operand(a, instrs, reg_map))
-                    .collect::<Result<_>>()?;
-                let qubits: Vec<BcOperand> = qubits
-                    .iter()
-                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map, span))
-                    .collect::<Result<_>>()?;
-                instrs.push(BcInstr {
-                    op: BcOp::GateCall {
-                        gate: *gate,
-                        modifiers,
-                        args,
-                        qubits,
-                    },
-                    span,
-                });
-            }
-            SsaStmtKind::Measure(SsaMeasure { measure, target }) => match target {
-                // `measure q -> lv;` assigns like `lv = measure q;` —
-                // reuse the assignment path so an indexed target gets
-                // its StoreElement.
-                Some(t) => {
-                    let value = RValue::Measure(Box::new(measure.clone()));
-                    self.emit_assignment(t, &value, instrs, reg_map, span)?;
-                }
-                None => {
-                    let qubit = self.measure_to_operand(measure, instrs, reg_map)?;
-                    instrs.push(BcInstr {
-                        op: BcOp::Measure { dest: None, qubit },
-                        span,
-                    });
-                }
-            },
-            SsaStmtKind::Reset(q) => {
-                let qubit = self.lower_qubit_operand(q, instrs, reg_map, span)?;
-                instrs.push(BcInstr {
-                    op: BcOp::Reset { qubit },
-                    span,
-                });
-            }
-            SsaStmtKind::Barrier(qs) => {
-                let qubits = qs
-                    .iter()
-                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map, span))
-                    .collect::<Result<_>>()?;
-                instrs.push(BcInstr {
-                    op: BcOp::Barrier { qubits },
-                    span,
-                });
-            }
-            SsaStmtKind::Delay(Delay { duration, operands }) => {
-                let duration = self.lower_expr_to_operand(duration, instrs, reg_map)?;
-                let qubits = operands
-                    .iter()
-                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map, span))
-                    .collect::<Result<_>>()?;
-                instrs.push(BcInstr {
-                    op: BcOp::Delay { duration, qubits },
-                    span,
-                });
-            }
-            SsaStmtKind::Box(SsaBoxStmt { duration, body }) => {
-                let duration = duration
-                    .as_ref()
-                    .map(|e| self.lower_expr_to_operand(e, instrs, reg_map))
-                    .transpose()?;
-                let body_id = self.emit_root(body, ProcOwner::Box)?;
-                instrs.push(BcInstr {
-                    op: BcOp::Box {
-                        duration,
-                        body: body_id,
-                    },
-                    span,
-                });
-            }
-            SsaStmtKind::Assignment(SsaAssignment { target, value }) => {
-                self.emit_assignment(target, value, instrs, reg_map, span)?;
-            }
-            SsaStmtKind::Pragma(s) => {
-                let content = self.intern_string(s.clone());
-                instrs.push(BcInstr {
-                    op: BcOp::Pragma { content },
-                    span,
-                });
-            }
-            SsaStmtKind::Cal(body) => match body {
-                SsaCalibrationBody::Opaque(s) => {
-                    let content = self.intern_string(s.clone());
-                    instrs.push(BcInstr {
-                        op: BcOp::CalOpaque { content },
-                        span,
-                    });
-                }
-                SsaCalibrationBody::OpenPulse(cfg) => {
-                    let body_id = self.emit_root(cfg, ProcOwner::InlineCal)?;
-                    instrs.push(BcInstr {
-                        op: BcOp::CalOpenPulse { body: body_id },
-                        span,
-                    });
-                }
-            },
-            SsaStmtKind::ExprStmt(e) => {
-                let _ = self.lower_expr_to_operand(e, instrs, reg_map)?;
-                // Pure-side-effect statements (calls etc.) get emitted
-                // inside lower_expr_to_operand. Top-level value is
-                // discarded.
-            }
-            SsaStmtKind::Nop(qs) => {
-                let qubits = qs
-                    .iter()
-                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map, span))
-                    .collect::<Result<_>>()?;
-                instrs.push(BcInstr {
-                    op: BcOp::Nop { qubits },
-                    span,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn emit_assignment(
-        &mut self,
-        target: &SsaLValue,
-        value: &RValue<SsaExpr>,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-        span: Span,
-    ) -> Result<()> {
-        match target {
-            SsaLValue::Var(v) => {
-                let dest = self.reg_for(*v, reg_map);
-                self.emit_rvalue_to_dest(value, dest, instrs, reg_map, span)?;
-                // Propagate writes to cal-scope globals into the VM's
-                // pulse-global store so other cal/defcal bodies observe
-                // them (their entries CalLoad the current value).
-                if self.in_cal && v.version >= 1 && self.is_pulse_global(v.symbol) {
-                    instrs.push(BcInstr {
-                        op: BcOp::CalStore {
-                            symbol: v.symbol,
-                            src: BcOperand::Reg(dest),
-                        },
-                        span,
-                    });
-                }
-            }
-            SsaLValue::Indexed { old, new, indices } => {
-                // Indexed store: read `old`, compute `new = old[index] = value`.
-                let base = BcOperand::Reg(self.reg_for(*old, reg_map));
-                let new_reg = self.reg_for(*new, reg_map);
-                // Element store `a[i, j, …] = v`: every index op selects a
-                // single position, so resolve one operand per dimension and
-                // write the element directly. Covers ordinary 1-D indexing
-                // and multi-dimensional `a[i, j]`.
-                if !indices.is_empty() && indices.iter().all(index_op_is_all_single) {
-                    let mut idx = Vec::new();
-                    for io in indices {
-                        idx.extend(self.lower_index_op_to_operands(io, instrs, reg_map)?);
-                    }
-                    let value = self.rvalue_to_operand(value, instrs, reg_map)?;
-                    instrs.push(BcInstr {
-                        op: BcOp::StoreElement {
-                            new: new_reg,
-                            base,
-                            indices: idx,
-                            value,
-                        },
-                        span,
-                    });
-                    return Ok(());
-                }
-                // A slice or multi-element target (`reg[a:b] = ...`) writes a
-                // multi-bit value across several positions. Resolve the
-                // positions statically and emit a slice store.
-                if let Some(io) = indices.first().filter(|io| is_multi_index(io))
-                    && let Some(len) = self.symbol_bit_len(old.symbol)
-                {
-                    let Resolved::Static(positions) = qubits::resolve_index(io, len)? else {
-                        return Err(CompileError::at(ErrorKind::NonConstantExpression, io.span));
-                    };
-                    let value = self.rvalue_to_operand(value, instrs, reg_map)?;
-                    instrs.push(BcInstr {
-                        op: BcOp::StoreSlice {
-                            new: new_reg,
-                            base,
-                            indices: positions.iter().map(|&i| i as u32).collect(),
-                            value,
-                        },
-                        span,
-                    });
-                    return Ok(());
-                }
-                // Fallback: collapse a slice index to its first element
-                // (v1 single-dimension behavior).
-                let index = if let Some(io) = indices.first() {
-                    self.lower_index_op_to_operand(io, instrs, reg_map)?
-                } else {
-                    BcOperand::Const(self.intern_const(Value::int(0, oqi_classical::iw(64))))
-                };
-                let value = self.rvalue_to_operand(value, instrs, reg_map)?;
-                instrs.push(BcInstr {
-                    op: BcOp::StoreElement {
-                        new: new_reg,
-                        base,
-                        indices: vec![index],
-                        value,
-                    },
-                    span,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn emit_rvalue_to_dest(
-        &mut self,
-        rv: &RValue<SsaExpr>,
-        dest: Reg,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-        span: Span,
-    ) -> Result<()> {
-        match rv {
-            RValue::Expr(e) => self.emit_expr_to_dest(e, dest, instrs, reg_map, span)?,
-            RValue::Measure(m) => {
-                let qubit = self.measure_to_operand(m, instrs, reg_map)?;
-                instrs.push(BcInstr {
-                    op: BcOp::Measure {
-                        dest: Some(dest),
-                        qubit,
-                    },
-                    span,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn emit_expr_to_dest(
-        &mut self,
-        e: &SsaExpr,
-        dest: Reg,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-        span: Span,
-    ) -> Result<()> {
-        match &e.kind {
-            SsaExprKind::Binary(Binary { op, left, right }) => {
-                let lhs = self.lower_expr_to_operand(left, instrs, reg_map)?;
-                let rhs = self.lower_expr_to_operand(right, instrs, reg_map)?;
-                let bc = BcOp::Binary {
-                    op: *op,
-                    dest,
-                    lhs,
-                    rhs,
-                };
-                instrs.push(BcInstr { op: bc, span });
-            }
-            SsaExprKind::Unary(crate::sir::Unary { op, operand }) => {
-                let src = self.lower_expr_to_operand(operand, instrs, reg_map)?;
-                let bc = BcOp::Unary { op: *op, dest, src };
-                instrs.push(BcInstr { op: bc, span });
-            }
-            SsaExprKind::Cast(Cast { target_ty, operand }) => {
-                let src = self.lower_expr_to_operand(operand, instrs, reg_map)?;
-                let target_ty = target_ty
-                    .value_ty()
-                    .unwrap_or(ValueTy::Scalar(PrimitiveTy::Bool));
-                instrs.push(BcInstr {
-                    op: BcOp::Cast {
-                        dest,
-                        target_ty,
-                        src,
-                    },
-                    span,
-                });
-            }
-            SsaExprKind::Index(Index { base, index }) => {
-                let base = self.lower_expr_to_operand(base, instrs, reg_map)?;
-                let indices = self.lower_index_op_to_operands(index, instrs, reg_map)?;
-                instrs.push(BcInstr {
-                    op: BcOp::LoadElement {
-                        dest,
-                        base,
-                        indices,
-                    },
-                    span,
-                });
-            }
-            SsaExprKind::Call(Call { callee, args }) => {
-                let args = args
-                    .iter()
-                    .map(|a| self.lower_expr_to_operand(a, instrs, reg_map))
-                    .collect::<Result<_>>()?;
-                let callee = match callee {
-                    CallTarget::Symbol(s) => BcCallTarget::Symbol(*s),
-                    CallTarget::Intrinsic(i) => BcCallTarget::Intrinsic(*i),
-                };
-                // A void call (statement position) yields no value, so it
-                // has no destination — mirroring the bare gate-call path.
-                let dest = reg_value_ty(&e.ty).is_some().then_some(dest);
-                instrs.push(BcInstr {
-                    op: BcOp::Call { dest, callee, args },
-                    span,
-                });
-            }
-            SsaExprKind::ArrayLiteral(_) => {
-                // Flatten nested literals (multi-dimensional arrays) into a
-                // single flat list of scalar leaves; `NewArray` builds the
-                // array from the flat values against the destination's full
-                // shape (see `oqi_classical::Array::new`).
-                let mut items = Vec::new();
-                self.collect_array_literal_leaves(e, &mut items, instrs, reg_map)?;
-                instrs.push(BcInstr {
-                    op: BcOp::NewArray { dest, items },
-                    span,
-                });
-            }
-            SsaExprKind::DurationOf(cfg) => {
-                let body_id = self.emit_root(cfg, ProcOwner::DurationOf)?;
-                instrs.push(BcInstr {
-                    op: BcOp::DurationOf {
-                        dest,
-                        body: body_id,
-                    },
-                    span,
-                });
-            }
-            // Trivial cases: just produce an operand and Move it.
-            SsaExprKind::Literal(_) | SsaExprKind::Var(_) | SsaExprKind::HardwareQubit(_) => {
-                let src = self.lower_expr_to_operand(e, instrs, reg_map)?;
-                instrs.push(BcInstr {
-                    op: BcOp::Move { dest, src },
-                    span,
-                });
-            }
-        }
-        Ok(())
-    }
-
-    /// Lower an SsaExpr into a single BcOperand, emitting intermediate
-    /// instructions for any non-trivial sub-expression. Qubit
-    /// references (named registers, aliases, parameters — bare or
-    /// indexed) are resolved through the layout so that call arguments
-    /// carry global qubit references.
-    fn lower_expr_to_operand(
-        &mut self,
-        e: &SsaExpr,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<BcOperand> {
-        if let Some((sym, ops)) = self.peel_qubit_ref(e) {
-            let ops: Vec<IndexOp<SsaExpr>> = ops.into_iter().cloned().collect();
-            return self.resolve_qubit_ref(sym, &ops, instrs, reg_map, e.span);
-        }
-        Ok(match &e.kind {
-            SsaExprKind::Literal(p) => {
-                let v = primitive_to_value(p.clone(), &e.ty);
-                BcOperand::Const(self.intern_const(v))
-            }
-            SsaExprKind::Var(v) => {
-                // Compile-time constants (`pi`, `tau`, `euler`, user
-                // `const`s) carry their value in the symbol table; inline
-                // it as a pooled constant rather than a register read that
-                // nothing ever assigns.
-                match self.symbols.get(v.symbol).const_value.clone() {
-                    Some(value) => BcOperand::Const(self.intern_const(value)),
-                    None => BcOperand::Reg(self.reg_for(*v, reg_map)),
-                }
-            }
-            SsaExprKind::HardwareQubit(n) => self.hw_qubit(*n as u32),
-            // Anything else: spill into a synthetic temp register.
-            _ => {
-                let ty = reg_value_ty(&e.ty).unwrap_or(ValueTy::Scalar(PrimitiveTy::Bool));
-                let temp = self.alloc_temp_reg(reg_map, ty);
-                self.emit_expr_to_dest(e, temp, instrs, reg_map, e.span)?;
-                BcOperand::Reg(temp)
-            }
-        })
-    }
-
-    /// Recursively collect the scalar-leaf operands of a (possibly nested)
-    /// array literal in row-major order. Nested `ArrayLiteral`s are descended
-    /// into rather than spilled to temporaries, so a multi-dimensional literal
-    /// becomes one flat operand list matching its element count.
-    fn collect_array_literal_leaves(
-        &mut self,
-        e: &SsaExpr,
-        items: &mut Vec<BcOperand>,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<()> {
-        match &e.kind {
-            SsaExprKind::ArrayLiteral(arr) => {
-                for item in &arr.items {
-                    self.collect_array_literal_leaves(item, items, instrs, reg_map)?;
-                }
-            }
-            _ => items.push(self.lower_expr_to_operand(e, instrs, reg_map)?),
-        }
-        Ok(())
-    }
-
-    fn lower_qubit_operand(
-        &mut self,
-        q: &QubitOperand<SsaExpr>,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-        span: Span,
-    ) -> Result<BcOperand> {
-        match q {
-            QubitOperand::Indexed { symbol, indices } => {
-                self.resolve_qubit_ref(*symbol, indices, instrs, reg_map, span)
-            }
-            QubitOperand::Hardware(n) => Ok(self.hw_qubit(*n as u32)),
-        }
-    }
-
-    /// Resolve a (possibly indexed) named qubit reference to a global
-    /// memory operand, or to a positional parameter reference inside
-    /// gate/subroutine bodies.
-    fn resolve_qubit_ref(
-        &mut self,
-        symbol: SymbolId,
-        indices: &[IndexOp<SsaExpr>],
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-        span: Span,
-    ) -> Result<BcOperand> {
-        // Gate / subroutine qubit parameter: bound at call time.
-        if let Some(slot) = self.layout.param_slot(symbol) {
-            return match indices {
-                [] => Ok(BcOperand::Whole(QubitSource::Slot(slot))),
-                [io] => match qubits::single_index_expr(io) {
-                    Some(e) => {
-                        let index = Box::new(self.lower_expr_to_operand(e, instrs, reg_map)?);
-                        Ok(BcOperand::Index {
-                            source: QubitSource::Slot(slot),
-                            index,
-                        })
-                    }
-                    None => {
-                        let len = self.qubit_param_len(symbol).ok_or_else(|| {
-                            CompileError::at(
-                                ErrorKind::Unsupported(
-                                    "slice of a non-register qubit parameter".into(),
-                                ),
-                                io.span,
-                            )
-                        })?;
-                        match qubits::resolve_index(io, len).map_err(|e| e.with_span(io.span))? {
-                            // Static slice / discrete set: resolve positions
-                            // against the declared length at compile time.
-                            Resolved::Static(positions) => Ok(BcOperand::Select {
-                                source: QubitSource::Slot(slot),
-                                positions: positions.iter().map(|&p| p as u32).collect(),
-                            }),
-                            // Runtime slice bounds: materialize a transient
-                            // alias bound to the parameter's qubits at run time.
-                            Resolved::Dynamic => {
-                                let src = AliasSrc::Param {
-                                    slot,
-                                    len: Some(len),
-                                };
-                                let alias =
-                                    self.bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
-                                Ok(BcOperand::Whole(QubitSource::Slot(alias)))
-                            }
-                        }
-                    }
-                },
-                _ => Err(CompileError::at(
-                    ErrorKind::Unsupported("multi-dimensional index on a quantum register".into()),
-                    span,
-                )),
-            };
-        }
-
-        // Declared register or resolved alias: global memory.
-        if let Some(reg) = self.layout.register_of(symbol) {
-            let reg = reg.clone();
-            return match indices {
-                [] => {
-                    if reg.len() == 1 {
-                        Ok(BcOperand::Qubit(self.must_global(&reg, 0)))
-                    } else {
-                        Ok(BcOperand::Whole(QubitSource::Region(
-                            self.region_for(&reg, Some(symbol)),
-                        )))
-                    }
-                }
-                [io] => match qubits::resolve_index(io, reg.len())? {
-                    Resolved::Static(idxs) => {
-                        if let [only] = idxs.as_slice() {
-                            Ok(BcOperand::Qubit(self.must_global(&reg, *only)))
-                        } else {
-                            let sub = qubits::select(&reg, &idxs);
-                            Ok(BcOperand::Whole(QubitSource::Region(
-                                self.region_for(&sub, Some(symbol)),
-                            )))
-                        }
-                    }
-                    // Runtime single index: the VM maps the logical
-                    // index through the region's ranges.
-                    Resolved::Dynamic => {
-                        match qubits::single_index_expr(io) {
-                            Some(e) => {
-                                let region = self.region_for(&reg, Some(symbol));
-                                let index =
-                                    Box::new(self.lower_expr_to_operand(e, instrs, reg_map)?);
-                                Ok(BcOperand::Index {
-                                    source: QubitSource::Region(region),
-                                    index,
-                                })
-                            }
-                            // Runtime multi-element slice: materialize a
-                            // transient alias and reference it by slot.
-                            None => {
-                                let src = AliasSrc::Region {
-                                    reg: reg.clone(),
-                                    origin: symbol,
-                                };
-                                let slot =
-                                    self.bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
-                                Ok(BcOperand::Whole(QubitSource::Slot(slot)))
-                            }
-                        }
-                    }
-                },
-                _ => Err(CompileError::at(
-                    ErrorKind::Unsupported("multi-dimensional index on a quantum register".into()),
-                    span,
-                )),
-            };
-        }
-
-        // Runtime-bound alias: resolved through its bind slot by the VM.
-        if let Some(da) = self.layout.dynamic_alias_of(symbol) {
-            return match indices {
-                [] => Ok(BcOperand::Whole(QubitSource::Slot(da.slot))),
-                [io] => match qubits::single_index_expr(io) {
-                    Some(e) => {
-                        let index = Box::new(self.alias_index_operand(&da, e, instrs, reg_map)?);
-                        Ok(BcOperand::Index {
-                            source: QubitSource::Slot(da.slot),
-                            index,
-                        })
-                    }
-                    // Runtime multi-element slice of an alias: re-bind it
-                    // through a transient alias slot.
-                    None => {
-                        let src = AliasSrc::Alias(da);
-                        let slot = self.bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
-                        Ok(BcOperand::Whole(QubitSource::Slot(slot)))
-                    }
-                },
-                _ => Err(CompileError::at(
-                    ErrorKind::Unsupported("multi-dimensional index on a quantum register".into()),
-                    span,
-                )),
-            };
-        }
-
-        Err(CompileError::at(
-            ErrorKind::Unsupported(format!(
-                "cannot resolve qubit reference `{}`",
-                self.symbols.get(symbol).name
-            )),
-            span,
-        ))
-    }
-
-    /// Declared length of a qubit parameter (`qubit q` → 1, `qubit[n]` → n),
-    /// used to resolve static slice bounds. `None` for non-qubit symbols.
-    fn qubit_param_len(&self, symbol: SymbolId) -> Option<usize> {
-        match self.symbols.get(symbol).ty {
-            crate::types::Type::Qubit => Some(1),
-            crate::types::Type::QubitReg(n) => Some(n),
-            _ => None,
-        }
-    }
-
-    /// Lower a runtime-bound `let` alias to a [`BcOp::AliasBind`] and
-    /// register its slot/length for later [`QubitSource::Slot`]
-    /// references. Each `++` operand becomes one or more segments.
-    fn lower_dynamic_alias(
-        &mut self,
-        alias_sym: SymbolId,
-        value: &[SsaExpr],
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-        span: Span,
-    ) -> Result<()> {
-        let slot = self.alias_slot;
-        self.alias_slot += 1;
-
-        let mut segments: Vec<BcAliasSegment> = Vec::new();
-        let mut total_len: Option<usize> = Some(0);
-        for expr in value {
-            let len = self.alias_operand_segments(expr, &mut segments, instrs, reg_map)?;
-            total_len = match (total_len, len) {
-                (Some(a), Some(b)) => Some(a + b),
-                _ => None,
-            };
-        }
-
-        instrs.push(BcInstr {
-            op: BcOp::AliasBind { slot, segments },
-            span,
-        });
-        self.layout.define_dynamic_alias(alias_sym, slot, total_len);
-        Ok(())
-    }
-
-    /// Append the segment(s) for one `++` operand of a runtime alias,
-    /// returning its length (`None` if it contains a runtime range).
-    fn alias_operand_segments(
-        &mut self,
-        expr: &SsaExpr,
-        out: &mut Vec<BcAliasSegment>,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<Option<usize>> {
-        if matches!(expr.kind, SsaExprKind::HardwareQubit(_)) {
-            return Err(CompileError::at(
-                ErrorKind::Unsupported("physical qubits cannot be aliased".into()),
-                expr.span,
-            ));
-        }
-        let Some((sym, ops)) = qubits::peel_index_chain(expr) else {
-            return Err(CompileError::at(
-                ErrorKind::Unsupported(
-                    "cannot mix quantum and classical operands in an alias".into(),
-                ),
-                expr.span,
-            ));
-        };
-        // The base this operand indexes: a qubit parameter (bound at call
-        // time), a declared register / static alias, or another runtime-bound
-        // alias.
-        let src = if let Some(slot) = self.layout.param_slot(sym) {
-            AliasSrc::Param {
-                slot,
-                len: self.qubit_param_len(sym),
-            }
-        } else if let Some(reg) = self.layout.register_of(sym) {
-            AliasSrc::Region {
-                reg: reg.clone(),
-                origin: sym,
-            }
-        } else if let Some(da) = self.layout.dynamic_alias_of(sym) {
-            AliasSrc::Alias(da)
-        } else {
-            return Err(CompileError::at(
-                ErrorKind::Unsupported(format!(
-                    "cannot resolve qubit reference `{}`",
-                    self.symbols.get(sym).name
-                )),
-                expr.span,
-            ));
-        };
-
-        self.alias_segments_for(&src, &ops, out, instrs, reg_map, expr.span)
-    }
-
-    /// Build the alias segment(s) for one indexed qubit operand against
-    /// `src`. Shared by [`Self::alias_operand_segments`] (the `let`-alias
-    /// path) and [`Self::bind_transient_alias`] (inline runtime slices).
-    fn alias_segments_for(
-        &mut self,
-        src: &AliasSrc,
-        ops: &[&IndexOp<SsaExpr>],
-        out: &mut Vec<BcAliasSegment>,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-        span: Span,
-    ) -> Result<Option<usize>> {
-        match ops {
-            [] => {
-                out.push(BcAliasSegment::Operand(self.alias_whole_operand(src)));
-                Ok(src.len())
-            }
-            [io] => match &io.kind {
-                IndexKind::Set(es) => {
-                    if es.is_empty() {
-                        return Err(CompileError::at(
-                            ErrorKind::InvalidContext(
-                                "a quantum register cannot be indexed by an empty index set".into(),
-                            ),
-                            io.span,
-                        ));
-                    }
-                    for e in es {
-                        let op = self.alias_element_operand(src, e, instrs, reg_map)?;
-                        out.push(BcAliasSegment::Operand(op));
-                    }
-                    Ok(Some(es.len()))
-                }
-                IndexKind::Items(items) => match items.as_slice() {
-                    [IndexItem::Single(e)] => {
-                        let op = self.alias_element_operand(src, e, instrs, reg_map)?;
-                        out.push(BcAliasSegment::Operand(op));
-                        Ok(Some(1))
-                    }
-                    [IndexItem::Range(r)] => {
-                        let source = self.alias_whole_operand(src);
-                        let mut lower = |b: Option<&SsaExpr>| -> Result<Option<Box<BcOperand>>> {
-                            match b {
-                                Some(e) => Ok(Some(Box::new(
-                                    self.lower_expr_to_operand(e, instrs, reg_map)?,
-                                ))),
-                                None => Ok(None),
-                            }
-                        };
-                        let start = lower(r.start.as_deref())?;
-                        let step = lower(r.step.as_deref())?;
-                        let end = lower(r.end.as_deref())?;
-                        out.push(BcAliasSegment::Slice {
-                            source,
-                            start,
-                            step,
-                            end,
-                        });
-                        // Length depends on runtime bounds.
-                        Ok(None)
-                    }
-                    _ => Err(CompileError::at(
-                        ErrorKind::Unsupported(
-                            "multi-dimensional index on a quantum register".into(),
-                        ),
-                        io.span,
-                    )),
-                },
-            },
-            _ => Err(CompileError::at(
-                ErrorKind::Unsupported("multi-dimensional index on a quantum register".into()),
-                span,
-            )),
-        }
-    }
-
-    /// Materialize a runtime multi-element slice (`q[{a, b}]`, `q[i:j]`)
-    /// used directly as an operand: allocate an anonymous alias slot, emit
-    /// its [`BcOp::AliasBind`], and return the slot. The caller wraps it in
-    /// a [`QubitSource::Slot`].
-    fn bind_transient_alias(
-        &mut self,
-        src: &AliasSrc,
-        ops: &[&IndexOp<SsaExpr>],
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-        span: Span,
-    ) -> Result<u32> {
-        let slot = self.alias_slot;
-        self.alias_slot += 1;
-        let mut segments = Vec::new();
-        self.alias_segments_for(src, ops, &mut segments, instrs, reg_map, span)?;
-        instrs.push(BcInstr {
-            op: BcOp::AliasBind { slot, segments },
-            span,
-        });
-        Ok(slot)
-    }
-
-    /// The operand resolving to the whole base list of `src`.
-    fn alias_whole_operand(&mut self, src: &AliasSrc) -> BcOperand {
-        let source = match src {
-            AliasSrc::Region { reg, origin } => {
-                QubitSource::Region(self.region_for(reg, Some(*origin)))
-            }
-            AliasSrc::Alias(da) => QubitSource::Slot(da.slot),
-            AliasSrc::Param { slot, .. } => QubitSource::Slot(*slot),
-        };
-        BcOperand::Whole(source)
-    }
-
-    /// A single-qubit operand selecting element `e` of `src`.
-    fn alias_element_operand(
-        &mut self,
-        src: &AliasSrc,
-        e: &SsaExpr,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<BcOperand> {
-        match src {
-            AliasSrc::Region { reg, origin } => match qubits::literal_index(e) {
-                Some(k) => {
-                    let local = qubits::normalize_index(k, reg.len())
-                        .map_err(|err| err.with_span(e.span))?;
-                    Ok(BcOperand::Qubit(self.must_global(reg, local)))
-                }
-                None => {
-                    let region = self.region_for(reg, Some(*origin));
-                    let index = Box::new(self.lower_expr_to_operand(e, instrs, reg_map)?);
-                    Ok(BcOperand::Index {
-                        source: QubitSource::Region(region),
-                        index,
-                    })
-                }
-            },
-            AliasSrc::Alias(da) => {
-                let index = Box::new(self.alias_index_operand(da, e, instrs, reg_map)?);
-                Ok(BcOperand::Index {
-                    source: QubitSource::Slot(da.slot),
-                    index,
-                })
-            }
-            AliasSrc::Param { slot, len } => {
-                let index = match (qubits::literal_index(e), len) {
-                    (Some(k), Some(n)) => {
-                        let local =
-                            qubits::normalize_index(k, *n).map_err(|err| err.with_span(e.span))?;
-                        BcOperand::Const(
-                            self.intern_const(Value::int(local as i128, oqi_classical::iw(64))),
-                        )
-                    }
-                    _ => self.lower_expr_to_operand(e, instrs, reg_map)?,
-                };
-                Ok(BcOperand::Index {
-                    source: QubitSource::Slot(*slot),
-                    index: Box::new(index),
-                })
-            }
-        }
-    }
-
-    /// Lower a logical index into a runtime alias. A constant index is
-    /// normalized against the alias length when known (so negative
-    /// indices and bounds are resolved at compile time); otherwise it is
-    /// left for the VM to resolve and bounds-check.
-    fn alias_index_operand(
-        &mut self,
-        da: &qubits::DynAlias,
-        e: &SsaExpr,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<BcOperand> {
-        match (qubits::literal_index(e), da.len) {
-            (Some(k), Some(len)) => {
-                let local = qubits::normalize_index(k, len).map_err(|err| err.with_span(e.span))?;
-                Ok(BcOperand::Const(self.intern_const(Value::int(
-                    local as i128,
-                    oqi_classical::iw(64),
-                ))))
-            }
-            (Some(k), None) if k < 0 => Err(CompileError::at(
-                ErrorKind::Unsupported("negative index into a runtime-length alias".into()),
-                e.span,
-            )),
-            _ => self.lower_expr_to_operand(e, instrs, reg_map),
-        }
-    }
-
-    /// Whether `e` is a (possibly indexed) reference to a named qubit
-    /// register, qubit alias, or qubit parameter; returns the base
-    /// symbol and the index ops in application order.
-    fn peel_qubit_ref<'e>(&self, e: &'e SsaExpr) -> Option<(SymbolId, Vec<&'e IndexOp<SsaExpr>>)> {
-        let (sym, ops) = qubits::peel_index_chain(e)?;
-        let qubit_like = self.layout.param_slot(sym).is_some()
-            || self.layout.register_of(sym).is_some()
-            || matches!(
-                self.symbols.get(sym).kind,
-                SymbolKind::Qubit | SymbolKind::GateQubit
-            );
-        qubit_like.then_some((sym, ops))
-    }
-
-    fn must_global(&self, reg: &oqi_quantum::QuantumRegister, local: usize) -> u32 {
-        self.layout
-            .global_index(reg, local)
-            .expect("local index validated against register length") as u32
-    }
-
-    /// Intern a region for `reg`, deduplicating on its global ranges.
-    fn region_for(
-        &mut self,
-        reg: &oqi_quantum::QuantumRegister,
-        origin: Option<SymbolId>,
-    ) -> QubitRegionId {
-        let ranges = self.layout.global_ranges(reg);
-        if let Some(&id) = self.region_index.get(&ranges) {
-            return id;
-        }
-        let id = QubitRegionId(self.qubit_regions.len() as u32);
-        self.qubit_regions.push(QubitRegion {
-            ranges: ranges.clone(),
-            origin,
-        });
-        self.region_index.insert(ranges, id);
-        id
-    }
-
-    /// Lower an index op to one operand per indexed dimension. An
-    /// all-single multi-dimensional index (`a[i, j]`) yields one operand
-    /// each; anything else collapses to a single operand (see
-    /// [`Self::lower_index_op_to_operand`]).
-    fn lower_index_op_to_operands(
-        &mut self,
-        io: &IndexOp<SsaExpr>,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<Vec<BcOperand>> {
-        if let IndexKind::Items(items) = &io.kind
-            && items.len() > 1
-            && items.iter().all(|it| matches!(it, IndexItem::Single(_)))
-        {
-            let mut out = Vec::with_capacity(items.len());
-            for it in items {
-                if let IndexItem::Single(e) = it {
-                    out.push(self.lower_expr_to_operand(e, instrs, reg_map)?);
-                }
-            }
-            return Ok(out);
-        }
-        Ok(vec![self.lower_index_op_to_operand(io, instrs, reg_map)?])
-    }
-
-    fn lower_index_op_to_operand(
-        &mut self,
-        io: &IndexOp<SsaExpr>,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<BcOperand> {
-        // v1: only single-item indices. Slices/sets collapse to their
-        // first element. (A richer model would lift slicing into its
-        // own opcodes.)
-        Ok(match &io.kind {
-            IndexKind::Set(es) => {
-                if let Some(e) = es.first() {
-                    self.lower_expr_to_operand(e, instrs, reg_map)?
-                } else {
-                    BcOperand::Const(self.intern_const(Value::int(0, oqi_classical::iw(64))))
-                }
-            }
-            IndexKind::Items(items) => {
-                if let Some(item) = items.first() {
-                    match item {
-                        IndexItem::Single(e) => self.lower_expr_to_operand(e, instrs, reg_map)?,
-                        IndexItem::Range(r) => {
-                            if let Some(start) = &r.start {
-                                self.lower_expr_to_operand(start, instrs, reg_map)?
-                            } else {
-                                BcOperand::Const(
-                                    self.intern_const(Value::int(0, oqi_classical::iw(64))),
-                                )
-                            }
-                        }
-                    }
-                } else {
-                    BcOperand::Const(self.intern_const(Value::int(0, oqi_classical::iw(64))))
-                }
-            }
-        })
-    }
-
-    /// Number of indexable bits of a declared bit-register symbol, used to
-    /// resolve negative and open-ended slice bounds. `None` for symbols that
-    /// aren't fixed-width bit registers.
-    fn symbol_bit_len(&self, sym: SymbolId) -> Option<usize> {
-        match self.symbols.get(sym).ty.value_ty()? {
-            ValueTy::Scalar(p) => p.bit_count().map(|w| w as usize),
-            _ => None,
-        }
-    }
-
-    fn lower_gate_modifier(
-        &mut self,
-        m: &GateModifier<SsaExpr>,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<BcGateModifier> {
-        Ok(match m {
-            GateModifier::Inv => BcGateModifier::Inv,
-            GateModifier::Pow(e) => {
-                BcGateModifier::Pow(self.lower_expr_to_operand(e, instrs, reg_map)?)
-            }
-            GateModifier::Ctrl(n) => BcGateModifier::Ctrl(*n as u32),
-            GateModifier::NegCtrl(n) => BcGateModifier::NegCtrl(*n as u32),
-        })
-    }
-
-    /// Lower the qubit being measured to an operand.
-    fn measure_to_operand(
-        &mut self,
-        m: &MeasureExpr<SsaExpr>,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<BcOperand> {
-        match &m.kind {
-            MeasureExprKind::Measure { operand } => {
-                self.lower_qubit_operand(operand, instrs, reg_map, m.span)
-            }
-            MeasureExprKind::QuantumCall { qubits, .. } => {
-                // QuantumCall in measure position: lower its first
-                // qubit as the measure target. (Multi-qubit
-                // measurement semantics aren't yet modeled in
-                // bytecode.)
-                qubits
-                    .first()
-                    .map(|q| self.lower_qubit_operand(q, instrs, reg_map, m.span))
-                    .unwrap_or_else(|| Ok(self.hw_qubit(0)))
-            }
-        }
-    }
-
-    fn rvalue_to_operand(
-        &mut self,
-        rv: &RValue<SsaExpr>,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-    ) -> Result<BcOperand> {
-        match rv {
-            RValue::Expr(e) => self.lower_expr_to_operand(e, instrs, reg_map),
-            RValue::Measure(m) => {
-                let qubit = self.measure_to_operand(m, instrs, reg_map)?;
-                let ty = m.ty.value_ty().unwrap_or(ValueTy::Scalar(PrimitiveTy::Bit));
-                let temp = self.alloc_temp_reg(reg_map, ty);
-                instrs.push(BcInstr {
-                    op: BcOp::Measure {
-                        dest: Some(temp),
-                        qubit,
-                    },
-                    span: m.span,
-                });
-                Ok(BcOperand::Reg(temp))
-            }
-        }
-    }
-
-    fn emit_terminator(
-        &mut self,
-        term: &SsaTerminator,
-        instrs: &mut Vec<BcInstr>,
-        reg_map: &mut RegMap,
-        _span: Span,
-    ) -> Result<BcTerminator> {
-        Ok(match term {
-            SsaTerminator::Goto(b) => BcTerminator::Goto(BlockId(b.0 as u32)),
-            SsaTerminator::Branch {
-                cond,
-                then_bb,
-                else_bb,
-            } => {
-                let cond = self.lower_expr_to_operand(cond, instrs, reg_map)?;
-                BcTerminator::Branch {
-                    cond,
-                    then_bb: BlockId(then_bb.0 as u32),
-                    else_bb: BlockId(else_bb.0 as u32),
-                }
-            }
-            SsaTerminator::Switch {
-                target,
-                cases,
-                default,
-            } => {
-                let target = self.lower_expr_to_operand(target, instrs, reg_map)?;
-                let cases = cases
-                    .iter()
-                    .map(|(labels, bb)| {
-                        let labels = labels
-                            .iter()
-                            .map(|v| self.lower_expr_to_operand(v, instrs, reg_map))
-                            .collect::<Result<_>>()?;
-                        Ok((labels, BlockId(bb.0 as u32)))
-                    })
-                    .collect::<Result<_>>()?;
-                BcTerminator::Switch {
-                    target,
-                    cases,
-                    default: BlockId(default.0 as u32),
-                }
-            }
-            SsaTerminator::Return(rv) => BcTerminator::Return(
-                rv.as_ref()
-                    .map(|r| self.rvalue_to_operand(r, instrs, reg_map))
-                    .transpose()?,
-            ),
-            SsaTerminator::End => BcTerminator::End,
-            SsaTerminator::Unreachable => BcTerminator::Unreachable,
-        })
-    }
-
-    // ── Helpers ────────────────────────────────────────────────────
 
     /// A cal-scope global: an openpulse-typed value (frame, port,
     /// waveform) declared at global scope. Cal/defcal bodies share these
@@ -1643,21 +308,46 @@ impl<'a> EmitCtx<'a> {
         }
     }
 
-    fn reg_for(&self, v: SsaValue, reg_map: &mut RegMap) -> Reg {
-        if let Some(r) = reg_map.by_ssa.get(&v) {
-            return *r;
-        }
-        // Symbol lookup; fall back to bool type if non-classical.
-        let ty = reg_value_ty(&self.symbols.get(v.symbol).ty)
-            .unwrap_or(ValueTy::Scalar(PrimitiveTy::Bool));
-        reg_map.alloc(v, ty)
+    /// Build a hardware-qubit operand, recording its index so the
+    /// global memory can be sized to include it.
+    fn hw_qubit(&mut self, n: u32) -> BcOperand {
+        self.max_hardware_qubit = Some(self.max_hardware_qubit.map_or(n, |m| m.max(n)));
+        BcOperand::HardwareQubit(n)
     }
 
-    fn alloc_temp_reg(&self, reg_map: &mut RegMap, ty: ValueTy) -> Reg {
-        // Synthetic reg with no SsaValue mapping — just push a slot.
-        let r = Reg(reg_map.types.len() as u32);
-        reg_map.types.push(ty);
-        r
+    fn must_global(&self, reg: &oqi_quantum::QuantumRegister, local: usize) -> u32 {
+        self.layout
+            .global_index(reg, local)
+            .expect("local index validated against register length") as u32
+    }
+
+    /// Intern a region for `reg`, deduplicating on its global ranges.
+    fn region_for(
+        &mut self,
+        reg: &oqi_quantum::QuantumRegister,
+        origin: Option<SymbolId>,
+    ) -> QubitRegionId {
+        let ranges = self.layout.global_ranges(reg);
+        if let Some(&id) = self.region_index.get(&ranges) {
+            return id;
+        }
+        let id = QubitRegionId(self.qubit_regions.len() as u32);
+        self.qubit_regions.push(QubitRegion {
+            ranges: ranges.clone(),
+            origin,
+        });
+        self.region_index.insert(ranges, id);
+        id
+    }
+
+    /// Declared length of a qubit parameter (`qubit q` → 1, `qubit[n]` → n),
+    /// used to resolve static slice bounds. `None` for non-qubit symbols.
+    fn qubit_param_len(&self, symbol: SymbolId) -> Option<usize> {
+        match self.symbols.get(symbol).ty {
+            Type::Qubit => Some(1),
+            Type::QubitReg(n) => Some(n),
+            _ => None,
+        }
     }
 
     fn intern_const(&mut self, v: Value) -> ConstId {
@@ -1673,6 +363,11 @@ impl<'a> EmitCtx<'a> {
         id
     }
 
+    /// The pooled constant for a non-negative position.
+    fn position_const(&mut self, position: usize) -> BcOperand {
+        BcOperand::Const(self.intern_const(Value::int(position as i128, iw(64))))
+    }
+
     fn intern_string(&mut self, s: String) -> StringId {
         let id = StringId(self.strings.len() as u32);
         self.strings.push(s);
@@ -1680,37 +375,1070 @@ impl<'a> EmitCtx<'a> {
     }
 }
 
-/// True when an lvalue index selects more than one position — a range
-/// (`a:b`) or a multi-element discrete set — so the store target is a slice
-/// rather than a single element.
-fn is_multi_index(io: &IndexOp<SsaExpr>) -> bool {
-    match &io.kind {
-        IndexKind::Set(es) => es.len() > 1,
-        IndexKind::Items(items) => !matches!(items.as_slice(), [IndexItem::Single(_)]),
+/// What is assigned or returned: an expression or a measurement.
+#[derive(Clone, Copy)]
+enum Source<'e> {
+    Expr(&'e Expr),
+    Measure(&'e MeasureExpr),
+}
+
+impl<'e> From<&'e RValue> for Source<'e> {
+    fn from(value: &'e RValue) -> Self {
+        match value {
+            RValue::Expr(e) => Source::Expr(e),
+            RValue::Measure(m) => Source::Measure(m),
+        }
     }
 }
 
-/// True when every item of an `Items` index op selects a single position
-/// (`a[i]` or the multi-dimensional `a[i, j]`), so the access targets one
-/// element rather than a slice.
-fn index_op_is_all_single(io: &IndexOp<SsaExpr>) -> bool {
-    matches!(&io.kind, IndexKind::Items(items)
-        if !items.is_empty() && items.iter().all(|it| matches!(it, IndexItem::Single(_))))
+/// Emission state of one frame: a procedure and the bodies nested in it.
+struct ProcEmitter<'c, 'a> {
+    ctx: &'c mut EmitCtx<'a>,
+    /// The register of each classical variable referenced so far.
+    regs: HashMap<SymbolId, Reg>,
+    /// Type of every register allocated so far, variables and temporaries.
+    register_types: Vec<ValueTy>,
+    /// Next free frame-local qubit slot for a runtime-bound alias
+    /// (`BcOp::AliasBind`).
+    alias_slot: u32,
+    /// True while emitting a calibration (`defcal`) or inline-`cal` body.
+    /// Reads/writes of cal-scope globals in such bodies go through the
+    /// VM's pulse-global store ([`BcOp::CalLoad`]/[`BcOp::CalStore`]).
+    in_cal: bool,
+    /// Instructions of the block being emitted.
+    instrs: Vec<BcInstr>,
+    /// Every variable assigned to, in whole or in part.
+    assigned: Vec<SymbolId>,
+    /// The procedures emitted for nested bodies.
+    nested: Vec<ProcId>,
 }
 
-fn primitive_to_value(p: crate::classical::Primitive, ty: &crate::types::Type) -> Value {
-    // Wrap a Primitive into the canonical Value by recovering a
-    // PrimitiveTy from the surrounding `Type`.
-    let vty = ty
-        .value_ty()
-        .unwrap_or(ValueTy::Scalar(crate::classical::PrimitiveTy::Bit));
-    match vty {
-        ValueTy::Scalar(pty) => Value::Scalar(crate::classical::Scalar::new_unchecked(p, pty)),
-        // Non-scalar literals shouldn't appear at this level; fall
-        // back to scalar bit.
-        _ => Value::Scalar(crate::classical::Scalar::new_unchecked(
-            p,
-            crate::classical::PrimitiveTy::Bit,
-        )),
+impl ProcEmitter<'_, '_> {
+    fn push(&mut self, op: BcOp, span: Span) {
+        self.instrs.push(BcInstr { op, span });
     }
+
+    /// A fresh register of type `ty`.
+    fn temp(&mut self, ty: ValueTy) -> Reg {
+        let reg = Reg(self.register_types.len() as u32);
+        self.register_types.push(ty);
+        reg
+    }
+
+    /// The register holding the classical variable `symbol`.
+    fn reg(&mut self, symbol: SymbolId, span: Span) -> Result<Reg> {
+        if let Some(reg) = self.regs.get(&symbol) {
+            return Ok(*reg);
+        }
+        let sym = self.ctx.symbols.get(symbol);
+        let ty = reg_value_ty(&sym.ty).ok_or_else(|| {
+            let message = format!("`{}` is not a classical value", sym.name);
+            CompileError::at(ErrorKind::InvalidContext(message), span)
+        })?;
+        let reg = self.temp(ty);
+        self.regs.insert(symbol, reg);
+        Ok(reg)
+    }
+
+    /// The register type of the value of an expression of type `ty`.
+    fn value_ty(&self, ty: &Type, span: Span) -> Result<ValueTy> {
+        reg_value_ty(ty).ok_or_else(|| {
+            let message = format!("a value is needed here, not `{ty}`");
+            CompileError::at(ErrorKind::InvalidContext(message), span)
+        })
+    }
+
+    /// Registers holding the classical parameters of a gate/subroutine/
+    /// defcal, in declaration order. Empty for owners that take no
+    /// classical parameters.
+    fn param_registers(&mut self, owner: &ProcOwner) -> Result<Vec<Reg>> {
+        let params: Vec<SymbolId> = match owner {
+            ProcOwner::Gate(s) | ProcOwner::Subroutine(s) => {
+                self.ctx.layout.classical_params(*s).to_vec()
+            }
+            // Defcal signatures aren't in the layout (several defcals can
+            // share one gate symbol); read the params off the declaration.
+            ProcOwner::Calibration(i) => self.ctx.calibrations[*i as usize]
+                .args
+                .iter()
+                .filter_map(|a| match a {
+                    sir::CalibrationArg::Param(sym) => Some(*sym),
+                    sir::CalibrationArg::Expr(_) => None,
+                })
+                .collect(),
+            _ => return Ok(Vec::new()),
+        };
+        params
+            .into_iter()
+            .map(|symbol| self.reg(symbol, self.ctx.symbols.get(symbol).span))
+            .collect()
+    }
+
+    /// The program's input contract: a `(symbol, reg)` for every
+    /// `input`-declared variable, allocated here so even an unread input
+    /// has a register to seed. In symbol (declaration) order.
+    fn input_registers(&mut self) -> Result<Vec<(SymbolId, Reg)>> {
+        let symbols = self.ctx.symbols.iter();
+        let inputs: Vec<(SymbolId, Span)> = symbols
+            .filter(|s| s.kind == SymbolKind::Input && s.ty.value_ty().is_some())
+            .map(|s| (s.id, s.span))
+            .collect();
+        inputs
+            .into_iter()
+            .map(|(symbol, span)| Ok((symbol, self.reg(symbol, span)?)))
+            .collect()
+    }
+
+    fn emit_blocks(&mut self, cfg: &Cfg) -> Result<Vec<BcBlock>> {
+        cfg.blocks
+            .iter()
+            .map(|block| {
+                for stmt in &block.stmts {
+                    self.emit_stmt(stmt)?;
+                }
+                let terminator = self.emit_terminator(&block.terminator)?;
+                Ok(BcBlock {
+                    id: block_id(block.id),
+                    instrs: std::mem::take(&mut self.instrs),
+                    terminator,
+                    span: block.span,
+                })
+            })
+            .collect()
+    }
+
+    /// Emit a nested body as a procedure that runs on this frame.
+    fn emit_nested(&mut self, body: &[Stmt], owner: ProcOwner) -> Result<ProcId> {
+        let cfg = cfg::build_body(body, owner.clone(), false, &mut self.ctx.symbols)?;
+        let id = self.ctx.reserve_proc(owner.clone());
+        let outer_instrs = std::mem::take(&mut self.instrs);
+        let outer_in_cal = self.in_cal;
+        let outer_assigned = self.assigned.len();
+        self.in_cal |= matches!(owner, ProcOwner::InlineCal);
+        let blocks = self.emit_blocks(&cfg);
+        self.in_cal = outer_in_cal;
+        self.instrs = outer_instrs;
+        // What a nested body assigns is not a result of this one: a cal
+        // block's values do not leak out of it, and a `durationof` scope
+        // only runs to be timed.
+        self.assigned.truncate(outer_assigned);
+        let proc = &mut self.ctx.procedures[id.0 as usize];
+        proc.blocks = blocks?;
+        proc.entry = block_id(cfg.entry);
+        self.nested.push(id);
+        Ok(id)
+    }
+
+    fn emit_stmt(&mut self, stmt: &Stmt) -> Result<()> {
+        let span = stmt.span;
+        match &stmt.kind {
+            StmtKind::Alias(sir::Alias { symbol, value }) => {
+                // An operand referencing another runtime-bound alias or a
+                // qubit parameter forces this alias to be runtime-bound too
+                // (parameters are only bound to concrete qubits at call time).
+                let layout = &self.ctx.layout;
+                let uses_dynamic = value.iter().any(|e| {
+                    qubits::peel_index_chain(e).is_some_and(|(s, _)| {
+                        layout.dynamic_alias_of(s).is_some() || layout.param_slot(s).is_some()
+                    })
+                });
+                // Static qubit aliases resolve into the layout and emit
+                // nothing; a non-constant index falls back to a runtime
+                // bind; classical aliases keep their metadata op.
+                let resolved = match uses_dynamic {
+                    true => Some(Resolved::Dynamic),
+                    false => layout.resolve_alias_value(value, &self.ctx.symbols)?,
+                };
+                match resolved {
+                    Some(Resolved::Static(reg)) => self.ctx.layout.define_alias(*symbol, reg),
+                    Some(Resolved::Dynamic) => self.lower_dynamic_alias(*symbol, value, span)?,
+                    None => {
+                        let value = self.operands(value)?;
+                        let symbol = *symbol;
+                        self.push(BcOp::Alias { symbol, value }, span);
+                    }
+                }
+            }
+            StmtKind::GateCall(sir::GateCall {
+                gate,
+                modifiers,
+                args,
+                qubits,
+                // Compile-time timing only.
+                duration: _,
+            }) => {
+                // A bare gate-call whose name resolves to a `def` (e.g.
+                // `hadamard_layer ancilla;`) is a subroutine call, not a gate.
+                if self.ctx.symbols.get(*gate).kind == SymbolKind::Subroutine {
+                    if !modifiers.is_empty() {
+                        let message = "gate modifiers cannot be applied to a subroutine call";
+                        return Err(CompileError::at(
+                            ErrorKind::InvalidContext(message.into()),
+                            span,
+                        ));
+                    }
+                    return self.emit_call(None, CallTarget::Symbol(*gate), args, qubits, span);
+                }
+                let modifiers = modifiers
+                    .iter()
+                    .map(|m| self.lower_gate_modifier(m))
+                    .collect::<Result<_>>()?;
+                let args = self.operands(args)?;
+                let qubits = self.qubit_operands(qubits, span)?;
+                let gate = *gate;
+                self.push(
+                    BcOp::GateCall {
+                        gate,
+                        modifiers,
+                        args,
+                        qubits,
+                    },
+                    span,
+                );
+            }
+            // `measure q -> lv;` assigns like `lv = measure q;`.
+            StmtKind::Measure(sir::Measure { measure, target }) => match target {
+                Some(target) => self.emit_assignment(target, Source::Measure(measure), span)?,
+                None => self.emit_measure(measure, None, span)?,
+            },
+            StmtKind::Reset(q) => {
+                let qubit = self.qubit_operand(q, span)?;
+                self.push(BcOp::Reset { qubit }, span);
+            }
+            StmtKind::Barrier(qs) => {
+                let qubits = self.qubit_operands(qs, span)?;
+                self.push(BcOp::Barrier { qubits }, span);
+            }
+            StmtKind::Delay(sir::Delay { duration, operands }) => {
+                let duration = self.operand(duration)?;
+                let qubits = self.qubit_operands(operands, span)?;
+                self.push(BcOp::Delay { duration, qubits }, span);
+            }
+            StmtKind::Assignment(sir::Assignment { target, value }) => {
+                self.emit_assignment(target, value.into(), span)?;
+            }
+            StmtKind::Pragma(s) => {
+                let content = self.ctx.intern_string(s.clone());
+                self.push(BcOp::Pragma { content }, span);
+            }
+            StmtKind::Cal(sir::CalibrationBody::Opaque(s)) => {
+                let content = self.ctx.intern_string(s.clone());
+                self.push(BcOp::CalOpaque { content }, span);
+            }
+            StmtKind::Cal(sir::CalibrationBody::OpenPulse(body)) => {
+                let body = self.emit_nested(body, ProcOwner::InlineCal)?;
+                self.push(BcOp::CalOpenPulse { body }, span);
+            }
+            // Evaluated for its effects; the value is dropped.
+            StmtKind::ExprStmt(e) => match &e.kind {
+                ExprKind::Call(call) => {
+                    self.emit_call(None, call.callee.clone(), &call.args, &[], e.span)?
+                }
+                _ => {
+                    self.operand(e)?;
+                }
+            },
+            StmtKind::Nop(qs) => {
+                let qubits = self.qubit_operands(qs, span)?;
+                self.push(BcOp::Nop { qubits }, span);
+            }
+            StmtKind::Box(_)
+            | StmtKind::If(_)
+            | StmtKind::For(_)
+            | StmtKind::While(_)
+            | StmtKind::Switch(_)
+            | StmtKind::Break
+            | StmtKind::Continue
+            | StmtKind::Return(_)
+            | StmtKind::End => {
+                unreachable!("the CFG builder lowers control flow to terminators")
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_assignment(&mut self, target: &LValue, value: Source<'_>, span: Span) -> Result<()> {
+        self.assigned.push(target.symbol());
+        match target {
+            // A cal-scope global lives in the VM's pulse-global store, where
+            // every cal/defcal body sees it.
+            LValue::Var(symbol) if self.in_cal && self.ctx.is_pulse_global(*symbol) => {
+                let ty = self.value_ty(&self.ctx.symbols.get(*symbol).ty, span)?;
+                let temp = self.temp(ty);
+                self.emit_to_dest(value, temp, span)?;
+                let (symbol, src) = (*symbol, BcOperand::Reg(temp));
+                self.push(BcOp::CalStore { symbol, src }, span);
+            }
+            LValue::Var(symbol) => {
+                let dest = self.reg(*symbol, span)?;
+                self.emit_to_dest(value, dest, span)?;
+            }
+            // Successive subscripts (`a[i][j]`) index ever deeper into the
+            // same variable.
+            LValue::Indexed { symbol, indices } => {
+                let target = self.reg(*symbol, span)?;
+                let indices = self.index_chain(indices.iter())?;
+                let value = match value {
+                    Source::Expr(e) => self.operand(e)?,
+                    Source::Measure(m) => {
+                        let temp = self.temp(self.value_ty(&m.ty, m.span)?);
+                        self.emit_measure(m, Some(temp), m.span)?;
+                        BcOperand::Reg(temp)
+                    }
+                };
+                self.push(
+                    BcOp::StoreElement {
+                        target,
+                        indices,
+                        value,
+                    },
+                    span,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_to_dest(&mut self, value: Source<'_>, dest: Reg, span: Span) -> Result<()> {
+        match value {
+            Source::Expr(e) => self.emit_expr_to_dest(e, dest, span),
+            Source::Measure(m) => self.emit_measure(m, Some(dest), span),
+        }
+    }
+
+    /// Measure into `dest`, or — for a subroutine called on qubits — call
+    /// it for its value.
+    fn emit_measure(&mut self, m: &MeasureExpr, dest: Option<Reg>, span: Span) -> Result<()> {
+        match &m.kind {
+            MeasureExprKind::Measure { operand } => {
+                let qubit = self.qubit_operand(operand, m.span)?;
+                self.push(BcOp::Measure { dest, qubit }, span);
+                Ok(())
+            }
+            MeasureExprKind::QuantumCall {
+                callee,
+                args,
+                qubits,
+            } => {
+                let sym = self.ctx.symbols.get(*callee);
+                if sym.kind != SymbolKind::Subroutine || reg_value_ty(&sym.ty).is_none() {
+                    let message = format!("`{}` does not return a value", sym.name);
+                    return Err(CompileError::at(ErrorKind::InvalidContext(message), m.span));
+                }
+                self.emit_call(dest, CallTarget::Symbol(*callee), args, qubits, span)
+            }
+        }
+    }
+
+    /// Emit a call with `args` followed by the qubit operands `qubits`
+    /// (as the bare `name(args) qubits;` syntax passes them).
+    ///
+    /// An array (or part of one) passed to a `mutable` parameter is lent
+    /// to the callee by reference (docs/subroutines.rst) for the call.
+    fn emit_call(
+        &mut self,
+        dest: Option<Reg>,
+        callee: CallTarget,
+        args: &[Expr],
+        qubits: &[QubitOperand],
+        span: Span,
+    ) -> Result<()> {
+        let params: Vec<SymbolId> = match &callee {
+            CallTarget::Symbol(callee) => self.ctx.layout.classical_params(*callee).to_vec(),
+            CallTarget::Intrinsic(_) => Vec::new(),
+        };
+        let mut params = params.into_iter();
+        let mut lent = Vec::new();
+        let mut operands = Vec::with_capacity(args.len() + qubits.len());
+        for arg in args {
+            // Qubit arguments bind to slots, not to classical parameters.
+            if matches!(arg.kind, ExprKind::HardwareQubit(_)) || self.peel_qubit_ref(arg).is_some()
+            {
+                operands.push(self.operand(arg)?);
+                continue;
+            }
+            let lend_as =
+                params
+                    .next()
+                    .and_then(|param| match self.ctx.symbols.get(param).ty.value_ty() {
+                        Some(ty @ ValueTy::ArrayRef(r)) if r.access() == RefAccess::Mutable => {
+                            Some(ty)
+                        }
+                        _ => None,
+                    });
+            // Only an array the caller owns needs lending; a reference it
+            // was passed itself already refers to the original.
+            let owned = qubits::peel_index_chain(arg).filter(|(base, _)| {
+                matches!(
+                    self.ctx.symbols.get(*base).ty.value_ty(),
+                    Some(ValueTy::Array(_))
+                )
+            });
+            match (lend_as, owned) {
+                (Some(ty), Some((base, indices))) => {
+                    let base = self.reg(base, arg.span)?;
+                    let indices = self.index_chain(indices.into_iter())?;
+                    let dest = self.temp(ty);
+                    self.push(
+                        BcOp::Borrow {
+                            dest,
+                            base,
+                            indices,
+                        },
+                        arg.span,
+                    );
+                    lent.push(base);
+                    operands.push(BcOperand::Reg(dest));
+                }
+                _ => operands.push(self.operand(arg)?),
+            }
+        }
+        operands.extend(self.qubit_operands(qubits, span)?);
+        let callee = match callee {
+            CallTarget::Symbol(s) => BcCallTarget::Symbol(s),
+            CallTarget::Intrinsic(i) => BcCallTarget::Intrinsic(i),
+        };
+        let args = operands;
+        self.push(BcOp::Call { dest, callee, args }, span);
+        lent.dedup();
+        for reg in lent {
+            self.push(BcOp::Release { reg }, span);
+        }
+        Ok(())
+    }
+
+    fn emit_expr_to_dest(&mut self, e: &Expr, dest: Reg, span: Span) -> Result<()> {
+        match &e.kind {
+            ExprKind::Binary(sir::Binary { op, left, right }) => {
+                let lhs = self.operand(left)?;
+                let rhs = self.operand(right)?;
+                let op = *op;
+                self.push(BcOp::Binary { op, dest, lhs, rhs }, span);
+            }
+            ExprKind::Unary(sir::Unary { op, operand }) => {
+                let src = self.operand(operand)?;
+                let op = *op;
+                self.push(BcOp::Unary { op, dest, src }, span);
+            }
+            ExprKind::Cast(sir::Cast { target_ty, operand }) => {
+                let src = self.operand(operand)?;
+                let target_ty = self.value_ty(target_ty, span)?;
+                self.push(
+                    BcOp::Cast {
+                        dest,
+                        target_ty,
+                        src,
+                    },
+                    span,
+                );
+            }
+            ExprKind::Index(sir::Index { base, index }) => {
+                let base = self.operand(base)?;
+                let indices = self.index_chain([index].into_iter())?;
+                self.push(
+                    BcOp::LoadElement {
+                        dest,
+                        base,
+                        indices,
+                    },
+                    span,
+                );
+            }
+            ExprKind::Call(sir::Call { callee, args }) => {
+                self.emit_call(Some(dest), callee.clone(), args, &[], span)?;
+            }
+            ExprKind::ArrayLiteral(_) => {
+                // Flatten nested literals (multi-dimensional arrays) into a
+                // single flat list of scalar leaves; `NewArray` builds the
+                // array from the flat values against the destination's full
+                // shape (see `oqi_classical::Array::new`).
+                let mut items = Vec::new();
+                self.collect_array_literal_leaves(e, &mut items)?;
+                self.push(BcOp::NewArray { dest, items }, span);
+            }
+            ExprKind::DurationOf(scope) => {
+                let body = self.emit_nested(scope, ProcOwner::DurationOf)?;
+                self.push(BcOp::DurationOf { dest, body }, span);
+            }
+            ExprKind::Literal(_) | ExprKind::Var(_) | ExprKind::HardwareQubit(_) => {
+                let src = self.operand(e)?;
+                self.push(BcOp::Move { dest, src }, span);
+            }
+        }
+        Ok(())
+    }
+
+    /// Lower an expression into a single operand, emitting instructions
+    /// into temporaries for any non-trivial sub-expression. Qubit
+    /// references (named registers, aliases, parameters — bare or
+    /// indexed) are resolved through the layout so that call arguments
+    /// carry global qubit references.
+    fn operand(&mut self, e: &Expr) -> Result<BcOperand> {
+        if let Some((sym, ops)) = self.peel_qubit_ref(e) {
+            return self.resolve_qubit_ref(sym, &ops, e.span);
+        }
+        Ok(match &e.kind {
+            ExprKind::Literal(p) => {
+                let ty = match self.value_ty(&e.ty, e.span)? {
+                    ValueTy::Scalar(ty) => ty,
+                    other => {
+                        let message = format!("a literal cannot be of type `{other}`");
+                        return Err(CompileError::at(ErrorKind::Unsupported(message), e.span));
+                    }
+                };
+                let value = Value::Scalar(Scalar::new_unchecked(p.clone(), ty));
+                BcOperand::Const(self.ctx.intern_const(value))
+            }
+            // Compile-time constants (`pi`, `tau`, `euler`, user `const`s)
+            // carry their value in the symbol table and are pooled.
+            ExprKind::Var(symbol) => match self.ctx.symbols.get(*symbol).const_value.clone() {
+                Some(value) => BcOperand::Const(self.ctx.intern_const(value)),
+                None if self.in_cal && self.ctx.is_pulse_global(*symbol) => {
+                    let dest = self.temp(self.value_ty(&e.ty, e.span)?);
+                    let symbol = *symbol;
+                    self.push(BcOp::CalLoad { dest, symbol }, e.span);
+                    BcOperand::Reg(dest)
+                }
+                None => BcOperand::Reg(self.reg(*symbol, e.span)?),
+            },
+            ExprKind::HardwareQubit(n) => self.ctx.hw_qubit(*n as u32),
+            _ => {
+                let temp = self.temp(self.value_ty(&e.ty, e.span)?);
+                self.emit_expr_to_dest(e, temp, e.span)?;
+                BcOperand::Reg(temp)
+            }
+        })
+    }
+
+    fn operands(&mut self, exprs: &[Expr]) -> Result<Vec<BcOperand>> {
+        exprs.iter().map(|e| self.operand(e)).collect()
+    }
+
+    fn optional_operand(&mut self, e: Option<&Expr>) -> Result<Option<BcOperand>> {
+        e.map(|e| self.operand(e)).transpose()
+    }
+
+    /// Recursively collect the scalar-leaf operands of a (possibly nested)
+    /// array literal in row-major order. Nested `ArrayLiteral`s are descended
+    /// into rather than spilled to temporaries, so a multi-dimensional literal
+    /// becomes one flat operand list matching its element count.
+    fn collect_array_literal_leaves(&mut self, e: &Expr, items: &mut Vec<BcOperand>) -> Result<()> {
+        match &e.kind {
+            ExprKind::ArrayLiteral(arr) => {
+                for item in &arr.items {
+                    self.collect_array_literal_leaves(item, items)?;
+                }
+            }
+            _ => items.push(self.operand(e)?),
+        }
+        Ok(())
+    }
+
+    /// The positions a chain of subscripts selects, one [`BcIndex`] per
+    /// subscript position.
+    fn index_chain<'e>(
+        &mut self,
+        subscripts: impl Iterator<Item = &'e IndexOp>,
+    ) -> Result<Vec<BcIndex>> {
+        let mut out = Vec::new();
+        for subscript in subscripts {
+            match &subscript.kind {
+                IndexKind::Set(members) => out.push(BcIndex::Set(self.operands(members)?)),
+                IndexKind::Items(items) => {
+                    for item in items {
+                        out.push(match item {
+                            IndexItem::Single(e) => BcIndex::Item(self.operand(e)?),
+                            IndexItem::Range(r) => BcIndex::Range {
+                                start: self.optional_operand(r.start.as_deref())?,
+                                step: self.optional_operand(r.step.as_deref())?,
+                                end: self.optional_operand(r.end.as_deref())?,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn qubit_operand(&mut self, q: &QubitOperand, span: Span) -> Result<BcOperand> {
+        match q {
+            QubitOperand::Indexed { symbol, indices } => {
+                let indices: Vec<&IndexOp> = indices.iter().collect();
+                self.resolve_qubit_ref(*symbol, &indices, span)
+            }
+            QubitOperand::Hardware(n) => Ok(self.ctx.hw_qubit(*n as u32)),
+        }
+    }
+
+    fn qubit_operands(&mut self, qs: &[QubitOperand], span: Span) -> Result<Vec<BcOperand>> {
+        qs.iter().map(|q| self.qubit_operand(q, span)).collect()
+    }
+
+    /// Resolve a (possibly indexed) named qubit reference to a global
+    /// memory operand, or to a positional parameter reference inside
+    /// gate/subroutine bodies.
+    fn resolve_qubit_ref(
+        &mut self,
+        symbol: SymbolId,
+        indices: &[&IndexOp],
+        span: Span,
+    ) -> Result<BcOperand> {
+        // Gate / subroutine qubit parameter: bound at call time.
+        if let Some(slot) = self.ctx.layout.param_slot(symbol) {
+            return match *indices {
+                [] => Ok(BcOperand::Whole(QubitSource::Slot(slot))),
+                [io] => match qubits::single_index_expr(io) {
+                    Some(e) => {
+                        let index = Box::new(self.operand(e)?);
+                        Ok(BcOperand::Index {
+                            source: QubitSource::Slot(slot),
+                            index,
+                        })
+                    }
+                    None => {
+                        let len = self.ctx.qubit_param_len(symbol).ok_or_else(|| {
+                            CompileError::at(
+                                ErrorKind::Unsupported(
+                                    "slice of a non-register qubit parameter".into(),
+                                ),
+                                io.span,
+                            )
+                        })?;
+                        match qubits::resolve_index(io, len)? {
+                            // Static slice / discrete set: resolve positions
+                            // against the declared length at compile time.
+                            Resolved::Static(positions) => Ok(BcOperand::Select {
+                                source: QubitSource::Slot(slot),
+                                positions: positions.iter().map(|&p| p as u32).collect(),
+                            }),
+                            // Runtime slice bounds: materialize a transient
+                            // alias bound to the parameter's qubits at run time.
+                            Resolved::Dynamic => {
+                                let src = AliasSrc::Param {
+                                    slot,
+                                    len: Some(len),
+                                };
+                                let alias = self.bind_transient_alias(&src, &[io], span)?;
+                                Ok(BcOperand::Whole(QubitSource::Slot(alias)))
+                            }
+                        }
+                    }
+                },
+                _ => Err(multi_dimensional(span)),
+            };
+        }
+
+        // Declared register or resolved alias: global memory.
+        if let Some(reg) = self.ctx.layout.register_of(symbol) {
+            let reg = reg.clone();
+            return match *indices {
+                [] => {
+                    if reg.len() == 1 {
+                        Ok(BcOperand::Qubit(self.ctx.must_global(&reg, 0)))
+                    } else {
+                        Ok(BcOperand::Whole(QubitSource::Region(
+                            self.ctx.region_for(&reg, Some(symbol)),
+                        )))
+                    }
+                }
+                [io] => match qubits::resolve_index(io, reg.len())? {
+                    Resolved::Static(idxs) => {
+                        if let [only] = idxs.as_slice() {
+                            Ok(BcOperand::Qubit(self.ctx.must_global(&reg, *only)))
+                        } else {
+                            let sub = qubits::select(&reg, &idxs);
+                            Ok(BcOperand::Whole(QubitSource::Region(
+                                self.ctx.region_for(&sub, Some(symbol)),
+                            )))
+                        }
+                    }
+                    // Runtime single index: the VM maps the logical
+                    // index through the region's ranges.
+                    Resolved::Dynamic => {
+                        match qubits::single_index_expr(io) {
+                            Some(e) => {
+                                let region = self.ctx.region_for(&reg, Some(symbol));
+                                let index = Box::new(self.operand(e)?);
+                                Ok(BcOperand::Index {
+                                    source: QubitSource::Region(region),
+                                    index,
+                                })
+                            }
+                            // Runtime multi-element slice: materialize a
+                            // transient alias and reference it by slot.
+                            None => {
+                                let src = AliasSrc::Region {
+                                    reg: reg.clone(),
+                                    origin: symbol,
+                                };
+                                let slot = self.bind_transient_alias(&src, &[io], span)?;
+                                Ok(BcOperand::Whole(QubitSource::Slot(slot)))
+                            }
+                        }
+                    }
+                },
+                _ => Err(multi_dimensional(span)),
+            };
+        }
+
+        // Runtime-bound alias: resolved through its bind slot by the VM.
+        if let Some(da) = self.ctx.layout.dynamic_alias_of(symbol) {
+            return match *indices {
+                [] => Ok(BcOperand::Whole(QubitSource::Slot(da.slot))),
+                [io] => match qubits::single_index_expr(io) {
+                    Some(e) => {
+                        let index = Box::new(self.alias_index_operand(&da, e)?);
+                        Ok(BcOperand::Index {
+                            source: QubitSource::Slot(da.slot),
+                            index,
+                        })
+                    }
+                    // Runtime multi-element slice of an alias: re-bind it
+                    // through a transient alias slot.
+                    None => {
+                        let src = AliasSrc::Alias(da);
+                        let slot = self.bind_transient_alias(&src, &[io], span)?;
+                        Ok(BcOperand::Whole(QubitSource::Slot(slot)))
+                    }
+                },
+                _ => Err(multi_dimensional(span)),
+            };
+        }
+
+        Err(CompileError::at(
+            ErrorKind::Unsupported(format!(
+                "cannot resolve qubit reference `{}`",
+                self.ctx.symbols.get(symbol).name
+            )),
+            span,
+        ))
+    }
+
+    /// Lower a runtime-bound `let` alias to a [`BcOp::AliasBind`] and
+    /// register its slot/length for later [`QubitSource::Slot`]
+    /// references. Each `++` operand becomes one or more segments.
+    fn lower_dynamic_alias(
+        &mut self,
+        alias_sym: SymbolId,
+        value: &[Expr],
+        span: Span,
+    ) -> Result<()> {
+        let slot = self.alias_slot;
+        self.alias_slot += 1;
+
+        let mut segments: Vec<BcAliasSegment> = Vec::new();
+        let mut total_len: Option<usize> = Some(0);
+        for expr in value {
+            let len = self.alias_operand_segments(expr, &mut segments)?;
+            total_len = match (total_len, len) {
+                (Some(a), Some(b)) => Some(a + b),
+                _ => None,
+            };
+        }
+
+        self.push(BcOp::AliasBind { slot, segments }, span);
+        self.ctx
+            .layout
+            .define_dynamic_alias(alias_sym, slot, total_len);
+        Ok(())
+    }
+
+    /// Append the segment(s) for one `++` operand of a runtime alias,
+    /// returning its length (`None` if it contains a runtime range).
+    fn alias_operand_segments(
+        &mut self,
+        expr: &Expr,
+        out: &mut Vec<BcAliasSegment>,
+    ) -> Result<Option<usize>> {
+        if matches!(expr.kind, ExprKind::HardwareQubit(_)) {
+            return Err(CompileError::at(
+                ErrorKind::Unsupported("physical qubits cannot be aliased".into()),
+                expr.span,
+            ));
+        }
+        let Some((sym, ops)) = qubits::peel_index_chain(expr) else {
+            return Err(CompileError::at(
+                ErrorKind::Unsupported(
+                    "cannot mix quantum and classical operands in an alias".into(),
+                ),
+                expr.span,
+            ));
+        };
+        // The base this operand indexes: a qubit parameter (bound at call
+        // time), a declared register / static alias, or another runtime-bound
+        // alias.
+        let src = if let Some(slot) = self.ctx.layout.param_slot(sym) {
+            AliasSrc::Param {
+                slot,
+                len: self.ctx.qubit_param_len(sym),
+            }
+        } else if let Some(reg) = self.ctx.layout.register_of(sym) {
+            AliasSrc::Region {
+                reg: reg.clone(),
+                origin: sym,
+            }
+        } else if let Some(da) = self.ctx.layout.dynamic_alias_of(sym) {
+            AliasSrc::Alias(da)
+        } else {
+            return Err(CompileError::at(
+                ErrorKind::Unsupported(format!(
+                    "cannot resolve qubit reference `{}`",
+                    self.ctx.symbols.get(sym).name
+                )),
+                expr.span,
+            ));
+        };
+
+        self.alias_segments_for(&src, &ops, out, expr.span)
+    }
+
+    /// Build the alias segment(s) for one indexed qubit operand against
+    /// `src`. Shared by [`Self::alias_operand_segments`] (the `let`-alias
+    /// path) and [`Self::bind_transient_alias`] (inline runtime slices).
+    fn alias_segments_for(
+        &mut self,
+        src: &AliasSrc,
+        ops: &[&IndexOp],
+        out: &mut Vec<BcAliasSegment>,
+        span: Span,
+    ) -> Result<Option<usize>> {
+        match *ops {
+            [] => {
+                out.push(BcAliasSegment::Operand(self.alias_whole_operand(src)));
+                Ok(src.len())
+            }
+            [io] => match &io.kind {
+                IndexKind::Set(es) => {
+                    if es.is_empty() {
+                        return Err(CompileError::at(
+                            ErrorKind::InvalidContext(
+                                "a quantum register cannot be indexed by an empty index set".into(),
+                            ),
+                            io.span,
+                        ));
+                    }
+                    for e in es {
+                        let op = self.alias_element_operand(src, e)?;
+                        out.push(BcAliasSegment::Operand(op));
+                    }
+                    Ok(Some(es.len()))
+                }
+                IndexKind::Items(items) => match items.as_slice() {
+                    [IndexItem::Single(e)] => {
+                        let op = self.alias_element_operand(src, e)?;
+                        out.push(BcAliasSegment::Operand(op));
+                        Ok(Some(1))
+                    }
+                    [IndexItem::Range(r)] => {
+                        let source = self.alias_whole_operand(src);
+                        let mut lower = |b: Option<&Expr>| -> Result<Option<Box<BcOperand>>> {
+                            match b {
+                                Some(e) => Ok(Some(Box::new(self.operand(e)?))),
+                                None => Ok(None),
+                            }
+                        };
+                        let start = lower(r.start.as_deref())?;
+                        let step = lower(r.step.as_deref())?;
+                        let end = lower(r.end.as_deref())?;
+                        out.push(BcAliasSegment::Slice {
+                            source,
+                            start,
+                            step,
+                            end,
+                        });
+                        // Length depends on runtime bounds.
+                        Ok(None)
+                    }
+                    _ => Err(multi_dimensional(io.span)),
+                },
+            },
+            _ => Err(multi_dimensional(span)),
+        }
+    }
+
+    /// Materialize a runtime multi-element slice (`q[{a, b}]`, `q[i:j]`)
+    /// used directly as an operand: allocate an anonymous alias slot, emit
+    /// its [`BcOp::AliasBind`], and return the slot. The caller wraps it in
+    /// a [`QubitSource::Slot`].
+    fn bind_transient_alias(
+        &mut self,
+        src: &AliasSrc,
+        ops: &[&IndexOp],
+        span: Span,
+    ) -> Result<u32> {
+        let slot = self.alias_slot;
+        self.alias_slot += 1;
+        let mut segments = Vec::new();
+        self.alias_segments_for(src, ops, &mut segments, span)?;
+        self.push(BcOp::AliasBind { slot, segments }, span);
+        Ok(slot)
+    }
+
+    /// The operand resolving to the whole base list of `src`.
+    fn alias_whole_operand(&mut self, src: &AliasSrc) -> BcOperand {
+        let source = match src {
+            AliasSrc::Region { reg, origin } => {
+                QubitSource::Region(self.ctx.region_for(reg, Some(*origin)))
+            }
+            AliasSrc::Alias(da) => QubitSource::Slot(da.slot),
+            AliasSrc::Param { slot, .. } => QubitSource::Slot(*slot),
+        };
+        BcOperand::Whole(source)
+    }
+
+    /// A single-qubit operand selecting element `e` of `src`.
+    fn alias_element_operand(&mut self, src: &AliasSrc, e: &Expr) -> Result<BcOperand> {
+        match src {
+            AliasSrc::Region { reg, origin } => match qubits::literal_index(e) {
+                Some(k) => {
+                    let local = qubits::normalize_index(k, reg.len())
+                        .map_err(|err| err.with_span(e.span))?;
+                    Ok(BcOperand::Qubit(self.ctx.must_global(reg, local)))
+                }
+                None => {
+                    let region = self.ctx.region_for(reg, Some(*origin));
+                    let index = Box::new(self.operand(e)?);
+                    Ok(BcOperand::Index {
+                        source: QubitSource::Region(region),
+                        index,
+                    })
+                }
+            },
+            AliasSrc::Alias(da) => {
+                let index = Box::new(self.alias_index_operand(da, e)?);
+                Ok(BcOperand::Index {
+                    source: QubitSource::Slot(da.slot),
+                    index,
+                })
+            }
+            AliasSrc::Param { slot, len } => {
+                let index = match (qubits::literal_index(e), len) {
+                    (Some(k), Some(n)) => {
+                        let local =
+                            qubits::normalize_index(k, *n).map_err(|err| err.with_span(e.span))?;
+                        self.ctx.position_const(local)
+                    }
+                    _ => self.operand(e)?,
+                };
+                Ok(BcOperand::Index {
+                    source: QubitSource::Slot(*slot),
+                    index: Box::new(index),
+                })
+            }
+        }
+    }
+
+    /// Lower a logical index into a runtime alias. A constant index is
+    /// normalized against the alias length when known (so negative
+    /// indices and bounds are resolved at compile time); otherwise it is
+    /// left for the VM to resolve and bounds-check.
+    fn alias_index_operand(&mut self, da: &qubits::DynAlias, e: &Expr) -> Result<BcOperand> {
+        match (qubits::literal_index(e), da.len) {
+            (Some(k), Some(len)) => {
+                let local = qubits::normalize_index(k, len).map_err(|err| err.with_span(e.span))?;
+                Ok(self.ctx.position_const(local))
+            }
+            (Some(k), None) if k < 0 => Err(CompileError::at(
+                ErrorKind::Unsupported("negative index into a runtime-length alias".into()),
+                e.span,
+            )),
+            _ => self.operand(e),
+        }
+    }
+
+    /// Whether `e` is a (possibly indexed) reference to a named qubit
+    /// register, qubit alias, or qubit parameter; returns the base
+    /// symbol and the index ops in application order.
+    fn peel_qubit_ref<'e>(&self, e: &'e Expr) -> Option<(SymbolId, Vec<&'e IndexOp>)> {
+        let (sym, ops) = qubits::peel_index_chain(e)?;
+        let qubit_like = self.ctx.layout.param_slot(sym).is_some()
+            || self.ctx.layout.register_of(sym).is_some()
+            || matches!(
+                self.ctx.symbols.get(sym).kind,
+                SymbolKind::Qubit | SymbolKind::GateQubit
+            );
+        qubit_like.then_some((sym, ops))
+    }
+
+    fn lower_gate_modifier(&mut self, m: &GateModifier) -> Result<BcGateModifier> {
+        Ok(match m {
+            GateModifier::Inv => BcGateModifier::Inv,
+            GateModifier::Pow(e) => BcGateModifier::Pow(self.operand(e)?),
+            GateModifier::Ctrl(n) => BcGateModifier::Ctrl(*n as u32),
+            GateModifier::NegCtrl(n) => BcGateModifier::NegCtrl(*n as u32),
+        })
+    }
+
+    fn emit_terminator(&mut self, term: &Terminator) -> Result<BcTerminator> {
+        Ok(match term {
+            Terminator::Goto(b) => BcTerminator::Goto(block_id(*b)),
+            Terminator::Branch {
+                cond,
+                then_bb,
+                else_bb,
+            } => BcTerminator::Branch {
+                cond: self.operand(cond)?,
+                then_bb: block_id(*then_bb),
+                else_bb: block_id(*else_bb),
+            },
+            Terminator::Switch {
+                target,
+                cases,
+                default,
+            } => {
+                let target = self.operand(target)?;
+                let cases = cases
+                    .iter()
+                    .map(|(labels, bb)| Ok((self.operands(labels)?, block_id(*bb))))
+                    .collect::<Result<_>>()?;
+                BcTerminator::Switch {
+                    target,
+                    cases,
+                    default: block_id(*default),
+                }
+            }
+            Terminator::Box {
+                duration,
+                body,
+                after,
+            } => BcTerminator::Box {
+                duration: self.operand(duration)?,
+                body: block_id(*body),
+                after: block_id(*after),
+            },
+            Terminator::Return(None) => BcTerminator::Return(None),
+            Terminator::Return(Some(RValue::Expr(e))) => {
+                BcTerminator::Return(Some(self.operand(e)?))
+            }
+            Terminator::Return(Some(RValue::Measure(m))) => {
+                let temp = self.temp(self.value_ty(&m.ty, m.span)?);
+                self.emit_measure(m, Some(temp), m.span)?;
+                BcTerminator::Return(Some(BcOperand::Reg(temp)))
+            }
+            Terminator::End => BcTerminator::End,
+            Terminator::Unreachable => BcTerminator::Unreachable,
+        })
+    }
+}
+
+fn block_id(id: cfg::BasicBlockId) -> BlockId {
+    BlockId(id.0 as u32)
+}
+
+/// The register type backing a value of type `ty`, if it has one.
+/// Classical types use their value type; openpulse values (ports, frames,
+/// waveforms) are opaque handles minted by the VM's pulse handler, carried
+/// in a `uint[64]` register.
+fn reg_value_ty(ty: &Type) -> Option<ValueTy> {
+    match ty {
+        Type::Openpulse(_) => Some(ValueTy::Scalar(PrimitiveTy::Uint(iw(64)))),
+        _ => ty.value_ty(),
+    }
+}
+
+/// The error for more than one subscript on a qubit register.
+fn multi_dimensional(span: Span) -> CompileError {
+    let message = "multi-dimensional index on a quantum register";
+    CompileError::at(ErrorKind::Unsupported(message.into()), span)
 }

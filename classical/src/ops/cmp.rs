@@ -15,11 +15,17 @@ pub(super) fn signature(op: BinOp, lhs: PrimitiveTy, rhs: PrimitiveTy) -> Option
         // Any type is comparable for equality with itself.
         Eq | Neq if lhs.is_compatible(rhs) => Some((lhs, rhs, Bool)),
         Eq | Neq => promote_arithmetic(lhs, rhs).map(|ty| (ty, ty, Bool)),
-        Lt | Gt | Lte | Gte => {
-            let ty = promote_arithmetic(lhs, rhs)?;
-            matches!(ty, Uint(_) | Int(_) | Float(_) | Duration | Angle(_))
-                .then_some((ty, ty, Bool))
-        }
+        // docs/classical.rst: "Integers, angles, bits, and classical
+        // registers can be compared".
+        Lt | Gt | Lte | Gte => match (lhs, rhs) {
+            (Bit, Bit) => Some((lhs, rhs, Bool)),
+            (BitReg(a), BitReg(b)) => (a == b).then_some((lhs, rhs, Bool)),
+            _ => {
+                let ty = promote_arithmetic(lhs, rhs)?;
+                matches!(ty, Uint(_) | Int(_) | Float(_) | Duration | Angle(_))
+                    .then_some((ty, ty, Bool))
+            }
+        },
         _ => None,
     }
 }
@@ -69,6 +75,8 @@ fn equal(a: &Primitive, b: &Primitive) -> Option<bool> {
 fn order(a: &Primitive, b: &Primitive) -> Option<Option<Ordering>> {
     use Primitive::*;
     Some(match (a, b) {
+        (Bit(a), Bit(b)) => Some(a.cmp(b)),
+        (BitReg(a), BitReg(b)) => Some(a.cmp(b)),
         (Uint(a), Uint(b)) => Some(a.cmp(b)),
         (Int(a), Int(b)) => Some(a.cmp(b)),
         (Float(a), Float(b)) => a.partial_cmp(b),

@@ -9,12 +9,12 @@ use std::collections::HashMap;
 
 use num_complex::Complex64;
 use oqi_classical::{
-    Array, ArrayRef, ArrayTy, BitReg, Duration, DurationUnit, FloatWidth, Index, Primitive,
-    PrimitiveTy, RefAccess, Scalar, Value, ValueTy, iw,
+    Array, ArrayRefShape, ArrayTy, BitReg, Duration, DurationUnit, FloatWidth, Index, Primitive,
+    PrimitiveTy, Scalar, Value, ValueTy, iw,
 };
 use oqi_compile::bytecode::{
     BcAliasSegment, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCallTarget, BcGateModifier,
-    BcModule, BcOp, BcOperand, BcTerminator, BlockId, ProcId, ProcOwner, QubitSource, Reg,
+    BcIndex, BcModule, BcOp, BcOperand, BcTerminator, BlockId, ProcId, ProcOwner, QubitSource, Reg,
     is_sample_safe,
 };
 use oqi_compile::symbol::{SymbolId, SymbolKind};
@@ -463,6 +463,25 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     let t = value_i128(&self.eval(frame, target)?)?;
                     current = self.switch_target(frame, t, cases, *default)?;
                 }
+                BcTerminator::Box {
+                    duration,
+                    body,
+                    after,
+                } => {
+                    // A `box[d]` pins its contents to duration `d`: a timing
+                    // pass counts `d` and skips them (running them would
+                    // count their delays twice).
+                    current = match self.timing.is_some() {
+                        false => *body,
+                        true => {
+                            let d = value_duration(&self.eval(frame, duration)?)?;
+                            if let Some(timing) = self.timing.as_mut() {
+                                timing.advance_base(d);
+                            }
+                            *after
+                        }
+                    };
+                }
                 BcTerminator::Return(opt) => {
                     return Ok(match opt {
                         Some(o) => Some(self.eval(frame, o)?),
@@ -527,35 +546,48 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 indices,
             } => {
                 let base = self.eval(frame, base)?;
-                let idx = self.eval_index_items(frame, indices)?;
+                let idx = self.eval_indices(frame, base.ty(), indices)?;
                 let v = base.get(&idx)?;
                 self.set(frame, *dest, v);
                 Ok(())
             }
             BcOp::StoreElement {
-                new,
-                base,
+                target,
                 indices,
                 value,
             } => {
-                let mut arr = self.eval(frame, base)?;
-                let idx = self.eval_index_items(frame, indices)?;
                 let value = self.eval(frame, value)?;
-                arr.set(&idx, value)?;
-                self.set(frame, *new, arr);
+                let unset = VmErrorKind::UnsetRegister(target.0);
+                let Some(held) = &frame.regs[target.0 as usize] else {
+                    return Err(unset);
+                };
+                let idx = self.eval_indices(frame, held.ty(), indices)?;
+                let held = frame.regs[target.0 as usize].as_mut().ok_or(unset)?;
+                held.set(&idx, value)?;
                 Ok(())
             }
-            BcOp::StoreSlice {
-                new,
+            BcOp::Borrow {
+                dest,
                 base,
                 indices,
-                value,
             } => {
-                let mut arr = self.eval(frame, base)?;
-                let value = self.eval(frame, value)?;
-                let sel = Index::Select(indices.iter().map(|&i| i as isize).collect());
-                arr.set(&[sel], value)?;
-                self.set(frame, *new, arr);
+                // The array becomes shared between `base` and the reference
+                // handed out; an array already shared stays so.
+                let held = &mut frame.regs[base.0 as usize];
+                if let Some(Value::Array(array)) = held.take_if(|v| matches!(v, Value::Array(_))) {
+                    *held = Some(Value::ArrayRef(array.into_ref_mut()));
+                }
+                let shared = self.eval(frame, &BcOperand::Reg(*base))?;
+                let idx = self.eval_indices(frame, shared.ty(), indices)?;
+                let lent = shared.get(&idx)?;
+                self.set(frame, *dest, lent);
+                Ok(())
+            }
+            BcOp::Release { reg } => {
+                if let Some(Value::ArrayRef(shared)) = &frame.regs[reg.0 as usize] {
+                    let array = shared.to_owned()?;
+                    self.set(frame, *reg, Value::Array(array));
+                }
                 Ok(())
             }
             BcOp::NewArray { dest, items } => {
@@ -713,23 +745,6 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             BcOp::Nop { .. } => Ok(()),
 
             // ── Structured / misc ──────────────────────────────────────
-            BcOp::Box { duration, body } => {
-                // A `box[d]` pins its subcircuit to duration `d`: a
-                // timing pass counts `d` and skips the body (recursing
-                // would count its delays twice).
-                if self.timing.is_some()
-                    && let Some(dur) = duration
-                {
-                    let d = value_duration(&self.eval(frame, dur)?)?;
-                    if let Some(t) = self.timing.as_mut() {
-                        t.advance_base(d);
-                    }
-                    return Ok(());
-                }
-                let mut child = self.fresh_frame(*body);
-                Box::pin(self.exec_proc(&mut child)).await?;
-                Ok(())
-            }
             BcOp::AliasBind { slot, segments } => {
                 let mut resolved: Vec<u32> = Vec::new();
                 for seg in segments {
@@ -742,14 +757,14 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                             end,
                         } => {
                             let base = self.qubits(frame, source)?;
-                            let sliced = self.slice_indices(
+                            let positions = self.range_positions(
                                 frame,
-                                &base,
+                                base.len(),
                                 start.as_deref(),
                                 step.as_deref(),
                                 end.as_deref(),
                             )?;
-                            resolved.extend(sliced);
+                            resolved.extend(positions.into_iter().map(|p| base[p]));
                         }
                     }
                 }
@@ -772,8 +787,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 // Inline cal blocks execute only when a pulse handler is
                 // installed; otherwise calibrations stay dormant.
                 if self.pulse.is_some() {
-                    let mut child = self.fresh_frame(*body);
-                    Box::pin(self.exec_proc(&mut child)).await?;
+                    // The body is a scope of this frame.
+                    let outer = std::mem::replace(&mut frame.proc, *body);
+                    let result = Box::pin(self.exec_proc(frame)).await;
+                    frame.proc = outer;
+                    result?;
                 }
                 Ok(())
             }
@@ -791,8 +809,15 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 // Run the body as a timing pass: quantum side effects
                 // are suppressed and elapsed time accumulates in a
                 // fresh [`TimingState`]. Save/restore nests correctly.
+                // The scope sees this frame's variables, but runs on a copy:
+                // measuring a duration changes nothing.
                 let saved = self.timing.replace(TimingState::new());
-                let mut child = self.fresh_frame(*body);
+                let mut child = Frame {
+                    proc: *body,
+                    regs: frame.regs.clone(),
+                    slots: frame.slots.clone(),
+                    mods: GateModifiers::none(),
+                };
                 let res = Box::pin(self.exec_proc(&mut child)).await;
                 let elapsed = self.timing.take().map(|t| t.elapsed());
                 self.timing = saved;
@@ -842,14 +867,8 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     let proc_id = *self.sub_procs.get(s).ok_or_else(|| {
                         VmErrorKind::Unsupported(format!("call to non-subroutine symbol s{}", s.0))
                     })?;
-                    let (mut child, by_ref) = self.bind_subroutine(frame, proc_id, args)?;
-                    let ret = Box::pin(self.exec_proc(&mut child)).await?;
-                    // Hand each array lent to a `mutable` parameter back to
-                    // the register it came from.
-                    for (reg, array) in by_ref {
-                        self.set(frame, reg, Value::Array(array.to_owned()?));
-                    }
-                    ret
+                    let mut child = self.bind_subroutine(frame, proc_id, args)?;
+                    Box::pin(self.exec_proc(&mut child)).await?
                 };
                 (name, ret)
             }
@@ -866,20 +885,17 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// declaration order); qubit args bind to their positional slot.
     ///
     /// Array parameters are references (docs/subroutines.rst). A `readonly`
-    /// one can't be told from a copy, so it is bound as one. An array passed
-    /// to a `mutable` parameter is shared between the caller's register and
-    /// the callee for the duration of the call; those registers are
-    /// returned with their shared arrays, for the caller to take back
-    /// ownership once the callee is done.
+    /// one can't be told from a copy, so it is bound as one; the argument
+    /// of a `mutable` one is a reference the caller made with
+    /// [`BcOp::Borrow`].
     fn bind_subroutine(
         &self,
-        frame: &mut Frame,
+        frame: &Frame,
         proc_id: ProcId,
         args: &[BcOperand],
-    ) -> KindResult<(Frame, Vec<(Reg, ArrayRef)>)> {
+    ) -> KindResult<Frame> {
         let proc = &self.module.procedures[proc_id.0 as usize];
         let mut child = self.fresh_frame(proc_id);
-        let mut by_ref = Vec::new();
         // Qubit args fill dense qubit slots `[0, n)`; classical args go to
         // the procedure's parameter registers, both in declaration order.
         let mut qslot = 0usize;
@@ -893,20 +909,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             let param = *params.next().ok_or_else(|| {
                 VmErrorKind::Unsupported("more classical args than parameters".into())
             })?;
-            if let BcOperand::Reg(reg) = arg
-                && let ValueTy::ArrayRef(ty) = proc.register_types[param.0 as usize]
-                && ty.access() == RefAccess::Mutable
-            {
-                let held = &mut frame.regs[reg.0 as usize];
-                if let Some(Value::Array(array)) = held.take_if(|v| matches!(v, Value::Array(_))) {
-                    let shared = array.into_ref_mut();
-                    *held = Some(Value::ArrayRef(shared.clone()));
-                    by_ref.push((*reg, shared));
-                }
-            }
             child.regs[param.0 as usize] = Some(self.eval(frame, arg)?);
         }
-        Ok((child, by_ref))
+        Ok(child)
     }
 
     // ── Calibrations ──────────────────────────────────────────────────
@@ -1306,13 +1311,39 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         ops.iter().map(|op| self.eval(frame, op)).collect()
     }
 
-    /// Evaluate per-dimension index operands into `Index::Item`s for an
-    /// element load/store (`a[i, j, …]`).
-    fn eval_index_items(&self, frame: &Frame, indices: &[BcOperand]) -> KindResult<Vec<Index>> {
-        indices
-            .iter()
-            .map(|op| Ok(Index::Item(value_isize(&self.eval(frame, op)?)?)))
-            .collect()
+    /// Resolve the subscripts of an indexed load or store on a value of
+    /// type `ty` to classical indices. A range is resolved against the size
+    /// of the dimension (or register) it slices.
+    fn eval_indices(
+        &self,
+        frame: &Frame,
+        ty: ValueTy,
+        indices: &[BcIndex],
+    ) -> KindResult<Vec<Index>> {
+        let position = |op: &BcOperand| value_isize(&self.eval(frame, op)?);
+        let sizes = index_sizes(ty);
+        let resolve = |(k, index): (usize, &BcIndex)| {
+            Ok(match index {
+                BcIndex::Item(op) => Index::Item(position(op)?),
+                BcIndex::Set(members) => {
+                    Index::Select(members.iter().map(position).collect::<KindResult<_>>()?)
+                }
+                BcIndex::Range { start, step, end } => {
+                    let len = *sizes.get(k).ok_or_else(|| {
+                        VmErrorKind::Type(format!("`{ty}` has no dimension {k} to slice"))
+                    })?;
+                    let positions = self.range_positions(
+                        frame,
+                        len,
+                        start.as_ref(),
+                        step.as_ref(),
+                        end.as_ref(),
+                    )?;
+                    Index::Select(positions.into_iter().map(|p| p as isize).collect())
+                }
+            })
+        };
+        indices.iter().enumerate().map(resolve).collect()
     }
 
     /// Resolve a classical operand to a value.
@@ -1407,45 +1438,38 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         out
     }
 
-    /// Apply OpenQASM range semantics `base[start : step : end]` at run
-    /// time (docs/types.rst): inclusive bounds, defaults start 0 / step 1
-    /// / end len-1, negative indices counting from the end. Used to bind
-    /// runtime-valued alias slices ([`BcAliasSegment::Slice`]).
-    fn slice_indices(
+    /// The positions the range `start : step : end` selects from `len`
+    /// items (docs/types.rst): inclusive bounds, defaulting to the first
+    /// and last item in the direction of `step` (itself 1 by default);
+    /// negative positions count from the end.
+    fn range_positions(
         &self,
         frame: &Frame,
-        base: &[u32],
+        len: usize,
         start: Option<&BcOperand>,
         step: Option<&BcOperand>,
         end: Option<&BcOperand>,
-    ) -> KindResult<Vec<u32>> {
-        let len = base.len() as i128;
-        let step = match step {
-            Some(op) => value_i128(&self.eval(frame, op)?)?,
-            None => 1,
+    ) -> KindResult<Vec<usize>> {
+        let len = len as i128;
+        let bound = |op: Option<&BcOperand>| -> KindResult<Option<i128>> {
+            op.map(|op| value_i128(&self.eval(frame, op)?)).transpose()
         };
+        let step = bound(step)?.unwrap_or(1);
         if step == 0 {
             return Err(VmErrorKind::Type("range step must be non-zero".into()));
         }
-        let start = match start {
-            Some(op) => value_i128(&self.eval(frame, op)?)?,
-            None if step > 0 => 0,
-            None => len - 1,
-        };
-        let end = match end {
-            Some(op) => value_i128(&self.eval(frame, op)?)?,
-            None if step > 0 => len - 1,
-            None => 0,
-        };
+        let (first, last) = if step > 0 { (0, len - 1) } else { (len - 1, 0) };
+        let start = bound(start)?.unwrap_or(first);
+        let end = bound(end)?.unwrap_or(last);
 
         let mut out = Vec::new();
         let mut cur = start;
         while (step > 0 && cur <= end) || (step < 0 && cur >= end) {
             let adj = if cur < 0 { cur + len } else { cur };
             if !(0..len).contains(&adj) {
-                return Err(VmErrorKind::Type(format!("qubit index {cur} out of range")));
+                return Err(VmErrorKind::Type(format!("index {cur} out of range")));
             }
-            out.push(base[adj as usize]);
+            out.push(adj as usize);
             cur += step;
         }
         Ok(out)
@@ -1464,9 +1488,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     }
 
     /// A fresh register file for `proc`, with every register set to its
-    /// type's zero. OpenQASM default-initializes classical variables to
-    /// zero, and this is also the SSA "entry value" of any variable;
-    /// callers then override parameter registers with bound arguments.
+    /// type's zero (OpenQASM default-initializes classical variables to
+    /// zero); callers then override parameter registers with bound
+    /// arguments.
     fn fresh_regs(&self, proc: ProcId) -> Vec<Option<Value>> {
         self.module.procedures[proc.0 as usize]
             .register_types
@@ -1484,6 +1508,22 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 }
 
 // ── Free helpers ──────────────────────────────────────────────────────
+
+/// The sizes successive subscript positions index into on a value of type
+/// `ty`: the dimensions of an array, then (or for a scalar) its bits.
+fn index_sizes(ty: ValueTy) -> Vec<usize> {
+    let (mut sizes, element) = match ty {
+        ValueTy::Scalar(ty) => (Vec::new(), ty),
+        ValueTy::Array(ty) => (ty.shape().get().to_vec(), ty.ty()),
+        ValueTy::ArrayRef(ty) => match ty.shape() {
+            ArrayRefShape::Fixed(shape) => (shape.get().to_vec(), ty.ty()),
+            // A reference at run time always knows its shape.
+            ArrayRefShape::Dim(_) => (Vec::new(), ty.ty()),
+        },
+    };
+    sizes.extend(element.bit_count().map(|n| n as usize));
+    sizes
+}
 
 /// The zero value of a register type (OpenQASM default initialization).
 /// Returns `None` for types with no natural zero we materialize (array

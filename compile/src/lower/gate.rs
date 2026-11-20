@@ -80,7 +80,7 @@ impl Lowerer {
         body: &ast::StmtOrScope<'_>,
         out: &mut Vec<sir::Stmt>,
     ) -> Result<()> {
-        let var_ty = resolve_scalar_type(ty, self.resolver.symbols(), self.resolver.options())?;
+        let var_ty = resolve_scalar_type(ty, &self.resolver)?;
         let values = self.gate_for_values(iterable)?;
         for v in values {
             let cv = gate_loop_value(&var_ty, v);
@@ -164,9 +164,7 @@ impl Lowerer {
                 e.span(),
             )
         };
-        let Value::Scalar(s) = eval_const_expr(e, self.resolver.symbols(), self.resolver.options())
-            .map_err(|_| err())?
-        else {
+        let Value::Scalar(s) = eval_const_expr(e, &self.resolver).map_err(|_| err())? else {
             return Err(err());
         };
         s.cast(PrimitiveTy::Int(iw(128)))

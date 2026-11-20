@@ -1170,7 +1170,7 @@ use oqi_compile::classical::{FloatWidth, Primitive};
 use oqi_compile::sir::{self, Assignment, Call, ExprKind, RValue, StmtKind};
 use oqi_compile::types::Type;
 
-fn first_assignment(program: &sir::Program) -> (&sir::LValue<sir::Expr>, &sir::RValue<sir::Expr>) {
+fn first_assignment(program: &sir::Program) -> (&sir::LValue, &sir::RValue) {
     for stmt in &program.body {
         if let StmtKind::Assignment(Assignment { target, value }) = &stmt.kind {
             return (target, value);
@@ -1179,7 +1179,7 @@ fn first_assignment(program: &sir::Program) -> (&sir::LValue<sir::Expr>, &sir::R
     panic!("no Assignment statement found");
 }
 
-fn as_literal(rv: &RValue<sir::Expr>) -> (&Primitive, &Type) {
+fn as_literal(rv: &RValue) -> (&Primitive, &Type) {
     let RValue::Expr(e) = rv else {
         panic!("expected RValue::Expr");
     };

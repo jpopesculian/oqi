@@ -30,6 +30,7 @@ impl ErrorKind {
             ErrorKind::Unsupported(_) => (13, "unsupported"),
             ErrorKind::InvalidLiteral(_) => (14, "invalid literal"),
             ErrorKind::QubitIndexOutOfRange { .. } => (15, "index out of range"),
+            ErrorKind::NotGlobalScope(_) => (16, "not in the global scope"),
         };
         (Code::compile(num), label)
     }
@@ -63,6 +64,9 @@ impl fmt::Display for ErrorKind {
                 )
             }
             ErrorKind::InvalidContext(msg) => write!(f, "{msg}"),
+            ErrorKind::NotGlobalScope(what) => {
+                write!(f, "{what} are only allowed in the global scope")
+            }
             ErrorKind::InvalidGateBody(msg) => write!(f, "invalid gate body: {msg}"),
             ErrorKind::InvalidLiteral(msg) => write!(f, "invalid literal: {msg}"),
             ErrorKind::Unsupported(msg) => write!(f, "unsupported: {msg}"),

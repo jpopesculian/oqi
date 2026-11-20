@@ -97,6 +97,7 @@ fn successors(term: &BcTerminator) -> Vec<u32> {
         BcTerminator::Branch {
             then_bb, else_bb, ..
         } => vec![then_bb.0, else_bb.0],
+        BcTerminator::Box { body, after, .. } => vec![body.0, after.0],
         BcTerminator::Switch { cases, default, .. } => {
             let mut v: Vec<u32> = cases.iter().map(|(_, b)| b.0).collect();
             v.push(default.0);

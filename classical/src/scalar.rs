@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use crate::bitreg::BitReg;
 use crate::duration::{Duration, DurationUnit};
 use crate::error::Result;
-use crate::primitive::{FloatWidth, IntWidth, Primitive, PrimitiveTy, iw};
+use crate::primitive::{
+    FloatWidth, IntWidth, Primitive, PrimitiveTy, angle_bits, angle_from_bits, iw,
+};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Scalar {
@@ -46,7 +48,19 @@ impl Scalar {
     #[inline]
     pub fn cast(self, to: PrimitiveTy) -> Result<Self> {
         self.ty.cast(to)?;
-        Self::new(self.value, to)
+        // An angle and a register of its width are cast by "a direct copy
+        // of the bit pattern" (docs/types.rst), which takes the angle's
+        // width to read.
+        let value = match (self.value, self.ty, to) {
+            (Primitive::Angle(a), PrimitiveTy::Angle(bw), PrimitiveTy::BitReg(_)) => {
+                Primitive::bitreg_u128(angle_bits(a, bw.get()))
+            }
+            (Primitive::BitReg(reg), _, PrimitiveTy::Angle(bw)) => {
+                Primitive::Angle(angle_from_bits(reg.as_u128(), bw.get()))
+            }
+            (value, ..) => value,
+        };
+        Self::new(value, to)
     }
 
     #[inline]
@@ -197,6 +211,19 @@ impl fmt::Display for Scalar {
 mod tests {
     use super::*;
     use crate::iw;
+
+    #[test]
+    fn angle_and_register_casts_copy_the_bit_pattern() {
+        // 9π/8 is 9/16 of a turn: "1001" as an `angle[4]`.
+        let angle = Scalar::new_unchecked(
+            Primitive::Angle(turns::Angle(0b1001 << 124)),
+            PrimitiveTy::Angle(iw(4)),
+        );
+        let bits = angle.clone().cast(PrimitiveTy::BitReg(4)).unwrap();
+        assert_eq!(bits.to_string(), "\"1001\"");
+        let back = bits.cast(PrimitiveTy::Angle(iw(4))).unwrap();
+        assert_eq!(back.to_string(), angle.to_string());
+    }
 
     #[test]
     fn angle_display_uses_reduced_pi_fraction() {

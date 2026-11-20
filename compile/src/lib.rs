@@ -1,6 +1,6 @@
 //! The OpenQASM 3 compiler: source → SIR → bytecode.
 //!
-//! [`compile`] is the whole pipeline (`parse → resolve → lower → cfg → ssa →
+//! [`compile`] is the whole pipeline (`parse → resolve → lower → cfg →
 //! bytecode`). [`compile_source`] stops at the structured IR
 //! ([`sir::Program`]), which [`bytecode::emit`] lowers the rest of the way.
 
@@ -19,7 +19,6 @@ mod qubits;
 mod resolve;
 mod scope;
 pub mod sir;
-mod ssa;
 pub mod symbol;
 pub mod types;
 

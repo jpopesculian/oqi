@@ -334,29 +334,15 @@ mod lt {
 
     #[test]
     fn bit_lt() {
-        assert!(
-            BinOp::Lt
-                .apply(bit_scalar(false), bit_scalar(true))
-                .is_err()
-        );
+        // docs/classical.rst: bits and registers can be compared.
+        let result = BinOp::Lt.apply(bit_scalar(false), bit_scalar(true));
+        assert_eq!(result.unwrap().to_string(), "true");
     }
 
     #[test]
     fn bitreg_lt_same_width() {
-        assert!(
-            BinOp::Lt
-                .apply(
-                    Value::Scalar(Scalar::new_unchecked(
-                        Primitive::bitreg_u128(0b0011),
-                        BitReg(4)
-                    )),
-                    Value::Scalar(Scalar::new_unchecked(
-                        Primitive::bitreg_u128(0b0100),
-                        BitReg(4),
-                    ))
-                )
-                .is_err()
-        )
+        let result = BinOp::Lt.apply(bitreg(0b0011, 4), bitreg(0b0100, 4));
+        assert_eq!(result.unwrap().to_string(), "true");
     }
 
     #[test]
@@ -460,29 +446,15 @@ mod gt {
 
     #[test]
     fn bit_gt() {
-        assert!(
-            BinOp::Gt
-                .apply(bit_scalar(true), bit_scalar(false))
-                .is_err()
-        );
+        // docs/classical.rst: bits and registers can be compared.
+        let result = BinOp::Gt.apply(bit_scalar(true), bit_scalar(false));
+        assert_eq!(result.unwrap().to_string(), "true");
     }
 
     #[test]
     fn bitreg_gt_same_width() {
-        assert!(
-            BinOp::Gt
-                .apply(
-                    Value::Scalar(Scalar::new_unchecked(
-                        Primitive::bitreg_u128(0b0100),
-                        BitReg(4)
-                    )),
-                    Value::Scalar(Scalar::new_unchecked(
-                        Primitive::bitreg_u128(0b0011),
-                        BitReg(4),
-                    ))
-                )
-                .is_err()
-        )
+        let result = BinOp::Gt.apply(bitreg(0b0100, 4), bitreg(0b0011, 4));
+        assert_eq!(result.unwrap().to_string(), "true");
     }
 
     #[test]

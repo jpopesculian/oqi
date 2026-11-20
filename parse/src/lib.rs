@@ -920,23 +920,30 @@ impl<'a> Parser<'a> {
     ) -> Result<Vec<StmtOrScope<'a>>> {
         let mut sub = Parser::new(Lexer::new(body).openpulse(), offset)?;
         let mut stmts = Vec::new();
-        while let Some(tok) = sub.peek() {
+        while sub.peek().is_some() {
+            let item = sub.parse_stmt_or_scope()?;
             // Directly inside a calibration block only the grammar's
             // `openpulseStatement` subset is allowed. The lexer has already
             // demoted `cal` and `defcal` to identifiers, so those cannot
             // appear; the rest of the exclusions are rejected here.
-            let excluded = match tok {
-                Token::Gate => Some("`gate` declarations are"),
-                Token::Nop => Some("`nop` is"),
-                Token::DefCalGrammar => Some("`defcalgrammar` is"),
-                _ => None,
+            let excluded = match &item {
+                StmtOrScope::Scope(_) => None,
+                StmtOrScope::Stmt(stmt) => match stmt.kind {
+                    StmtKind::Gate { .. } => Some("`gate` declarations are"),
+                    StmtKind::Nop(_) => Some("`nop` is"),
+                    StmtKind::CalibrationGrammar(_) => Some("`defcalgrammar` is"),
+                    StmtKind::OldStyleDecl { .. } => Some("`creg` and `qreg` declarations are"),
+                    // (A measurement can still be assigned: `c = measure $0;`.)
+                    StmtKind::MeasureArrow { .. } => Some("measurement statements are"),
+                    _ => None,
+                }
+                .map(|what| (what, stmt.span)),
             };
-            if let Some(what) = excluded {
-                return Err(sub.error(format!(
-                    "{what} not allowed inside an OpenPulse calibration block"
-                )));
+            if let Some((what, span)) = excluded {
+                let message = format!("{what} not allowed inside an OpenPulse calibration block");
+                return Err(Error::new(span, message));
             }
-            stmts.push(sub.parse_stmt_or_scope()?);
+            stmts.push(item);
         }
         self.comments.append(&mut sub.comments);
         Ok(stmts)
@@ -2176,10 +2183,25 @@ cphase(π / 2) q[0], q[1];
         // statements directly inside a calibration block; nested bodies use
         // the ordinary statement rule.
         let grammar = "defcalgrammar \"openpulse\";";
-        for excluded in ["nop $0;", "gate g q { }", "defcalgrammar \"openpulse\";"] {
-            assert!(parse(&format!("{grammar} cal {{ {excluded} }}")).is_err());
+        for excluded in [
+            "nop $0;",
+            "gate g q { }",
+            "defcalgrammar \"openpulse\";",
+            "creg c[2];",
+            "qreg q[2];",
+            "measure $0;",
+            "measure $0 -> c;",
+            "@note\n nop $0;",
+        ] {
+            let err = parse(&format!("{grammar} cal {{ {excluded} }}")).unwrap_err();
+            assert!(
+                err.message.contains("not allowed inside"),
+                "{excluded}: {}",
+                err.message
+            );
         }
         parse_ok(&format!("{grammar} cal {{ box {{ nop $0; }} }}"));
+        parse_ok(&format!("{grammar} cal {{ bit c; c = measure $0; }}"));
     }
 
     #[test]

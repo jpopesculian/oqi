@@ -19,7 +19,8 @@ pub struct ConstId(pub u32);
 pub struct StringId(pub u32);
 
 /// Dense per-procedure register identifier. `Reg(0)`..`Reg(n)` cover
-/// every SSA value the procedure produces.
+/// every classical variable the procedure touches and every temporary it
+/// computes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Reg(pub u32);
 
@@ -39,7 +40,7 @@ pub struct BcVersion {
 }
 
 impl BcVersion {
-    pub const CURRENT: BcVersion = BcVersion { major: 4, minor: 0 };
+    pub const CURRENT: BcVersion = BcVersion { major: 5, minor: 0 };
 }
 
 /// Global quantum memory: every named register is statically allocated
@@ -133,6 +134,13 @@ impl BcModule {
     }
 }
 
+/// A body of code and the layout of the frame it runs on.
+///
+/// A gate, subroutine, `defcal` or the program itself runs on a frame of
+/// its own. The body of an inline `cal` block or the scope of a
+/// `durationof` is a procedure too, but one that runs on the frame of the
+/// procedure it appears in: it sees that procedure's variables, and so
+/// repeats its register and qubit-slot layout.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BcProcedure {
     pub owner: ProcOwner,
@@ -140,7 +148,7 @@ pub struct BcProcedure {
     pub register_types: Vec<ValueTy>,
     /// Registers holding this procedure's classical parameters, in
     /// declaration order. Empty for procedures that take no classical
-    /// parameters (top-level, box/cal/durationof bodies). The calling
+    /// parameters (top-level, cal/durationof bodies). The calling
     /// convention: a caller binds its positional classical arguments to
     /// these registers before entering the body. Qubit parameters are
     /// addressed separately as frame-local qubit slots
@@ -161,11 +169,9 @@ pub enum ProcOwner {
     Subroutine(SymbolId),
     Gate(SymbolId),
     Calibration(u32),
-    /// Lifted body of a `box { ... }` block stmt.
-    Box,
-    /// Lifted body of an inline `cal { ... }` block stmt.
+    /// Body of an inline `cal { ... }` block.
     InlineCal,
-    /// Lifted body of a `durationof({...})` expression.
+    /// Scope of a `durationof({...})` expression.
     DurationOf,
 }
 
@@ -252,7 +258,7 @@ pub enum QubitSource {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum BcOperand {
-    /// Classical SSA register.
+    /// Classical register.
     Reg(Reg),
     /// Pooled constant value.
     Const(ConstId),
@@ -297,6 +303,24 @@ pub enum BcAliasSegment {
     },
 }
 
+/// How one subscript position selects from a bit register or an array
+/// dimension. Negative positions count from the end.
+#[derive(Clone, Serialize, Deserialize)]
+pub enum BcIndex {
+    /// One position: `a[i]`.
+    Item(BcOperand),
+    /// The listed positions, in order: `a[{i, j}]`.
+    Set(Vec<BcOperand>),
+    /// Every `step`-th position from `start` to `end`, both included:
+    /// `a[start:step:end]`. A bound left out is the first or last position
+    /// in the direction of `step`, which defaults to 1.
+    Range {
+        start: Option<BcOperand>,
+        step: Option<BcOperand>,
+        end: Option<BcOperand>,
+    },
+}
+
 // ── Gate modifiers ───────────────────────────────────────────────────
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -338,43 +362,46 @@ pub enum BcOp {
     },
 
     // ── Moves & memory ─────────────────────────────────────────────
-    /// `dest = src`. Covers literal-to-register copies and the parallel
-    /// register-to-register moves inserted by phi elimination.
+    /// `dest = src`.
     Move {
         dest: Reg,
         src: BcOperand,
     },
-    /// Element read `dest = base[i0, i1, …]`. `indices` holds one operand
-    /// per indexed dimension (a single entry for ordinary 1-D indexing,
-    /// several for a multi-dimensional access like `arr[i, j]`).
+    /// Indexed read `dest = base[indices]`: an element or sub-array for
+    /// [`BcIndex::Item`]s, a slice for a final set or range, and bits of an
+    /// element once the array dimensions are used up. `indices` are applied
+    /// in order, each to the leading dimension of what the previous ones
+    /// left.
     LoadElement {
         dest: Reg,
         base: BcOperand,
-        indices: Vec<BcOperand>,
+        indices: Vec<BcIndex>,
     },
-    /// Whole-array kill+def: `new = base; new[i0, i1, …] = value`. Reads
-    /// the entire array via `base`, produces a fresh `new` register
-    /// after the partial update. `indices` holds one operand per indexed
-    /// dimension (see [`BcOp::LoadElement`]).
+    /// Indexed write `target[indices] = value`, in place (see
+    /// [`BcOp::LoadElement`] for `indices`).
     StoreElement {
-        new: Reg,
-        base: BcOperand,
-        indices: Vec<BcOperand>,
-        value: BcOperand,
-    },
-    /// Whole-register kill+def for a slice target: `new = base;
-    /// new[indices] = value`. `value` is a multi-bit register whose bits
-    /// are written into `base` at the given (already-resolved) positions,
-    /// in order. Used for `reg[a:b] = ...` and discrete-set assignment.
-    StoreSlice {
-        new: Reg,
-        base: BcOperand,
-        indices: Vec<u32>,
+        target: Reg,
+        indices: Vec<BcIndex>,
         value: BcOperand,
     },
     NewArray {
         dest: Reg,
         items: Vec<BcOperand>,
+    },
+    /// Lend out the array in `base` (or the part of it `indices` select) to
+    /// pass to a `mutable` array parameter: `dest` becomes a reference
+    /// through which the callee writes to the array itself. `base` is
+    /// shared for as long as the reference is out; [`BcOp::Release`] ends
+    /// that.
+    Borrow {
+        dest: Reg,
+        base: Reg,
+        indices: Vec<BcIndex>,
+    },
+    /// Take back sole ownership of the array in `reg` after a
+    /// [`BcOp::Borrow`].
+    Release {
+        reg: Reg,
     },
 
     // ── Call ───────────────────────────────────────────────────────
@@ -409,17 +436,16 @@ pub enum BcOp {
         qubits: Vec<BcOperand>,
     },
 
-    // ── Structured timing constructs (lifted to procedures) ────────
-    Box {
-        duration: Option<BcOperand>,
-        body: ProcId,
-    },
+    // ── Nested bodies ──────────────────────────────────────────────
     CalOpaque {
         content: StringId,
     },
+    /// Run the body of an inline `cal` block on this frame.
     CalOpenPulse {
         body: ProcId,
     },
+    /// `dest` = the duration of `body`, measured by a timing pass over it
+    /// on a copy of this frame.
     DurationOf {
         dest: Reg,
         body: ProcId,
@@ -441,17 +467,13 @@ pub enum BcOp {
     },
 
     // ── Calibration globals ────────────────────────────────────────
-    // (Appended at the end: postcard encodes variants by index.)
     /// Read a cal-scope global (a frame/port/waveform shared across all
-    /// cal/defcal bodies) from the VM's pulse-global store. Emitted at
-    /// the entry of every calibration procedure, once per such value
-    /// the body references.
+    /// cal/defcal bodies) from the VM's pulse-global store.
     CalLoad {
         dest: Reg,
         symbol: SymbolId,
     },
-    /// Write a cal-scope global back to the VM's pulse-global store;
-    /// emitted after each assignment to one.
+    /// Write a cal-scope global to the VM's pulse-global store.
     CalStore {
         symbol: SymbolId,
         src: BcOperand,
@@ -472,6 +494,14 @@ pub enum BcTerminator {
         target: BcOperand,
         cases: Vec<(Vec<BcOperand>, BlockId)>,
         default: BlockId,
+    },
+    /// Entry to a `box[duration]`: run its contents from `body`, which
+    /// fall through to `after` — or, in a timing pass, count `duration`
+    /// and go straight to `after`.
+    Box {
+        duration: BcOperand,
+        body: BlockId,
+        after: BlockId,
     },
     Return(Option<BcOperand>),
     End,

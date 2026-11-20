@@ -33,7 +33,7 @@ cargo run -p oqi-cli -- fmt --stdout fixtures/qasm/qft.qasm
 The end-to-end flow (see `compile/src/bytecode/mod.rs` and `cli/src/main.rs`):
 
 ```
-source → parse → resolve (includes) → lower → cfg → ssa → bytecode → vm
+source → parse → resolve (includes) → lower → cfg → bytecode → vm
 ```
 
 - **`lex/`** (`oqi-lex`) — lexer producing `Token`s with spans. `Token` derives
@@ -45,16 +45,23 @@ source → parse → resolve (includes) → lower → cfg → ssa → bytecode �
 - **`compile/`** (`oqi-compile`) — the heart. `oqi_compile::compile` is the main
   entry point (source → `BcModule`); `compile_source` stops at the SIR
   (source → `sir::Program`) and `bytecode::emit` lowers that the rest of the
-  way. The pipeline stages (`cfg`, `ssa`, `qubits`, `lower`, `resolve`) are
+  way. The pipeline stages (`cfg`, `qubits`, `lower`, `resolve`) are
   crate-private. Key modules:
   - `lower.rs` — AST → SIR, name resolution, type checking.
   - `resolve.rs` — `include` resolution; `stdgates.inc` is embedded via
     `include_str!` and served as a library include.
   - `sir.rs` — Structured IR (the `Program` with gates, subroutines, externs,
-    calibrations, body).
-  - `cfg.rs` → `ssa.rs` → `bytecode/` — control-flow graph, SSA construction,
-    then the flat phi-free bytecode (`bytecode::emit`). Bytecode is
-    postcard-encoded binary with a textual disassembler (`bytecode/disasm.rs`).
+    calibrations, body). One statement/expression tree serves every stage;
+    passes walk it with `Expr::children`, `Stmt::exprs` and `Stmt::bodies`
+    (and their `_mut` twins) and only spell out the nodes they treat
+    specially.
+  - `cfg.rs` → `bytecode/` — control-flow graph (blocks of straight-line SIR
+    statements ending in terminators), then the flat register bytecode
+    (`bytecode::emit`): one register per classical variable per frame, no
+    SSA. `box` is a scope of its enclosing body; an inline `cal` body and a
+    `durationof` scope are procedures that run on the enclosing frame.
+    Bytecode is postcard-encoded binary with a textual disassembler
+    (`bytecode/disasm.rs`).
   - `types.rs`, `symbol.rs`, `scope.rs` — type system, symbol table, scoping.
   - `openpulse.rs` — OpenPulse types (port, frame, waveform).
 - **`classical/`** (`oqi-classical`) — classical value/type system (ints up to

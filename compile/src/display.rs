@@ -77,7 +77,7 @@ impl fmt::Display for Program {
         }
 
         if let Some(ref grammar) = self.calibration_grammar {
-            writeln!(f, "  calibration_grammar: {grammar}")?;
+            writeln!(f, "  calibration_grammar: \"{grammar}\"")?;
         }
 
         // Symbol table
@@ -125,7 +125,7 @@ impl fmt::Display for Program {
                 if i > 0 {
                     write!(f, ", ")?;
                 }
-                let sym = self.symbols.get(p.symbol);
+                let sym = self.symbols.get(*p);
                 write!(f, "{} : {}", sym.name, sym.ty)?;
             }
             write!(f, ")")?;
@@ -262,7 +262,7 @@ fn fmt_annotations(
     Ok(())
 }
 
-fn fmt_alias(f: &mut fmt::Formatter<'_>, a: &Alias<Expr>, symbols: &SymbolTable) -> fmt::Result {
+fn fmt_alias(f: &mut fmt::Formatter<'_>, a: &Alias, symbols: &SymbolTable) -> fmt::Result {
     write!(f, "alias {} = ", a.symbol)?;
     for (i, v) in a.value.iter().enumerate() {
         if i > 0 {
@@ -273,11 +273,7 @@ fn fmt_alias(f: &mut fmt::Formatter<'_>, a: &Alias<Expr>, symbols: &SymbolTable)
     writeln!(f)
 }
 
-fn fmt_gate_call(
-    f: &mut fmt::Formatter<'_>,
-    g: &GateCall<Expr>,
-    symbols: &SymbolTable,
-) -> fmt::Result {
+fn fmt_gate_call(f: &mut fmt::Formatter<'_>, g: &GateCall, symbols: &SymbolTable) -> fmt::Result {
     write!(f, "gate_call ")?;
     for m in &g.modifiers {
         fmt_gate_modifier(f, m, symbols)?;
@@ -306,11 +302,7 @@ fn fmt_gate_call(
     writeln!(f, "]")
 }
 
-fn fmt_measure_stmt(
-    f: &mut fmt::Formatter<'_>,
-    m: &Measure<Expr>,
-    symbols: &SymbolTable,
-) -> fmt::Result {
+fn fmt_measure_stmt(f: &mut fmt::Formatter<'_>, m: &Measure, symbols: &SymbolTable) -> fmt::Result {
     fmt_measure(f, &m.measure, symbols)?;
     if let Some(lv) = &m.target {
         write!(f, " -> ")?;
@@ -321,7 +313,7 @@ fn fmt_measure_stmt(
 
 fn fmt_reset(
     f: &mut fmt::Formatter<'_>,
-    operand: &QubitOperand<Expr>,
+    operand: &QubitOperand,
     symbols: &SymbolTable,
 ) -> fmt::Result {
     write!(f, "reset ")?;
@@ -331,7 +323,7 @@ fn fmt_reset(
 
 fn fmt_barrier(
     f: &mut fmt::Formatter<'_>,
-    operands: &[QubitOperand<Expr>],
+    operands: &[QubitOperand],
     symbols: &SymbolTable,
 ) -> fmt::Result {
     write!(f, "barrier")?;
@@ -347,7 +339,7 @@ fn fmt_barrier(
     writeln!(f)
 }
 
-fn fmt_delay(f: &mut fmt::Formatter<'_>, d: &Delay<Expr>, symbols: &SymbolTable) -> fmt::Result {
+fn fmt_delay(f: &mut fmt::Formatter<'_>, d: &Delay, symbols: &SymbolTable) -> fmt::Result {
     write!(f, "delay ")?;
     fmt_expr(f, &d.duration, symbols)?;
     for q in &d.operands {
@@ -379,7 +371,7 @@ fn fmt_box_stmt(
 
 fn fmt_assignment(
     f: &mut fmt::Formatter<'_>,
-    a: &Assignment<Expr>,
+    a: &Assignment,
     symbols: &SymbolTable,
 ) -> fmt::Result {
     write!(f, "assign ")?;
@@ -394,7 +386,7 @@ fn fmt_assignment(
 
 fn fmt_nop(
     f: &mut fmt::Formatter<'_>,
-    operands: &[QubitOperand<Expr>],
+    operands: &[QubitOperand],
     symbols: &SymbolTable,
 ) -> fmt::Result {
     write!(f, "nop")?;
@@ -586,7 +578,7 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, symbols: &SymbolTable) -> f
 
 fn fmt_qubit_op(
     f: &mut fmt::Formatter<'_>,
-    op: &QubitOperand<Expr>,
+    op: &QubitOperand,
     symbols: &SymbolTable,
 ) -> fmt::Result {
     match op {
@@ -603,7 +595,7 @@ fn fmt_qubit_op(
     }
 }
 
-fn fmt_lvalue(f: &mut fmt::Formatter<'_>, lv: &LValue<Expr>, symbols: &SymbolTable) -> fmt::Result {
+fn fmt_lvalue(f: &mut fmt::Formatter<'_>, lv: &LValue, symbols: &SymbolTable) -> fmt::Result {
     match lv {
         LValue::Var(id) => write!(f, "{id}"),
         LValue::Indexed { symbol, indices } => {
@@ -618,11 +610,7 @@ fn fmt_lvalue(f: &mut fmt::Formatter<'_>, lv: &LValue<Expr>, symbols: &SymbolTab
     }
 }
 
-fn fmt_index(
-    f: &mut fmt::Formatter<'_>,
-    idx: &IndexOp<Expr>,
-    symbols: &SymbolTable,
-) -> fmt::Result {
+fn fmt_index(f: &mut fmt::Formatter<'_>, idx: &IndexOp, symbols: &SymbolTable) -> fmt::Result {
     match &idx.kind {
         IndexKind::Set(exprs) => {
             write!(f, "{{")?;
@@ -649,11 +637,7 @@ fn fmt_index(
     }
 }
 
-fn fmt_range(
-    f: &mut fmt::Formatter<'_>,
-    range: &RangeExpr<Expr>,
-    symbols: &SymbolTable,
-) -> fmt::Result {
+fn fmt_range(f: &mut fmt::Formatter<'_>, range: &RangeExpr, symbols: &SymbolTable) -> fmt::Result {
     if let Some(start) = &range.start {
         fmt_expr(f, start, symbols)?;
     }
@@ -670,7 +654,7 @@ fn fmt_range(
 
 fn fmt_gate_modifier(
     f: &mut fmt::Formatter<'_>,
-    m: &GateModifier<Expr>,
+    m: &GateModifier,
     symbols: &SymbolTable,
 ) -> fmt::Result {
     match m {
@@ -685,11 +669,7 @@ fn fmt_gate_modifier(
     }
 }
 
-fn fmt_measure(
-    f: &mut fmt::Formatter<'_>,
-    m: &MeasureExpr<Expr>,
-    symbols: &SymbolTable,
-) -> fmt::Result {
+fn fmt_measure(f: &mut fmt::Formatter<'_>, m: &MeasureExpr, symbols: &SymbolTable) -> fmt::Result {
     match &m.kind {
         MeasureExprKind::Measure { operand } => {
             write!(f, "measure ")?;
@@ -725,7 +705,7 @@ fn fmt_for_iterable(
     symbols: &SymbolTable,
 ) -> fmt::Result {
     match iter {
-        ForIterable::Range { start, step, end } => {
+        ForIterable::Range(RangeExpr { start, step, end }) => {
             write!(f, "[")?;
             if let Some(s) = start {
                 fmt_expr(f, s, symbols)?;
@@ -756,7 +736,7 @@ fn fmt_for_iterable(
 
 fn fmt_array_literal(
     f: &mut fmt::Formatter<'_>,
-    arr: &ArrayLiteral<Expr>,
+    arr: &ArrayLiteral,
     symbols: &SymbolTable,
 ) -> fmt::Result {
     write!(f, "{{")?;

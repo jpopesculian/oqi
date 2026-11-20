@@ -23,8 +23,7 @@ use oqi_quantum::{QuantumMemory, QuantumRegister};
 
 use crate::classical::Primitive;
 use crate::error::{CompileError, ErrorKind, Result};
-use crate::sir::{self, IndexItem, IndexKind, IndexOp, ParamPassing, RangeExpr};
-use crate::ssa::{SsaExpr, SsaExprKind};
+use crate::sir::{self, Expr, ExprKind, IndexItem, IndexKind, IndexOp, RangeExpr};
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::Type;
 
@@ -100,12 +99,15 @@ pub fn build_layout(program: &sir::Program) -> QubitLayout {
         // Qubit params get dense slots `[0, n)` (classical params go to
         // registers, not slots), so the layout matches gates.
         let mut qslot = 0u32;
-        for p in &sub.params {
-            if matches!(p.passing, ParamPassing::QubitRef) {
-                param_slots.insert(p.symbol, qslot);
+        for &param in &sub.params {
+            if matches!(
+                program.symbols.get(param).ty,
+                Type::Qubit | Type::QubitReg(_)
+            ) {
+                param_slots.insert(param, qslot);
                 qslot += 1;
             } else {
-                classical.push(p.symbol);
+                classical.push(param);
             }
         }
         classical_params.insert(sub.symbol, classical);
@@ -205,7 +207,7 @@ impl QubitLayout {
     /// caller keeps its existing behavior.
     pub fn resolve_alias_value(
         &self,
-        exprs: &[SsaExpr],
+        exprs: &[Expr],
         symbols: &SymbolTable,
     ) -> Result<Option<Resolved<QuantumRegister>>> {
         let mut combined = QuantumRegister::new();
@@ -248,10 +250,10 @@ impl QubitLayout {
     /// it is not a quantum reference.
     fn resolve_alias_operand(
         &self,
-        expr: &SsaExpr,
+        expr: &Expr,
         symbols: &SymbolTable,
     ) -> Result<Option<Resolved<QuantumRegister>>> {
-        if matches!(expr.kind, SsaExprKind::HardwareQubit(_)) {
+        if matches!(expr.kind, ExprKind::HardwareQubit(_)) {
             return Err(CompileError::at(
                 ErrorKind::Unsupported("physical qubits cannot be aliased".into()),
                 expr.span,
@@ -285,7 +287,7 @@ impl QubitLayout {
         match ops.as_slice() {
             [] => Ok(Some(Resolved::Static(reg.clone()))),
             [io] => {
-                let idxs = resolve_index(io, reg.len()).map_err(|e| e.with_span(io.span))?;
+                let idxs = resolve_index(io, reg.len())?;
                 Ok(Some(idxs.map(|idxs| select(reg, &idxs))))
             }
             _ => Err(CompileError::at(
@@ -298,10 +300,10 @@ impl QubitLayout {
 
 /// Peel an `Index` chain down to its base variable, collecting index
 /// ops in application order.
-pub fn peel_index_chain(e: &SsaExpr) -> Option<(SymbolId, Vec<&IndexOp<SsaExpr>>)> {
+pub fn peel_index_chain(e: &Expr) -> Option<(SymbolId, Vec<&IndexOp>)> {
     match &e.kind {
-        SsaExprKind::Var(v) => Some((v.symbol, Vec::new())),
-        SsaExprKind::Index(ix) => {
+        ExprKind::Var(symbol) => Some((*symbol, Vec::new())),
+        ExprKind::Index(ix) => {
             let (sym, mut ops) = peel_index_chain(&ix.base)?;
             ops.push(&ix.index);
             Some((sym, ops))
@@ -312,16 +314,16 @@ pub fn peel_index_chain(e: &SsaExpr) -> Option<(SymbolId, Vec<&IndexOp<SsaExpr>>
 
 /// `Some(i)` iff `e` is an integer literal (const folding during SIR
 /// lowering guarantees constant indices arrive as literals).
-pub fn literal_index(e: &SsaExpr) -> Option<i128> {
+pub fn literal_index(e: &Expr) -> Option<i128> {
     match &e.kind {
-        SsaExprKind::Literal(Primitive::Int(i)) => Some(*i),
-        SsaExprKind::Literal(Primitive::Uint(u)) => i128::try_from(*u).ok(),
+        ExprKind::Literal(Primitive::Int(i)) => Some(*i),
+        ExprKind::Literal(Primitive::Uint(u)) => i128::try_from(*u).ok(),
         _ => None,
     }
 }
 
 /// The single index expression of `io`, if it is a plain `q[expr]`.
-pub fn single_index_expr(io: &IndexOp<SsaExpr>) -> Option<&SsaExpr> {
+pub fn single_index_expr(io: &IndexOp) -> Option<&Expr> {
     match &io.kind {
         IndexKind::Items(items) => match items.as_slice() {
             [IndexItem::Single(e)] => Some(e),
@@ -355,7 +357,11 @@ impl<T> Resolved<T> {
 /// {a, a+c, ..., a+mc} with m maximized. Negative members select from
 /// the end. The selection is static when every constituent expression
 /// is an integer literal, and dynamic otherwise.
-pub fn resolve_index(io: &IndexOp<SsaExpr>, len: usize) -> Result<Resolved<Vec<usize>>> {
+pub fn resolve_index(io: &IndexOp, len: usize) -> Result<Resolved<Vec<usize>>> {
+    resolve_index_unlocated(io, len).map_err(|e| e.with_span(io.span))
+}
+
+fn resolve_index_unlocated(io: &IndexOp, len: usize) -> Result<Resolved<Vec<usize>>> {
     let normalize = |raw: Option<Vec<i128>>| -> Result<Option<Vec<usize>>> {
         let normalized = raw.map(|raw| raw.into_iter().map(|i| normalize_index(i, len)).collect());
         normalized.transpose()
@@ -424,9 +430,9 @@ pub fn normalize_index(idx: i128, len: usize) -> Result<usize> {
 /// member is normalized as an index. A direction mismatch yields the
 /// empty set (rejected by the caller). `None` when a bound or the step
 /// is not an integer literal.
-fn expand_range(r: &RangeExpr<SsaExpr>, len: usize) -> Result<Option<Vec<usize>>> {
+pub fn expand_range(r: &RangeExpr, len: usize) -> Result<Option<Vec<usize>>> {
     // A component left out takes `default`.
-    let component = |e: &Option<Box<SsaExpr>>, default: i128| match e {
+    let component = |e: &Option<Box<Expr>>, default: i128| match e {
         Some(e) => literal_index(e),
         None => Some(default),
     };
@@ -456,10 +462,8 @@ fn expand_range(r: &RangeExpr<SsaExpr>, len: usize) -> Result<Option<Vec<usize>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cfg as cfg_mod;
     use crate::lower::compile_source;
     use crate::resolve::DefaultIncludeResolver;
-    use crate::ssa::{self, SsaStmtKind};
     use crate::types::CompileOptions;
 
     fn compile(src: &str) -> sir::Program {
@@ -472,21 +476,22 @@ mod tests {
         .expect("compile")
     }
 
-    /// Build the layout and resolve every top-level alias in block
+    /// Build the layout and resolve every top-level alias in program
     /// order, mirroring what the bytecode emitter does.
     fn try_layout(src: &str) -> Result<(sir::Program, QubitLayout)> {
-        let p = compile(src);
-        let cfgs = cfg_mod::build_program(&p).expect("cfg");
-        let ssa_prog = ssa::build_program(&cfgs, &p.symbols);
+        let p = compile_source(
+            src,
+            DefaultIncludeResolver,
+            &CompileOptions::default(),
+            None,
+        )?;
         let mut layout = build_layout(&p);
-        for block in &ssa_prog.top_level.blocks {
-            for stmt in &block.stmts {
-                if let SsaStmtKind::Alias(a) = &stmt.kind
-                    && let Some(Resolved::Static(reg)) =
-                        layout.resolve_alias_value(&a.value, &p.symbols)?
-                {
-                    layout.define_alias(a.symbol, reg);
-                }
+        for stmt in &p.body {
+            if let sir::StmtKind::Alias(a) = &stmt.kind
+                && let Some(Resolved::Static(reg)) =
+                    layout.resolve_alias_value(&a.value, &p.symbols)?
+            {
+                layout.define_alias(a.symbol, reg);
             }
         }
         Ok((p, layout))
@@ -596,18 +601,11 @@ mod tests {
     #[test]
     fn alias_runtime_index_is_dynamic() {
         let p = compile("input uint[32] i; qubit[4] q; let late = q[{i}] ++ q[{0}];");
-        let cfgs = cfg_mod::build_program(&p).expect("cfg");
-        let ssa_prog = ssa::build_program(&cfgs, &p.symbols);
-        let alias = ssa_prog
-            .top_level
-            .blocks
-            .iter()
-            .flat_map(|block| &block.stmts)
-            .find_map(|stmt| match &stmt.kind {
-                SsaStmtKind::Alias(alias) => Some(alias),
-                _ => None,
-            })
-            .expect("alias");
+        let aliases = p.body.iter().filter_map(|stmt| match &stmt.kind {
+            sir::StmtKind::Alias(alias) => Some(alias),
+            _ => None,
+        });
+        let alias = { aliases }.next().expect("alias");
         let resolved = build_layout(&p).resolve_alias_value(&alias.value, &p.symbols);
         assert!(matches!(resolved, Ok(Some(Resolved::Dynamic))));
     }
@@ -635,8 +633,8 @@ mod tests {
         let sub = &p.subroutines[0];
         // Qubit params get dense slots: classical `n` is skipped, so the
         // qubit param `d` is slot 0.
-        assert_eq!(l.param_slot(sub.params[0].symbol), None);
-        assert_eq!(l.param_slot(sub.params[1].symbol), Some(0));
+        assert_eq!(l.param_slot(sub.params[0]), None);
+        assert_eq!(l.param_slot(sub.params[1]), Some(0));
         assert_eq!(l.qubit_param_count(sub.symbol), 1);
     }
 

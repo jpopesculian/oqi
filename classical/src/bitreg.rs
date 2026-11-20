@@ -241,7 +241,23 @@ impl PartialEq for BitReg {
 
 impl Eq for BitReg {}
 
-impl BitReg {}
+/// Registers order as the unsigned integers their bits spell.
+impl Ord for BitReg {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let n = self.storage_byte_count().max(other.storage_byte_count());
+        let bytes = (0..n).rev();
+        let mut orderings = bytes.map(|i| self.storage_byte(i).cmp(&other.storage_byte(i)));
+        orderings
+            .find(|ordering| ordering.is_ne())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    }
+}
+
+impl PartialOrd for BitReg {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 impl PartialEq<u128> for BitReg {
     fn eq(&self, other: &u128) -> bool {

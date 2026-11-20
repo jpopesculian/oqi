@@ -12,6 +12,7 @@ use crate::types::Type;
 
 pub struct Program {
     pub version: Option<String>,
+    /// The `defcalgrammar` name, without its quotes.
     pub calibration_grammar: Option<String>,
     pub symbols: SymbolTable,
     pub gates: Vec<GateDecl>,
@@ -33,22 +34,12 @@ pub struct GateDecl {
 
 pub struct SubroutineDecl {
     pub symbol: SymbolId,
-    pub params: Vec<SubroutineParam>,
+    /// Parameters in declaration order. How each is passed follows from its
+    /// type: qubits and arrays by reference, everything else by value.
+    pub params: Vec<SymbolId>,
     pub return_ty: Option<Type>,
     pub body: Vec<Stmt>,
     pub span: Span,
-}
-
-pub struct SubroutineParam {
-    pub symbol: SymbolId,
-    pub passing: ParamPassing,
-}
-
-pub enum ParamPassing {
-    ByValue,
-    QubitRef,
-    ReadonlyRef,
-    MutableRef,
 }
 
 pub struct ExternDecl {
@@ -113,18 +104,18 @@ pub struct Annotation {
 #[derive(Clone)]
 pub enum StmtKind {
     // --- Aliases ---
-    Alias(Alias<Expr>),
+    Alias(Alias),
 
     // --- Quantum operations ---
-    GateCall(GateCall<Expr>),
-    Measure(Measure<Expr>),
-    Reset(QubitOperand<Expr>),
-    Barrier(Vec<QubitOperand<Expr>>),
-    Delay(Delay<Expr>),
+    GateCall(GateCall),
+    Measure(Measure),
+    Reset(QubitOperand),
+    Barrier(Vec<QubitOperand>),
+    Delay(Delay),
     Box(BoxStmt),
 
     // --- Classical operations ---
-    Assignment(Assignment<Expr>),
+    Assignment(Assignment),
 
     // --- Control flow ---
     If(If),
@@ -133,48 +124,44 @@ pub enum StmtKind {
     Switch(Switch),
     Break,
     Continue,
-    Return(Option<RValue<Expr>>),
+    Return(Option<RValue>),
     End,
 
     // --- Misc ---
     Pragma(String),
     Cal(CalibrationBody),
     ExprStmt(Expr),
-    Nop(Vec<QubitOperand<Expr>>),
+    Nop(Vec<QubitOperand>),
 }
 
-// ── Generic statement-level payload structs ──────────────────────────
-// Generic over `E` (the expression type) so the same struct can serve
-// both SIR (`E = Expr`) and CFG (`E = BlockExpr`).
-
 #[derive(Clone)]
-pub struct Alias<E> {
+pub struct Alias {
     pub symbol: SymbolId,
-    pub value: Vec<E>,
+    pub value: Vec<Expr>,
 }
 
 #[derive(Clone)]
-pub struct GateCall<E> {
+pub struct GateCall {
     pub gate: SymbolId,
-    pub modifiers: Vec<GateModifier<E>>,
-    pub args: Vec<E>,
-    pub qubits: Vec<QubitOperand<E>>,
+    pub modifiers: Vec<GateModifier>,
+    pub args: Vec<Expr>,
+    pub qubits: Vec<QubitOperand>,
     /// `gate[duration]` designator (docs/delays.rst: stretchy/timed
-    /// instructions). Compile-time timing only: dropped at CFG conversion,
-    /// never reaches bytecode or the VM.
-    pub duration: Option<E>,
+    /// instructions). Compile-time timing only: never reaches bytecode or
+    /// the VM.
+    pub duration: Option<Expr>,
 }
 
 #[derive(Clone)]
-pub struct Measure<E> {
-    pub measure: MeasureExpr<E>,
-    pub target: Option<LValue<E>>,
+pub struct Measure {
+    pub measure: MeasureExpr,
+    pub target: Option<LValue>,
 }
 
 #[derive(Clone)]
-pub struct Delay<E> {
-    pub duration: E,
-    pub operands: Vec<QubitOperand<E>>,
+pub struct Delay {
+    pub duration: Expr,
+    pub operands: Vec<QubitOperand>,
 }
 
 #[derive(Clone)]
@@ -184,12 +171,10 @@ pub struct BoxStmt {
 }
 
 #[derive(Clone)]
-pub struct Assignment<E> {
-    pub target: LValue<E>,
-    pub value: RValue<E>,
+pub struct Assignment {
+    pub target: LValue,
+    pub value: RValue,
 }
-
-// ── Control-flow statement structs (SIR-only) ────────────────────────
 
 #[derive(Clone)]
 pub struct If {
@@ -236,114 +221,120 @@ pub enum ExprKind {
     HardwareQubit(usize),
 
     // --- Operations ---
-    Binary(Binary<Expr>),
-    Unary(Unary<Expr>),
-    Cast(Cast<Expr>),
-    Index(Index<Expr>),
-    Call(Call<Expr>),
+    Binary(Binary),
+    Unary(Unary),
+    Cast(Cast),
+    Index(Index),
+    Call(Call),
+    /// The duration of a scope. Its statements are a nested body, not
+    /// sub-expressions: [`Expr::children`] does not yield them.
     DurationOf(Vec<Stmt>),
-    ArrayLiteral(ArrayLiteral<Expr>),
+    ArrayLiteral(ArrayLiteral),
 }
 
-// ── Generic expression payload structs ───────────────────────────────
-
 #[derive(Clone)]
-pub struct Binary<E> {
+pub struct Binary {
     pub op: BinOp,
-    pub left: Box<E>,
-    pub right: Box<E>,
+    pub left: Box<Expr>,
+    pub right: Box<Expr>,
 }
 
 #[derive(Clone)]
-pub struct Unary<E> {
+pub struct Unary {
     pub op: UnOp,
-    pub operand: Box<E>,
+    pub operand: Box<Expr>,
 }
 
 #[derive(Clone)]
-pub struct Cast<E> {
+pub struct Cast {
     pub target_ty: Type,
-    pub operand: Box<E>,
+    pub operand: Box<Expr>,
 }
 
 #[derive(Clone)]
-pub struct Index<E> {
-    pub base: Box<E>,
-    pub index: IndexOp<E>,
+pub struct Index {
+    pub base: Box<Expr>,
+    pub index: IndexOp,
 }
 
 #[derive(Clone)]
-pub struct Call<E> {
+pub struct Call {
     pub callee: CallTarget,
-    pub args: Vec<E>,
+    pub args: Vec<Expr>,
 }
 
 #[derive(Clone)]
-pub struct ArrayLiteral<E> {
-    pub items: Vec<E>,
+pub struct ArrayLiteral {
+    pub items: Vec<Expr>,
     pub span: Span,
 }
 
 // ── Supporting types (2.5) ───────────────────────────────────────────
 
 #[derive(Clone)]
-pub enum GateModifier<E> {
+pub enum GateModifier {
     Inv,
-    Pow(Box<E>),
+    Pow(Box<Expr>),
     Ctrl(usize),
     NegCtrl(usize),
 }
 
 #[derive(Clone)]
-pub enum QubitOperand<E> {
+pub enum QubitOperand {
     Indexed {
         symbol: SymbolId,
-        indices: Vec<IndexOp<E>>,
+        indices: Vec<IndexOp>,
     },
     Hardware(usize),
 }
 
 #[derive(Clone)]
-pub enum LValue<E> {
+pub enum LValue {
     Var(SymbolId),
     Indexed {
         symbol: SymbolId,
-        indices: Vec<IndexOp<E>>,
+        indices: Vec<IndexOp>,
     },
 }
 
+impl LValue {
+    /// The variable assigned to, in whole or in part.
+    pub fn symbol(&self) -> SymbolId {
+        match self {
+            LValue::Var(symbol) | LValue::Indexed { symbol, .. } => *symbol,
+        }
+    }
+}
+
+/// One subscript: `[i]`, `[i, j]`, `[a:b]` or `[{a, b}]`.
 #[derive(Clone)]
-pub struct IndexOp<E> {
-    pub kind: IndexKind<E>,
+pub struct IndexOp {
+    pub kind: IndexKind,
     pub span: Span,
 }
 
 #[derive(Clone)]
-pub enum IndexKind<E> {
-    Set(Vec<E>),
-    Items(Vec<IndexItem<E>>),
+pub enum IndexKind {
+    Set(Vec<Expr>),
+    Items(Vec<IndexItem>),
 }
 
 #[derive(Clone)]
-pub enum IndexItem<E> {
-    Single(Box<E>),
-    Range(RangeExpr<E>),
+pub enum IndexItem {
+    Single(Box<Expr>),
+    Range(RangeExpr),
 }
 
 #[derive(Clone)]
-pub struct RangeExpr<E> {
-    pub start: Option<Box<E>>,
-    pub step: Option<Box<E>>,
-    pub end: Option<Box<E>>,
+pub struct RangeExpr {
+    pub start: Option<Box<Expr>>,
+    pub step: Option<Box<Expr>>,
+    pub end: Option<Box<Expr>>,
 }
 
 #[derive(Clone)]
 pub enum ForIterable {
-    Range {
-        start: Option<Box<Expr>>,
-        step: Option<Box<Expr>>,
-        end: Option<Box<Expr>>,
-    },
+    Range(RangeExpr),
     Set(Vec<Expr>),
     Expr(Box<Expr>),
 }
@@ -361,21 +352,23 @@ pub enum SwitchLabels {
 }
 
 #[derive(Clone)]
-pub struct MeasureExpr<E> {
-    pub kind: MeasureExprKind<E>,
+pub struct MeasureExpr {
+    pub kind: MeasureExprKind,
     pub ty: Type,
     pub span: Span,
 }
 
 #[derive(Clone)]
-pub enum MeasureExprKind<E> {
+pub enum MeasureExprKind {
     Measure {
-        operand: QubitOperand<E>,
+        operand: QubitOperand,
     },
+    /// A subroutine called on qubit operands for its value:
+    /// `bit b = xmeasure q;`.
     QuantumCall {
         callee: SymbolId,
-        args: Vec<E>,
-        qubits: Vec<QubitOperand<E>>,
+        args: Vec<Expr>,
+        qubits: Vec<QubitOperand>,
     },
 }
 
@@ -447,7 +440,206 @@ impl Intrinsic {
 }
 
 #[derive(Clone)]
-pub enum RValue<E> {
-    Expr(Box<E>),
-    Measure(Box<MeasureExpr<E>>),
+pub enum RValue {
+    Expr(Box<Expr>),
+    Measure(Box<MeasureExpr>),
 }
+
+// ── Traversal ────────────────────────────────────────────────────────
+
+/// The tree-walking helpers, in a shared and a `mut` flavour: the
+/// expressions an expression or statement holds directly, and the nested
+/// statement lists of a statement. A pass recurses through these and only
+/// spells out the node kinds it treats specially.
+macro_rules! walkers {
+    ($children:ident, $exprs:ident, $bodies:ident, $collect:ident $(, $m:ident)?) => {
+        impl Expr {
+            /// The sub-expressions this expression is built from directly, in
+            /// evaluation order.
+            pub fn $children(& $($m)? self) -> Vec<& $($m)? Expr> {
+                let mut out = Vec::new();
+                match & $($m)? self.kind {
+                    ExprKind::Literal(_)
+                    | ExprKind::Var(_)
+                    | ExprKind::HardwareQubit(_)
+                    | ExprKind::DurationOf(_) => {}
+                    ExprKind::Binary(b) => {
+                        out.push(& $($m)? *b.left);
+                        out.push(& $($m)? *b.right);
+                    }
+                    ExprKind::Unary(u) => out.push(& $($m)? *u.operand),
+                    ExprKind::Cast(c) => out.push(& $($m)? *c.operand),
+                    ExprKind::Index(ix) => {
+                        out.push(& $($m)? *ix.base);
+                        ix.index.$collect(&mut out);
+                    }
+                    ExprKind::Call(c) => out.extend(& $($m)? c.args),
+                    ExprKind::ArrayLiteral(a) => out.extend(& $($m)? a.items),
+                }
+                out
+            }
+        }
+
+        impl Stmt {
+            /// The expressions this statement holds directly: operands,
+            /// conditions and index expressions, but nothing inside its
+            /// nested statement lists.
+            pub fn $exprs(& $($m)? self) -> Vec<& $($m)? Expr> {
+                let mut out = Vec::new();
+                match & $($m)? self.kind {
+                    StmtKind::Alias(a) => out.extend(& $($m)? a.value),
+                    StmtKind::GateCall(gc) => {
+                        for m in & $($m)? gc.modifiers {
+                            if let GateModifier::Pow(e) = m {
+                                out.push(& $($m)? **e);
+                            }
+                        }
+                        out.extend(& $($m)? gc.args);
+                        for q in & $($m)? gc.qubits {
+                            q.$collect(&mut out);
+                        }
+                        out.extend(& $($m)? gc.duration);
+                    }
+                    StmtKind::Measure(m) => {
+                        m.measure.$collect(&mut out);
+                        if let Some(target) = & $($m)? m.target {
+                            target.$collect(&mut out);
+                        }
+                    }
+                    StmtKind::Reset(q) => q.$collect(&mut out),
+                    StmtKind::Barrier(qs) | StmtKind::Nop(qs) => {
+                        for q in qs {
+                            q.$collect(&mut out);
+                        }
+                    }
+                    StmtKind::Delay(d) => {
+                        out.push(& $($m)? d.duration);
+                        for q in & $($m)? d.operands {
+                            q.$collect(&mut out);
+                        }
+                    }
+                    StmtKind::Box(b) => out.extend(& $($m)? b.duration),
+                    StmtKind::Assignment(a) => {
+                        a.target.$collect(&mut out);
+                        a.value.$collect(&mut out);
+                    }
+                    StmtKind::If(i) => out.push(& $($m)? i.condition),
+                    StmtKind::For(f) => match & $($m)? f.iterable {
+                        ForIterable::Range(r) => r.$collect(&mut out),
+                        ForIterable::Set(items) => out.extend(items),
+                        ForIterable::Expr(e) => out.push(e),
+                    },
+                    StmtKind::While(w) => out.push(& $($m)? w.condition),
+                    StmtKind::Switch(s) => {
+                        out.push(& $($m)? s.target);
+                        for case in & $($m)? s.cases {
+                            if let SwitchLabels::Values(values) = & $($m)? case.labels {
+                                out.extend(values);
+                            }
+                        }
+                    }
+                    StmtKind::Return(Some(value)) => value.$collect(&mut out),
+                    StmtKind::ExprStmt(e) => out.push(e),
+                    StmtKind::Return(None)
+                    | StmtKind::Break
+                    | StmtKind::Continue
+                    | StmtKind::End
+                    | StmtKind::Pragma(_)
+                    | StmtKind::Cal(_) => {}
+                }
+                out
+            }
+
+            /// The statement lists nested in this statement: box, branch,
+            /// loop and case bodies, and a structured `cal` body.
+            pub fn $bodies(& $($m)? self) -> Vec<& $($m)? Vec<Stmt>> {
+                match & $($m)? self.kind {
+                    StmtKind::Box(b) => vec![& $($m)? b.body],
+                    StmtKind::If(i) => {
+                        let mut out = vec![& $($m)? i.then_body];
+                        out.extend(& $($m)? i.else_body);
+                        out
+                    }
+                    StmtKind::For(f) => vec![& $($m)? f.body],
+                    StmtKind::While(w) => vec![& $($m)? w.body],
+                    StmtKind::Switch(s) => {
+                        (& $($m)? s.cases).into_iter().map(|c| & $($m)? c.body).collect()
+                    }
+                    StmtKind::Cal(CalibrationBody::OpenPulse(body)) => vec![body],
+                    _ => Vec::new(),
+                }
+            }
+        }
+
+        impl RangeExpr {
+            fn $collect<'a>(&'a $($m)? self, out: &mut Vec<&'a $($m)? Expr>) {
+                let bounds = [& $($m)? self.start, & $($m)? self.step, & $($m)? self.end];
+                for bound in bounds.into_iter().flatten() {
+                    out.push(bound);
+                }
+            }
+        }
+
+        impl IndexOp {
+            fn $collect<'a>(&'a $($m)? self, out: &mut Vec<&'a $($m)? Expr>) {
+                match & $($m)? self.kind {
+                    IndexKind::Set(items) => out.extend(items),
+                    IndexKind::Items(items) => {
+                        for item in items {
+                            match item {
+                                IndexItem::Single(e) => out.push(e),
+                                IndexItem::Range(r) => r.$collect(out),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        impl QubitOperand {
+            fn $collect<'a>(&'a $($m)? self, out: &mut Vec<&'a $($m)? Expr>) {
+                if let QubitOperand::Indexed { indices, .. } = self {
+                    for index in indices {
+                        index.$collect(out);
+                    }
+                }
+            }
+        }
+
+        impl LValue {
+            fn $collect<'a>(&'a $($m)? self, out: &mut Vec<&'a $($m)? Expr>) {
+                if let LValue::Indexed { indices, .. } = self {
+                    for index in indices {
+                        index.$collect(out);
+                    }
+                }
+            }
+        }
+
+        impl MeasureExpr {
+            fn $collect<'a>(&'a $($m)? self, out: &mut Vec<&'a $($m)? Expr>) {
+                match & $($m)? self.kind {
+                    MeasureExprKind::Measure { operand } => operand.$collect(out),
+                    MeasureExprKind::QuantumCall { args, qubits, .. } => {
+                        out.extend(args);
+                        for q in qubits {
+                            q.$collect(out);
+                        }
+                    }
+                }
+            }
+        }
+
+        impl RValue {
+            fn $collect<'a>(&'a $($m)? self, out: &mut Vec<&'a $($m)? Expr>) {
+                match self {
+                    RValue::Expr(e) => out.push(e),
+                    RValue::Measure(m) => m.$collect(out),
+                }
+            }
+        }
+    };
+}
+
+walkers!(children, exprs, bodies, collect_exprs);
+walkers!(children_mut, exprs_mut, bodies_mut, collect_exprs_mut, mut);

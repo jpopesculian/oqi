@@ -9,8 +9,8 @@ use crate::classical::{
 };
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::openpulse;
+use crate::resolve::Resolver;
 use crate::sir::{BinOp, Intrinsic, UnOp};
-use crate::symbol::SymbolTable;
 
 pub use crate::classical::FloatWidth;
 
@@ -175,22 +175,15 @@ impl Default for CompileOptions {
 }
 
 /// Evaluate a constant expression to a `usize` value for use as a type designator.
-pub(crate) fn eval_designator(
-    expr: &ast::Expr<'_>,
-    symbols: &SymbolTable,
-    options: &CompileOptions,
-) -> Result<usize> {
-    let cv = eval_const_expr(expr, symbols, options)?;
+pub(crate) fn eval_designator(expr: &ast::Expr<'_>, scope: &Resolver) -> Result<usize> {
+    let cv = eval_const_expr(expr, scope)?;
     value_as_usize(&cv)
         .ok_or_else(|| CompileError::at(ErrorKind::NonConstantDesignator, expr.span()))
 }
 
-/// Evaluate a constant expression, returning a `Value`.
-pub(crate) fn eval_const_expr(
-    expr: &ast::Expr<'_>,
-    symbols: &SymbolTable,
-    options: &CompileOptions,
-) -> Result<Value> {
+/// Evaluate a constant expression, returning a `Value`. Names are resolved
+/// in the scope `scope` is in.
+pub(crate) fn eval_const_expr(expr: &ast::Expr<'_>, scope: &Resolver) -> Result<Value> {
     match expr {
         ast::Expr::IntLiteral(s, encoding, span) => Ok(Value::int(
             parse_int_literal(s, *encoding).with_span(*span)?,
@@ -210,14 +203,11 @@ pub(crate) fn eval_const_expr(
             Ok(Value::bitreg_u128(bits, width as u32))
         }
         ast::Expr::TimingLiteral(s, span) => Ok(Value::from(
-            parse_timing_literal(s, &options.dt).with_span(*span)?,
+            parse_timing_literal(s, &scope.options().dt).with_span(*span)?,
         )),
-        ast::Expr::Paren(inner, _) => eval_const_expr(inner, symbols, options),
+        ast::Expr::Paren(inner, _) => eval_const_expr(inner, scope),
         ast::Expr::Ident(ident) => {
-            let sym_id = symbols.lookup(ident.name).ok_or_else(|| {
-                CompileError::at(ErrorKind::UndefinedName(ident.name.to_string()), ident.span)
-            })?;
-            let sym = symbols.get(sym_id);
+            let sym = scope.symbols().get(scope.resolve(ident.name, ident.span)?);
             match &sym.const_value {
                 Some(cv) => Ok(cv.clone()),
                 None => Err(CompileError::at(
@@ -232,27 +222,25 @@ pub(crate) fn eval_const_expr(
             right,
             span,
         } => {
-            let lv = eval_const_expr(left, symbols, options)?;
-            let rv = eval_const_expr(right, symbols, options)?;
+            let lv = eval_const_expr(left, scope)?;
+            let rv = eval_const_expr(right, scope)?;
             bin_op(*op)
                 .apply(lv, rv)
                 .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, *span))
         }
         ast::Expr::UnaryOp { op, operand, span } => {
-            let v = eval_const_expr(operand, symbols, options)?;
+            let v = eval_const_expr(operand, scope)?;
             un_op(*op)
                 .apply(v)
                 .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, *span))
         }
-        ast::Expr::Call { name, args, span } => {
-            const_intrinsic_call(name.name, args, symbols, options, *span)
-        }
+        ast::Expr::Call { name, args, span } => const_intrinsic_call(name.name, args, scope, *span),
         ast::Expr::Cast { ty, operand, span } => {
-            let target = resolve_type(ty, symbols, options)?;
+            let target = resolve_type(ty, scope)?;
             let target_vty = target
                 .value_ty()
                 .ok_or_else(|| CompileError::at(ErrorKind::NonConstantExpression, *span))?;
-            let v = eval_const_expr(operand, symbols, options)?;
+            let v = eval_const_expr(operand, scope)?;
             v.cast(target_vty)
                 .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, *span))
         }
@@ -300,18 +288,17 @@ pub(crate) fn un_op(op: ast::UnOp) -> UnOp {
 fn const_intrinsic_call(
     name: &str,
     args: &[ast::Expr<'_>],
-    symbols: &SymbolTable,
-    options: &CompileOptions,
+    scope: &Resolver,
     span: Span,
 ) -> Result<Value> {
     let non_const = || CompileError::at(ErrorKind::NonConstantExpression, span);
     let intrinsic = Intrinsic::lookup(name).ok_or_else(non_const)?;
     if intrinsic == Intrinsic::Sizeof {
-        return const_sizeof(args, symbols, options, span);
+        return const_sizeof(args, scope, span);
     }
     let args = args
         .iter()
-        .map(|arg| eval_const_expr(arg, symbols, options))
+        .map(|arg| eval_const_expr(arg, scope))
         .collect::<Result<Vec<_>>>()?;
     intrinsic
         .apply(args)
@@ -319,12 +306,7 @@ fn const_intrinsic_call(
         .map_err(|_| non_const())
 }
 
-fn const_sizeof(
-    args: &[ast::Expr<'_>],
-    symbols: &SymbolTable,
-    options: &CompileOptions,
-    span: oqi_lex::Span,
-) -> Result<Value> {
+fn const_sizeof(args: &[ast::Expr<'_>], scope: &Resolver, span: oqi_lex::Span) -> Result<Value> {
     let (value_expr, dim_expr) = match args {
         [value] => (value, None),
         [value, dim] => (value, Some(dim)),
@@ -332,22 +314,20 @@ fn const_sizeof(
     };
 
     let dim_value = dim_expr
-        .map(|dim| eval_const_expr(dim, symbols, options))
+        .map(|dim| eval_const_expr(dim, scope))
         .transpose()?;
 
     if let ast::Expr::Ident(ident) = value_expr {
-        let sym_id = symbols.lookup(ident.name).ok_or_else(|| {
-            CompileError::at(ErrorKind::UndefinedName(ident.name.to_string()), ident.span)
-        })?;
-        let value_ty = symbols
-            .get(sym_id)
+        let value_ty = scope
+            .symbols()
+            .get(scope.resolve(ident.name, ident.span)?)
             .ty
             .value_ty()
             .ok_or_else(|| CompileError::at(ErrorKind::NonConstantExpression, span))?;
         return const_sizeof_ty(value_ty, dim_value, span);
     }
 
-    let value_ty = eval_const_expr(value_expr, symbols, options)?.ty();
+    let value_ty = eval_const_expr(value_expr, scope)?.ty();
     const_sizeof_ty(value_ty, dim_value, span)
 }
 
@@ -468,11 +448,7 @@ pub fn parse_dt(spec: &str) -> Result<Duration> {
 }
 
 /// Resolve an AST scalar type to an IR `Type`.
-pub(crate) fn resolve_scalar_type(
-    ty: &ast::ScalarType<'_>,
-    symbols: &SymbolTable,
-    options: &CompileOptions,
-) -> Result<Type> {
+pub(crate) fn resolve_scalar_type(ty: &ast::ScalarType<'_>, scope: &Resolver) -> Result<Type> {
     match ty {
         ast::ScalarType::Bool(_) => Ok(Type::Classical(ValueTy::bool())),
         ast::ScalarType::Duration(_) => Ok(Type::Classical(ValueTy::duration())),
@@ -480,49 +456,49 @@ pub(crate) fn resolve_scalar_type(
 
         ast::ScalarType::Bit(None, _) => Ok(Type::Classical(ValueTy::bit())),
         ast::ScalarType::Bit(Some(expr), _) => {
-            let n = eval_designator(expr, symbols, options)?;
+            let n = eval_designator(expr, scope)?;
             Ok(Type::Classical(ValueTy::bitreg(n as u32)))
         }
 
-        ast::ScalarType::Int(None, _) => {
-            Ok(Type::Classical(ValueTy::int(options.system_width.iw())))
-        }
+        ast::ScalarType::Int(None, _) => Ok(Type::Classical(ValueTy::int(
+            scope.options().system_width.iw(),
+        ))),
         ast::ScalarType::Int(Some(expr), _) => {
-            let width = eval_designator(expr, symbols, options)?;
+            let width = eval_designator(expr, scope)?;
             Ok(Type::Classical(ValueTy::int(int_width(expr, width)?)))
         }
 
-        ast::ScalarType::Uint(None, _) => {
-            Ok(Type::Classical(ValueTy::uint(options.system_width.iw())))
-        }
+        ast::ScalarType::Uint(None, _) => Ok(Type::Classical(ValueTy::uint(
+            scope.options().system_width.iw(),
+        ))),
         ast::ScalarType::Uint(Some(expr), _) => {
-            let width = eval_designator(expr, symbols, options)?;
+            let width = eval_designator(expr, scope)?;
             Ok(Type::Classical(ValueTy::uint(int_width(expr, width)?)))
         }
 
-        ast::ScalarType::Float(None, _) => {
-            Ok(Type::Classical(ValueTy::float(options.system_width.fw())))
-        }
+        ast::ScalarType::Float(None, _) => Ok(Type::Classical(ValueTy::float(
+            scope.options().system_width.fw(),
+        ))),
         ast::ScalarType::Float(Some(expr), _) => {
-            let width = eval_designator(expr, symbols, options)?;
+            let width = eval_designator(expr, scope)?;
             Ok(Type::Classical(ValueTy::float(
                 float_width_from_system_width(width),
             )))
         }
 
-        ast::ScalarType::Angle(None, _) => {
-            Ok(Type::Classical(ValueTy::angle(options.system_width.iw())))
-        }
+        ast::ScalarType::Angle(None, _) => Ok(Type::Classical(ValueTy::angle(
+            scope.options().system_width.iw(),
+        ))),
         ast::ScalarType::Angle(Some(expr), _) => {
-            let width = eval_designator(expr, symbols, options)?;
+            let width = eval_designator(expr, scope)?;
             Ok(Type::Classical(ValueTy::angle(int_width(expr, width)?)))
         }
 
-        ast::ScalarType::Complex(None, _) => {
-            Ok(Type::Classical(ValueTy::complex(options.system_width.fw())))
-        }
+        ast::ScalarType::Complex(None, _) => Ok(Type::Classical(ValueTy::complex(
+            scope.options().system_width.fw(),
+        ))),
         ast::ScalarType::Complex(Some(inner), _) => {
-            let inner_ty = resolve_scalar_type(inner, symbols, options)?;
+            let inner_ty = resolve_scalar_type(inner, scope)?;
             match inner_ty.scalar_ty() {
                 Some(PrimitiveTy::Float(fw)) => Ok(Type::Classical(ValueTy::complex(fw))),
                 _ => Err(CompileError::at(
@@ -533,31 +509,27 @@ pub(crate) fn resolve_scalar_type(
         }
 
         ast::ScalarType::Waveform(_) => Ok(Type::Openpulse(openpulse::PrimitiveTy::Waveform(
-            options.system_width.fw(),
+            scope.options().system_width.fw(),
         ))),
         ast::ScalarType::Port(_) => Ok(Type::Openpulse(openpulse::PrimitiveTy::Port)),
         ast::ScalarType::Frame(_) => Ok(Type::Openpulse(openpulse::PrimitiveTy::Frame(
-            options.system_width.fw(),
-            options.system_width.iw(),
+            scope.options().system_width.fw(),
+            scope.options().system_width.iw(),
         ))),
     }
 }
 
 /// Resolve an AST type expression to an IR `Type`.
-pub(crate) fn resolve_type(
-    ty: &ast::TypeExpr<'_>,
-    symbols: &SymbolTable,
-    options: &CompileOptions,
-) -> Result<Type> {
+pub(crate) fn resolve_type(ty: &ast::TypeExpr<'_>, scope: &Resolver) -> Result<Type> {
     match ty {
-        ast::TypeExpr::Scalar(scalar) => resolve_scalar_type(scalar, symbols, options),
+        ast::TypeExpr::Scalar(scalar) => resolve_scalar_type(scalar, scope),
         ast::TypeExpr::Array(arr) => {
-            let element = resolve_scalar_type(&arr.element_type, symbols, options)?
+            let element = resolve_scalar_type(&arr.element_type, scope)?
                 .scalar_ty()
                 .expect("resolved scalar type should stay scalar");
             let mut dims = Vec::with_capacity(arr.dimensions.len());
             for dim_expr in &arr.dimensions {
-                dims.push(eval_designator(dim_expr, symbols, options)?);
+                dims.push(eval_designator(dim_expr, scope)?);
             }
             let shape = ArrayShape::new(dims).map_err(|e| invalid_type(e, arr.span))?;
             Ok(Type::Classical(ValueTy::array(element, shape)))
@@ -566,15 +538,11 @@ pub(crate) fn resolve_type(
 }
 
 /// Resolve an AST qubit type to an IR `Type`.
-pub(crate) fn resolve_qubit_type(
-    ty: &ast::QubitType<'_>,
-    symbols: &SymbolTable,
-    options: &CompileOptions,
-) -> Result<Type> {
+pub(crate) fn resolve_qubit_type(ty: &ast::QubitType<'_>, scope: &Resolver) -> Result<Type> {
     match &ty.designator {
         None => Ok(Type::Qubit),
         Some(expr) => {
-            let n = eval_designator(expr, symbols, options)?;
+            let n = eval_designator(expr, scope)?;
             Ok(Type::QubitReg(n))
         }
     }
@@ -584,20 +552,19 @@ pub(crate) fn resolve_qubit_type(
 pub(crate) fn resolve_old_style_type(
     kind: &ast::OldStyleKind,
     designator: Option<&ast::Expr<'_>>,
-    symbols: &SymbolTable,
-    options: &CompileOptions,
+    scope: &Resolver,
 ) -> Result<Type> {
     match kind {
         ast::OldStyleKind::Creg => match designator {
             Some(expr) => {
-                let n = eval_designator(expr, symbols, options)?;
+                let n = eval_designator(expr, scope)?;
                 Ok(Type::Classical(ValueTy::bitreg(n as u32)))
             }
             None => Ok(Type::Classical(ValueTy::bit())),
         },
         ast::OldStyleKind::Qreg => match designator {
             Some(expr) => {
-                let n = eval_designator(expr, symbols, options)?;
+                let n = eval_designator(expr, scope)?;
                 Ok(Type::QubitReg(n))
             }
             None => Ok(Type::Qubit),
@@ -608,10 +575,9 @@ pub(crate) fn resolve_old_style_type(
 /// Resolve an array-ref argument type (subroutine / extern parameters).
 pub(crate) fn resolve_array_ref_type(
     arr_ref: &ast::ArrayRefType<'_>,
-    symbols: &SymbolTable,
-    options: &CompileOptions,
+    scope: &Resolver,
 ) -> Result<Type> {
-    let element = resolve_scalar_type(&arr_ref.element_type, symbols, options)?
+    let element = resolve_scalar_type(&arr_ref.element_type, scope)?
         .scalar_ty()
         .expect("resolved scalar type should stay scalar");
     let access = match arr_ref.mutability {
@@ -622,7 +588,7 @@ pub(crate) fn resolve_array_ref_type(
         ast::ArrayRefDims::ExprList(exprs) => {
             let mut fixed = Vec::with_capacity(exprs.len());
             for e in exprs {
-                fixed.push(eval_designator(e, symbols, options)?);
+                fixed.push(eval_designator(e, scope)?);
             }
             let shape = ArrayShape::new(fixed).map_err(|e| invalid_type(e, arr_ref.span))?;
             Ok(Type::Classical(ValueTy::array_ref(
@@ -632,7 +598,7 @@ pub(crate) fn resolve_array_ref_type(
             )))
         }
         ast::ArrayRefDims::Dim(expr) => {
-            let rank = eval_designator(expr, symbols, options)?;
+            let rank = eval_designator(expr, scope)?;
             let rank = ArrayDim::new(rank).map_err(|e| invalid_type(e, expr.span()))?;
             Ok(Type::Classical(ValueTy::array_ref(
                 element,
@@ -652,16 +618,14 @@ mod tests {
         oqi_lex::Span::new(start, end)
     }
 
-    fn empty_symbols() -> SymbolTable {
-        SymbolTable::new()
-    }
-
-    fn default_options() -> CompileOptions {
-        CompileOptions {
+    /// The global scope, with only the built-in names in it.
+    fn global_scope() -> Resolver {
+        let options = CompileOptions {
             source_name: None,
             system_width: SystemWidth::B64,
             ..Default::default()
-        }
+        };
+        Resolver::new(crate::resolve::DefaultIncludeResolver, options)
     }
 
     #[test]
@@ -696,161 +660,145 @@ mod tests {
 
     #[test]
     fn test_resolve_scalar_bool() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let ty = ast::ScalarType::Bool(span(0, 4));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::bool())
         );
     }
 
     #[test]
     fn test_resolve_scalar_bit_no_designator() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let ty = ast::ScalarType::Bit(None, span(0, 3));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::bit())
         );
     }
 
     #[test]
     fn test_resolve_scalar_bit_with_designator() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let expr = ast::Expr::IntLiteral("4", ast::IntEncoding::Decimal, span(4, 5));
         let ty = ast::ScalarType::Bit(Some(Box::new(expr)), span(0, 6));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::bitreg(4))
         );
     }
 
     #[test]
     fn test_resolve_scalar_int_no_designator() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let ty = ast::ScalarType::Int(None, span(0, 3));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::int(iw(64)))
         );
     }
 
     #[test]
     fn test_resolve_scalar_int_with_designator() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let expr = ast::Expr::IntLiteral("8", ast::IntEncoding::Decimal, span(4, 5));
         let ty = ast::ScalarType::Int(Some(Box::new(expr)), span(0, 6));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::int(iw(8)))
         );
     }
 
     #[test]
     fn test_resolve_scalar_uint_with_designator() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let expr = ast::Expr::IntLiteral("16", ast::IntEncoding::Decimal, span(5, 7));
         let ty = ast::ScalarType::Uint(Some(Box::new(expr)), span(0, 8));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::uint(iw(16)))
         );
     }
 
     #[test]
     fn test_resolve_scalar_float_no_designator() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let ty = ast::ScalarType::Float(None, span(0, 5));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::float(FloatWidth::F64))
         );
     }
 
     #[test]
     fn test_resolve_scalar_float_32() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let expr = ast::Expr::IntLiteral("32", ast::IntEncoding::Decimal, span(6, 8));
         let ty = ast::ScalarType::Float(Some(Box::new(expr)), span(0, 9));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::float(FloatWidth::F32))
         );
     }
 
     #[test]
     fn test_resolve_scalar_angle_no_designator() {
-        let sym = empty_symbols();
-        let opts = CompileOptions {
+        let options = CompileOptions {
             source_name: None,
             system_width: SystemWidth::B32,
             ..Default::default()
         };
+        let scope = Resolver::new(crate::resolve::DefaultIncludeResolver, options);
         let ty = ast::ScalarType::Angle(None, span(0, 5));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::angle(iw(32)))
         );
     }
 
     #[test]
     fn test_resolve_scalar_complex_no_designator() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let ty = ast::ScalarType::Complex(None, span(0, 7));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::complex(FloatWidth::F64))
         );
     }
 
     #[test]
     fn test_resolve_scalar_complex_with_float32() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let inner_expr = ast::Expr::IntLiteral("32", ast::IntEncoding::Decimal, span(14, 16));
         let inner = ast::ScalarType::Float(Some(Box::new(inner_expr)), span(8, 17));
         let ty = ast::ScalarType::Complex(Some(Box::new(inner)), span(0, 18));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::complex(FloatWidth::F32))
         );
     }
 
     #[test]
     fn test_resolve_scalar_duration() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let ty = ast::ScalarType::Duration(span(0, 8));
         assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
+            resolve_scalar_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::duration())
         );
     }
 
     #[test]
     fn test_resolve_scalar_stretch() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let ty = ast::ScalarType::Stretch(span(0, 7));
-        assert_eq!(
-            resolve_scalar_type(&ty, &sym, &opts).unwrap(),
-            Type::Stretch
-        );
+        assert_eq!(resolve_scalar_type(&ty, &scope).unwrap(), Type::Stretch);
     }
 
     #[test]
     fn test_resolve_array_type() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let elem = ast::ScalarType::Float(
             Some(Box::new(ast::Expr::IntLiteral(
                 "64",
@@ -868,7 +816,7 @@ mod tests {
         };
         let ty = ast::TypeExpr::Array(arr);
         assert_eq!(
-            resolve_type(&ty, &sym, &opts).unwrap(),
+            resolve_type(&ty, &scope).unwrap(),
             Type::Classical(ValueTy::array(
                 PrimitiveTy::Float(FloatWidth::F64),
                 ashape(vec![3, 4])
@@ -878,48 +826,41 @@ mod tests {
 
     #[test]
     fn test_resolve_qubit_no_designator() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let ty = ast::QubitType {
             designator: None,
             span: span(0, 5),
         };
-        assert_eq!(resolve_qubit_type(&ty, &sym, &opts).unwrap(), Type::Qubit);
+        assert_eq!(resolve_qubit_type(&ty, &scope).unwrap(), Type::Qubit);
     }
 
     #[test]
     fn test_resolve_qubit_with_designator() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let expr = ast::Expr::IntLiteral("4", ast::IntEncoding::Decimal, span(6, 7));
         let ty = ast::QubitType {
             designator: Some(Box::new(expr)),
             span: span(0, 8),
         };
-        assert_eq!(
-            resolve_qubit_type(&ty, &sym, &opts).unwrap(),
-            Type::QubitReg(4)
-        );
+        assert_eq!(resolve_qubit_type(&ty, &scope).unwrap(), Type::QubitReg(4));
     }
 
     #[test]
     fn test_resolve_old_style_creg() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let expr = ast::Expr::IntLiteral("4", ast::IntEncoding::Decimal, span(5, 6));
         assert_eq!(
-            resolve_old_style_type(&ast::OldStyleKind::Creg, Some(&expr), &sym, &opts).unwrap(),
+            resolve_old_style_type(&ast::OldStyleKind::Creg, Some(&expr), &scope).unwrap(),
             Type::Classical(ValueTy::bitreg(4))
         );
     }
 
     #[test]
     fn test_resolve_old_style_qreg() {
-        let sym = empty_symbols();
-        let opts = default_options();
+        let scope = global_scope();
         let expr = ast::Expr::IntLiteral("4", ast::IntEncoding::Decimal, span(5, 6));
         assert_eq!(
-            resolve_old_style_type(&ast::OldStyleKind::Qreg, Some(&expr), &sym, &opts).unwrap(),
+            resolve_old_style_type(&ast::OldStyleKind::Qreg, Some(&expr), &scope).unwrap(),
             Type::QubitReg(4)
         );
     }
@@ -928,15 +869,12 @@ mod tests {
     fn test_eval_const_expr_from_symbol() {
         use crate::symbol::SymbolKind;
 
-        let mut sym = SymbolTable::new();
-        let id = sym.insert(
-            "N".to_string(),
-            SymbolKind::Const,
-            Type::Classical(ValueTy::uint(iw(32))),
-            span(0, 5),
-            None,
-        );
-        sym.set_const_value(
+        let mut scope = global_scope();
+        let ty = Type::Classical(ValueTy::uint(iw(32)));
+        let id = scope
+            .declare("N", SymbolKind::Const, ty, span(0, 5))
+            .unwrap();
+        scope.symbols_mut().set_const_value(
             id,
             Value::int(
                 parse_int_literal("8", ast::IntEncoding::Decimal).unwrap(),
@@ -948,16 +886,14 @@ mod tests {
             name: "N",
             span: span(0, 1),
         });
-        let options = CompileOptions::default();
-        let val = eval_const_expr(&expr, &sym, &options).unwrap();
+        let val = eval_const_expr(&expr, &scope).unwrap();
         assert_eq!(value_as_usize(&val), Some(8));
     }
 
     #[test]
     fn test_eval_const_expr_imag_literal() {
         let expr = ast::Expr::ImagLiteral("3 im", span(0, 4));
-        let options = CompileOptions::default();
-        let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
+        let val = eval_const_expr(&expr, &global_scope()).unwrap();
         match val {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::Complex(FloatWidth::F64));
@@ -972,8 +908,7 @@ mod tests {
     #[test]
     fn test_eval_const_expr_bitstring_literal() {
         let expr = ast::Expr::BitstringLiteral(r#""0110""#, span(0, 6));
-        let options = CompileOptions::default();
-        let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
+        let val = eval_const_expr(&expr, &global_scope()).unwrap();
         match val {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::BitReg(4));
@@ -1002,8 +937,9 @@ mod tests {
             dt,
             ..Default::default()
         };
+        let scope = Resolver::new(crate::resolve::DefaultIncludeResolver, options);
         let expr = ast::Expr::TimingLiteral("4 dt", span(0, 4));
-        let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
+        let val = eval_const_expr(&expr, &scope).unwrap();
         match val {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::Duration);
@@ -1026,8 +962,7 @@ mod tests {
             args: vec![ast::Expr::FloatLiteral("0.0", span(4, 7))],
             span: span(0, 8),
         };
-        let options = CompileOptions::default();
-        let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
+        let val = eval_const_expr(&expr, &global_scope()).unwrap();
         match val {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::Float(FloatWidth::F64));
@@ -1047,8 +982,7 @@ mod tests {
             args: vec![ast::Expr::BitstringLiteral(r#""1011""#, span(9, 15))],
             span: span(0, 16),
         };
-        let options = CompileOptions::default();
-        let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
+        let val = eval_const_expr(&expr, &global_scope()).unwrap();
         match val {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::Uint(iw(4)));
@@ -1071,8 +1005,7 @@ mod tests {
             ],
             span: span(0, 15),
         };
-        let options = CompileOptions::default();
-        let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
+        let val = eval_const_expr(&expr, &global_scope()).unwrap();
         match val {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::BitReg(4));
@@ -1089,17 +1022,14 @@ mod tests {
     fn test_eval_const_expr_intrinsic_sizeof_symbol() {
         use crate::symbol::SymbolKind;
 
-        let mut sym = SymbolTable::new();
-        sym.insert(
-            "my_array".to_string(),
-            SymbolKind::Variable,
-            Type::Classical(ValueTy::array(
-                PrimitiveTy::Uint(iw(8)),
-                ashape(vec![2, 3, 4]),
-            )),
-            span(0, 8),
-            None,
-        );
+        let mut scope = global_scope();
+        let ty = Type::Classical(ValueTy::array(
+            PrimitiveTy::Uint(iw(8)),
+            ashape(vec![2, 3, 4]),
+        ));
+        scope
+            .declare("my_array", SymbolKind::Variable, ty, span(0, 8))
+            .unwrap();
 
         let expr = ast::Expr::Call {
             name: ast::Ident {
@@ -1115,8 +1045,7 @@ mod tests {
             ],
             span: span(0, 19),
         };
-        let options = CompileOptions::default();
-        let val = eval_const_expr(&expr, &sym, &options).unwrap();
+        let val = eval_const_expr(&expr, &scope).unwrap();
         assert_eq!(value_as_usize(&val), Some(3));
     }
 
@@ -1130,8 +1059,7 @@ mod tests {
             args: vec![ast::Expr::BitstringLiteral(r#""1010""#, span(7, 13))],
             span: span(0, 14),
         };
-        let options = CompileOptions::default();
-        let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
+        let val = eval_const_expr(&expr, &global_scope()).unwrap();
         assert_eq!(value_as_usize(&val), Some(4));
     }
 
@@ -1145,8 +1073,7 @@ mod tests {
             args: vec![ast::Expr::ImagLiteral("3 im", span(5, 9))],
             span: span(0, 10),
         };
-        let options = CompileOptions::default();
-        let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
+        let val = eval_const_expr(&expr, &global_scope()).unwrap();
         match val {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::Float(FloatWidth::F64));
@@ -1166,8 +1093,7 @@ mod tests {
             args: vec![ast::Expr::ImagLiteral("3 im", span(5, 9))],
             span: span(0, 10),
         };
-        let options = CompileOptions::default();
-        let val = eval_const_expr(&expr, &empty_symbols(), &options).unwrap();
+        let val = eval_const_expr(&expr, &global_scope()).unwrap();
         match val {
             Value::Scalar(scalar) => {
                 assert_eq!(scalar.ty(), PrimitiveTy::Float(FloatWidth::F64));

@@ -5,8 +5,8 @@ use std::fmt;
 
 use super::types::{
     BcAliasSegment, BcBlock, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCallTarget,
-    BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcTerminator, BlockId, ConstId, ProcId,
-    ProcOwner, QubitSource, Reg, StringId,
+    BcGateModifier, BcIndex, BcInstr, BcModule, BcOp, BcOperand, BcTerminator, BlockId, ConstId,
+    ProcId, ProcOwner, QubitSource, Reg, StringId,
 };
 
 impl fmt::Display for BcModule {
@@ -135,7 +135,6 @@ fn fmt_owner(f: &mut fmt::Formatter<'_>, owner: &ProcOwner) -> fmt::Result {
         ProcOwner::Subroutine(s) => write!(f, "subroutine(s{})", s.0),
         ProcOwner::Gate(s) => write!(f, "gate(s{})", s.0),
         ProcOwner::Calibration(i) => write!(f, "calibration({i})"),
-        ProcOwner::Box => write!(f, "box"),
         ProcOwner::InlineCal => write!(f, "inline_cal"),
         ProcOwner::DurationOf => write!(f, "durationof"),
     }
@@ -191,28 +190,24 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             fmt_index_list(f, indices)
         }
         BcOp::StoreElement {
-            new,
-            base,
+            target,
             indices,
             value,
         } => {
-            write!(f, "{} = store_elem ", fmt_reg(*new))?;
-            fmt_operand(f, base)?;
+            write!(f, "store_elem {}", fmt_reg(*target))?;
             fmt_index_list(f, indices)?;
             write!(f, " = ")?;
             fmt_operand(f, value)
         }
-        BcOp::StoreSlice {
-            new,
+        BcOp::Borrow {
+            dest,
             base,
             indices,
-            value,
         } => {
-            write!(f, "{} = store_slice ", fmt_reg(*new))?;
-            fmt_operand(f, base)?;
-            write!(f, "{indices:?} = ")?;
-            fmt_operand(f, value)
+            write!(f, "{} = borrow {}", fmt_reg(*dest), fmt_reg(*base))?;
+            fmt_index_list(f, indices)
         }
+        BcOp::Release { reg } => write!(f, "release {}", fmt_reg(*reg)),
         BcOp::NewArray { dest, items } => {
             write!(f, "{} = new_array [", fmt_reg(*dest))?;
             for (i, it) in items.iter().enumerate() {
@@ -300,15 +295,6 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
                 fmt_operand(f, q)?;
             }
             Ok(())
-        }
-        BcOp::Box { duration, body } => {
-            write!(f, "box")?;
-            if let Some(d) = duration {
-                write!(f, "[")?;
-                fmt_operand(f, d)?;
-                write!(f, "]")?;
-            }
-            write!(f, " -> {}", fmt_proc(*body))
         }
         BcOp::CalOpaque { content } => write!(f, "cal_opaque {}", fmt_str(*content)),
         BcOp::CalOpenPulse { body } => write!(f, "cal_openpulse -> {}", fmt_proc(*body)),
@@ -409,6 +395,15 @@ fn fmt_terminator(f: &mut fmt::Formatter<'_>, term: &BcTerminator) -> fmt::Resul
             }
             write!(f, " | default -> {}", fmt_block_id(*default))
         }
+        BcTerminator::Box {
+            duration,
+            body,
+            after,
+        } => {
+            write!(f, "box[")?;
+            fmt_operand(f, duration)?;
+            write!(f, "] {} then {}", fmt_block_id(*body), fmt_block_id(*after))
+        }
         BcTerminator::Return(rv) => {
             write!(f, "return")?;
             if let Some(v) = rv {
@@ -429,13 +424,36 @@ fn mnemonic(op: &impl fmt::Debug) -> String {
 }
 
 /// Render `[i0, i1, …]` for an element access's per-dimension indices.
-fn fmt_index_list(f: &mut fmt::Formatter<'_>, indices: &[BcOperand]) -> fmt::Result {
+fn fmt_index_list(f: &mut fmt::Formatter<'_>, indices: &[BcIndex]) -> fmt::Result {
     write!(f, "[")?;
     for (i, idx) in indices.iter().enumerate() {
         if i > 0 {
             write!(f, ", ")?;
         }
-        fmt_operand(f, idx)?;
+        match idx {
+            BcIndex::Item(position) => fmt_operand(f, position)?,
+            BcIndex::Set(members) => {
+                write!(f, "{{")?;
+                for (i, member) in members.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    fmt_operand(f, member)?;
+                }
+                write!(f, "}}")?;
+            }
+            BcIndex::Range { start, step, end } => {
+                for (i, bound) in [start, step, end].into_iter().enumerate() {
+                    // The step and its colon are left out when it is.
+                    if i > 0 && (i != 1 || bound.is_some()) {
+                        write!(f, ":")?;
+                    }
+                    if let Some(bound) = bound {
+                        fmt_operand(f, bound)?;
+                    }
+                }
+            }
+        }
     }
     write!(f, "]")
 }

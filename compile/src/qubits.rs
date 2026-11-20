@@ -201,10 +201,9 @@ impl QubitLayout {
         out
     }
 
-    /// Resolve a `let` alias value (one expression per `++` operand)
-    /// into a register. Returns `Ok(None)` when the first operand is
-    /// not a quantum reference at all — the alias is classical and the
-    /// caller keeps its existing behavior.
+    /// Resolve the value of a `let` alias of qubits (one expression per
+    /// `++` operand) into a register. Returns `Ok(None)` when the first
+    /// operand is not a quantum reference the layout knows.
     pub fn resolve_alias_value(
         &self,
         exprs: &[Expr],

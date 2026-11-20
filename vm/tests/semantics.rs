@@ -112,6 +112,111 @@ fn arrays_cannot_be_indexed_by_a_set() {
     compile_error("array[int[8], 3] a = {1, 2, 3}; array[int[8], 2] b = a[{0, 1}];");
 }
 
+const TWO_D: &str = "array[int[8], 3, 2] twoD = {{1, 2}, {3, 4}, {5, 6}};";
+
+#[test]
+fn a_subscript_indexes_one_dimension_per_position() {
+    // docs/types.rst: `twoD[1:2, 0] = anotherTwoD[0:1, 1]; // allowed`.
+    let src = format!(
+        "{TWO_D}
+        array[int[8], 3, 2] anotherTwoD = {{{{10, 20}}, {{30, 40}}, {{50, 60}}}};
+        array[int[8], 2] column = twoD[1:2, 0];
+        array[int[8], 2, 1] cells = twoD[0:1, 1:1];
+        array[int[8], 2, 2] rows = twoD[0:2:2];
+        int[8] corner = twoD[-1, -1];
+        twoD[1:2, 0] = anotherTwoD[0:1, 1];"
+    );
+    assert_eq!(output(&src, "column"), "{3, 5}");
+    assert_eq!(output(&src, "cells"), "{{2}, {4}}");
+    assert_eq!(output(&src, "rows"), "{{1, 2}, {5, 6}}");
+    assert_eq!(output(&src, "corner"), "6");
+    assert_eq!(output(&src, "twoD"), "{{1, 2}, {20, 4}, {40, 6}}");
+}
+
+#[test]
+fn array_assignment_follows_the_spec_examples() {
+    let decls = format!(
+        "int[8] scalar = 7;
+        array[int[8], 2] oneD = {{8, 9}};
+        {TWO_D}
+        array[int[8], 3, 2] anotherTwoD = {{{{10, 20}}, {{30, 40}}, {{50, 60}}}};
+        array[int[8], 4, 3, 2] threeD;
+        array[int[8], 2, 3, 4] anotherThreeD;"
+    );
+    let src = format!(
+        "{decls}
+        threeD[0, 0, 0] = scalar;
+        threeD[1, 0] = oneD;
+        threeD[2] = twoD;
+        twoD[1:2] = anotherTwoD[0:1];
+        array[int[8], 2] a = threeD[0, 0];
+        array[int[8], 2] b = threeD[1, 0];
+        array[int[8], 3, 2] c = threeD[2];
+        array[int[8], 2] d = threeD[2, 1:2, 1];"
+    );
+    assert_eq!(output(&src, "a"), "{7, 0}");
+    assert_eq!(output(&src, "b"), "{8, 9}");
+    assert_eq!(output(&src, "c"), "{{1, 2}, {3, 4}, {5, 6}}");
+    assert_eq!(output(&src, "d"), "{4, 6}");
+    assert_eq!(output(&src, "twoD"), "{{1, 2}, {10, 20}, {30, 40}}");
+
+    // "error - shape mismatch"
+    compile_error(&format!("{decls} threeD[0] = oneD;"));
+    compile_error(&format!("{decls} threeD[0, 0] = scalar;"));
+    compile_error(&format!("{decls} threeD = anotherThreeD;"));
+    compile_error(&format!("{decls} twoD[1:2, 0] = anotherTwoD[0:1];"));
+}
+
+#[test]
+fn a_second_subscript_indexes_what_the_first_selected() {
+    // "nearly all instances of multiple subscripts `[][]` will be bit-level
+    // accesses of array elements" — the rest index the selection.
+    let src = format!(
+        "array[int[32], 5] intArr = {{0, 1, 2, 3, 4}};
+        intArr[0][0] = 1;
+        bit[5] b = intArr[4][0:4];
+        {TWO_D}
+        array[int[8], 2] oneD = {{8, 9}};
+        array[int[8], 2] row = twoD[1:2][0];
+        int[8] cell = twoD[1:2, 1][0];
+        twoD[1:2][1] = oneD;
+        twoD[0:1][1][0] = 7;
+        bit[8] reg = \"00000000\";
+        reg[2:5][1] = 1;"
+    );
+    assert_eq!(output(&src, "intArr"), "{1, 1, 2, 3, 4}");
+    assert_eq!(output(&src, "b"), "\"00100\"");
+    assert_eq!(output(&src, "row"), "{3, 4}");
+    assert_eq!(output(&src, "cell"), "4");
+    assert_eq!(output(&src, "twoD"), "{{1, 2}, {7, 4}, {8, 9}}");
+    assert_eq!(output(&src, "reg"), "\"00001000\"");
+}
+
+#[test]
+fn per_dimension_subscripts_work_through_array_references() {
+    let src = format!(
+        "def shift(mutable array[int[8], #dim = 2] a) {{ a[0:1, 1] = a[1:2, 0]; }}
+        def mark(mutable array[int[8], #dim = 2] a) {{ a[0, 0] = a[0, 0] + 100; }}
+        def pick(readonly array[int[8], 3, 2] a) -> int[8] {{ return a[1:2, 1][1]; }}
+        {TWO_D}
+        int[8] picked = pick(twoD);
+        shift(twoD);
+        array[int[8], 2, 3, 2] cube = {{{{{{1, 2}}, {{3, 4}}, {{5, 6}}}}, {{{{1, 2}}, {{3, 4}}, {{5, 6}}}}}};
+        shift(cube[1]);
+        array[int[8], 3, 2] untouched = cube[0];
+        array[int[8], 3, 2] shifted = cube[1];
+        array[int[8], 4, 2] tall = {{{{1, 2}}, {{3, 4}}, {{5, 6}}, {{7, 8}}}};
+        shift(tall[1:3]);
+        mark(tall[0:2][1:2]);"
+    );
+    assert_eq!(output(&src, "picked"), "6");
+    assert_eq!(output(&src, "twoD"), "{{1, 3}, {3, 5}, {5, 6}}");
+    assert_eq!(output(&src, "untouched"), "{{1, 2}, {3, 4}, {5, 6}}");
+    assert_eq!(output(&src, "shifted"), "{{1, 3}, {3, 5}, {5, 6}}");
+    // Rows 1 to 3 shift; then row 1 of rows 0 to 2 is row 0 of its last two.
+    assert_eq!(output(&src, "tall"), "{{1, 2}, {103, 5}, {5, 7}, {7, 8}}");
+}
+
 #[test]
 fn measuring_a_register_slice_yields_that_many_bits() {
     let src = r#"
@@ -121,6 +226,164 @@ fn measuring_a_register_slice_yields_that_many_bits() {
         bit[3] c = measure q[0:2];
     "#;
     assert_eq!(output(src, "c"), "\"010\"");
+}
+
+// ── Aliases of bit registers (docs/types.rst, docs/classical.rst) ────────
+
+#[test]
+fn a_classical_alias_refers_to_the_bits_it_names() {
+    // Positions 1, 2, 3 of `a` hold 1, 0, 0; positions 7 and 6 hold 1, 0.
+    let src = format!(
+        "{REG}
+        let mid = a[1:3];
+        let low = a[0];
+        let picked = a[{{7, 6}}];
+        bit[3] before = mid;
+        bit first = low;
+        bit[2] chosen = picked;
+        bit one = mid[0];
+        bit[2] two = mid[1:2];
+        a[2] = 1;
+        bit[3] after = mid;"
+    );
+    assert_eq!(output(&src, "before"), "\"001\"");
+    assert_eq!(output(&src, "first"), "0");
+    assert_eq!(output(&src, "chosen"), "\"01\"");
+    assert_eq!(output(&src, "one"), "1");
+    assert_eq!(output(&src, "two"), "\"00\"");
+    // An alias is a reference: it sees the register as it now is.
+    assert_eq!(output(&src, "after"), "\"011\"");
+}
+
+#[test]
+fn writing_through_a_classical_alias_reaches_the_register() {
+    let src = r#"
+        bit[8] r = "00000000";
+        let mid = r[2:5];
+        mid = "1001";
+        bit[8] whole = r;
+        mid[1] = 1;
+        bit[8] item = r;
+        mid[2:3] = "01";
+        bit[8] slice = r;
+        let top = r[7];
+        top = 1;
+    "#;
+    assert_eq!(output(src, "whole"), "\"00100100\"");
+    assert_eq!(output(src, "item"), "\"00101100\"");
+    assert_eq!(output(src, "slice"), "\"00011100\"");
+    assert_eq!(output(src, "r"), "\"10011100\"");
+}
+
+#[test]
+fn classical_aliases_concatenate_registers() {
+    // "The concatenated register is a reference to the bits … of the
+    // original registers."
+    let src = r#"
+        bit[2] hi = "10";
+        bit[3] lo = "011";
+        let both = lo ++ hi;
+        bit[5] joined = both;
+        both[4] = 0;
+        both[0:1] = "00";
+        let inner = both[2:3];
+        inner = "11";
+        let spread = lo[0] ++ hi[{1, 0}] ++ lo[2];
+        bit[4] spread_now = spread;
+    "#;
+    assert_eq!(output(src, "joined"), "\"10011\"");
+    assert_eq!(output(src, "lo"), "\"100\"");
+    assert_eq!(output(src, "hi"), "\"01\"");
+    // Parts of one register may be concatenated, as long as they are
+    // different parts: lo[0], hi[1], hi[0], lo[2] hold 0, 0, 1, 1.
+    assert_eq!(output(src, "spread_now"), "\"1100\"");
+}
+
+#[test]
+fn classical_aliases_loop_and_take_measurements() {
+    let src = r#"
+        include "stdgates.inc";
+        qubit[3] q;
+        x q[0];
+        x q[2];
+        bit[5] c;
+        let window = c[1:3];
+        window = measure q;
+        int ones = 0;
+        for bit b in window { ones += int(b); }
+        let last = c[4];
+        last = measure q[0];
+        window[1] = measure q[2];
+    "#;
+    assert_eq!(output(src, "ones"), "2");
+    assert_eq!(output(src, "c"), "\"11110\"");
+}
+
+#[test]
+fn a_classical_alias_is_bound_where_it_is_declared() {
+    let src = r#"
+        bit[4] r = "0000";
+        int i = 1;
+        let chosen = r[i];
+        let pair = r[{i, 2}];
+        i = 3;
+        chosen = 1;
+        bit[4] bound = r;
+        pair = "10";
+        bit[4] set = r;
+        let a = r[0];
+        if (true) {
+            let a = r[3];
+            a = 1;
+        }
+        a = 1;
+    "#;
+    // `chosen` is r[1] whatever becomes of `i`; `pair` is r[1], r[2].
+    assert_eq!(output(src, "bound"), "\"0010\"");
+    assert_eq!(output(src, "set"), "\"0100\"");
+    // The alias in the block shadows the outer one, and ends with it.
+    assert_eq!(output(src, "r"), "\"1101\"");
+}
+
+#[test]
+fn classical_aliases_work_in_loops_and_subroutines() {
+    let src = r#"
+        def middle(bit[4] r) -> bit[2] { let m = r[1:2]; m[0] = 1; return m; }
+        bit[4] r = "0100";
+        bit[2] got = middle(r);
+        for int i in [0:2] { let b = r[i]; b = 1; }
+        bit[4] looped = r;
+        let all = r;
+        all ^= "1111";
+    "#;
+    assert_eq!(output(src, "got"), "\"11\"");
+    // Each iteration binds `b` anew.
+    assert_eq!(output(src, "looped"), "\"0111\"");
+    assert_eq!(output(src, "r"), "\"1000\"");
+    // An alias belongs to the body that declares it.
+    let err = compile_error("bit[4] r; let a = r[0:1]; def f() -> bit { return a[0]; }");
+    assert!(err.to_string().contains("not visible"), "{err}");
+}
+
+#[test]
+fn only_registers_can_be_aliased() {
+    for (src, what) in [
+        ("array[int[8], 2] xs = {1, 2}; let a = xs;", "alias"),
+        ("int[8] x = 3; let a = x;", "alias"),
+        ("int[8] x = 3; let a = x[0:3];", "alias"),
+        ("bit[2] c; let a = c & c;", "alias"),
+        ("let a = $0;", "physical qubits"),
+        ("qubit[2] q; bit[2] c; let a = q ++ c;", "classical"),
+        ("bit[4] r; let a = r ++ r[2:3];", "part of itself"),
+        (
+            "bit[4] r; let a = r[0:1]; let b = r[3] ++ a[{1, 0}] ++ r[1:2];",
+            "part of itself",
+        ),
+    ] {
+        let err = compile_error(src);
+        assert!(err.to_string().contains(what), "{src}: {err}");
+        assert!(err.span.end > err.span.start, "{src}: no location");
+    }
 }
 
 // ── Constants and scope (docs/scope.rst) ────────────────────────────────

@@ -72,6 +72,12 @@ pub struct Resolver {
     /// IDs of currently active *non-global* scopes, innermost last. Empty
     /// while resolving at the global scope.
     scope_stack: Vec<ScopeId>,
+    /// The names of the cal scope ([`ScopeId::CAL`]).
+    cal_names: HashMap<String, SymbolId>,
+    /// While resolving a `cal` block or `defcal`: the length of
+    /// `lookup_stack` where it starts. The scopes from there on are its
+    /// own, and see the cal scope before the scopes around it.
+    cal_start: Option<usize>,
     include_stack: Vec<PathBuf>,
     options: CompileOptions,
     include_resolver: Box<dyn IncludeResolver>,
@@ -139,9 +145,12 @@ impl Resolver {
 
         Self {
             symbols,
-            scope_count: 0,
+            // `ScopeId(0)` is the cal scope.
+            scope_count: ScopeId::CAL.0 + 1,
             lookup_stack: vec![global],
             scope_stack: Vec::new(),
+            cal_names: HashMap::new(),
+            cal_start: None,
             include_stack: Vec::new(),
             options,
             include_resolver: Box::new(include_resolver),
@@ -162,6 +171,19 @@ impl Resolver {
         self.lookup_stack.pop();
     }
 
+    /// Start resolving a `cal` block or `defcal`: the cal scope comes into
+    /// view, and — until a scope is opened, as a `defcal` does for its
+    /// body — declarations go into it. Returns what [`leave_cal`] restores.
+    ///
+    /// [`leave_cal`]: Self::leave_cal
+    pub fn enter_cal(&mut self) -> Option<usize> {
+        self.cal_start.replace(self.lookup_stack.len())
+    }
+
+    pub fn leave_cal(&mut self, outer: Option<usize>) {
+        self.cal_start = outer;
+    }
+
     /// `Some(id)` for non-global scopes, `None` at global scope. Use this
     /// when declaring a symbol — it's exactly the value to store in
     /// `Symbol::scope`.
@@ -176,8 +198,23 @@ impl Resolver {
         ty: Type,
         span: Span,
     ) -> Result<SymbolId> {
-        let current = self.lookup_stack.last().unwrap();
-        if let Some(&prior_id) = current.get(name) {
+        // The top level of a `cal` block declares into the cal scope. The
+        // program's qubits, inputs and outputs are no values of the
+        // block's: they are declared as usual.
+        let cal = self.cal_start == Some(self.lookup_stack.len())
+            && !matches!(
+                kind,
+                SymbolKind::Qubit | SymbolKind::Input | SymbolKind::Output
+            );
+        let scope = match cal {
+            true => Some(ScopeId::CAL),
+            false => self.current_scope(),
+        };
+        let names = match cal {
+            true => &mut self.cal_names,
+            false => self.lookup_stack.last_mut().unwrap(),
+        };
+        if let Some(&prior_id) = names.get(name) {
             let prior = self.symbols.get(prior_id).span;
             return Err(CompileError::at(
                 ErrorKind::DuplicateDefinition {
@@ -187,25 +224,29 @@ impl Resolver {
                 span,
             ));
         }
-        let scope = self.current_scope();
         let id = self.symbols.insert(name.to_string(), kind, ty, span, scope);
-        self.lookup_stack
-            .last_mut()
-            .unwrap()
-            .insert(name.to_string(), id);
+        names.insert(name.to_string(), id);
         Ok(id)
     }
 
     pub fn resolve(&self, name: &str, span: Span) -> Result<SymbolId> {
-        for scope in self.lookup_stack.iter().rev() {
-            if let Some(&id) = scope.get(name) {
-                return Ok(id);
-            }
-        }
-        Err(CompileError::at(
-            ErrorKind::UndefinedName(name.to_string()),
-            span,
-        ))
+        let innermost = |scopes: &[HashMap<String, SymbolId>]| {
+            scopes
+                .iter()
+                .rev()
+                .find_map(|scope| scope.get(name).copied())
+        };
+        let (around, own) = self
+            .lookup_stack
+            .split_at(self.cal_start.unwrap_or(self.lookup_stack.len()));
+        let cal = || {
+            self.cal_start
+                .and_then(|_| self.cal_names.get(name).copied())
+        };
+        innermost(own)
+            .or_else(cal)
+            .or_else(|| innermost(around))
+            .ok_or_else(|| CompileError::at(ErrorKind::UndefinedName(name.to_string()), span))
     }
 
     pub fn resolve_call(&self, name: &str, span: Span) -> Result<CallTarget> {
@@ -449,6 +490,45 @@ mod tests {
 
         r.pop_scope();
         assert_eq!(r.resolve("x", Default::default()).unwrap(), outer);
+    }
+
+    #[test]
+    fn the_cal_scope_is_seen_from_cal_blocks_and_defcals_only() {
+        let mut r = default_resolver();
+        let bool_var = |r: &mut Resolver, name: &str| {
+            let ty = Type::Classical(ValueTy::bool());
+            r.declare(name, SymbolKind::Variable, ty, span(0, 1))
+        };
+        let outside = bool_var(&mut r, "x").unwrap();
+
+        // A `cal` block declares into the cal scope, at its top level.
+        let outer = r.enter_cal();
+        let shared = bool_var(&mut r, "shared").unwrap();
+        let shadow = bool_var(&mut r, "x").unwrap();
+        assert_eq!(r.symbols().get(shared).scope, Some(ScopeId::CAL));
+        assert_eq!(r.resolve("x", span(0, 1)).unwrap(), shadow);
+        let block = r.push_scope();
+        let nested = bool_var(&mut r, "nested").unwrap();
+        assert_eq!(r.symbols().get(nested).scope, Some(block));
+        r.pop_scope();
+        r.leave_cal(outer);
+
+        assert!(r.resolve("shared", span(0, 1)).is_err());
+        assert_eq!(r.resolve("x", span(0, 1)).unwrap(), outside);
+
+        // A `defcal` sees the cal scope and declares into its own.
+        let outer = r.enter_cal();
+        let body = r.push_scope();
+        assert_eq!(r.resolve("shared", span(0, 1)).unwrap(), shared);
+        let local = bool_var(&mut r, "local").unwrap();
+        assert_eq!(r.symbols().get(local).scope, Some(body));
+        r.pop_scope();
+        r.leave_cal(outer);
+
+        let outer = r.enter_cal();
+        assert!(r.resolve("local", span(0, 1)).is_err());
+        assert!(bool_var(&mut r, "shared").is_err());
+        r.leave_cal(outer);
     }
 
     #[test]

@@ -151,11 +151,12 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     pulse: Option<Box<dyn OpenPulseHandler + 'm>>,
     /// Installed handler for non-OpenPulse `cal` block text.
     opaque_cal: Option<Box<dyn OpaqueCalHandler + 'm>>,
-    /// Cal-scope globals (frames/ports/waveforms shared across all
-    /// cal/defcal bodies), keyed by symbol. Written by `CalStore`, read
-    /// by `CalLoad`; extern ports/frames are minted through the pulse
-    /// handler on first read. Cleared at the start of each run.
-    pulse_globals: HashMap<SymbolId, Value>,
+    /// The values of the cal scope (what `cal` blocks declare: shared by
+    /// every `cal` block and `defcal` body), keyed by symbol. Written by
+    /// `CalStore`, read by `CalLoad`; extern ports/frames are minted
+    /// through the pulse handler on first read. Cleared at the start of
+    /// each run.
+    cal_values: HashMap<SymbolId, Value>,
     /// Span of the instruction (or block) currently executing, used to
     /// locate a runtime error in the source. Defaults to the empty sentinel.
     current_span: Span,
@@ -234,7 +235,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             timing: None,
             pulse: None,
             opaque_cal: None,
-            pulse_globals: HashMap::new(),
+            cal_values: HashMap::new(),
             current_span: Span::default(),
             capture: false,
             captured_state: None,
@@ -383,7 +384,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// instruction in flight is tracked in `self.current_span` and attached by
     /// [`run_with_inputs`](Self::run_with_inputs).
     async fn run_inner(&mut self, mut inputs: HashMap<SymbolId, Value>) -> KindResult<RunResult> {
-        self.pulse_globals.clear();
+        self.cal_values.clear();
         self.measurements.clear();
         let entry = self.module.entry;
         let mut frame = self.fresh_frame(entry);
@@ -775,7 +776,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     resolved;
                 Ok(())
             }
-            BcOp::Pragma { .. } | BcOp::Alias { .. } => Ok(()),
+            BcOp::Pragma { .. } => Ok(()),
             BcOp::CalOpaque { content } => {
                 if let Some(handler) = self.opaque_cal.as_mut() {
                     let text = &self.module.strings[content.0 as usize];
@@ -802,7 +803,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
             BcOp::CalStore { symbol, src } => {
                 let v = self.eval(frame, src)?;
-                self.pulse_globals.insert(*symbol, v);
+                self.cal_values.insert(*symbol, v);
                 Ok(())
             }
             BcOp::DurationOf { dest, body } => {
@@ -925,14 +926,19 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         )
     }
 
-    /// Read a cal-scope global. Extern ports/frames are minted through
-    /// the pulse handler on first read; anything else must have been
-    /// stored by a `cal` block that already ran.
+    /// Read a cal-scope value. Extern ports/frames are minted through
+    /// the pulse handler on first read; a classical variable starts at
+    /// zero like any other; a frame or waveform must have been stored by a
+    /// `cal` block that already ran.
     fn cal_load(&mut self, symbol: SymbolId) -> KindResult<Value> {
-        if let Some(v) = self.pulse_globals.get(&symbol) {
+        if let Some(v) = self.cal_values.get(&symbol) {
             return Ok(v.clone());
         }
         let sym = self.module.symbol(symbol);
+        if let Some(zero) = sym.ty.and_then(zero_value) {
+            self.cal_values.insert(symbol, zero.clone());
+            return Ok(zero);
+        }
         let pulse = self.pulse.as_mut().ok_or_else(|| {
             VmErrorKind::Pulse(format!(
                 "cal code executed without a pulse handler (reading `{}`)",
@@ -950,7 +956,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
         };
         let v = handle_value(handle);
-        self.pulse_globals.insert(symbol, v.clone());
+        self.cal_values.insert(symbol, v.clone());
         Ok(v)
     }
 

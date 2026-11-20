@@ -7,7 +7,7 @@ use crate::error::{Error, Result};
 use crate::index::Index;
 use crate::primitive::PrimitiveTy;
 use crate::shared::Shared;
-use crate::value::Value;
+use crate::value::{Value, ValueTy};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArrayRef {
@@ -32,20 +32,17 @@ impl ArrayRef {
         self.ty
     }
 
+    /// A reference to the part of `array` the subscript `indices` selects
+    /// (one index per dimension), which must be an array itself.
     pub fn new(array: Shared<Array>, indices: Vec<Index>, access: RefAccess) -> Result<Self> {
         let array_ty = array.borrow()?.ty();
-        let mut shape = array_ty.shape();
-        for idx in &indices {
-            let new_shape = idx
-                .shape(shape.get())
-                .filter(|shape| !shape.is_empty())
-                .ok_or_else(|| Error::IndexOutOfBounds {
-                    value: Box::new(array_ty.into()),
-                    index: indices.clone(),
-                })?;
-            shape = ArrayShape::new(new_shape)?;
-        }
-        let shape = ArrayRefShape::Fixed(shape);
+        let ValueTy::Array(viewed) = ValueTy::Array(array_ty).get(&indices)? else {
+            return Err(Error::IndexOutOfBounds {
+                value: Box::new(array_ty.into()),
+                index: indices,
+            });
+        };
+        let shape = ArrayRefShape::Fixed(viewed.shape());
         Ok(Self {
             ty: ArrayRefTy::new(array_ty.ty(), shape, access),
             array,

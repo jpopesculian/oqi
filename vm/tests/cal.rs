@@ -436,6 +436,152 @@ fn unprovided_extern_frame_errors() {
     );
 }
 
+// ── The scope of a `cal` block (docs/pulses.rst) ────────────────────────
+
+/// A `cal` block declaring values next to an ordinary constant and
+/// variable, and a `defcal` using them.
+const CAL_SCOPE: &str = r#"
+defcalgrammar "openpulse";
+const float base = 0.25;
+float scale = 2.0;
+cal {
+    extern port d0;
+    float step = 0.5;
+    int count;
+    frame f = newframe(d0, 5.0e9, base * scale);
+}
+defcal x $0 {
+    count += 1;
+    shift_phase(f, step * count);
+}
+"#;
+
+/// Values a `cal` block declares "are only referenceable from other `cal`
+/// blocks or `defcal` declarations": the defcal reads `step` and counts
+/// its calls in `count`, and a later `cal` block changes both.
+#[test]
+fn cal_declared_values_are_shared_with_defcals_and_cal_blocks() {
+    let src = format!(
+        "{CAL_SCOPE}
+        x $0;
+        x $0;
+        cal {{ step = step + base; count = 10; shift_phase(f, step); }}
+        x $0;"
+    );
+    let module = build(&src);
+    let (mock, events) = MockPulse::new();
+    let mut vm = Vm::new(&module, sim_for(&module), NoExterns).with_pulse_handler(mock);
+    let result = block_on(vm.run()).expect("run");
+
+    let shift = |phase| Event::ShiftPhase { frame: 2, phase };
+    let expected = vec![
+        Event::Port("d0".into()),
+        // The `cal` block reads the constant and the variable around it.
+        Event::NewFrame {
+            port: 1,
+            frequency: 5.0e9,
+            phase: 0.5,
+        },
+        shift(0.5),
+        shift(1.0),
+        shift(0.75),
+        shift(8.25),
+    ];
+    assert_eq!(*events.borrow(), expected);
+
+    // "Values may not leak back to the block's enclosing scope."
+    let outputs: Vec<&str> = result
+        .outputs
+        .iter()
+        .map(|(symbol, _)| module.symbol(*symbol).name.as_str())
+        .collect();
+    assert_eq!(outputs, ["scale"]);
+}
+
+#[test]
+fn cal_declared_values_are_not_visible_to_the_program() {
+    let compile = |src: &str| {
+        let options = CompileOptions::default();
+        oqi_compile::compile(src, DefaultIncludeResolver, &options, None)
+    };
+    for leak in [
+        "float leak = step;",
+        "count = 1;",
+        "def g() -> int { return count; }",
+    ] {
+        let Err(err) = compile(&format!("{CAL_SCOPE}{leak}")) else {
+            panic!("`{leak}` compiled");
+        };
+        assert!(err.to_string().contains("undefined name"), "{leak}: {err}");
+    }
+    // The program's own names are a different scope: neither clashes.
+    compile(&format!(
+        "{CAL_SCOPE}float step = 1.0; cal {{ step = 2.0; }}"
+    ))
+    .expect("compile");
+    compile(&format!("float step = 1.0; {CAL_SCOPE}")).expect("compile");
+    // Within the cal scope a name is declared once.
+    assert!(compile(&format!("{CAL_SCOPE}cal {{ float step = 1.0; }}")).is_err());
+}
+
+/// Registers and arrays of the cal scope are written in part, and lent to
+/// a `mutable` parameter, like any other.
+#[test]
+fn cal_declared_registers_and_arrays_are_updated_in_place() {
+    let src = r#"
+        defcalgrammar "openpulse";
+        def bump(mutable array[int[8], #dim = 1] a) { a[0] = a[0] + 1; }
+        cal {
+            extern port d0;
+            frame f = newframe(d0, 5.0e9, 0.0);
+            array[int[8], 2] hits = {0, 0};
+            bit[4] flags = "0000";
+        }
+        defcal x $0 {
+            bump(hits);
+            flags[hits[0]] = 1;
+            let seen = flags[1:2];
+            shift_phase(f, float(hits[0]));
+            shift_phase(f, float(int(seen[0]) + int(seen[1])));
+        }
+        x $0;
+        x $0;
+        cal {
+            int ones = 0;
+            for bit b in flags { ones += int(b); }
+            shift_phase(f, float(ones));
+        }
+    "#;
+    let module = build(src);
+    let (mock, events) = MockPulse::new();
+    let mut vm = Vm::new(&module, sim_for(&module), NoExterns).with_pulse_handler(mock);
+    block_on(vm.run()).expect("run");
+
+    let phases: Vec<f64> = events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            Event::ShiftPhase { phase, .. } => Some(*phase),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(phases, [1.0, 1.0, 2.0, 2.0, 2.0]);
+}
+
+/// A local of one defcal is not a cal-scope value.
+#[test]
+fn defcal_locals_stay_local() {
+    let src = r#"
+        defcalgrammar "openpulse";
+        cal { extern port d0; frame f = newframe(d0, 5.0e9, 0.0); }
+        defcal x $0 { float mine = 1.0; shift_phase(f, mine); }
+        defcal y $0 { shift_phase(f, mine); }
+    "#;
+    let options = CompileOptions::default();
+    let err = oqi_compile::compile(src, DefaultIncludeResolver, &options, None);
+    assert!(err.is_err_and(|e| e.to_string().contains("undefined name 'mine'")));
+}
+
 /// Recorded opaque-cal deliveries: `(grammar, text)`.
 type CalCalls = Rc<RefCell<Vec<(Option<String>, String)>>>;
 

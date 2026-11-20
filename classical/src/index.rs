@@ -90,70 +90,8 @@ fn resolve_slice(
 }
 
 impl Index {
-    // given array dimensions, get new dimensions after applying the index
-    pub fn shape(&self, shape: &[usize]) -> Option<Vec<usize>> {
-        if shape.is_empty() {
-            return None;
-        }
-        let dim = shape[0];
-        Some(match self {
-            Self::Item(i) => {
-                resolve_index(*i, dim, false)?;
-                shape[1..].to_vec()
-            }
-            Self::Slice { start, step, end } => {
-                let mut new_shape = shape.to_vec();
-                new_shape[0] = resolve_slice(*start, *step, *end, dim)?.len();
-                new_shape
-            }
-            Self::Select(indices) => {
-                for &i in indices {
-                    resolve_index(i, dim, false)?;
-                }
-                let mut new_shape = shape.to_vec();
-                new_shape[0] = indices.len();
-                new_shape
-            }
-        })
-    }
-
-    // Given the original shape and an index for the new shape, return the index for the original shape
-    // e.g. Given Index::Elem(1), shape [3,4] and index: [1] return [1, 1]
-    pub fn index(&self, shape: &[usize], index: &[usize]) -> Option<Vec<usize>> {
-        if shape.is_empty() {
-            return None;
-        }
-        let dim = shape[0];
-        match self {
-            Self::Item(i) => {
-                let resolved = resolve_index(*i, dim, false)?;
-                let mut result = vec![resolved];
-                result.extend_from_slice(index);
-                Some(result)
-            }
-            Self::Slice { start, step, end } => {
-                let slice = resolve_slice(*start, *step, *end, dim)?;
-                let original = slice.start as isize + *index.first()? as isize * slice.step;
-                if original < 0 || original as usize >= dim {
-                    return None;
-                }
-                let mut result = vec![original as usize];
-                result.extend_from_slice(&index[1..]);
-                Some(result)
-            }
-            Self::Select(indices) => {
-                let i = *index.first()?;
-                if i >= indices.len() {
-                    return None;
-                }
-                let original = resolve_index(indices[i], dim, false)?;
-                let mut result = vec![original];
-                result.extend_from_slice(&index[1..]);
-                Some(result)
-            }
-        }
-    }
-
+    /// The positions this index selects from a dimension (or register) of
+    /// size `dim`, in order.
     fn iter(&self, dim: usize) -> Option<IndexIter> {
         Some(match self {
             Self::Item(i) => IndexIter::Item(Some(resolve_index(*i, dim, false)?)),
@@ -241,17 +179,6 @@ pub(crate) fn flat_to_multi(shape: &[usize], mut flat: usize) -> Vec<usize> {
     result
 }
 
-/// multi-dimensional index to flat index
-fn multi_to_flat(shape: &[usize], index: &[usize]) -> usize {
-    let mut flat = 0;
-    let mut stride = 1;
-    for i in (0..shape.len()).rev() {
-        flat += index[i] * stride;
-        stride *= shape[i];
-    }
-    flat
-}
-
 fn index_error(value: ValueTy, indices: &[Index]) -> Error {
     Error::IndexOutOfBounds {
         value: Box::new(value),
@@ -259,27 +186,87 @@ fn index_error(value: ValueTy, indices: &[Index]) -> Error {
     }
 }
 
-fn compute_shapes(shape: &[usize], indices: &[Index]) -> Option<Vec<Vec<usize>>> {
-    let mut shapes = Vec::with_capacity(indices.len() + 1);
-    shapes.push(shape.to_vec());
-    for idx in indices {
-        if shapes.last().unwrap().is_empty() {
-            break;
-        }
-        shapes.push(idx.shape(shapes.last().unwrap())?);
-    }
-    Some(shapes)
+/// What a subscript selects from an array: the shape of the selection and
+/// the flat (row-major) positions of its elements.
+struct Selection {
+    shape: Vec<usize>,
+    positions: Vec<usize>,
 }
 
-fn resolve_array_position(
-    shapes: &[Vec<usize>],
-    indices: &[Index],
-    mut pos: Vec<usize>,
-) -> Option<Vec<usize>> {
-    for (i, idx) in indices.iter().enumerate().rev() {
-        pos = idx.index(&shapes[i], &pos)?;
+/// Apply the subscript `indices` to an array of shape `shape`, one index per
+/// dimension (docs/types.rst, "Array concatenation and slicing"): an item
+/// drops its dimension, a slice or selection keeps it at the size it
+/// selects, and the dimensions the subscript does not reach are kept whole.
+/// Indices past the last dimension are left to the caller (see
+/// [`bit_indices`]).
+fn select(shape: &[usize], indices: &[Index]) -> Option<Selection> {
+    let mut selection = Selection {
+        shape: Vec::new(),
+        positions: vec![0],
+    };
+    for (k, &dim) in shape.iter().enumerate() {
+        let picked: Vec<usize> = match indices.get(k) {
+            Some(index) => {
+                let picked = index.iter(dim)?;
+                if !matches!(index, Index::Item(_)) {
+                    selection.shape.push(picked.len());
+                }
+                picked.collect()
+            }
+            None => {
+                selection.shape.push(dim);
+                (0..dim).collect()
+            }
+        };
+        selection.positions = selection
+            .positions
+            .iter()
+            .flat_map(|&outer| picked.iter().map(move |&p| outer * dim + p))
+            .collect();
     }
-    Some(pos)
+    Some(selection)
+}
+
+/// The part of a subscript past the `rank` dimensions of an array: it
+/// indexes the bits of the element the rest of the subscript selects.
+fn bit_indices(rank: usize, indices: &[Index]) -> &[Index] {
+    &indices[indices.len().min(rank)..]
+}
+
+/// The single subscript that selects from an array of shape `shape` what
+/// `next` selects from the selection of `base`: `next` indexes, in order,
+/// the dimensions `base` keeps.
+pub(crate) fn compose(shape: &[usize], base: &[Index], next: &[Index]) -> Option<Vec<Index>> {
+    let mut next = next.iter();
+    let mut composed = Vec::with_capacity(shape.len());
+    for (k, &dim) in shape.iter().enumerate() {
+        let kept = match base.get(k) {
+            Some(dropped @ Index::Item(_)) => {
+                composed.push(dropped.clone());
+                continue;
+            }
+            kept => kept,
+        };
+        let Some(index) = next.next() else {
+            match kept {
+                Some(kept) => composed.push(kept.clone()),
+                // Neither subscript reaches this dimension or any after it.
+                None => break,
+            }
+            continue;
+        };
+        let positions: Vec<usize> = match kept {
+            Some(kept) => kept.iter(dim)?.collect(),
+            None => (0..dim).collect(),
+        };
+        let mut picked = index.iter(positions.len())?.map(|p| positions[p] as isize);
+        composed.push(match index {
+            Index::Item(_) => Index::Item(picked.next()?),
+            _ => Index::Select(picked.collect()),
+        });
+    }
+    composed.extend(next.cloned());
+    Some(composed)
 }
 
 impl PrimitiveTy {
@@ -314,28 +301,16 @@ impl ArrayTy {
 
         let value_ty = ValueTy::Array(self);
         let error = || index_error(value_ty, indices);
-        let shapes = compute_shapes(self.shape().get(), indices).ok_or_else(error)?;
-        let n_array = shapes.len() - 1;
-        let result_shape = shapes.last().unwrap();
-        let result_ty = if result_shape.is_empty() {
-            ValueTy::Scalar(self.ty())
+        let shape = self.shape();
+        let selected = select(shape.get(), indices).ok_or_else(error)?;
+        let bits = bit_indices(shape.get().len(), indices);
+        if selected.shape.is_empty() {
+            self.ty().get(bits).map(ValueTy::Scalar)
+        } else if bits.is_empty() {
+            let shape = ArrayShape::new(selected.shape)?;
+            Ok(ValueTy::Array(ArrayTy::new(self.ty(), shape)))
         } else {
-            ValueTy::Array(ArrayTy::new(
-                self.ty(),
-                ArrayShape::new(result_shape.clone())?,
-            ))
-        };
-
-        if n_array < indices.len() {
-            match result_ty {
-                ValueTy::Scalar(ty) => ty.get(&indices[n_array..]).map(ValueTy::Scalar),
-                ValueTy::Array(_) => Err(error()),
-                ValueTy::ArrayRef(_) => {
-                    unreachable!("array indexing on ArrayTy cannot yield ArrayRef")
-                }
-            }
-        } else {
-            Ok(result_ty)
+            Err(error())
         }
     }
 }
@@ -360,42 +335,32 @@ impl ArrayRefTy {
                     unreachable!("array indexing on ArrayTy cannot yield ArrayRef")
                 }
             },
+            // Only the rank is known: count the dimensions the subscript
+            // drops (see `select`).
             ArrayRefShape::Dim(dim) => {
-                let mut result_dim = dim.get();
-                let mut n_array = 0;
-
-                for idx in indices {
-                    if result_dim == 0 {
-                        break;
-                    }
-                    match idx {
-                        Index::Item(_) => result_dim -= 1,
-                        Index::Slice { step: Some(0), .. } => return Err(error()),
-                        Index::Slice { .. } | Index::Select(_) => {}
-                    }
-                    n_array += 1;
+                let rank = dim.get();
+                let bits = bit_indices(rank, indices);
+                let reached = &indices[..indices.len() - bits.len()];
+                if reached
+                    .iter()
+                    .any(|index| matches!(index, Index::Slice { step: Some(0), .. }))
+                {
+                    return Err(error());
                 }
-
-                let result_ty = if result_dim == 0 {
-                    ValueTy::Scalar(self.ty())
-                } else {
-                    ValueTy::ArrayRef(ArrayRefTy::new(
+                let dropped = reached
+                    .iter()
+                    .filter(|index| matches!(index, Index::Item(_)))
+                    .count();
+                if dropped == rank {
+                    self.ty().get(bits).map(ValueTy::Scalar)
+                } else if bits.is_empty() {
+                    Ok(ValueTy::ArrayRef(ArrayRefTy::new(
                         self.ty(),
-                        ArrayRefShape::Dim(ArrayDim::new(result_dim)?),
+                        ArrayRefShape::Dim(ArrayDim::new(rank - dropped)?),
                         self.access(),
-                    ))
-                };
-
-                if n_array < indices.len() {
-                    match result_ty {
-                        ValueTy::Scalar(ty) => ty.get(&indices[n_array..]).map(ValueTy::Scalar),
-                        ValueTy::Array(_) => {
-                            unreachable!("array ref indexing never yields owned arrays")
-                        }
-                        ValueTy::ArrayRef(_) => Err(error()),
-                    }
+                    )))
                 } else {
-                    Ok(result_ty)
+                    Err(error())
                 }
             }
         }
@@ -510,45 +475,22 @@ impl Array {
 
         let value_ty = ValueTy::Array(self.ty());
         let error = || index_error(value_ty, indices);
-        let aty = self.ty();
-        let ty = aty.ty();
-        let shape = aty.shape();
-        let shapes = compute_shapes(shape.get(), indices).ok_or_else(error)?;
-        let n_array = shapes.len() - 1;
-        let array_indices = &indices[..n_array];
-        let result_shape = shapes.last().unwrap();
-
-        let total: usize = result_shape.iter().product();
-        let mut result = Vec::with_capacity(total);
-        for flat in 0..total {
-            let pos =
-                resolve_array_position(&shapes, array_indices, flat_to_multi(result_shape, flat))
-                    .ok_or_else(error)?;
-            result.push(self.values()[multi_to_flat(shape.get(), &pos)].clone());
-        }
-
-        let value = if result_shape.is_empty() {
-            Value::Scalar(Scalar::new_unchecked(
-                result.into_iter().next().unwrap(),
-                ty,
-            ))
+        let ty = self.ty().ty();
+        let shape = self.ty().shape();
+        let selected = select(shape.get(), indices).ok_or_else(error)?;
+        let bits = bit_indices(shape.get().len(), indices);
+        let mut values = selected.positions.iter().map(|&p| self.values()[p].clone());
+        if selected.shape.is_empty() {
+            let element = Scalar::new_unchecked(values.next().ok_or_else(error)?, ty);
+            element.get(bits).map(Value::Scalar)
+        } else if bits.is_empty() {
+            let shape = ArrayShape::new(selected.shape)?;
+            Ok(Value::Array(Array::new_unchecked(
+                values.collect(),
+                ArrayTy::new(ty, shape),
+            )))
         } else {
-            Value::Array(Array::new_unchecked(
-                result,
-                ArrayTy::new(ty, ArrayShape::new(result_shape.clone())?),
-            ))
-        };
-
-        if n_array < indices.len() {
-            match value {
-                Value::Scalar(s) => s.get(&indices[n_array..]).map(Value::Scalar),
-                Value::Array(_) => Err(error()),
-                Value::ArrayRef(_) => {
-                    unreachable!("Array::get only produces owned arrays or scalars")
-                }
-            }
-        } else {
-            Ok(value)
+            Err(error())
         }
     }
 
@@ -569,76 +511,64 @@ impl Array {
 
         let value_ty = ValueTy::Array(self.ty());
         let error = || index_error(value_ty, indices);
-        let aty = self.ty();
-        let ty = aty.ty();
-        let shape = aty.shape();
-        let shapes = compute_shapes(shape.get(), indices).ok_or_else(error)?;
-        let n_array = shapes.len() - 1;
-        let array_indices = &indices[..n_array];
-        let bit_indices = &indices[n_array..];
-        let result_shape = shapes.last().unwrap();
+        let ty = self.ty().ty();
+        let shape = self.ty().shape();
+        let selected = select(shape.get(), indices).ok_or_else(error)?;
+        let bits = bit_indices(shape.get().len(), indices);
 
-        if !bit_indices.is_empty() {
-            if !result_shape.is_empty() {
-                return Err(error());
-            }
+        // One element: replace it, or the bits of it the subscript goes on
+        // to select.
+        if selected.shape.is_empty() {
             let Value::Scalar(value) = value else {
-                return Err(Error::unexpected_ty(self.ty().ty(), value.ty()));
+                return Err(Error::unexpected_ty(ty, value.ty()));
             };
-            let pos = resolve_array_position(&shapes, array_indices, vec![]).ok_or_else(error)?;
-            let flat = multi_to_flat(shape.get(), &pos);
-            let mut tmp = Scalar::new_unchecked(self.values()[flat].clone(), ty);
-            tmp.set(bit_indices, value)?;
-            self.values_mut()[flat] = tmp.into_value();
+            let flat = *selected.positions.first().ok_or_else(error)?;
+            let element = if bits.is_empty() {
+                value
+            } else {
+                let mut element = Scalar::new_unchecked(self.values()[flat].clone(), ty);
+                element.set(bits, value)?;
+                element
+            };
+            self.values_mut()[flat] = element.into_value();
             return Ok(());
         }
 
-        let val_scalars: Vec<Primitive> = match value {
-            Value::Scalar(s) => {
-                if !result_shape.is_empty() {
-                    return Err(error());
-                }
-                vec![s.into_value()]
-            }
-            Value::Array(a) => {
-                if a.ty().shape().get() != result_shape.as_slice() {
-                    return Err(error());
-                }
-                a.values().to_vec()
-            }
-            Value::ArrayRef(ar) => {
-                let a = ar.to_owned()?;
-                if a.ty().shape().get() != result_shape.as_slice() {
-                    return Err(error());
-                }
-                a.values().to_vec()
-            }
+        let source = match value {
+            Value::Array(a) if bits.is_empty() => a,
+            Value::ArrayRef(ar) if bits.is_empty() => ar.to_owned()?,
+            _ => return Err(error()),
         };
-
-        let total: usize = result_shape.iter().product();
-        let scalars = self.values_mut();
-        for (flat, scalar) in val_scalars.into_iter().enumerate().take(total) {
-            let pos =
-                resolve_array_position(&shapes, array_indices, flat_to_multi(result_shape, flat))
-                    .ok_or_else(error)?;
-            scalars[multi_to_flat(shape.get(), &pos)] = scalar;
+        if source.ty().shape().get() != selected.shape.as_slice() {
+            return Err(error());
+        }
+        let elements = self.values_mut();
+        for (&flat, element) in selected.positions.iter().zip(source.values()) {
+            elements[flat] = element.clone();
         }
         Ok(())
     }
 }
 
 impl ArrayRef {
+    /// The subscript on the referenced array that `indices` on this
+    /// reference amounts to.
+    fn through(&self, indices: &[Index]) -> Result<Vec<Index>> {
+        let shape = self.array().borrow()?.ty().shape();
+        compose(shape.get(), self.indices(), indices)
+            .ok_or_else(|| index_error(self.ty().into(), indices))
+    }
+
     pub fn get(&self, indices: &[Index]) -> Result<Value> {
         if indices.is_empty() {
             return Ok(Value::ArrayRef(self.clone()));
         }
 
-        let mut new_indices = self.indices().to_vec();
-        new_indices.extend_from_slice(indices);
+        let through = self.through(indices)?;
         match self.ty().get(indices)? {
-            ValueTy::Scalar(_) => self.array().borrow()?.get(&new_indices),
+            ValueTy::Scalar(_) => self.array().borrow()?.get(&through),
             ValueTy::ArrayRef(_) => {
-                ArrayRef::new(self.array().clone(), new_indices, self.ty().access())
+                ArrayRef::new(self.array().clone(), through, self.ty().access())
                     .map(Value::ArrayRef)
             }
             ValueTy::Array(_) => unreachable!("array ref indexing never yields owned arrays"),
@@ -649,9 +579,14 @@ impl ArrayRef {
         if matches!(self.ty().access(), RefAccess::Readonly) {
             return Err(Error::ReadOnly);
         }
-        let mut new_indices = self.indices().to_vec();
-        new_indices.extend_from_slice(indices);
-        self.array().borrow_mut()?.set(&new_indices, value)?;
+        let through = self.through(indices)?;
+        // The value may be a reference into this same array (`a[0] = a[1]`):
+        // copy it out before borrowing the array to write.
+        let value = match value {
+            Value::ArrayRef(source) => Value::Array(source.to_owned()?),
+            value => value,
+        };
+        self.array().borrow_mut()?.set(&through, value)?;
         Ok(())
     }
 }
@@ -714,6 +649,13 @@ mod tests {
     use crate::array::{ArrayShape, shape};
     use crate::primitive::iw;
 
+    impl Index {
+        /// The shape left by applying this index to the leading dimension.
+        fn shape(&self, shape: &[usize]) -> Option<Vec<usize>> {
+            select(shape, std::slice::from_ref(self)).map(|selected| selected.shape)
+        }
+    }
+
     // --- Item ---
 
     #[test]
@@ -724,11 +666,6 @@ mod tests {
     #[test]
     fn item_on_1d_returns_scalar_shape() {
         assert_eq!(Index::Item(0).shape(&[5]), Some(vec![]));
-    }
-
-    #[test]
-    fn item_on_empty_shape_returns_none() {
-        assert_eq!(Index::Item(0).shape(&[]), None);
     }
 
     // --- Slice defaults (start=None, step=None, end=None → full slice) ---
@@ -856,16 +793,6 @@ mod tests {
         assert_eq!(idx.shape(&[5]), None);
     }
 
-    #[test]
-    fn slice_on_empty_shape_returns_none() {
-        let idx = Index::Slice {
-            start: None,
-            step: None,
-            end: None,
-        };
-        assert_eq!(idx.shape(&[]), None);
-    }
-
     // --- Select ---
 
     #[test]
@@ -876,11 +803,6 @@ mod tests {
     #[test]
     fn select_empty_gives_zero_dim() {
         assert_eq!(Index::Select(vec![]).shape(&[5, 3]), Some(vec![0, 3]));
-    }
-
-    #[test]
-    fn select_on_empty_shape_returns_none() {
-        assert_eq!(Index::Select(vec![0]).shape(&[]), None);
     }
 
     #[test]
@@ -1005,6 +927,62 @@ mod tests {
 
         row.set(&[Index::Item(0)], sc(9)).unwrap();
         assert_eq!(to_u8s(&whole), vec![0, 1, 2, 9, 4, 5]);
+    }
+
+    #[test]
+    fn a_reference_can_be_assigned_from_the_array_it_views() {
+        let Value::Array(array) = arr(&[0, 1, 2, 3], shape![2, 2]) else {
+            unreachable!()
+        };
+        let mut whole = Value::ArrayRef(array.into_ref_mut());
+        let row = whole.get(&[Index::Item(1)]).unwrap();
+        whole.set(&[Index::Item(0)], row).unwrap();
+        assert_eq!(to_u8s(&whole), vec![2, 3, 2, 3]);
+    }
+
+    /// Rows 1 and 2 of a three-row array.
+    fn last_two_rows() -> Index {
+        Index::Slice {
+            start: Some(1),
+            step: None,
+            end: Some(3),
+        }
+    }
+
+    #[test]
+    fn an_index_after_a_slice_indexes_the_next_dimension() {
+        // {{0, 1}, {2, 3}, {4, 5}}[1:2, 0] is column 0 of rows 1 and 2.
+        let mut val = arr(&[0, 1, 2, 3, 4, 5], shape![3, 2]);
+        let column = [last_two_rows(), Index::Item(0)];
+        let result = val.get(&column).unwrap();
+        assert_eq!(result.ty(), val.ty().get(&column).unwrap());
+        assert_eq!(to_u8s(&result), vec![2, 4]);
+
+        val.set(&[last_two_rows(), Index::Item(1)], arr(&[8, 9], shape![2]))
+            .unwrap();
+        assert_eq!(to_u8s(&val), vec![0, 1, 2, 8, 4, 9]);
+
+        // A second index never re-indexes a dimension the first one kept.
+        let one_d = arr(&[0, 1, 2], shape![3]);
+        assert!(one_d.get(&[last_two_rows(), Index::Item(0)]).is_err());
+    }
+
+    #[test]
+    fn a_reference_to_a_slice_is_indexed_within_the_slice() {
+        let Value::Array(array) = arr(&[0, 1, 2, 3, 4, 5], shape![3, 2]) else {
+            unreachable!()
+        };
+        let whole = Value::ArrayRef(array.into_ref_mut());
+        let mut tail = whole.get(&[last_two_rows()]).unwrap();
+
+        // Row 0 of the slice is row 1 of the array.
+        tail.set(&[Index::Item(0), Index::Item(1)], sc(9)).unwrap();
+        assert_eq!(to_u8s(&whole), vec![0, 1, 2, 9, 4, 5]);
+
+        let column = tail.get(&[Index::Select(vec![1, 0]), Index::Item(0)]);
+        assert_eq!(to_u8s(&column.unwrap()), vec![4, 2]);
+        let row = tail.get(&[Index::Item(-1)]).unwrap();
+        assert_eq!(to_u8s(&row.get(&[Index::Item(0)]).unwrap()), vec![4]);
     }
 
     #[test]

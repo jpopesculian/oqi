@@ -247,10 +247,6 @@ mod tests {
             )
         });
         assert!(found, "alias index should resolve statically:\n{module}");
-        let alias_ops = all_ops(&module)
-            .filter(|op| matches!(op, BcOp::Alias { .. }))
-            .count();
-        assert_eq!(alias_ops, 0, "qubit aliases should not emit Alias ops");
     }
 
     #[test]

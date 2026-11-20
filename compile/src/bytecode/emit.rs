@@ -17,7 +17,7 @@
 //! and subroutine qubit parameters and runtime aliases become frame-local
 //! [`QubitSource::Slot`]s bound at call time / by `BcOp::AliasBind`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use oqi_classical::{RefAccess, Value, ValueTy};
 use oqi_lex::Span;
@@ -26,6 +26,7 @@ use crate::cfg::{self, Cfg, Terminator};
 use crate::classical::{PrimitiveTy, Scalar, iw};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::qubits::{self, QubitLayout, Resolved};
+use crate::scope::ScopeId;
 use crate::sir::{
     self, CallTarget, Expr, ExprKind, GateModifier, IndexItem, IndexKind, IndexOp, LValue,
     MeasureExpr, MeasureExprKind, QubitOperand, RValue, Stmt, StmtKind,
@@ -199,9 +200,9 @@ impl<'a> EmitCtx<'a> {
         let top_level = matches!(owner, ProcOwner::TopLevel);
 
         let mut body = ProcEmitter {
-            in_cal: matches!(owner, ProcOwner::Calibration(_)),
             ctx: self,
             regs: HashMap::new(),
+            bit_aliases: HashMap::new(),
             register_types: Vec::new(),
             alias_slot: qubit_params,
             instrs: Vec::new(),
@@ -235,7 +236,7 @@ impl<'a> EmitCtx<'a> {
             assigned.sort_by_key(|symbol| symbol.0);
             assigned.dedup();
             assigned.retain(|symbol| self.symbols.get(*symbol).kind == wanted);
-            // (A cal-scope global has no register: it is not an output.)
+            // (A value of the cal scope has no register: it is not an output.)
             let outputs = assigned.iter().filter_map(|s| Some((*s, *regs.get(s)?)));
             self.outputs = outputs.collect();
             self.inputs = inputs;
@@ -257,12 +258,11 @@ impl<'a> EmitCtx<'a> {
         Ok(id)
     }
 
-    /// A cal-scope global: an openpulse-typed value (frame, port,
-    /// waveform) declared at global scope. Cal/defcal bodies share these
-    /// through the VM's pulse-global store.
-    fn is_pulse_global(&self, sym: SymbolId) -> bool {
-        let s = self.symbols.get(sym);
-        matches!(s.ty, Type::Openpulse(_)) && s.scope.is_none()
+    /// A value of the cal scope (docs/pulses.rst): declared at the top
+    /// level of a `cal` block, and shared by `cal` blocks and `defcal`
+    /// bodies through the VM's store of them.
+    fn is_cal_value(&self, sym: SymbolId) -> bool {
+        self.symbols.get(sym).scope == Some(ScopeId::CAL)
     }
 
     /// The module-level record of one `defcal`: its dispatch signature
@@ -375,6 +375,16 @@ impl<'a> EmitCtx<'a> {
     }
 }
 
+/// Where a classical variable lives.
+enum Place {
+    /// In a register of the frame.
+    Reg(Reg),
+    /// Outside the frame's registers, to be fetched from and put back to:
+    /// a value of the cal scope (in the VM's store of them), or the bits a
+    /// `let` alias refers to (in the registers it names).
+    Elsewhere,
+}
+
 /// What is assigned or returned: an expression or a measurement.
 #[derive(Clone, Copy)]
 enum Source<'e> {
@@ -398,13 +408,13 @@ struct ProcEmitter<'c, 'a> {
     regs: HashMap<SymbolId, Reg>,
     /// Type of every register allocated so far, variables and temporaries.
     register_types: Vec<ValueTy>,
+    /// The bits each `let` alias of bit registers refers to: the operands
+    /// of its `++`, each a (possibly subscripted) register or alias, with
+    /// the positions in their subscripts fixed when the `let` ran.
+    bit_aliases: HashMap<SymbolId, Vec<Expr>>,
     /// Next free frame-local qubit slot for a runtime-bound alias
     /// (`BcOp::AliasBind`).
     alias_slot: u32,
-    /// True while emitting a calibration (`defcal`) or inline-`cal` body.
-    /// Reads/writes of cal-scope globals in such bodies go through the
-    /// VM's pulse-global store ([`BcOp::CalLoad`]/[`BcOp::CalStore`]).
-    in_cal: bool,
     /// Instructions of the block being emitted.
     instrs: Vec<BcInstr>,
     /// Every variable assigned to, in whole or in part.
@@ -512,11 +522,8 @@ impl ProcEmitter<'_, '_> {
         let cfg = cfg::build_body(body, owner.clone(), false, &mut self.ctx.symbols)?;
         let id = self.ctx.reserve_proc(owner.clone());
         let outer_instrs = std::mem::take(&mut self.instrs);
-        let outer_in_cal = self.in_cal;
         let outer_assigned = self.assigned.len();
-        self.in_cal |= matches!(owner, ProcOwner::InlineCal);
         let blocks = self.emit_blocks(&cfg);
-        self.in_cal = outer_in_cal;
         self.instrs = outer_instrs;
         // What a nested body assigns is not a result of this one: a cal
         // block's values do not leak out of it, and a `durationof` scope
@@ -532,6 +539,11 @@ impl ProcEmitter<'_, '_> {
     fn emit_stmt(&mut self, stmt: &Stmt) -> Result<()> {
         let span = stmt.span;
         match &stmt.kind {
+            StmtKind::Alias(sir::Alias { symbol, value })
+                if self.ctx.symbols.get(*symbol).ty.value_ty().is_some() =>
+            {
+                self.bind_bit_alias(*symbol, value)?;
+            }
             StmtKind::Alias(sir::Alias { symbol, value }) => {
                 // An operand referencing another runtime-bound alias or a
                 // qubit parameter forces this alias to be runtime-bound too
@@ -544,7 +556,7 @@ impl ProcEmitter<'_, '_> {
                 });
                 // Static qubit aliases resolve into the layout and emit
                 // nothing; a non-constant index falls back to a runtime
-                // bind; classical aliases keep their metadata op.
+                // bind.
                 let resolved = match uses_dynamic {
                     true => Some(Resolved::Dynamic),
                     false => layout.resolve_alias_value(value, &self.ctx.symbols)?,
@@ -552,10 +564,12 @@ impl ProcEmitter<'_, '_> {
                 match resolved {
                     Some(Resolved::Static(reg)) => self.ctx.layout.define_alias(*symbol, reg),
                     Some(Resolved::Dynamic) => self.lower_dynamic_alias(*symbol, value, span)?,
+                    // Lowering types an alias of bits, so this one names
+                    // qubits the layout does not know here.
                     None => {
-                        let value = self.operands(value)?;
-                        let symbol = *symbol;
-                        self.push(BcOp::Alias { symbol, value }, span);
+                        let name = &self.ctx.symbols.get(*symbol).name;
+                        let message = format!("cannot resolve the qubits `{name}` aliases");
+                        return Err(CompileError::at(ErrorKind::InvalidContext(message), span));
                     }
                 }
             }
@@ -658,44 +672,285 @@ impl ProcEmitter<'_, '_> {
     }
 
     fn emit_assignment(&mut self, target: &LValue, value: Source<'_>, span: Span) -> Result<()> {
-        self.assigned.push(target.symbol());
-        match target {
-            // A cal-scope global lives in the VM's pulse-global store, where
-            // every cal/defcal body sees it.
-            LValue::Var(symbol) if self.in_cal && self.ctx.is_pulse_global(*symbol) => {
-                let ty = self.value_ty(&self.ctx.symbols.get(*symbol).ty, span)?;
-                let temp = self.temp(ty);
-                self.emit_to_dest(value, temp, span)?;
-                let (symbol, src) = (*symbol, BcOperand::Reg(temp));
-                self.push(BcOp::CalStore { symbol, src }, span);
+        let symbol = target.symbol();
+        let stores = self.stores(symbol);
+        self.assigned.extend(stores);
+        let subscripts: Vec<&IndexOp> = match target {
+            LValue::Var(_) => Vec::new(),
+            LValue::Indexed { indices, .. } => indices.iter().collect(),
+        };
+        // A whole variable is evaluated into a register of its type: its
+        // own, if it lives in one.
+        if subscripts.is_empty() {
+            let dest = match self.place(symbol, span)? {
+                Place::Reg(dest) => return self.emit_to_dest(value, dest, span),
+                Place::Elsewhere => {
+                    let ty = self.ctx.symbols.get(symbol).ty.clone();
+                    self.temp(self.value_ty(&ty, span)?)
+                }
+            };
+            self.emit_to_dest(value, dest, span)?;
+            return self.put(symbol, BcOperand::Reg(dest), span);
+        }
+        let value = match value {
+            Source::Expr(e) => self.operand(e)?,
+            Source::Measure(m) => {
+                let temp = self.temp(self.value_ty(&m.ty, m.span)?);
+                self.emit_measure(m, Some(temp), m.span)?;
+                BcOperand::Reg(temp)
             }
-            LValue::Var(symbol) => {
-                let dest = self.reg(*symbol, span)?;
-                self.emit_to_dest(value, dest, span)?;
+        };
+        self.assign(symbol, &subscripts, value, span)
+    }
+
+    /// Assign `value` to the part of the variable `symbol` that a chain of
+    /// subscripts selects: all of it if there are none.
+    fn assign(
+        &mut self,
+        symbol: SymbolId,
+        subscripts: &[&IndexOp],
+        value: BcOperand,
+        span: Span,
+    ) -> Result<()> {
+        let ty = self.ctx.symbols.get(symbol).ty.clone();
+        match (self.place(symbol, span)?, subscripts) {
+            (Place::Reg(dest), []) => self.push(BcOp::Move { dest, src: value }, span),
+            (Place::Reg(target), _) => self.store_indexed(target, &ty, subscripts, value, span)?,
+            (Place::Elsewhere, []) => self.put(symbol, value, span)?,
+            // Part of a value held elsewhere: fetch it, store into the
+            // copy, and put the copy back.
+            (Place::Elsewhere, _) => {
+                let held = self.fetch(symbol, span)?;
+                self.store_indexed(held, &ty, subscripts, value, span)?;
+                self.put(symbol, BcOperand::Reg(held), span)?;
             }
-            // Successive subscripts (`a[i][j]`) index ever deeper into the
-            // same variable.
-            LValue::Indexed { symbol, indices } => {
-                let target = self.reg(*symbol, span)?;
-                let indices = self.index_chain(indices.iter())?;
-                let value = match value {
-                    Source::Expr(e) => self.operand(e)?,
-                    Source::Measure(m) => {
-                        let temp = self.temp(self.value_ty(&m.ty, m.span)?);
-                        self.emit_measure(m, Some(temp), m.span)?;
-                        BcOperand::Reg(temp)
-                    }
-                };
-                self.push(
-                    BcOp::StoreElement {
+        }
+        Ok(())
+    }
+
+    /// Where the classical variable `symbol` lives.
+    fn place(&mut self, symbol: SymbolId, span: Span) -> Result<Place> {
+        if self.bit_aliases.contains_key(&symbol) || self.ctx.is_cal_value(symbol) {
+            return Ok(Place::Elsewhere);
+        }
+        let sym = self.ctx.symbols.get(symbol);
+        // An alias of bits is bound in the body that declares it.
+        if sym.kind == SymbolKind::Alias && sym.ty.value_ty().is_some() {
+            let message = format!("the alias `{}` is not visible here", sym.name);
+            return Err(CompileError::at(ErrorKind::InvalidContext(message), span));
+        }
+        Ok(Place::Reg(self.reg(symbol, span)?))
+    }
+
+    /// A temporary holding the current value of a variable that lives
+    /// outside the frame's registers ([`Place::Elsewhere`]).
+    fn fetch(&mut self, symbol: SymbolId, span: Span) -> Result<Reg> {
+        let ty = self.ctx.symbols.get(symbol).ty.clone();
+        let dest = self.temp(self.value_ty(&ty, span)?);
+        match self.bit_aliases.get(&symbol).cloned() {
+            None => self.push(BcOp::CalLoad { dest, symbol }, span),
+            // One part: the alias is that register, or that part of it.
+            Some(parts) if parts.len() == 1 => self.emit_expr_to_dest(&parts[0], dest, span)?,
+            Some(parts) => {
+                let mut offset = 0;
+                for part in &parts {
+                    let value = self.operand(part)?;
+                    let (bits, width) = self.alias_bits(part, offset);
+                    let (target, indices) = (dest, vec![bits]);
+                    let op = BcOp::StoreElement {
                         target,
                         indices,
                         value,
-                    },
-                    span,
-                );
+                    };
+                    self.push(op, span);
+                    offset += width;
+                }
             }
         }
+        Ok(dest)
+    }
+
+    /// Set a variable that lives outside the frame's registers
+    /// ([`Place::Elsewhere`]) to `src`.
+    fn put(&mut self, symbol: SymbolId, src: BcOperand, span: Span) -> Result<()> {
+        let Some(parts) = self.bit_aliases.get(&symbol).cloned() else {
+            self.push(BcOp::CalStore { symbol, src }, span);
+            return Ok(());
+        };
+        let mut offset = 0;
+        for part in &parts {
+            let (bits, width) = self.alias_bits(part, offset);
+            let piece = match parts.len() {
+                1 => src.clone(),
+                _ => {
+                    let dest = self.temp(self.value_ty(&part.ty, span)?);
+                    let (base, indices) = (src.clone(), vec![bits]);
+                    let op = BcOp::LoadElement {
+                        dest,
+                        base,
+                        indices,
+                    };
+                    self.push(op, span);
+                    BcOperand::Reg(dest)
+                }
+            };
+            let (root, subscripts) =
+                qubits::peel_index_chain(part).expect("an alias part is a register reference");
+            self.assign(root, &subscripts, piece, span)?;
+            offset += width;
+        }
+        Ok(())
+    }
+
+    /// Where the bits of `part` sit in the alias it is a part of, `offset`
+    /// bits in: the subscript selecting them, and how many they are.
+    fn alias_bits(&mut self, part: &Expr, offset: usize) -> (BcIndex, usize) {
+        let width = match part.ty.scalar_ty() {
+            Some(PrimitiveTy::BitReg(width)) => width as usize,
+            // A single bit.
+            _ => return (BcIndex::Item(self.ctx.position_const(offset)), 1),
+        };
+        let bits = BcIndex::Range {
+            start: Some(self.ctx.position_const(offset)),
+            step: None,
+            end: Some(self.ctx.position_const(offset + width - 1)),
+        };
+        (bits, width)
+    }
+
+    /// The variables that hold the value of `symbol`: itself, or, through
+    /// an alias, the registers it refers to.
+    fn stores(&self, symbol: SymbolId) -> Vec<SymbolId> {
+        let Some(parts) = self.bit_aliases.get(&symbol) else {
+            return vec![symbol];
+        };
+        let roots = parts.iter().filter_map(qubits::peel_index_chain);
+        roots.flat_map(|(root, _)| self.stores(root)).collect()
+    }
+
+    /// The bits of declared registers that the register reference `place`
+    /// names, in order: `None` if a position in its subscripts is only
+    /// known at run time.
+    fn named_bits(&self, place: &Expr) -> Option<Vec<(SymbolId, usize)>> {
+        let (root, subscripts) = qubits::peel_index_chain(place)?;
+        let mut bits: Vec<(SymbolId, usize)> = match self.bit_aliases.get(&root) {
+            Some(parts) => {
+                let parts = parts.iter().map(|part| self.named_bits(part));
+                parts.collect::<Option<Vec<_>>>()?.concat()
+            }
+            None => {
+                let width = match self.ctx.symbols.get(root).ty.scalar_ty()? {
+                    PrimitiveTy::BitReg(width) => width as usize,
+                    _ => 1,
+                };
+                (0..width).map(|bit| (root, bit)).collect()
+            }
+        };
+        for subscript in subscripts {
+            let Ok(Resolved::Static(positions)) = qubits::resolve_index(subscript, bits.len())
+            else {
+                return None;
+            };
+            bits = positions
+                .into_iter()
+                .map(|position| bits[position])
+                .collect();
+        }
+        Some(bits)
+    }
+
+    /// Bind a `let` alias of bits (docs/types.rst, "Register concatenation
+    /// and slicing") to the bits its operands name now.
+    fn bind_bit_alias(&mut self, symbol: SymbolId, parts: &[Expr]) -> Result<()> {
+        let mut named = HashSet::new();
+        let mut bound = Vec::with_capacity(parts.len());
+        for part in parts {
+            let (root, _) =
+                qubits::peel_index_chain(part).expect("an alias part is a register reference");
+            // Also rejects an alias from another body (see `place`).
+            self.place(root, part.span)?;
+            // "A register cannot be concatenated with any part of itself":
+            // checked where the positions are known.
+            let bits = self.named_bits(part).unwrap_or_default();
+            if bits.iter().any(|bit| named.contains(bit)) {
+                let message = "a register cannot be concatenated with any part of itself";
+                let kind = ErrorKind::InvalidOperands(message.into());
+                return Err(CompileError::at(kind, part.span));
+            }
+            named.extend(bits);
+            let mut part = part.clone();
+            self.fix_positions(&mut part)?;
+            bound.push(part);
+        }
+        self.bit_aliases.insert(symbol, bound);
+        Ok(())
+    }
+
+    /// Evaluate the positions in the subscripts of the register reference
+    /// `place` into hidden variables, so that it keeps naming the same bits
+    /// whatever becomes of the variables in its index sets.
+    fn fix_positions(&mut self, place: &mut Expr) -> Result<()> {
+        let mut children = place.children_mut().into_iter();
+        let Some(base) = children.next() else {
+            return Ok(());
+        };
+        self.fix_positions(base)?;
+        for position in children {
+            if qubits::literal_index(position).is_some() {
+                continue;
+            }
+            let hidden = self
+                .ctx
+                .symbols
+                .new_temp(position.ty.clone(), position.span, None);
+            let dest = self.reg(hidden, position.span)?;
+            self.emit_expr_to_dest(position, dest, position.span)?;
+            position.kind = ExprKind::Var(hidden);
+        }
+        Ok(())
+    }
+
+    /// Store `value` to the part of `target` (a register of type `ty`) that
+    /// a chain of subscripts selects.
+    ///
+    /// One store reaches as far as the subscripts index one dimension after
+    /// another (see [`direct_subscripts`]). The subscripts after that index
+    /// the selection (`a[1:2][0]`), which is copied out, stored into, and
+    /// written back.
+    fn store_indexed(
+        &mut self,
+        target: Reg,
+        ty: &Type,
+        subscripts: &[&IndexOp],
+        value: BcOperand,
+        span: Span,
+    ) -> Result<()> {
+        let (direct, rest) = subscripts.split_at(direct_subscripts(subscripts));
+        let indices = self.index_chain(direct.iter().copied())?;
+        if rest.is_empty() {
+            let op = BcOp::StoreElement {
+                target,
+                indices,
+                value,
+            };
+            self.push(op, span);
+            return Ok(());
+        }
+        let selected_ty = selected_type(ty, direct)?;
+        let selected = self.temp(self.value_ty(&selected_ty, span)?);
+        let load = BcOp::LoadElement {
+            dest: selected,
+            base: BcOperand::Reg(target),
+            indices: indices.clone(),
+        };
+        self.push(load, span);
+        self.store_indexed(selected, &selected_ty, rest, value, span)?;
+        let store = BcOp::StoreElement {
+            target,
+            indices,
+            value: BcOperand::Reg(selected),
+        };
+        self.push(store, span);
         Ok(())
     }
 
@@ -749,6 +1004,8 @@ impl ProcEmitter<'_, '_> {
         };
         let mut params = params.into_iter();
         let mut lent = Vec::new();
+        // The arrays lent from outside the frame's registers, as fetched.
+        let mut fetched = Vec::new();
         let mut operands = Vec::with_capacity(args.len() + qubits.len());
         for arg in args {
             // Qubit arguments bind to slots, not to classical parameters.
@@ -775,20 +1032,43 @@ impl ProcEmitter<'_, '_> {
                 )
             });
             match (lend_as, owned) {
-                (Some(ty), Some((base, indices))) => {
-                    let base = self.reg(base, arg.span)?;
-                    let indices = self.index_chain(indices.into_iter())?;
-                    let dest = self.temp(ty);
-                    self.push(
-                        BcOp::Borrow {
+                (Some(ty), Some((base, subscripts))) => {
+                    let lender = match self.place(base, arg.span)? {
+                        Place::Reg(reg) => reg,
+                        Place::Elsewhere => {
+                            let held = self.fetch(base, arg.span)?;
+                            fetched.push((base, held));
+                            held
+                        }
+                    };
+                    let mut lent_ty = self.ctx.symbols.get(base).ty.clone();
+                    let mut source = lender;
+                    let mut rest = subscripts.as_slice();
+                    // A subscript that follows a range indexes the
+                    // selection (see `direct_subscripts`): borrow from the
+                    // reference to it.
+                    loop {
+                        let (direct, after) = rest.split_at(direct_subscripts(rest));
+                        let indices = self.index_chain(direct.iter().copied())?;
+                        lent_ty = selected_type(&lent_ty, direct)?;
+                        let dest = match after.is_empty() {
+                            true => self.temp(ty),
+                            false => self.temp(self.value_ty(&lent_ty, arg.span)?),
+                        };
+                        let base = source;
+                        let op = BcOp::Borrow {
                             dest,
                             base,
                             indices,
-                        },
-                        arg.span,
-                    );
-                    lent.push(base);
-                    operands.push(BcOperand::Reg(dest));
+                        };
+                        self.push(op, arg.span);
+                        (source, rest) = (dest, after);
+                        if rest.is_empty() {
+                            break;
+                        }
+                    }
+                    lent.push(lender);
+                    operands.push(BcOperand::Reg(source));
                 }
                 _ => operands.push(self.operand(arg)?),
             }
@@ -803,6 +1083,9 @@ impl ProcEmitter<'_, '_> {
         lent.dedup();
         for reg in lent {
             self.push(BcOp::Release { reg }, span);
+        }
+        for (symbol, held) in fetched {
+            self.put(symbol, BcOperand::Reg(held), span)?;
         }
         Ok(())
     }
@@ -893,13 +1176,10 @@ impl ProcEmitter<'_, '_> {
             // carry their value in the symbol table and are pooled.
             ExprKind::Var(symbol) => match self.ctx.symbols.get(*symbol).const_value.clone() {
                 Some(value) => BcOperand::Const(self.ctx.intern_const(value)),
-                None if self.in_cal && self.ctx.is_pulse_global(*symbol) => {
-                    let dest = self.temp(self.value_ty(&e.ty, e.span)?);
-                    let symbol = *symbol;
-                    self.push(BcOp::CalLoad { dest, symbol }, e.span);
-                    BcOperand::Reg(dest)
-                }
-                None => BcOperand::Reg(self.reg(*symbol, e.span)?),
+                None => match self.place(*symbol, e.span)? {
+                    Place::Reg(reg) => BcOperand::Reg(reg),
+                    Place::Elsewhere => BcOperand::Reg(self.fetch(*symbol, e.span)?),
+                },
             },
             ExprKind::HardwareQubit(n) => self.ctx.hw_qubit(*n as u32),
             _ => {
@@ -1420,6 +1700,28 @@ impl ProcEmitter<'_, '_> {
             Terminator::Unreachable => BcTerminator::Unreachable,
         })
     }
+}
+
+/// How many leading subscripts of a chain index one dimension after another,
+/// as a single subscript would: those up to and including the first that
+/// selects a range or set. What follows indexes that selection, starting
+/// over at its first dimension.
+fn direct_subscripts(chain: &[&IndexOp]) -> usize {
+    let selects = |subscript: &&IndexOp| match &subscript.kind {
+        IndexKind::Set(_) => true,
+        IndexKind::Items(items) => items.iter().any(|item| matches!(item, IndexItem::Range(_))),
+    };
+    chain
+        .iter()
+        .position(selects)
+        .map_or(chain.len(), |i| i + 1)
+}
+
+/// The type of a value of type `ty` after the subscripts `chain`.
+fn selected_type(ty: &Type, chain: &[&IndexOp]) -> Result<Type> {
+    chain.iter().try_fold(ty.clone(), |ty, subscript| {
+        crate::lower::index_result_type(&ty, subscript)
+    })
 }
 
 fn block_id(id: cfg::BasicBlockId) -> BlockId {

@@ -40,7 +40,7 @@ pub struct BcVersion {
 }
 
 impl BcVersion {
-    pub const CURRENT: BcVersion = BcVersion { major: 5, minor: 0 };
+    pub const CURRENT: BcVersion = BcVersion { major: 6, minor: 0 };
 }
 
 /// Global quantum memory: every named register is statically allocated
@@ -455,10 +455,6 @@ pub enum BcOp {
     Pragma {
         content: StringId,
     },
-    Alias {
-        symbol: SymbolId,
-        value: Vec<BcOperand>,
-    },
     /// Bind a body-local qubit alias `slot` to the concatenation of the
     /// resolved `segments`, for later [`QubitSource::Slot`] references.
     AliasBind {
@@ -466,14 +462,14 @@ pub enum BcOp {
         segments: Vec<BcAliasSegment>,
     },
 
-    // ── Calibration globals ────────────────────────────────────────
-    /// Read a cal-scope global (a frame/port/waveform shared across all
-    /// cal/defcal bodies) from the VM's pulse-global store.
+    // ── The cal scope ──────────────────────────────────────────────
+    /// Read a value of the cal scope (declared by a `cal` block, shared by
+    /// every `cal` block and `defcal` body) from the VM's store of them.
     CalLoad {
         dest: Reg,
         symbol: SymbolId,
     },
-    /// Write a cal-scope global to the VM's pulse-global store.
+    /// Write a value of the cal scope to the VM's store of them.
     CalStore {
         symbol: SymbolId,
         src: BcOperand,

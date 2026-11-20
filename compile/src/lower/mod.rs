@@ -105,6 +105,16 @@ impl Lowerer {
         result
     }
 
+    /// Lower a `cal` block or a `defcal` (docs/pulses.rst, "Inline
+    /// calibration blocks"): it sees the values `cal` blocks declare, which
+    /// the rest of the program does not.
+    fn with_cal_scope<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let outer = self.resolver.enter_cal();
+        let result = f(self);
+        self.resolver.leave_cal(outer);
+        result
+    }
+
     fn with_include<T>(
         &mut self,
         path: PathBuf,
@@ -369,7 +379,7 @@ impl Lowerer {
                         sir::CalibrationTarget::Named(self.defcal_gate(id)?)
                     }
                 };
-                let (args, operands, return_ty, body) = self.with_scope(|this| {
+                let lower = |this: &mut Self| {
                     let args: Vec<_> = args
                         .iter()
                         .map(|a| match a {
@@ -400,7 +410,9 @@ impl Lowerer {
                         .map(|ty| resolve_scalar_type(ty, &this.resolver))
                         .transpose()?;
                     Ok((args, operands, return_ty, this.lower_cal_body(body)?))
-                })?;
+                };
+                let (args, operands, return_ty, body) =
+                    self.with_cal_scope(|this| this.with_scope(lower))?;
                 self.calibrations.push(sir::CalibrationDecl {
                     target,
                     args,
@@ -412,7 +424,9 @@ impl Lowerer {
                 return none;
             }
 
-            ast::StmtKind::Cal(body) => sir::StmtKind::Cal(self.lower_cal_body(body)?),
+            ast::StmtKind::Cal(body) => {
+                sir::StmtKind::Cal(self.with_cal_scope(|this| this.lower_cal_body(body))?)
+            }
 
             ast::StmtKind::CalibrationGrammar(grammar) => {
                 let name = grammar.trim_matches(['"', '\'']);
@@ -606,13 +620,14 @@ impl Lowerer {
             }),
 
             ast::StmtKind::Alias { name, value } => {
-                let value = value
+                let value: Vec<sir::Expr> = value
                     .iter()
                     .map(|e| self.lower_expr(e))
                     .collect::<Result<_>>()?;
-                let symbol =
-                    self.resolver
-                        .declare(name.name, SymbolKind::Alias, Type::Void, name.span)?;
+                let ty = self.alias_type(&value)?;
+                let symbol = self
+                    .resolver
+                    .declare(name.name, SymbolKind::Alias, ty, name.span)?;
                 sir::StmtKind::Alias(sir::Alias { symbol, value })
             }
 
@@ -1120,6 +1135,58 @@ impl Lowerer {
                 .iter()
                 .find(|d| d.symbol == sym)
                 .map(|d| d.param_types.clone())
+        }
+    }
+
+    /// The type of a `let` alias of the concatenation of `parts`
+    /// (docs/types.rst, "Aliasing" and "Register concatenation and
+    /// slicing"). Qubits and bits of declared registers can be aliased: an
+    /// alias of bits is typed as the register of them, an alias of qubits
+    /// is left to the qubit layout (`Type::Void`).
+    fn alias_type(&self, parts: &[sir::Expr]) -> Result<Type> {
+        let invalid = |message: &str, span| {
+            CompileError::at(ErrorKind::InvalidOperands(message.into()), span)
+        };
+        // How many bits each operand that names bits contributes.
+        let mut widths = Vec::new();
+        for part in parts {
+            if matches!(part.kind, sir::ExprKind::HardwareQubit(_)) {
+                let message = "physical qubits are not declared and so cannot be aliased";
+                return Err(invalid(message, part.span));
+            }
+            let root = qubits::peel_index_chain(part)
+                .map(|(symbol, _)| self.resolver.symbols().get(symbol));
+            let width = match root.map(|root| (&root.ty, root.kind)) {
+                Some((Type::Qubit | Type::QubitReg(_), _) | (Type::Void, SymbolKind::Alias)) => {
+                    continue;
+                }
+                // A constant is no register.
+                Some((_, SymbolKind::Const)) | None => None,
+                Some((root_ty, _)) => match (root_ty.scalar_ty(), part.ty.scalar_ty()) {
+                    (Some(PrimitiveTy::Bit | PrimitiveTy::BitReg(_)), Some(PrimitiveTy::Bit)) => {
+                        Some(1)
+                    }
+                    (
+                        Some(PrimitiveTy::Bit | PrimitiveTy::BitReg(_)),
+                        Some(PrimitiveTy::BitReg(width)),
+                    ) => Some(width),
+                    _ => None,
+                },
+            };
+            let message = "only qubits, qubit registers and bit registers can be aliased";
+            widths.push(width.ok_or_else(|| invalid(message, part.span))?);
+        }
+        let one_bit = matches!(parts, [part] if part.ty.scalar_ty() == Some(PrimitiveTy::Bit));
+        match widths.len() {
+            0 => Ok(Type::Void),
+            n if n != parts.len() => {
+                let message = "an alias concatenates registers of the same type, \
+                               classical or quantum";
+                let span = parts[0].span.to(parts[parts.len() - 1].span);
+                Err(invalid(message, span))
+            }
+            _ if one_bit => Ok(Type::Classical(ValueTy::bit())),
+            _ => Ok(Type::Classical(ValueTy::bitreg(widths.iter().sum()))),
         }
     }
 
@@ -1677,7 +1744,7 @@ fn measure_result_type(qubit_ty: &Type) -> Type {
 /// The type of `base[index]` (docs/types.rst, "Index sets and slicing"):
 /// a single position selects an item, a range or set a register or array
 /// of as many items as it selects.
-fn index_result_type(base_ty: &Type, index: &sir::IndexOp) -> Result<Type> {
+pub(crate) fn index_result_type(base_ty: &Type, index: &sir::IndexOp) -> Result<Type> {
     if let Type::QubitReg(len) = base_ty {
         let selected = qubits::resolve_index(index, *len)?;
         return Ok(match selected {
@@ -1748,13 +1815,6 @@ fn typing_indices(ty: ValueTy, index: &sir::IndexOp) -> Result<Vec<ClassicalInde
                     }
                     sir::IndexItem::Range(range) => range,
                 };
-                if k + 1 != items.len() {
-                    let message = "an index after a range in the same subscript";
-                    return Err(CompileError::at(
-                        ErrorKind::Unsupported(message.into()),
-                        index.span,
-                    ));
-                }
                 let positions = match sizes.get(k).copied().flatten() {
                     None => Vec::new(),
                     Some(len) => match qubits::expand_range(range, len) {

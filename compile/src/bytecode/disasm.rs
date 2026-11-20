@@ -309,16 +309,6 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             write!(f, "{} = durationof -> {}", fmt_reg(*dest), fmt_proc(*body))
         }
         BcOp::Pragma { content } => write!(f, "pragma {}", fmt_str(*content)),
-        BcOp::Alias { symbol, value } => {
-            write!(f, "alias s{} = ", symbol.0)?;
-            for (i, v) in value.iter().enumerate() {
-                if i > 0 {
-                    write!(f, " ++ ")?;
-                }
-                fmt_operand(f, v)?;
-            }
-            Ok(())
-        }
         BcOp::AliasBind { slot, segments } => {
             write!(f, "aliasbind qa{slot} = ")?;
             for (i, seg) in segments.iter().enumerate() {

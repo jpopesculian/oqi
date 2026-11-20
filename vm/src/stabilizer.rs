@@ -10,7 +10,7 @@
 //! row produced during a random measurement is overwritten immediately).
 
 use crate::clifford::CliffordSink;
-use crate::sim::Rng;
+use crate::rng::Rng;
 
 #[derive(Clone)]
 struct Row {

@@ -16,10 +16,10 @@ use crate::bytecode::ProcOwner;
 use crate::classical::{Primitive, PrimitiveTy, ValueTy};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{
-    self, Alias, Annotation, ArrayLiteral, Assignment, BinOp, Binary, BoxStmt, CalibrationBody,
-    Call, Cast, Delay, Expr, ExprKind, For, ForIterable, GateCall, GateModifier, If, Index,
-    IndexItem, IndexKind, IndexOp, LValue, Measure, MeasureExpr, MeasureExprKind, QubitOperand,
-    RValue, Stmt, StmtKind, SwitchCase, SwitchLabels, UnOp, Unary, While,
+    self, Alias, ArrayLiteral, Assignment, BinOp, Binary, BoxStmt, CalibrationBody, Call, Cast,
+    Delay, Expr, ExprKind, For, ForIterable, GateCall, GateModifier, If, Index, IndexItem,
+    IndexKind, IndexOp, LValue, Measure, MeasureExpr, MeasureExprKind, QubitOperand, RValue, Stmt,
+    StmtKind, SwitchCase, SwitchLabels, UnOp, Unary, While,
 };
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::Type;
@@ -38,7 +38,6 @@ pub struct BasicBlock {
 #[derive(Clone)]
 pub struct BlockStmt {
     pub kind: BlockStmtKind,
-    pub annotations: Vec<Annotation>,
     pub span: Span,
 }
 
@@ -378,11 +377,7 @@ impl<'a> CfgBuilder<'a> {
     }
 
     fn lower_stmt(&mut self, stmt: Stmt) -> Result<()> {
-        let Stmt {
-            kind,
-            annotations,
-            span,
-        } = stmt;
+        let Stmt { kind, span, .. } = stmt;
         match kind {
             StmtKind::If(If {
                 condition,
@@ -485,11 +480,7 @@ impl<'a> CfgBuilder<'a> {
             }
             other => {
                 let kind = self.lower_non_cf_stmt(other)?;
-                self.append(BlockStmt {
-                    kind,
-                    annotations,
-                    span,
-                });
+                self.append(BlockStmt { kind, span });
                 Ok(())
             }
         }
@@ -638,7 +629,6 @@ impl<'a> CfgBuilder<'a> {
                 target: LValue::Var(var),
                 value: RValue::Expr(Box::new(init_expr)),
             }),
-            annotations: vec![],
             span,
         });
 
@@ -727,7 +717,6 @@ impl<'a> CfgBuilder<'a> {
                 target: LValue::Var(var),
                 value: RValue::Expr(Box::new(advance)),
             }),
-            annotations: vec![],
             span,
         });
         self.terminate(Terminator::Goto(header_bb));

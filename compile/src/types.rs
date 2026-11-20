@@ -121,16 +121,22 @@ impl From<ArrayRefTy> for Type {
 }
 
 /// Map a system width to a `FloatWidth`. The OpenQASM spec supports 32 and 64.
-pub fn float_width_from_system_width(width: usize) -> FloatWidth {
+pub(crate) fn float_width_from_system_width(width: usize) -> FloatWidth {
     match width {
         w if w <= 32 => FloatWidth::F32,
         _ => FloatWidth::F64,
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// Width of plain (undesignated) `int`, `uint`, `float`, `complex` and
+/// `angle`. The spec leaves it to "the particular target architecture"
+/// (docs/types.rst); the target here is the simulator, not the machine the
+/// compiler happens to run on, so the default is a fixed 64 bits on every
+/// host (native and wasm32 alike).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum SystemWidth {
     B32,
+    #[default]
     B64,
 }
 
@@ -146,16 +152,6 @@ impl SystemWidth {
         match self {
             SystemWidth::B32 => FloatWidth::F32,
             SystemWidth::B64 => FloatWidth::F64,
-        }
-    }
-}
-
-impl Default for SystemWidth {
-    fn default() -> Self {
-        match usize::BITS {
-            32 => SystemWidth::B32,
-            64 => SystemWidth::B64,
-            other => panic!("unsupported system width: {other} bits"),
         }
     }
 }
@@ -182,7 +178,7 @@ impl Default for CompileOptions {
 }
 
 /// Evaluate a constant expression to a `usize` value for use as a type designator.
-pub fn eval_designator(
+pub(crate) fn eval_designator(
     expr: &ast::Expr<'_>,
     symbols: &SymbolTable,
     options: &CompileOptions,
@@ -193,7 +189,7 @@ pub fn eval_designator(
 }
 
 /// Evaluate a constant expression, returning a `Value`.
-pub fn eval_const_expr(
+pub(crate) fn eval_const_expr(
     expr: &ast::Expr<'_>,
     symbols: &SymbolTable,
     options: &CompileOptions,
@@ -425,7 +421,7 @@ fn const_sizeof_ty(value_ty: ValueTy, dim: Option<&Value>, span: oqi_lex::Span) 
 }
 
 #[inline]
-pub fn parse_int_literal(s: &str, encoding: ast::IntEncoding) -> Result<i128> {
+pub(crate) fn parse_int_literal(s: &str, encoding: ast::IntEncoding) -> Result<i128> {
     let (radix, digits) = match encoding {
         ast::IntEncoding::Binary => (2, &s[2..]),
         ast::IntEncoding::Octal => (8, &s[2..]),
@@ -437,20 +433,20 @@ pub fn parse_int_literal(s: &str, encoding: ast::IntEncoding) -> Result<i128> {
 }
 
 #[inline]
-pub fn parse_float_literal(s: &str) -> Result<f64> {
+pub(crate) fn parse_float_literal(s: &str) -> Result<f64> {
     Ok(s.replace('_', "")
         .parse::<f64>()
         .map_err(|e| ErrorKind::InvalidLiteral(e.to_string()))?)
 }
 
 #[inline]
-pub fn parse_imag_literal(s: &str) -> Result<(f64, f64)> {
+pub(crate) fn parse_imag_literal(s: &str) -> Result<(f64, f64)> {
     let im = parse_float_literal(s.strip_suffix("im").unwrap_or(s).trim_end())?;
     Ok((0.0, im))
 }
 
 #[inline]
-pub fn parse_bitstring_literal(s: &str) -> Result<(u128, usize)> {
+pub(crate) fn parse_bitstring_literal(s: &str) -> Result<(u128, usize)> {
     let s = s.trim_matches('"');
     let mut value = 0u128;
     let mut width = 0usize;
@@ -484,7 +480,7 @@ pub fn parse_bitstring_literal(s: &str) -> Result<(u128, usize)> {
 }
 
 #[inline]
-pub fn parse_timing_literal(s: &str, dt: &Duration) -> Result<Duration> {
+pub(crate) fn parse_timing_literal(s: &str, dt: &Duration) -> Result<Duration> {
     let unit_start = s.find(|c: char| c.is_alphabetic()).ok_or_else(|| {
         ErrorKind::InvalidLiteral(format!("invalid timing literal: no unit found in '{s}'"))
     })?;
@@ -504,8 +500,29 @@ pub fn parse_timing_literal(s: &str, dt: &Duration) -> Result<Duration> {
     Ok(Duration::new(value, unit))
 }
 
+/// Parse the duration of one `dt` unit from a host option ("0.5ns"):
+/// timing-literal syntax, except the `dt` unit itself is rejected
+/// (self-referential) and the value must be positive.
+pub fn parse_dt(spec: &str) -> Result<Duration> {
+    let invalid = |msg: String| CompileError::new(ErrorKind::InvalidLiteral(msg));
+    if spec.trim_end().ends_with("dt") {
+        return Err(invalid(
+            "`dt` cannot itself be given in `dt` units".to_string(),
+        ));
+    }
+    let d = parse_timing_literal(spec, &CompileOptions::default().dt).map_err(|_| {
+        invalid(format!(
+            "`dt`: `{spec}` is not a duration literal (e.g. \"0.5ns\")"
+        ))
+    })?;
+    if d.value.is_nan() || d.value <= 0.0 {
+        return Err(invalid("`dt` must be a positive duration".to_string()));
+    }
+    Ok(d)
+}
+
 /// Resolve an AST scalar type to an IR `Type`.
-pub fn resolve_scalar_type(
+pub(crate) fn resolve_scalar_type(
     ty: &ast::ScalarType<'_>,
     symbols: &SymbolTable,
     options: &CompileOptions,
@@ -581,7 +598,7 @@ pub fn resolve_scalar_type(
 }
 
 /// Resolve an AST type expression to an IR `Type`.
-pub fn resolve_type(
+pub(crate) fn resolve_type(
     ty: &ast::TypeExpr<'_>,
     symbols: &SymbolTable,
     options: &CompileOptions,
@@ -602,7 +619,7 @@ pub fn resolve_type(
 }
 
 /// Resolve an AST qubit type to an IR `Type`.
-pub fn resolve_qubit_type(
+pub(crate) fn resolve_qubit_type(
     ty: &ast::QubitType<'_>,
     symbols: &SymbolTable,
     options: &CompileOptions,
@@ -617,7 +634,7 @@ pub fn resolve_qubit_type(
 }
 
 /// Resolve an old-style declaration (`creg`/`qreg`) to an IR `Type`.
-pub fn resolve_old_style_type(
+pub(crate) fn resolve_old_style_type(
     kind: &ast::OldStyleKind,
     designator: Option<&ast::Expr<'_>>,
     symbols: &SymbolTable,
@@ -642,7 +659,7 @@ pub fn resolve_old_style_type(
 }
 
 /// Resolve an array-ref argument type (subroutine / extern parameters).
-pub fn resolve_array_ref_type(
+pub(crate) fn resolve_array_ref_type(
     arr_ref: &ast::ArrayRefType<'_>,
     symbols: &SymbolTable,
     options: &CompileOptions,

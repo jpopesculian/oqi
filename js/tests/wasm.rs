@@ -358,7 +358,7 @@ async fn sample_bell_histogram() {
         .await
         .unwrap();
     assert_eq!(out.shots, 200);
-    assert_eq!(out.backend, "cpu");
+    assert_eq!(out.backend, "scalar");
     assert_eq!(out.precision, "f64");
     // One histogram for the `c` register; counts sum to the shot total, and a
     // Bell state only ever yields the correlated "00"/"11" outcomes.
@@ -372,14 +372,14 @@ async fn sample_bell_histogram() {
 }
 
 #[wasm_bindgen_test]
-async fn sample_cpu_f32() {
+async fn sample_scalar_f32() {
     let out = sample(
         BELL,
-        options(r#"{ "shots": 100, "backend": "cpu", "precision": "f32" }"#),
+        options(r#"{ "shots": 100, "backend": "scalar", "precision": "f32" }"#),
     )
     .await
     .unwrap();
-    assert_eq!(out.backend, "cpu");
+    assert_eq!(out.backend, "scalar");
     assert_eq!(out.precision, "f32");
     let c = out.histograms.iter().find(|h| h.name == "c").unwrap();
     assert_eq!(c.total, 100);
@@ -432,4 +432,94 @@ async fn sample_is_reproducible() {
         assert_eq!(x.label, y.label);
         assert_eq!(x.count, y.count);
     }
+}
+
+#[wasm_bindgen_test]
+async fn sample_defaults_to_1024_shots() {
+    let out = sample(BELL, JsValue::UNDEFINED).await.unwrap();
+    assert_eq!(out.shots, 1024);
+    assert_eq!(out.histograms[0].total, 1024);
+}
+
+#[wasm_bindgen_test]
+async fn backends_share_the_cli_names() {
+    // Every CLI backend name is accepted; the result names what ran.
+    for (name, precision) in [("simd", "f64"), ("auto", "f64"), ("sum", "f64")] {
+        let opts = format!(r#"{{ "shots": 50, "backend": "{name}" }}"#);
+        let out = sample(BELL, options(&opts)).await.unwrap();
+        assert_eq!(
+            (out.backend.as_str(), out.precision.as_str()),
+            (name, precision)
+        );
+        let c = out.histograms.iter().find(|h| h.name == "c").unwrap();
+        assert_eq!(c.total, 50);
+        for bar in &c.bars {
+            assert!(
+                bar.label == "00" || bar.label == "11",
+                "{name}: {}",
+                bar.label
+            );
+        }
+    }
+
+    // Without WebGPU (node), `prefer-gpu` falls back to the scalar simulator
+    // and `gpu` itself is an error.
+    let out = sample(BELL, options(r#"{ "backend": "prefer-gpu", "shots": 10 }"#))
+        .await
+        .unwrap();
+    assert_eq!(out.backend, "scalar");
+    let err = sample(BELL, options(r#"{ "backend": "gpu" }"#))
+        .await
+        .unwrap_err();
+    assert!(error_message(err).contains("backend unavailable"));
+
+    // The pre-rename names are gone, and wasm has no threads.
+    let err = sample(BELL, options(r#"{ "backend": "cpu" }"#))
+        .await
+        .unwrap_err();
+    assert!(error_message(err).contains("unknown backend `cpu`"));
+    let err = sample(BELL, options(r#"{ "backend": "rayon" }"#))
+        .await
+        .unwrap_err();
+    assert!(error_message(err).contains("backend unavailable"));
+}
+
+#[wasm_bindgen_test]
+async fn plain_int_is_64_bits_wide() {
+    // The default width of an undesignated `int` is 64 bits on every host,
+    // wasm32 included (it used to follow the compiler's pointer width).
+    let out = run(
+        "OPENQASM 3.0;\noutput int big;\nbig = 3000000000;\nbig = big + big;\n",
+        JsValue::UNDEFINED,
+    )
+    .await
+    .unwrap();
+    assert_eq!(output(&out, "big").as_f64().unwrap(), 6_000_000_000.0);
+}
+
+#[wasm_bindgen_test]
+async fn input_coercion_matches_the_other_front_doors() {
+    let src = "OPENQASM 3.0;\n\
+        input angle[32] theta;\n\
+        input bit[4] mask;\n\
+        output bit[4] copy;\n\
+        output float[64] radians;\n\
+        copy = mask;\n\
+        radians = float[64](theta);\n";
+    let out = run(
+        src,
+        options(r#"{ "inputs": { "theta": 0.5, "mask": "0110" } }"#),
+    )
+    .await
+    .unwrap();
+    assert_eq!(output(&out, "copy").as_str().unwrap(), "\"0110\"");
+    assert!((output(&out, "radians").as_f64().unwrap() - 0.5).abs() < 1e-6);
+
+    let err = run(
+        src,
+        options(r#"{ "inputs": { "theta": 0.5, "mask": "01" } }"#),
+    )
+    .await
+    .unwrap_err();
+    assert!(error_message(err).contains("must be a 4-character string of 0s and 1s"));
 }

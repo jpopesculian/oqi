@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 
 use crate::cfg::BasicBlockId;
-use crate::sir::{Annotation, RValue};
+use crate::sir::RValue;
 use crate::ssa::{
     Phi, SsaAssignment, SsaBlock, SsaCfg, SsaExpr, SsaExprKind, SsaLValue, SsaStmt, SsaStmtKind,
     SsaValue,
@@ -106,7 +106,6 @@ fn move_stmt(dest: SsaValue, src: SsaValue, span: oqi_lex::Span) -> SsaStmt {
             target: SsaLValue::Var(dest),
             value: RValue::Expr(Box::new(var_expr(src, span))),
         }),
-        annotations: Vec::<Annotation>::new(),
         span,
     }
 }

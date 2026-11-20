@@ -1,22 +1,26 @@
 use std::path::Path;
 
 use oqi_compile::classical::{ValueTy, iw};
-use oqi_compile::lower::compile_source;
-use oqi_compile::resolve::DefaultIncludeResolver;
+use oqi_compile::{CompileError, CompileOptions, DefaultIncludeResolver, compile_source};
 
-fn compile_fixture(
-    name: &str,
-) -> Result<oqi_compile::sir::Program, oqi_compile::error::CompileError> {
+fn compile_fixture(name: &str) -> Result<oqi_compile::sir::Program, CompileError> {
     let path_str = format!("../fixtures/qasm/{name}");
     let path = Path::new(&path_str);
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path_str}: {e}"));
-    compile_source(&source, DefaultIncludeResolver, Some(path))
+    let options = CompileOptions {
+        source_name: Some(path.to_path_buf()),
+        ..Default::default()
+    };
+    compile_source(&source, DefaultIncludeResolver, &options, None)
 }
 
-fn compile_inline(
-    source: &str,
-) -> Result<oqi_compile::sir::Program, oqi_compile::error::CompileError> {
-    compile_source(source, DefaultIncludeResolver, None)
+fn compile_inline(source: &str) -> Result<oqi_compile::sir::Program, CompileError> {
+    compile_source(
+        source,
+        DefaultIncludeResolver,
+        &CompileOptions::default(),
+        None,
+    )
 }
 
 // ── Fixtures that must compile successfully ──────────────────────────
@@ -118,7 +122,6 @@ fn alignment_resolves_with_timings() {
     use oqi_compile::classical::{DurationUnit, Primitive};
     use oqi_compile::duration::{TableTimings, resolve_durationof};
     use oqi_compile::sir::{ExprKind, StmtKind};
-    use oqi_compile::types::CompileOptions;
 
     let mut p = compile_fixture("alignment.qasm").expect("should compile");
     let options = CompileOptions::default();
@@ -150,7 +153,7 @@ fn alignment_resolves_with_timings() {
     assert!((lit_ns(&b.right) - 80.0).abs() < 1e-6);
 
     // The rewritten program still lowers through the rest of the pipeline.
-    oqi_compile::cfg::build_program(&p).expect("cfg after stretch resolution");
+    oqi_compile::bytecode::emit(&p).expect("bytecode after stretch resolution");
 }
 
 #[test]
@@ -165,7 +168,6 @@ fn dd() {
 fn dd_resolves_with_timings() {
     use oqi_compile::duration::{TableTimings, resolve_durationof};
     use oqi_compile::sir::{ExprKind, LValue, RValue, StmtKind};
-    use oqi_compile::types::CompileOptions;
 
     let mut p = compile_fixture("dd.qasm").expect("should compile");
     let options = CompileOptions::default();
@@ -279,10 +281,7 @@ fn gate_without_stdgates_is_undefined() {
     // example — it defines the gates it uses — so this checks the error path
     // directly.)
     match compile_inline("qubit[2] q;\ncx q[0], q[1];\n") {
-        Err(e) => assert!(matches!(
-            e.kind,
-            oqi_compile::error::ErrorKind::UndefinedName(_)
-        )),
+        Err(e) => assert!(matches!(e.kind, oqi_compile::ErrorKind::UndefinedName(_))),
         Ok(_) => panic!("expected error"),
     }
 }
@@ -314,7 +313,7 @@ fn special_standard_assignment_requires_explicit_cast() {
     };
     assert!(matches!(
         err.kind,
-        oqi_compile::error::ErrorKind::TypeMismatch { .. }
+        oqi_compile::ErrorKind::TypeMismatch { .. }
     ));
 
     // The explicit-cast form stays valid.
@@ -1048,8 +1047,8 @@ fn non_const_designator_rejected() {
         Err(e) => assert!(
             matches!(
                 e.kind,
-                oqi_compile::error::ErrorKind::NonConstantDesignator
-                    | oqi_compile::error::ErrorKind::NonConstantExpression
+                oqi_compile::ErrorKind::NonConstantDesignator
+                    | oqi_compile::ErrorKind::NonConstantExpression
             ),
             "expected non-constant error, got: {:?}",
             e.kind,
@@ -1064,10 +1063,7 @@ fn undefined_variable_rejected() {
         int[32] a = b;
     "#;
     match compile_inline(src) {
-        Err(e) => assert!(matches!(
-            e.kind,
-            oqi_compile::error::ErrorKind::UndefinedName(_)
-        )),
+        Err(e) => assert!(matches!(e.kind, oqi_compile::ErrorKind::UndefinedName(_))),
         Ok(_) => panic!("expected UndefinedName error"),
     }
 }
@@ -1081,7 +1077,7 @@ fn duplicate_definition_rejected() {
     match compile_inline(src) {
         Err(e) => assert!(matches!(
             e.kind,
-            oqi_compile::error::ErrorKind::DuplicateDefinition { .. }
+            oqi_compile::ErrorKind::DuplicateDefinition { .. }
         )),
         Ok(_) => panic!("expected DuplicateDefinition error"),
     }
@@ -1105,16 +1101,12 @@ fn io_declarations() {
 /// Source → bytecode, then the names of the module's program outputs,
 /// sorted.
 fn output_names(source: &str) -> Vec<String> {
-    use oqi_compile::{bytecode, cfg, qubits, ssa};
     let program = compile_inline(source).expect("compile");
-    let cfgs = cfg::build_program(&program).expect("cfg");
-    let ssa = ssa::build_program(&cfgs, &program.symbols);
-    let layout = qubits::build_layout(&program);
-    let module = bytecode::emit(&ssa, &program, layout).expect("emit");
+    let module = oqi_compile::bytecode::emit(&program).expect("emit");
     let mut names: Vec<String> = module
         .outputs
         .iter()
-        .map(|(sym, _)| module.symbols.get(*sym).name.clone())
+        .map(|(sym, _)| module.symbol(*sym).name.clone())
         .collect();
     names.sort();
     names
@@ -1137,16 +1129,12 @@ fn outputs_sidecar_honors_output_decls() {
 /// Source → bytecode, then the names of the module's declared inputs,
 /// sorted.
 fn input_names(source: &str) -> Vec<String> {
-    use oqi_compile::{bytecode, cfg, qubits, ssa};
     let program = compile_inline(source).expect("compile");
-    let cfgs = cfg::build_program(&program).expect("cfg");
-    let ssa = ssa::build_program(&cfgs, &program.symbols);
-    let layout = qubits::build_layout(&program);
-    let module = bytecode::emit(&ssa, &program, layout).expect("emit");
+    let module = oqi_compile::bytecode::emit(&program).expect("emit");
     let mut names: Vec<String> = module
         .inputs
         .iter()
-        .map(|(sym, _)| module.symbols.get(*sym).name.clone())
+        .map(|(sym, _)| module.symbol(*sym).name.clone())
         .collect();
     names.sort();
     names

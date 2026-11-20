@@ -5,7 +5,7 @@ use oqi_lex::Span;
 use serde::{Deserialize, Serialize};
 
 use crate::sir::Intrinsic;
-use crate::symbol::{SymbolId, SymbolTable};
+use crate::symbol::{SymbolId, SymbolKind};
 
 // ── IDs ──────────────────────────────────────────────────────────────
 
@@ -39,7 +39,7 @@ pub struct BcVersion {
 }
 
 impl BcVersion {
-    pub const CURRENT: BcVersion = BcVersion { major: 2, minor: 0 };
+    pub const CURRENT: BcVersion = BcVersion { major: 3, minor: 0 };
 }
 
 /// Global quantum memory: every named register is statically allocated
@@ -63,10 +63,23 @@ pub struct QubitRegion {
     pub origin: Option<SymbolId>,
 }
 
+/// What a bytecode consumer needs to know about a source symbol: enough to
+/// name it, classify it, and (for classical values) type it.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct BcSymbol {
+    pub name: String,
+    pub kind: SymbolKind,
+    /// Classical value type: a variable's declared type, or an `extern`'s
+    /// return type. `None` for everything else (qubits, gates, void
+    /// externs, …).
+    pub ty: Option<ValueTy>,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct BcModule {
     pub version: BcVersion,
-    pub symbols: SymbolTable,
+    /// The program's symbols, indexed by [`SymbolId`].
+    pub symbols: Vec<BcSymbol>,
     /// Pool of classical values referenced by [`BcOperand::Const`].
     pub constants: Vec<Value>,
     /// Pool of strings (pragma payloads, opaque cal text).
@@ -94,6 +107,30 @@ pub struct BcModule {
     pub calibrations: Vec<BcCalibration>,
     /// The `defcalgrammar` string, quotes stripped (e.g. `openpulse`).
     pub calibration_grammar: Option<String>,
+}
+
+impl BcModule {
+    /// The symbol `id` names.
+    pub fn symbol(&self, id: SymbolId) -> &BcSymbol {
+        &self.symbols[id.0]
+    }
+
+    /// The declared `input` called `name`, with its value type.
+    pub fn input(&self, name: &str) -> Option<(SymbolId, ValueTy)> {
+        self.inputs
+            .iter()
+            .map(|(id, _)| (*id, self.symbol(*id)))
+            .find(|(_, sym)| sym.name == name)
+            .and_then(|(id, sym)| Some((id, sym.ty?)))
+    }
+
+    /// Each declared classical `extern` with its return type (`None` = void).
+    pub fn externs(&self) -> impl Iterator<Item = (&str, Option<ValueTy>)> {
+        self.symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Extern)
+            .map(|s| (s.name.as_str(), s.ty))
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]

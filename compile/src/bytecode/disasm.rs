@@ -21,12 +21,12 @@ impl fmt::Display for BcModule {
         if !self.symbols.is_empty() {
             writeln!(f)?;
             writeln!(f, ".symbols")?;
-            for sym in self.symbols.iter() {
-                writeln!(
-                    f,
-                    "  s{} {:?} {} : {}",
-                    sym.id.0, sym.kind, sym.name, sym.ty
-                )?;
+            for (i, sym) in self.symbols.iter().enumerate() {
+                write!(f, "  s{i} {:?} {}", sym.kind, sym.name)?;
+                if let Some(ty) = sym.ty {
+                    write!(f, " : {ty}")?;
+                }
+                writeln!(f)?;
             }
         }
 
@@ -58,7 +58,7 @@ impl fmt::Display for BcModule {
                     write!(f, " [{start}..{end})")?;
                 }
                 if let Some(sym) = region.origin {
-                    write!(f, " ; {}", self.symbols.get(sym).name)?;
+                    write!(f, " ; {}", self.symbol(sym).name)?;
                 }
                 writeln!(f)?;
             }

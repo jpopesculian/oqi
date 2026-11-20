@@ -27,7 +27,7 @@ use crate::ch::{ChForm, Projection};
 use crate::clifford::{
     CliffordSink, M2, apply_clifford_gphase, apply_clifford_u, effective_matrix,
 };
-use crate::sim::Rng;
+use crate::rng::Rng;
 
 const TOL: f64 = 1e-6;
 /// Terms with |ω| below this are numerically dead and pruned after
@@ -602,231 +602,245 @@ mod tests {
 
     /// `H T⁴ H = H Z H = X`: sixteen branches must interfere back down to
     /// a deterministic |1⟩.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn t_gates_interfere_exactly() {
-        let calls = vec![h(0), t(0), t(0), t(0), t(0), h(0)];
-        let (sum, sv) = run_both(1, &calls).await;
-        assert!(sum.rank() <= 16);
-        assert_matches_dense(&sum, &sv, "HT⁴H").await;
-        let amps = sum.amplitudes().unwrap();
-        assert!(amps[0].norm() < 1e-9, "|0⟩ amplitude should cancel");
-        assert!((amps[1].norm() - 1.0).abs() < 1e-9);
+    #[test]
+    fn t_gates_interfere_exactly() {
+        pollster::block_on(async {
+            let calls = vec![h(0), t(0), t(0), t(0), t(0), h(0)];
+            let (sum, sv) = run_both(1, &calls).await;
+            assert!(sum.rank() <= 16);
+            assert_matches_dense(&sum, &sv, "HT⁴H").await;
+            let amps = sum.amplitudes().unwrap();
+            assert!(amps[0].norm() < 1e-9, "|0⟩ amplitude should cancel");
+            assert!((amps[1].norm() - 1.0).abs() < 1e-9);
+        })
     }
 
     /// `T·T†` must cancel exactly (branch coefficients interfere to I).
-    #[tokio::test(flavor = "multi_thread")]
-    async fn t_tdg_cancels() {
-        let calls = vec![h(0), t(0), tdg(0)];
-        let (sum, sv) = run_both(1, &calls).await;
-        assert_matches_dense(&sum, &sv, "T·T†").await;
+    #[test]
+    fn t_tdg_cancels() {
+        pollster::block_on(async {
+            let calls = vec![h(0), t(0), tdg(0)];
+            let (sum, sv) = run_both(1, &calls).await;
+            assert_matches_dense(&sum, &sv, "T·T†").await;
+        })
     }
 
     /// `pow` reaches the backend as a per-primitive power: `t` really
     /// arrives as `U(0,0,π)^0.25`.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn powered_u_matches_dense() {
-        let quarter = GateModifiers {
-            controls: vec![],
-            neg_controls: vec![],
-            power: 0.25,
-        };
-        let calls = vec![h(0), Call::U(0, 0.0, 0.0, PI, quarter)];
-        let (sum, sv) = run_both(1, &calls).await;
-        assert_matches_dense(&sum, &sv, "pow(0.25)@Z").await;
+    #[test]
+    fn powered_u_matches_dense() {
+        pollster::block_on(async {
+            let quarter = GateModifiers {
+                controls: vec![],
+                neg_controls: vec![],
+                power: 0.25,
+            };
+            let calls = vec![h(0), Call::U(0, 0.0, 0.0, PI, quarter)];
+            let (sum, sv) = run_both(1, &calls).await;
+            assert_matches_dense(&sum, &sv, "pow(0.25)@Z").await;
+        })
     }
 
     /// Random mixed circuits — Cliffords, T's, arbitrary rotations and
     /// generic U's — must match the dense simulator exactly.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn random_mixed_circuits_match_dense() {
-        let n = 3u32;
-        for seed in 0..12u64 {
-            let mut r = Lcg(seed + 1);
-            let mut calls = Vec::new();
-            let mut noncliff = 0;
-            for _ in 0..25 {
-                let q = r.below(n);
-                match r.below(8) {
-                    0 => calls.push(h(q)),
-                    1 => calls.push(Call::U(q, 0.0, 0.0, FRAC_PI_2, none())),
-                    2 | 3 => {
-                        let c = (q + 1 + r.below(n - 1)) % n;
-                        let g = if r.below(2) == 0 { PI } else { 0.0 };
-                        // cx (θ=π) or cz (θ=0 ⇒ z), lowered like stdgates.
-                        calls.push(Call::U(q, g, 0.0, PI, ctrl(&[c])));
-                        if g == PI {
-                            calls.push(Call::Gphase(-FRAC_PI_2, ctrl(&[c])));
+    #[test]
+    fn random_mixed_circuits_match_dense() {
+        pollster::block_on(async {
+            let n = 3u32;
+            for seed in 0..12u64 {
+                let mut r = Lcg(seed + 1);
+                let mut calls = Vec::new();
+                let mut noncliff = 0;
+                for _ in 0..25 {
+                    let q = r.below(n);
+                    match r.below(8) {
+                        0 => calls.push(h(q)),
+                        1 => calls.push(Call::U(q, 0.0, 0.0, FRAC_PI_2, none())),
+                        2 | 3 => {
+                            let c = (q + 1 + r.below(n - 1)) % n;
+                            let g = if r.below(2) == 0 { PI } else { 0.0 };
+                            // cx (θ=π) or cz (θ=0 ⇒ z), lowered like stdgates.
+                            calls.push(Call::U(q, g, 0.0, PI, ctrl(&[c])));
+                            if g == PI {
+                                calls.push(Call::Gphase(-FRAC_PI_2, ctrl(&[c])));
+                            }
                         }
+                        4 if noncliff < 4 => {
+                            noncliff += 1;
+                            calls.push(t(q));
+                        }
+                        5 if noncliff < 4 => {
+                            // rz(θ) as lowered: gphase(−θ/2); U(0,0,θ).
+                            noncliff += 1;
+                            let th = r.angle();
+                            calls.push(Call::Gphase(-th / 2.0, none()));
+                            calls.push(Call::U(q, 0.0, 0.0, th, none()));
+                        }
+                        6 if noncliff < 4 => {
+                            // ry(θ) = U(θ, 0, 0) up to the built-in phase.
+                            noncliff += 1;
+                            calls.push(Call::U(q, r.angle(), 0.0, 0.0, none()));
+                        }
+                        7 if noncliff < 4 => {
+                            noncliff += 1;
+                            calls.push(Call::U(q, r.angle(), r.angle(), r.angle(), none()));
+                        }
+                        _ => calls.push(h(q)),
                     }
-                    4 if noncliff < 4 => {
-                        noncliff += 1;
-                        calls.push(t(q));
-                    }
-                    5 if noncliff < 4 => {
-                        // rz(θ) as lowered: gphase(−θ/2); U(0,0,θ).
-                        noncliff += 1;
-                        let th = r.angle();
-                        calls.push(Call::Gphase(-th / 2.0, none()));
-                        calls.push(Call::U(q, 0.0, 0.0, th, none()));
-                    }
-                    6 if noncliff < 4 => {
-                        // ry(θ) = U(θ, 0, 0) up to the built-in phase.
-                        noncliff += 1;
-                        calls.push(Call::U(q, r.angle(), 0.0, 0.0, none()));
-                    }
-                    7 if noncliff < 4 => {
-                        noncliff += 1;
-                        calls.push(Call::U(q, r.angle(), r.angle(), r.angle(), none()));
-                    }
-                    _ => calls.push(h(q)),
                 }
+                let (sum, sv) = run_both(n, &calls).await;
+                assert_matches_dense(&sum, &sv, &format!("seed {seed}")).await;
             }
-            let (sum, sv) = run_both(n, &calls).await;
-            assert_matches_dense(&sum, &sv, &format!("seed {seed}")).await;
-        }
+        })
     }
 
     /// Controlled non-Cliffords: `cp` (two-control gphase), `crz`, `ccx`
     /// (its real two-op lowering), and negative controls.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn controlled_noncliffords_match_dense() {
-        let n = 3u32;
-        // cp(0.7) on (0,1) after spreading amplitude.
-        let calls = vec![h(0), h(1), h(2), Call::Gphase(0.7, ctrl(&[0, 1]))];
-        let (sum, sv) = run_both(n, &calls).await;
-        assert_matches_dense(&sum, &sv, "cp").await;
+    #[test]
+    fn controlled_noncliffords_match_dense() {
+        pollster::block_on(async {
+            let n = 3u32;
+            // cp(0.7) on (0,1) after spreading amplitude.
+            let calls = vec![h(0), h(1), h(2), Call::Gphase(0.7, ctrl(&[0, 1]))];
+            let (sum, sv) = run_both(n, &calls).await;
+            assert_matches_dense(&sum, &sv, "cp").await;
 
-        // crz(1.1) on (0,1): gphase(−0.55) ctrl [0]; U(0,0,1.1) ctrl [0].
-        let calls = vec![
-            h(0),
-            h(1),
-            Call::Gphase(-0.55, ctrl(&[0])),
-            Call::U(1, 0.0, 0.0, 1.1, ctrl(&[0])),
-        ];
-        let (sum, sv) = run_both(n, &calls).await;
-        assert_matches_dense(&sum, &sv, "crz").await;
+            // crz(1.1) on (0,1): gphase(−0.55) ctrl [0]; U(0,0,1.1) ctrl [0].
+            let calls = vec![
+                h(0),
+                h(1),
+                Call::Gphase(-0.55, ctrl(&[0])),
+                Call::U(1, 0.0, 0.0, 1.1, ctrl(&[0])),
+            ];
+            let (sum, sv) = run_both(n, &calls).await;
+            assert_matches_dense(&sum, &sv, "crz").await;
 
-        // ccx on (0,1 → 2): U(π,0,π) + gphase(−π/2), both under [0,1].
-        let calls = vec![
-            h(0),
-            h(1),
-            Call::U(2, PI, 0.0, PI, ctrl(&[0, 1])),
-            Call::Gphase(-FRAC_PI_2, ctrl(&[0, 1])),
-        ];
-        let (sum, sv) = run_both(n, &calls).await;
-        assert_matches_dense(&sum, &sv, "ccx").await;
+            // ccx on (0,1 → 2): U(π,0,π) + gphase(−π/2), both under [0,1].
+            let calls = vec![
+                h(0),
+                h(1),
+                Call::U(2, PI, 0.0, PI, ctrl(&[0, 1])),
+                Call::Gphase(-FRAC_PI_2, ctrl(&[0, 1])),
+            ];
+            let (sum, sv) = run_both(n, &calls).await;
+            assert_matches_dense(&sum, &sv, "ccx").await;
 
-        // A controlled generic rotation (ZYZ path) and a negative control.
-        let neg = GateModifiers {
-            controls: vec![0],
-            neg_controls: vec![1],
-            power: 1.0,
-        };
-        let calls = vec![
-            h(0),
-            h(1),
-            Call::U(2, 0.9, 0.4, 1.7, ctrl(&[0])),
-            Call::U(2, 0.3, 0.0, 0.0, neg),
-        ];
-        let (sum, sv) = run_both(n, &calls).await;
-        assert_matches_dense(&sum, &sv, "ctrl-generic + negctrl").await;
+            // A controlled generic rotation (ZYZ path) and a negative control.
+            let neg = GateModifiers {
+                controls: vec![0],
+                neg_controls: vec![1],
+                power: 1.0,
+            };
+            let calls = vec![
+                h(0),
+                h(1),
+                Call::U(2, 0.9, 0.4, 1.7, ctrl(&[0])),
+                Call::U(2, 0.3, 0.0, 0.0, neg),
+            ];
+            let (sum, sv) = run_both(n, &calls).await;
+            assert_matches_dense(&sum, &sv, "ctrl-generic + negctrl").await;
+        })
     }
 
     /// Exceeding the budget returns `Err(needed)` and leaves the state
     /// untouched; retrying with room succeeds.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn budget_overflow_is_clean() {
-        let mut sum = SumState::zero(1);
-        sum.apply_u(0, FRAC_PI_2, 0.0, PI, &none(), BIG).unwrap();
-        let before = sum.amplitudes().unwrap();
-        let e = sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &none(), 1);
-        assert_eq!(e, Err(2));
-        let after = sum.amplitudes().unwrap();
-        for (x, y) in before.iter().zip(&after) {
-            assert!((x - y).norm() < 1e-12, "state changed on Err");
-        }
-        sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &none(), 2).unwrap();
-        assert_eq!(sum.rank(), 2);
+    #[test]
+    fn budget_overflow_is_clean() {
+        pollster::block_on(async {
+            let mut sum = SumState::zero(1);
+            sum.apply_u(0, FRAC_PI_2, 0.0, PI, &none(), BIG).unwrap();
+            let before = sum.amplitudes().unwrap();
+            let e = sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &none(), 1);
+            assert_eq!(e, Err(2));
+            let after = sum.amplitudes().unwrap();
+            for (x, y) in before.iter().zip(&after) {
+                assert!((x - y).norm() < 1e-12, "state changed on Err");
+            }
+            sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &none(), 2).unwrap();
+            assert_eq!(sum.rank(), 2);
 
-        // Negative-control wrap must also restore the state on Err.
-        let neg = GateModifiers {
-            controls: vec![],
-            neg_controls: vec![1],
-            power: 1.0,
-        };
-        let mut sum = SumState::zero(2);
-        sum.apply_u(0, FRAC_PI_2, 0.0, PI, &none(), BIG).unwrap();
-        let before = sum.amplitudes().unwrap();
-        let e = sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &neg, 1);
-        assert!(e.is_err());
-        let after = sum.amplitudes().unwrap();
-        for (x, y) in before.iter().zip(&after) {
-            assert!((x - y).norm() < 1e-12, "state changed on neg-ctrl Err");
-        }
+            // Negative-control wrap must also restore the state on Err.
+            let neg = GateModifiers {
+                controls: vec![],
+                neg_controls: vec![1],
+                power: 1.0,
+            };
+            let mut sum = SumState::zero(2);
+            sum.apply_u(0, FRAC_PI_2, 0.0, PI, &none(), BIG).unwrap();
+            let before = sum.amplitudes().unwrap();
+            let e = sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &neg, 1);
+            assert!(e.is_err());
+            let after = sum.amplitudes().unwrap();
+            for (x, y) in before.iter().zip(&after) {
+                assert!((x - y).norm() < 1e-12, "state changed on neg-ctrl Err");
+            }
+        })
     }
 
     /// Mid-circuit measurement: outcomes forced onto the dense sim via
     /// `project` must leave both simulators in the same state.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn measurement_matches_dense() {
-        let n = 3u32;
-        for seed in 0..10u64 {
-            let mut r = Lcg(seed * 77 + 5);
-            let mut sum = SumState::zero(n as usize);
-            let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
-            let mut rng = Rng::new(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
-            for step in 0..20 {
-                let q = r.below(n);
-                match r.below(6) {
-                    0 | 1 => {
-                        let Call::U(t2, th, ph, la, m) = h(q) else {
-                            unreachable!()
-                        };
-                        sum.apply_u(t2, th, ph, la, &m, BIG).unwrap();
-                        sv.u(t2, th, ph, la, &m).await;
-                    }
-                    2 => {
-                        let c = (q + 1 + r.below(n - 1)) % n;
-                        sum.apply_u(q, PI, 0.0, PI, &ctrl(&[c]), BIG).unwrap();
-                        sv.u(q, PI, 0.0, PI, &ctrl(&[c])).await;
-                        sum.apply_gphase(-FRAC_PI_2, &ctrl(&[c]), BIG).unwrap();
-                        sv.gphase(-FRAC_PI_2, &ctrl(&[c])).await;
-                    }
-                    3 if step % 3 == 0 => {
-                        sum.apply_u(q, 0.0, 0.0, FRAC_PI_4, &none(), BIG).unwrap();
-                        sv.u(q, 0.0, 0.0, FRAC_PI_4, &none()).await;
-                    }
-                    _ => {
-                        // Measure on the sum side; force the dense sim to
-                        // the same outcome.
-                        let pre = sv.amplitudes().await.unwrap();
-                        let outcome = sum.measure(q as usize, &mut rng);
-                        let bit = 1usize << q;
-                        let p: f64 = pre
-                            .iter()
-                            .enumerate()
-                            .filter(|(i, _)| (i & bit != 0) == outcome)
-                            .map(|(_, a)| a.norm_sqr())
-                            .sum();
-                        assert!(p > 1e-9, "seed {seed}: outcome has ~0 probability");
-                        sv.project(q, outcome);
+    #[test]
+    fn measurement_matches_dense() {
+        pollster::block_on(async {
+            let n = 3u32;
+            for seed in 0..10u64 {
+                let mut r = Lcg(seed * 77 + 5);
+                let mut sum = SumState::zero(n as usize);
+                let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
+                let mut rng = Rng::new(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
+                for step in 0..20 {
+                    let q = r.below(n);
+                    match r.below(6) {
+                        0 | 1 => {
+                            let Call::U(t2, th, ph, la, m) = h(q) else {
+                                unreachable!()
+                            };
+                            sum.apply_u(t2, th, ph, la, &m, BIG).unwrap();
+                            sv.u(t2, th, ph, la, &m).await;
+                        }
+                        2 => {
+                            let c = (q + 1 + r.below(n - 1)) % n;
+                            sum.apply_u(q, PI, 0.0, PI, &ctrl(&[c]), BIG).unwrap();
+                            sv.u(q, PI, 0.0, PI, &ctrl(&[c])).await;
+                            sum.apply_gphase(-FRAC_PI_2, &ctrl(&[c]), BIG).unwrap();
+                            sv.gphase(-FRAC_PI_2, &ctrl(&[c])).await;
+                        }
+                        3 if step % 3 == 0 => {
+                            sum.apply_u(q, 0.0, 0.0, FRAC_PI_4, &none(), BIG).unwrap();
+                            sv.u(q, 0.0, 0.0, FRAC_PI_4, &none()).await;
+                        }
+                        _ => {
+                            // Measure on the sum side; force the dense sim to
+                            // the same outcome.
+                            let pre = sv.amplitudes().await.unwrap();
+                            let outcome = sum.measure(q as usize, &mut rng);
+                            let bit = 1usize << q;
+                            let p: f64 = pre
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, _)| (i & bit != 0) == outcome)
+                                .map(|(_, a)| a.norm_sqr())
+                                .sum();
+                            assert!(p > 1e-9, "seed {seed}: outcome has ~0 probability");
+                            sv.project(q, outcome);
+                        }
                     }
                 }
-            }
-            assert_matches_dense(&sum, &sv, &format!("seed {seed}")).await;
+                assert_matches_dense(&sum, &sv, &format!("seed {seed}")).await;
 
-            // Reset drives the qubit back to |0⟩ with unit norm.
-            sum.reset(0, &mut rng);
-            let amps = sum.amplitudes().unwrap();
-            let ones: f64 = amps
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| i & 1 == 1)
-                .map(|(_, a)| a.norm_sqr())
-                .sum();
-            let norm: f64 = amps.iter().map(|a| a.norm_sqr()).sum();
-            assert!(ones < 1e-9, "reset left |1⟩ weight");
-            assert!((norm - 1.0).abs() < 1e-9, "reset broke normalization");
-        }
+                // Reset drives the qubit back to |0⟩ with unit norm.
+                sum.reset(0, &mut rng);
+                let amps = sum.amplitudes().unwrap();
+                let ones: f64 = amps
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| i & 1 == 1)
+                    .map(|(_, a)| a.norm_sqr())
+                    .sum();
+                let norm: f64 = amps.iter().map(|a| a.norm_sqr()).sum();
+                assert!(ones < 1e-9, "reset left |1⟩ weight");
+                assert!((norm - 1.0).abs() < 1e-9, "reset broke normalization");
+            }
+        })
     }
 }

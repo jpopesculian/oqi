@@ -3,7 +3,8 @@
 
 export type InputValue = boolean | number | string | InputValue[];
 
-export type BackendChoice = 'cpu' | 'gpu' | 'auto';
+/** oqi-js backend names (the CLI's `--backend` names, minus the threaded ones). */
+export type BackendChoice = 'scalar' | 'simd' | 'gpu' | 'prefer-gpu' | 'auto' | 'sum';
 export type Precision = 'f32' | 'f64';
 
 export interface RunOptions {
@@ -33,8 +34,8 @@ export interface ErrorSpan {
 
 export interface SampleResult {
   shots: number;
-  /** The backend that actually ran (`auto` reports `cpu` or `gpu`). */
-  backend: 'cpu' | 'gpu';
+  /** The backend that actually ran (`prefer-gpu` reports `gpu` or `scalar`). */
+  backend: Exclude<BackendChoice, 'prefer-gpu'>;
   /** The amplitude precision that ran. */
   precision: Precision;
   /** One histogram per named output variable, in program order. */

@@ -42,7 +42,7 @@ npm run preview    # http://localhost:4173/oqi/
   option; the seed and shots fields feed `seed` and `shots`.
 - **Backend**: a toolbar dropdown selects the simulator — **CPU f64** (default),
   **CPU f32**, or **GPU** (the WebGPU `wgpu` sim, always `f32`). It maps to `sample()`'s
-  `backend`/`precision` options, and the results badge echoes what ran plus the shot
+  `backend` (`"scalar"` or `"gpu"`) and `precision` options, and the results badge echoes what ran plus the shot
   count. GPU requires a WebGPU-capable browser (Chrome/Edge, recent Firefox/Safari) over
   HTTPS — GitHub Pages qualifies; selecting GPU where it's unavailable surfaces a clear
   error. Note that GPU shots re-upload |0> and read back each measurement per shot, so

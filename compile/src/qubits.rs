@@ -446,9 +446,16 @@ mod tests {
     use crate::lower::compile_source;
     use crate::resolve::DefaultIncludeResolver;
     use crate::ssa::{self, SsaStmtKind};
+    use crate::types::CompileOptions;
 
     fn compile(src: &str) -> sir::Program {
-        compile_source(src, DefaultIncludeResolver, None).expect("compile")
+        compile_source(
+            src,
+            DefaultIncludeResolver,
+            &CompileOptions::default(),
+            None,
+        )
+        .expect("compile")
     }
 
     /// Build the layout and resolve every top-level alias in block

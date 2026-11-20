@@ -42,6 +42,25 @@ pub struct DefaultIncludeResolver;
 
 impl IncludeResolver for DefaultIncludeResolver {}
 
+/// Serves only embedded libraries (`stdgates.inc`); file includes are an
+/// error. For hosts with no filesystem to include from (wasm, embedded
+/// language bindings).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LibOnlyResolver;
+
+impl IncludeResolver for LibOnlyResolver {
+    fn resolve_path(
+        &self,
+        path: &Path,
+    ) -> std::result::Result<Cow<'_, str>, Box<dyn std::error::Error>> {
+        Err(format!(
+            "cannot include \"{}\": file includes are not supported in this build",
+            path.display()
+        )
+        .into())
+    }
+}
+
 pub struct Resolver {
     symbols: SymbolTable,
     /// Number of non-global scopes opened so far; the next [`ScopeId`].

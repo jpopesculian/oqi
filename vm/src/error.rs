@@ -49,8 +49,21 @@ pub enum VmErrorKind {
         max_rank: usize,
         qubits: u32,
     },
+    /// The requested backend can't be constructed here (no GPU adapter, or
+    /// support for it was not compiled into this build).
+    BackendUnavailable(String),
     /// Execution reached a block marked unreachable.
     Unreachable,
+}
+
+impl VmErrorKind {
+    /// An [`Extern`](VmErrorKind::Extern) failure of the extern `name`.
+    pub fn extern_failed(name: &str, message: impl Into<String>) -> Self {
+        VmErrorKind::Extern {
+            name: name.to_string(),
+            message: message.into(),
+        }
+    }
 }
 
 impl fmt::Display for VmErrorKind {
@@ -60,12 +73,7 @@ impl fmt::Display for VmErrorKind {
             VmErrorKind::MissingInput(name) => {
                 write!(f, "no value supplied for input `{name}`")
             }
-            VmErrorKind::UnknownInput(name) => {
-                write!(
-                    f,
-                    "value supplied for `{name}`, which is not a declared input"
-                )
-            }
+            VmErrorKind::UnknownInput(name) => write!(f, "no input named `{name}`"),
             VmErrorKind::UnknownExtern(name) => {
                 write!(f, "extern function `{name}` is not provided")
             }
@@ -102,6 +110,7 @@ impl fmt::Display for VmErrorKind {
                  stabilizer terms) and its 2^{qubits}-amplitude dense state cannot \
                  be allocated; raise the term budget or reduce non-Clifford gates"
             ),
+            VmErrorKind::BackendUnavailable(why) => write!(f, "backend unavailable: {why}"),
             VmErrorKind::Unreachable => write!(f, "reached an unreachable block"),
         }
     }
@@ -151,6 +160,13 @@ impl From<oqi_classical::Error> for VmErrorKind {
     }
 }
 
-/// Internal result type. Errors are spanless ([`VmErrorKind`]) until
-/// [`Vm::run`](crate::Vm::run) surfaces them as a spanned [`VmError`].
-pub type Result<T> = std::result::Result<T, VmErrorKind>;
+/// Result of a public VM entry point: the error carries the source span of
+/// the instruction that raised it.
+pub type VmResult<T> = std::result::Result<T, VmError>;
+
+/// Result of an interpreter step or an extension-point call
+/// ([`ExternProvider`](crate::ExternProvider),
+/// [`OpenPulseHandler`](crate::OpenPulseHandler), …). Errors are spanless
+/// [`VmErrorKind`]s; the VM attaches the span of the instruction in flight
+/// when it surfaces them as a [`VmError`].
+pub type KindResult<T> = std::result::Result<T, VmErrorKind>;

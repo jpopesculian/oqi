@@ -1413,7 +1413,13 @@ mod tests {
     use crate::sir::BinOp;
 
     fn compile(source: &str) -> Program {
-        compile_source(source, DefaultIncludeResolver, None).expect("compile ok")
+        compile_source(
+            source,
+            DefaultIncludeResolver,
+            &CompileOptions::default(),
+            None,
+        )
+        .expect("compile ok")
     }
 
     fn table() -> TableTimings {

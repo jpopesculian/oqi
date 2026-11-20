@@ -24,6 +24,7 @@ impl Diagnostic for VmError {
             VmErrorKind::Pulse(_) => 13,
             VmErrorKind::Extern { .. } => 14,
             VmErrorKind::RankOverflow { .. } => 15,
+            VmErrorKind::BackendUnavailable(_) => 16,
         };
         Code::runtime(num)
     }
@@ -49,6 +50,7 @@ impl Diagnostic for VmError {
             VmErrorKind::Pulse(_) => "pulse error",
             VmErrorKind::Extern { .. } => "extern call failed",
             VmErrorKind::RankOverflow { .. } => "sum-over-Cliffords budget exhausted",
+            VmErrorKind::BackendUnavailable(_) => "backend unavailable",
         };
         vec![DiagLabel::primary(self.span.unwrap_or_default(), pointer)]
     }

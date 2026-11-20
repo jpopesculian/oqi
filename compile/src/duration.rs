@@ -1842,7 +1842,13 @@ mod tests {
     use crate::resolve::DefaultIncludeResolver;
 
     fn compile(source: &str) -> Program {
-        compile_source(source, DefaultIncludeResolver, None).expect("compile ok")
+        compile_source(
+            source,
+            DefaultIncludeResolver,
+            &CompileOptions::default(),
+            None,
+        )
+        .expect("compile ok")
     }
 
     /// A simple backend that returns a fixed duration for every gate/reset/
@@ -2122,6 +2128,7 @@ mod tests {
             compile_source(
                 "qubit q;\nbit c;\nf(1)[100ns] q -> c;\n",
                 DefaultIncludeResolver,
+                &CompileOptions::default(),
                 None,
             )
             .is_err()

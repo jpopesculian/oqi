@@ -6,36 +6,8 @@ use num_traits::Float;
 use oqi_quantum::{Gate, StateVector, Unitary};
 
 use crate::backend::{GateModifiers, QuantumBackend};
-use crate::error::{VmError, VmErrorKind};
-
-/// A small, seedable xorshift64* PRNG. Avoids a `rand` dependency and
-/// keeps runs reproducible. Shared by the CPU backends.
-pub(crate) struct Rng {
-    state: u64,
-}
-
-impl Rng {
-    pub(crate) fn new(seed: u64) -> Self {
-        // xorshift requires a non-zero state.
-        Rng {
-            state: if seed == 0 { 0x9E3779B97F4A7C15 } else { seed },
-        }
-    }
-
-    fn next_u64(&mut self) -> u64 {
-        let mut x = self.state;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.state = x;
-        x.wrapping_mul(0x2545F4914F6CDD1D)
-    }
-
-    /// Uniform in [0, 1).
-    pub(crate) fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
-    }
-}
+use crate::error::{VmError, VmErrorKind, VmResult};
+use crate::rng::Rng;
 
 /// State-vector simulator over `Complex<F>` amplitudes (`F` = `f64` by
 /// default; instantiate `StateVectorSim<f32>` for single precision).
@@ -56,7 +28,7 @@ impl<F: Float + Send + Sync> StateVectorSim<F> {
     /// [`VmErrorKind::TooManyQubits`] error if the `2^num_qubits`-amplitude
     /// state vector can't be allocated (it uses a fallible allocation, so an
     /// oversized circuit fails gracefully instead of aborting).
-    pub fn try_zeroed(num_qubits: u32, seed: u64) -> std::result::Result<Self, VmError> {
+    pub fn try_zeroed(num_qubits: u32, seed: u64) -> VmResult<Self> {
         let state = StateVector::try_zero(num_qubits as usize).ok_or_else(|| {
             VmError::new(VmErrorKind::TooManyQubits {
                 requested: num_qubits,
@@ -264,49 +236,55 @@ mod tests {
 
     /// `reset_state` returns the register to |0…0⟩ so a reused sim can start a
     /// fresh shot (the shots feature depends on this).
-    #[tokio::test]
-    async fn reset_state_rezeros() {
-        let none = GateModifiers::none();
-        let mut sim = StateVectorSim::<f64>::try_zeroed(2, 7).unwrap();
-        // X on qubit 0 (U(π,0,π)) → |01>; q0 measures 1 deterministically.
-        sim.u(0, std::f64::consts::PI, 0.0, std::f64::consts::PI, &none)
-            .await;
-        assert!(sim.measure(0).await, "X|0⟩ measures 1");
-        // A fresh shot: re-zero, then both qubits measure 0.
-        sim.reset_state(2).await;
-        assert!(!sim.measure(0).await, "reset_state returns q0 to |0⟩");
-        assert!(!sim.measure(1).await, "reset_state returns q1 to |0⟩");
+    #[test]
+    fn reset_state_rezeros() {
+        pollster::block_on(async {
+            let none = GateModifiers::none();
+            let mut sim = StateVectorSim::<f64>::try_zeroed(2, 7).unwrap();
+            // X on qubit 0 (U(π,0,π)) → |01>; q0 measures 1 deterministically.
+            sim.u(0, std::f64::consts::PI, 0.0, std::f64::consts::PI, &none)
+                .await;
+            assert!(sim.measure(0).await, "X|0⟩ measures 1");
+            // A fresh shot: re-zero, then both qubits measure 0.
+            sim.reset_state(2).await;
+            assert!(!sim.measure(0).await, "reset_state returns q0 to |0⟩");
+            assert!(!sim.measure(1).await, "reset_state returns q1 to |0⟩");
+        })
     }
 
     /// `measure_all` returns the register's bits in order.
-    #[tokio::test]
-    async fn measure_all_reads_register() {
-        use std::f64::consts::PI;
-        let none = GateModifiers::none();
-        let mut sim = StateVectorSim::<f64>::try_zeroed(3, 1).unwrap();
-        // X on q0 and q2 → |q2 q1 q0> = |101>.
-        sim.u(0, PI, 0.0, PI, &none).await;
-        sim.u(2, PI, 0.0, PI, &none).await;
-        assert_eq!(sim.measure_all(&[0, 1, 2]).await, vec![true, false, true]);
+    #[test]
+    fn measure_all_reads_register() {
+        pollster::block_on(async {
+            use std::f64::consts::PI;
+            let none = GateModifiers::none();
+            let mut sim = StateVectorSim::<f64>::try_zeroed(3, 1).unwrap();
+            // X on q0 and q2 → |q2 q1 q0> = |101>.
+            sim.u(0, PI, 0.0, PI, &none).await;
+            sim.u(2, PI, 0.0, PI, &none).await;
+            assert_eq!(sim.measure_all(&[0, 1, 2]).await, vec![true, false, true]);
+        })
     }
 
     /// `measure_all` samples the joint distribution: a Bell pair's two qubits
     /// must agree (a naive independent sample from one snapshot would not).
-    #[tokio::test]
-    async fn measure_all_bell_is_correlated() {
-        use std::f64::consts::{FRAC_PI_2, PI};
-        let none = GateModifiers::none();
-        let ctrl0 = GateModifiers {
-            controls: vec![0],
-            neg_controls: vec![],
-            power: 1.0,
-        };
-        for seed in 0..8u64 {
-            let mut sim = StateVectorSim::<f64>::try_zeroed(2, seed).unwrap();
-            sim.u(0, FRAC_PI_2, 0.0, PI, &none).await; // H q0
-            sim.u(1, PI, 0.0, PI, &ctrl0).await; // CX 0->1
-            let out = sim.measure_all(&[0, 1]).await;
-            assert_eq!(out[0], out[1], "Bell measurement must agree (seed {seed})");
-        }
+    #[test]
+    fn measure_all_bell_is_correlated() {
+        pollster::block_on(async {
+            use std::f64::consts::{FRAC_PI_2, PI};
+            let none = GateModifiers::none();
+            let ctrl0 = GateModifiers {
+                controls: vec![0],
+                neg_controls: vec![],
+                power: 1.0,
+            };
+            for seed in 0..8u64 {
+                let mut sim = StateVectorSim::<f64>::try_zeroed(2, seed).unwrap();
+                sim.u(0, FRAC_PI_2, 0.0, PI, &none).await; // H q0
+                sim.u(1, PI, 0.0, PI, &ctrl0).await; // CX 0->1
+                let out = sim.measure_all(&[0, 1]).await;
+                assert_eq!(out[0], out[1], "Bell measurement must agree (seed {seed})");
+            }
+        })
     }
 }

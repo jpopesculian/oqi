@@ -198,3 +198,88 @@ def test_run_with_timings_resolves_durationof():
 def test_bad_timing_literal_raises():
     with pytest.raises(oqi.OqiError, match="is not a duration literal"):
         oqi.run(TIMED, timings={"x": "abc"})
+
+
+def test_angle_and_bitreg_inputs():
+    src = (
+        "OPENQASM 3.0;\n"
+        "input angle[32] theta;\n"
+        "input bit[4] mask;\n"
+        "output bit[4] copy;\n"
+        "output float[64] radians;\n"
+        "copy = mask;\n"
+        "radians = float[64](theta);\n"
+    )
+    out = oqi.run(src, inputs={"theta": 0.5, "mask": "0110"})
+    assert out.outputs["copy"] == '"0110"'
+    assert out.outputs["radians"] == pytest.approx(0.5, abs=1e-6)
+
+    with pytest.raises(oqi.OqiError, match="4-character string of 0s and 1s"):
+        oqi.run(src, inputs={"theta": 0.5, "mask": "01"})
+    with pytest.raises(oqi.OqiError, match="unsupported Python type `dict`"):
+        oqi.run(src, inputs={"theta": {}, "mask": "0110"})
+
+
+@pytest.mark.parametrize(
+    "backend", ["scalar", "rayon", "simd", "rayon-simd", "auto", "sum"]
+)
+def test_backends_share_the_cli_names(backend):
+    out = oqi.run(BELL, seed=7, backend=backend)
+    assert out.backend == backend
+    (_, v0), (_, v1) = out.measurements
+    assert v0 == v1
+
+
+def test_backend_options():
+    assert oqi.run(BELL).precision == "f64"
+    assert oqi.run(BELL, backend="simd", precision="f32").precision == "f32"
+    # The auto-router is exact (f64) whatever was asked for.
+    assert oqi.run(BELL, backend="auto", precision="f32").precision == "f64"
+    oqi.run(BELL, backend="sum", max_rank=4)
+
+    with pytest.raises(oqi.OqiError, match="unknown backend `cpu`"):
+        oqi.run(BELL, backend="cpu")
+    with pytest.raises(oqi.OqiError, match="unknown precision"):
+        oqi.run(BELL, precision="f16")
+    # The wheel is built without the wgpu simulator.
+    with pytest.raises(oqi.OqiError, match="backend unavailable"):
+        oqi.run(BELL, backend="gpu")
+    assert oqi.run(BELL, backend="prefer-gpu").backend == "scalar"
+
+
+def test_sample_bell_histogram():
+    out = oqi.sample(BELL, shots=200, seed=1234)
+    assert out.shots == 200
+    assert out.backend == "scalar"
+    counts = out.histograms["c"]
+    # A Bell state only ever yields the correlated outcomes, sorted by value.
+    assert list(counts) == ["00", "11"]
+    assert sum(counts.values()) == 200
+
+    # Same seed, same histogram; 1024 shots by default.
+    assert oqi.sample(BELL, shots=200, seed=1234).histograms == out.histograms
+    assert sum(oqi.sample(BELL).histograms["c"].values()) == 1024
+
+    with pytest.raises(oqi.OqiError, match="at least 1"):
+        oqi.sample(BELL, shots=0)
+
+
+@pytest.mark.parametrize("backend", ["scalar", "simd", "auto"])
+def test_sample_with_feedback(backend):
+    # A gate conditioned on a measurement can't be sampled from one final
+    # state, so every shot re-runs the circuit: `b` mirrors `a` each time.
+    src = (
+        'include "stdgates.inc";\n'
+        "input int flips;\n"
+        "qubit[2] q;\n"
+        "h q[0];\n"
+        "bit a = measure q[0];\n"
+        "if (a) { x q[1]; }\n"
+        "for int i in [1:flips] { x q[1]; }\n"
+        "bit b = measure q[1];\n"
+    )
+    out = oqi.sample(src, shots=128, seed=5, inputs={"flips": 2}, backend=backend)
+    a, b = out.histograms["a"], out.histograms["b"]
+    assert sum(a.values()) == sum(b.values()) == 128
+    assert set(a) == {"0", "1"}
+    assert a == b

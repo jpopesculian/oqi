@@ -22,10 +22,10 @@ export type BackendSel = 'cpu-f64' | 'cpu-f32' | 'gpu';
 
 const BACKENDS: Record<
   BackendSel,
-  { label: string; backend: 'cpu' | 'gpu'; precision: 'f32' | 'f64' }
+  { label: string; backend: 'scalar' | 'gpu'; precision: 'f32' | 'f64' }
 > = {
-  'cpu-f64': { label: 'CPU · f64', backend: 'cpu', precision: 'f64' },
-  'cpu-f32': { label: 'CPU · f32', backend: 'cpu', precision: 'f32' },
+  'cpu-f64': { label: 'CPU · f64', backend: 'scalar', precision: 'f64' },
+  'cpu-f32': { label: 'CPU · f32', backend: 'scalar', precision: 'f32' },
   gpu: { label: 'GPU · f32', backend: 'gpu', precision: 'f32' },
 };
 

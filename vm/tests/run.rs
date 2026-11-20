@@ -3,22 +3,17 @@
 use std::collections::HashMap;
 
 use oqi_classical::{Value, iw};
-use oqi_compile::bytecode::{BcModule, emit, is_sample_safe};
-use oqi_compile::lower::compile_source;
-use oqi_compile::resolve::DefaultIncludeResolver;
+use oqi_compile::bytecode::{BcModule, is_sample_safe};
 use oqi_compile::symbol::SymbolId;
-use oqi_compile::{cfg, qubits, ssa};
-use oqi_vm::{AutoSim, FnRegistry, NoExterns, StateVectorSim, SumPolicy, Vm, VmError, VmErrorKind};
+use oqi_compile::{CompileOptions, DefaultIncludeResolver};
+use oqi_vm::{
+    AutoSim, BackendSpec, FnRegistry, Histogram, HostValue, NoExterns, StateVectorSim, SumPolicy,
+    Vm, VmError, VmErrorKind, histograms,
+};
 
-/// Drive an async VM call to completion on a shared multi-threaded tokio
-/// runtime (the VM is async now; tests are sync). `block_on` runs the future
-/// on the calling thread, so the runtime's `Send` bound on spawned tasks
-/// doesn't apply to our `?Send` futures.
+/// Drive an async VM call to completion (the VM is async; tests are sync).
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
-    use std::sync::OnceLock;
-    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RT.get_or_init(|| tokio::runtime::Runtime::new().expect("tokio runtime"))
-        .block_on(fut)
+    pollster::block_on(fut)
 }
 
 #[test]
@@ -55,11 +50,13 @@ fn sample_safe_rejects_feedback() {
 
 /// Compile source straight through to a bytecode module.
 fn build(src: &str) -> BcModule {
-    let program = compile_source(src, DefaultIncludeResolver, None).expect("compile");
-    let cfgs = cfg::build_program(&program).expect("cfg");
-    let ssa = ssa::build_program(&cfgs, &program.symbols);
-    let layout = qubits::build_layout(&program);
-    emit(&ssa, &program, layout).expect("emit")
+    oqi_compile::compile(
+        src,
+        DefaultIncludeResolver,
+        &CompileOptions::default(),
+        None,
+    )
+    .expect("compile")
 }
 
 /// Run with the CPU simulator and no externs; return the measurement log.
@@ -73,7 +70,7 @@ fn run_measurements(src: &str) -> Vec<(u32, bool)> {
 const TOL: f64 = 1e-9;
 
 /// Default simulator seed for tests whose outcome doesn't depend on it.
-const SEED: u64 = 0x2545F4914F6CDD1D;
+const SEED: u64 = oqi_vm::DEFAULT_SEED;
 
 #[test]
 fn classical_arithmetic_drives_a_branch() {
@@ -1052,7 +1049,7 @@ fn run_outputs(src: &str) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = result
         .outputs
         .iter()
-        .map(|(sym, v)| (module.symbols.get(*sym).name.clone(), v.to_string()))
+        .map(|(sym, v)| (module.symbol(*sym).name.clone(), v.to_string()))
         .collect();
     out.sort();
     out
@@ -1110,7 +1107,7 @@ fn output_decl_returns_only_outputs_untaken_branch() {
 
 /// Symbol id of a declared symbol by name.
 fn sym_id(module: &BcModule, name: &str) -> SymbolId {
-    module.symbols.iter().find(|s| s.name == name).unwrap().id
+    SymbolId(module.symbols.iter().position(|s| s.name == name).unwrap())
 }
 
 const INPUT_BRANCH_SRC: &str = r#"
@@ -1245,7 +1242,7 @@ fn durationof_does_not_execute_gates() {
     let d = result
         .outputs
         .iter()
-        .find(|(sym, _)| module.symbols.get(*sym).name == "d")
+        .find(|(sym, _)| module.symbol(*sym).name == "d")
         .map(|(_, v)| v.to_string())
         .expect("output d");
     assert_eq!(d, "0ns");
@@ -1306,4 +1303,195 @@ fn t1_style_durationof_delay_pattern_runs() {
         "#,
     );
     assert_eq!(m, vec![(0, true), (0, true), (0, true)]);
+}
+
+// ── Named inputs / host values ──────────────────────────────────────
+
+fn named(pairs: &[(&str, HostValue)]) -> Vec<(String, HostValue)> {
+    pairs
+        .iter()
+        .map(|(name, value)| (name.to_string(), value.clone()))
+        .collect()
+}
+
+#[test]
+fn named_inputs_are_coerced_to_their_declared_types() {
+    let module = build(INPUT_BRANCH_SRC);
+    // `int n` takes an int, an integral float or a decimal string.
+    for one in [
+        HostValue::Int(1),
+        HostValue::Float(1.0),
+        HostValue::Text("1".into()),
+    ] {
+        let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+        let mut vm = Vm::new(&module, sim, NoExterns);
+        let r = block_on(vm.run_with_named_inputs(&named(&[("n", one)]))).expect("run");
+        assert_eq!(r.measurements, vec![(0, true)]);
+    }
+}
+
+#[test]
+fn named_input_errors_are_deterministic() {
+    let module = build(INPUT_BRANCH_SRC);
+    let run = |inputs: &[(&str, HostValue)]| {
+        let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+        let mut vm = Vm::new(&module, sim, NoExterns);
+        block_on(vm.run_with_named_inputs(&named(inputs))).unwrap_err()
+    };
+    // The first offending entry, in the order given, is reported — whether
+    // it's an unknown name (`q` is a qubit, not an input) …
+    let err = run(&[
+        ("n", HostValue::Int(1)),
+        ("zzz", HostValue::Int(0)),
+        ("q", HostValue::Int(0)),
+    ]);
+    assert!(matches!(&err.kind, VmErrorKind::UnknownInput(name) if name == "zzz"));
+    assert_eq!(err.to_string(), "no input named `zzz`");
+    // … or a value that doesn't fit the declared type.
+    let err = run(&[("n", HostValue::Bool(true))]);
+    assert!(matches!(&err.kind, VmErrorKind::Type(msg) if msg.contains("input `n`")));
+}
+
+#[test]
+fn leftover_symbol_inputs_report_the_first_declared() {
+    // By symbol id, the unknown input reported is the lowest id, not whichever
+    // the hash map yields first.
+    let module = build(
+        r#"
+            input int n;
+            int a = n;
+            int b = n;
+            int c = n;
+        "#,
+    );
+    let n = sym_id(&module, "n");
+    let extra = ["c", "b", "a"].map(|name| sym_id(&module, name));
+    for _ in 0..8 {
+        let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+        let mut vm = Vm::new(&module, sim, NoExterns);
+        let mut inputs = HashMap::from([(n, Value::int(1, iw(32)))]);
+        inputs.extend(extra.map(|sym| (sym, Value::int(0, iw(32)))));
+        let err = block_on(vm.run_with_inputs(inputs)).unwrap_err();
+        assert!(matches!(&err.kind, VmErrorKind::UnknownInput(name) if name == "a"));
+    }
+}
+
+// ── Shot sampling ───────────────────────────────────────────────────
+
+const BELL_SRC: &str = r#"
+    include "stdgates.inc";
+    qubit[2] q;
+    bit[2] c;
+    h q[0]; cx q[0], q[1];
+    c = measure q;
+"#;
+
+/// `a` is random, `b` copies it through measurement feedback.
+const FEEDBACK_SRC: &str = r#"
+    include "stdgates.inc";
+    qubit[2] q;
+    h q[0];
+    bit a = measure q[0];
+    if (a) { x q[1]; }
+    bit b = measure q[1];
+"#;
+
+/// Sample `src` on the named backend and tally its outputs.
+fn sample_counts(src: &str, backend: &str, shots: u32, seed: u64) -> Vec<Histogram> {
+    let module = build(src);
+    let mut spec: BackendSpec = backend.parse().unwrap();
+    spec.seed = seed;
+    let (sim, _) = block_on(spec.build(module.qubits.num_qubits)).unwrap();
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    let results = block_on(vm.sample(HashMap::new(), shots, seed)).expect("sample");
+    assert_eq!(results.len(), shots as usize);
+    histograms(&module, &results)
+}
+
+#[test]
+fn sampling_a_bell_state_yields_only_correlated_outcomes() {
+    // Dense backends snapshot the state once; the auto-router (no dense
+    // state) re-runs the circuit per shot. Both see only 00 and 11.
+    for backend in ["scalar", "simd", "auto"] {
+        let h = sample_counts(BELL_SRC, backend, 400, 11);
+        assert_eq!(h.len(), 1, "{backend}");
+        assert_eq!(h[0].name, "c");
+        let labels: Vec<&str> = h[0].counts.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(labels, ["00", "11"], "{backend}");
+        assert_eq!(h[0].counts.iter().map(|(_, n)| n).sum::<u32>(), 400);
+    }
+}
+
+#[test]
+fn sampling_is_reproducible_per_seed() {
+    for src in [BELL_SRC, FEEDBACK_SRC] {
+        let a = sample_counts(src, "scalar", 256, 99);
+        assert_eq!(a, sample_counts(src, "scalar", 256, 99));
+        assert_ne!(a, sample_counts(src, "scalar", 256, 100));
+    }
+}
+
+#[test]
+fn sampling_with_feedback_reruns_the_circuit_each_shot() {
+    for backend in ["scalar", "simd", "auto"] {
+        let h = sample_counts(FEEDBACK_SRC, backend, 200, 5);
+        let counts = |name: &str| &h.iter().find(|h| h.name == name).unwrap().counts;
+        assert_eq!(counts("a").len(), 2, "{backend}: H yields both outcomes");
+        assert_eq!(counts("a"), counts("b"), "{backend}: b mirrors a");
+    }
+}
+
+#[test]
+fn histograms_sort_numbers_numerically() {
+    let module = build(
+        r#"
+            include "stdgates.inc";
+            qubit[4] q;
+            h q;
+            bit[4] c = measure q;
+            output int n;
+            n = 0;
+            if (c[0]) { n += 1; }
+            if (c[1]) { n += 2; }
+            if (c[2]) { n += 4; }
+            if (c[3]) { n += 8; }
+        "#,
+    );
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    let results = block_on(vm.sample(HashMap::new(), 600, 3)).unwrap();
+    let h = histograms(&module, &results);
+    let values: Vec<i32> = h[0]
+        .counts
+        .iter()
+        .map(|(l, _)| l.parse().unwrap())
+        .collect();
+    assert!(
+        values.len() > 10,
+        "a uniform 4-bit value takes most of its 16 values"
+    );
+    assert!(values.is_sorted(), "2 sorts before 10: {values:?}");
+}
+
+#[test]
+fn sampling_on_the_sum_tier_starts_each_shot_from_a_fresh_state() {
+    // Seven T gates cost 2⁷ = 128 stabilizer terms per run — well inside the
+    // 1024-term budget, as long as shots don't compound each other's terms.
+    // The feedback forces a full re-run per shot.
+    let src = r#"
+        include "stdgates.inc";
+        qubit[3] q;
+        h q[0]; t q[0]; h q[0];
+        t q[1]; h q[1]; t q[1];
+        cx q[0], q[1];
+        t q[2]; h q[2]; t q[2];
+        bit a = measure q[0];
+        if (a) { x q[1]; }
+        t q[1]; h q[1];
+        bit b = measure q[1];
+    "#;
+    let h = sample_counts(src, "sum", 200, 4);
+    for histogram in &h {
+        assert_eq!(histogram.counts.iter().map(|(_, n)| n).sum::<u32>(), 200);
+    }
 }

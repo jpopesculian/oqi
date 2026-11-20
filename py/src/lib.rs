@@ -1,43 +1,32 @@
 //! Python (PyO3) bindings for the oqi compiler and VM.
 //!
-//! Exposes a minimal API: [`compile`] (source → bytecode + disassembly) and
-//! [`run`] (source → simulated results). `run` can call host-supplied
+//! Exposes a minimal API: [`compile`] (source → bytecode + disassembly),
+//! [`run`] (source → simulated results) and [`sample`] (source → per-output
+//! histograms over many shots). `run` and `sample` can call host-supplied
 //! `extern` implementations (the `externs` option), as synchronous callables.
 //! Includes are limited to the embedded `stdgates.inc`; file includes are
 //! rejected. Errors raise [`OqiError`] whose message is the rendered
 //! diagnostic.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
 use async_trait::async_trait;
 use num_complex::Complex;
-use oqi_compile::bytecode::{self, BcModule};
-use oqi_compile::classical::{
-    Array, BitReg, Duration, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy,
+use oqi_compile::classical::{Value, ValueTy};
+use oqi_compile::{BcModule, CompileOptions, LibOnlyResolver};
+use oqi_vm::{
+    BackendSpec, DEFAULT_SEED, ExternProvider, HostValue, KindResult, QuantumBackend, SumPolicy,
+    Vm, VmErrorKind,
 };
-use oqi_compile::duration::TableTimings;
-use oqi_compile::resolve::IncludeResolver;
-use oqi_compile::symbol::{SymbolId, SymbolKind};
-use oqi_compile::types::CompileOptions;
-use oqi_compile::{cfg, duration, qubits, ssa};
-use oqi_vm::{ExternProvider, QuantumBackend, StateVectorSim, Vm, VmErrorKind};
 use pyo3::IntoPyObjectExt;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyList, PyTuple};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 /// Name used for the root source in rendered diagnostics.
 const SOURCE_NAME: &str = "<source>";
-
-/// Default RNG seed (matches the CLI's `DEFAULT_SEED`, so CLI, JS, and
-/// Python runs of the same program and seed agree).
-const DEFAULT_SEED: u64 = 0x2545F4914F6CDD1D;
-
-/// Largest integer a `float` represents exactly (2^53 - 1).
-const MAX_SAFE_INTEGER: f64 = ((1u64 << 53) - 1) as f64;
 
 create_exception!(
     oqi,
@@ -45,22 +34,6 @@ create_exception!(
     PyException,
     "Compile or runtime error; the message is the rendered diagnostic."
 );
-
-/// Serves only embedded libraries (`stdgates.inc`); file includes error.
-struct LibOnlyResolver;
-
-impl IncludeResolver for LibOnlyResolver {
-    fn resolve_path(
-        &self,
-        path: &Path,
-    ) -> std::result::Result<Cow<'_, str>, Box<dyn std::error::Error>> {
-        Err(format!(
-            "cannot include \"{}\": file includes are not supported in the Python build",
-            path.display()
-        )
-        .into())
-    }
-}
 
 /// Render any workspace diagnostic against the root source as an `OqiError`.
 fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> PyErr {
@@ -71,7 +44,9 @@ fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> PyErr {
     ))
 }
 
-/// Source → bytecode module; same pipeline the CLI drives in `run`.
+/// Source → bytecode module. With `timings` supplied (even an empty dict),
+/// `durationof` is resolved at compile time; otherwise it stays for the VM's
+/// runtime pass.
 fn build_module(
     source: &str,
     timings: Option<&Bound<'_, PyDict>>,
@@ -82,60 +57,31 @@ fn build_module(
         ..Default::default()
     };
     if let Some(spec) = dt {
-        options.dt = parse_dt(spec)?;
+        options.dt = oqi_compile::parse_dt(spec).map_err(|e| diag_err(&e, source))?;
     }
-    let mut program =
-        oqi_compile::lower::compile_source_with_options(source, LibOnlyResolver, options.clone())
-            .map_err(|e| diag_err(&e, source))?;
-    // With timings supplied (even an empty dict), `durationof` is resolved
-    // at compile time; otherwise it stays for the VM's runtime pass.
-    if let Some(timings) = timings {
-        let mut entries: Vec<(String, String)> = Vec::new();
-        for (key, val) in timings.iter() {
-            let name: String = key
-                .extract()
-                .map_err(|_| OqiError::new_err("timing names must be strings"))?;
-            let dur: String = val.extract().map_err(|_| {
-                OqiError::new_err(format!(
-                    "timing for `{name}` must be a duration string (e.g. \"50ns\")"
-                ))
-            })?;
-            entries.push((name, dur));
-        }
-        let entries = entries.iter().map(|(k, v)| (k.as_str(), v.as_str()));
-        let table = TableTimings::from_str_entries(entries, &options.dt)
-            .map_err(|e| diag_err(&e, source))?
-            .with_defcals(&program, &options.dt)
-            .with_program_gates(&program);
-        duration::resolve_durationof(&mut program, &table, &options)
-            .map_err(|e| diag_err(&e, source))?;
-    }
-    let cfgs = cfg::build_program(&program).map_err(|e| diag_err(&e, source))?;
-    let ssa = ssa::build_program(&cfgs, &program.symbols);
-    let layout = qubits::build_layout(&program);
-    bytecode::emit(&ssa, &program, layout).map_err(|e| diag_err(&e, source))
-}
-
-/// Parse the `dt` option ("0.5ns"): timing-literal syntax, except the `dt`
-/// unit itself is rejected (self-referential) and the value must be
-/// positive.
-fn parse_dt(spec: &str) -> PyResult<Duration> {
-    if spec.trim_end().ends_with("dt") {
-        return Err(OqiError::new_err(
-            "`dt` cannot itself be given in `dt` units",
-        ));
-    }
-    let d = oqi_compile::types::parse_timing_literal(spec, &CompileOptions::default().dt).map_err(
-        |_| {
-            OqiError::new_err(format!(
-                "`{spec}` is not a duration literal (e.g. \"0.5ns\")"
-            ))
-        },
-    )?;
-    if d.value <= 0.0 {
-        return Err(OqiError::new_err("`dt` must be a positive duration"));
-    }
-    Ok(d)
+    let timings: Option<Vec<(String, String)>> = timings
+        .map(|timings| {
+            timings
+                .iter()
+                .map(|(key, val)| {
+                    let name: String = key
+                        .extract()
+                        .map_err(|_| OqiError::new_err("timing names must be strings"))?;
+                    let dur: String = val.extract().map_err(|_| {
+                        OqiError::new_err(format!(
+                            "timing for `{name}` must be a duration string (e.g. \"50ns\")"
+                        ))
+                    })?;
+                    Ok((name, dur))
+                })
+                .collect::<PyResult<_>>()
+        })
+        .transpose()?;
+    let timings: Option<Vec<(&str, &str)>> = timings
+        .as_ref()
+        .map(|t| t.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect());
+    oqi_compile::compile(source, LibOnlyResolver, &options, timings.as_deref())
+        .map_err(|e| diag_err(&e, source))
 }
 
 /// Result of [`compile`]: postcard-encoded bytecode plus its disassembly.
@@ -158,7 +104,7 @@ impl CompileResult {
 #[pyfunction]
 fn compile(source: &str) -> PyResult<CompileResult> {
     let module = build_module(source, None, None)?;
-    let bytes = bytecode::to_bytes(&module)
+    let bytes = oqi_compile::bytecode::to_bytes(&module)
         .map_err(|e| OqiError::new_err(format!("bytecode encoding failed: {e:?}")))?;
     Ok(CompileResult {
         bytecode: bytes,
@@ -175,6 +121,10 @@ struct RunResult {
     outputs: Py<PyDict>,
     /// Final state vector, present iff requested.
     statevector: Option<Vec<Complex<f64>>>,
+    /// The backend that ran, by name.
+    backend: &'static str,
+    /// The amplitude precision that ran: `"f64"` or `"f32"`.
+    precision: &'static str,
 }
 
 #[pymethods]
@@ -188,7 +138,99 @@ impl RunResult {
     }
 }
 
-/// Compile and run an OpenQASM 3 program on the state-vector simulator.
+/// Result of [`sample`].
+#[pyclass(frozen, get_all, module = "oqi")]
+struct SampleResult {
+    /// The number of shots that ran.
+    shots: u32,
+    /// Per output variable (in program order), how often each value was
+    /// observed: `{name: {label: count}}`, labels sorted by value. `bit` and
+    /// `bool` are labelled `"0"`/`"1"`, `bit[n]` as an MSB-first bit string.
+    histograms: Py<PyDict>,
+    /// The backend that ran, by name.
+    backend: &'static str,
+    /// The amplitude precision that ran: `"f64"` or `"f32"`.
+    precision: &'static str,
+}
+
+#[pymethods]
+impl SampleResult {
+    fn __repr__(&self) -> String {
+        format!(
+            "SampleResult(shots={}, histograms=<{} entries>)",
+            self.shots,
+            Python::attach(|py| self.histograms.bind(py).len()),
+        )
+    }
+}
+
+/// Everything [`run`] and [`sample`] share: the compiled module and the
+/// pieces a [`Vm`] is assembled from.
+struct Session {
+    module: BcModule,
+    inputs: Vec<(String, HostValue)>,
+    externs: PyExterns,
+    backend: Box<dyn QuantumBackend>,
+    /// The backend configuration that was actually built.
+    built: BackendSpec,
+    seed: u64,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn session(
+    source: &str,
+    inputs: Option<&Bound<'_, PyDict>>,
+    seed: Option<u64>,
+    externs: Option<&Bound<'_, PyDict>>,
+    timings: Option<&Bound<'_, PyDict>>,
+    dt: Option<&str>,
+    backend: &str,
+    precision: &str,
+    max_rank: Option<usize>,
+) -> PyResult<Session> {
+    let module = build_module(source, timings, dt)?;
+    let externs = PyExterns::new(&module, externs)?;
+
+    let mut named = Vec::new();
+    for (key, val) in inputs.iter().flat_map(|inputs| inputs.iter()) {
+        let name: String = key
+            .extract()
+            .map_err(|_| OqiError::new_err("input names must be strings"))?;
+        let value = host_value(&val).ok_or_else(|| {
+            OqiError::new_err(format!(
+                "input `{name}` has an unsupported Python type `{}`",
+                type_name(&val)
+            ))
+        })?;
+        named.push((name, value));
+    }
+
+    let seed = seed.unwrap_or(DEFAULT_SEED);
+    let mut spec: BackendSpec = backend.parse().map_err(OqiError::new_err)?;
+    spec.precision = precision.parse().map_err(OqiError::new_err)?;
+    spec.seed = seed;
+    if let Some(max_rank) = max_rank {
+        spec.sum_policy = SumPolicy {
+            max_rank,
+            ..spec.sum_policy
+        };
+    }
+    // Backend construction resolves immediately for the CPU simulators and
+    // polls the device itself for the GPU one, so blocking never parks.
+    let (backend, built) = pollster::block_on(spec.build(module.qubits.num_qubits))
+        .map_err(|e| diag_err(&e, source))?;
+
+    Ok(Session {
+        module,
+        inputs: named,
+        externs,
+        backend,
+        built,
+        seed,
+    })
+}
+
+/// Compile and run an OpenQASM 3 program on a simulator.
 ///
 /// `externs` maps each `extern` function's name to a synchronous Python
 /// callable. Return values are coerced to the declared return type (radians
@@ -201,8 +243,14 @@ impl RunResult {
 /// which also derives durations from the program's defcal bodies (an empty
 /// dict enables defcal derivation alone). `dt` sets the device time unit
 /// (e.g. "0.5ns").
+///
+/// `backend` selects the simulator by the same names as the CLI's
+/// `--backend` (`"scalar"`, `"rayon"`, `"simd"`, `"rayon-simd"`, `"gpu"`,
+/// `"prefer-gpu"`, `"auto"`, `"sum"`); `precision` (`"f64"` or `"f32"`) is
+/// the amplitude precision of the CPU state-vector simulators and `max_rank`
+/// the stabilizer-term budget of `"auto"`/`"sum"`.
 #[pyfunction]
-#[pyo3(signature = (source, *, inputs=None, seed=None, statevector=false, externs=None, timings=None, dt=None))]
+#[pyo3(signature = (source, *, inputs=None, seed=None, statevector=false, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None))]
 #[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
@@ -213,20 +261,21 @@ fn run(
     externs: Option<&Bound<'_, PyDict>>,
     timings: Option<&Bound<'_, PyDict>>,
     dt: Option<&str>,
+    backend: &str,
+    precision: &str,
+    max_rank: Option<usize>,
 ) -> PyResult<RunResult> {
-    let module = build_module(source, timings, dt)?;
-    let input_map = coerce_inputs(&module, inputs)?;
-    let externs = PyExterns::new(&module, externs)?;
-    let sim =
-        StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, seed.unwrap_or(DEFAULT_SEED))
-            .map_err(|e| diag_err(&e, source))?;
-    let mut vm = Vm::new(&module, sim, externs);
+    let session = session(
+        source, inputs, seed, externs, timings, dt, backend, precision, max_rank,
+    )?;
+    let module = &session.module;
+    let mut vm = Vm::new(module, session.backend, session.externs);
 
     // The VM futures resolve immediately (async-trait over a synchronous
     // simulator), so blocking here never parks the thread. Runs hold the GIL:
     // `oqi_vm::RunResult` is not `Send`, which rules out `Python::detach`.
-    let result =
-        pollster::block_on(vm.run_with_inputs(input_map)).map_err(|e| diag_err(&e, source))?;
+    let result = pollster::block_on(vm.run_with_named_inputs(&session.inputs))
+        .map_err(|e| diag_err(&e, source))?;
     let amps = if statevector {
         pollster::block_on(vm.backend().amplitudes())
     } else {
@@ -235,205 +284,128 @@ fn run(
 
     let outputs = PyDict::new(py);
     for (sym, v) in &result.outputs {
-        outputs.set_item(module.symbols.get(*sym).name.as_str(), output_value(py, v)?)?;
+        outputs.set_item(
+            module.symbol(*sym).name.as_str(),
+            py_value(py, HostValue::from(v))?,
+        )?;
     }
     Ok(RunResult {
         measurements: result.measurements,
         outputs: outputs.into(),
         statevector: amps,
+        backend: session.built.name(),
+        precision: session.built.precision.as_str(),
     })
 }
 
-/// Coerce Python input values to the declared types of the program's `input`
-/// symbols. A superset of `parse_inputs` in `cli/src/main.rs` (which handles
-/// int/uint/float/bit only); mirrors `coerce_inputs` in `js/src/lib.rs`;
-/// keep the three in sync.
-fn coerce_inputs(
-    module: &BcModule,
-    raw: Option<&Bound<'_, PyDict>>,
-) -> PyResult<HashMap<SymbolId, Value>> {
-    let mut map = HashMap::new();
-    let Some(raw) = raw else { return Ok(map) };
-    for (key, val) in raw.iter() {
-        let name: String = key
-            .extract()
-            .map_err(|_| OqiError::new_err("input names must be strings"))?;
-        let sym = module
-            .symbols
-            .iter()
-            .find(|s| s.kind == SymbolKind::Input && s.name == name)
-            .ok_or_else(|| OqiError::new_err(format!("no input named `{name}`")))?;
-        let ty = sym
-            .ty
-            .value_ty()
-            .ok_or_else(|| OqiError::new_err(format!("input `{name}` has no value type")))?;
-        let value =
-            coerce_scalar(&format!("input `{name}`"), &val, ty).map_err(OqiError::new_err)?;
-        map.insert(sym.id, value);
+/// Compile and sample an OpenQASM 3 program over `shots` runs, returning a
+/// histogram of observed values per named output variable. Takes the same
+/// options as [`run`]; a given `seed` reproduces the whole histogram.
+#[pyfunction]
+#[pyo3(signature = (source, *, shots=1024, inputs=None, seed=None, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None))]
+#[allow(clippy::too_many_arguments)]
+fn sample(
+    py: Python<'_>,
+    source: &str,
+    shots: u32,
+    inputs: Option<&Bound<'_, PyDict>>,
+    seed: Option<u64>,
+    externs: Option<&Bound<'_, PyDict>>,
+    timings: Option<&Bound<'_, PyDict>>,
+    dt: Option<&str>,
+    backend: &str,
+    precision: &str,
+    max_rank: Option<usize>,
+) -> PyResult<SampleResult> {
+    if shots == 0 {
+        return Err(OqiError::new_err("`shots` must be at least 1"));
     }
-    Ok(map)
-}
+    let session = session(
+        source, inputs, seed, externs, timings, dt, backend, precision, max_rank,
+    )?;
+    let module = &session.module;
+    let mut vm = Vm::new(module, session.backend, session.externs);
+    let inputs =
+        oqi_vm::coerce_inputs(module, &session.inputs).map_err(|e| diag_err(&e, source))?;
+    let results = pollster::block_on(vm.sample(inputs, shots, session.seed))
+        .map_err(|e| diag_err(&e, source))?;
 
-/// Coerce a raw Python value to the declared scalar type `ty`. Shared by
-/// [`coerce_inputs`] and extern return values; `what` names the value in
-/// error messages. Angles are radians (wrapped mod 2π and quantized to the
-/// declared width); bit registers are MSB-first "0101" strings of the
-/// declared width.
-fn coerce_scalar(what: &str, v: &Bound<'_, PyAny>, ty: ValueTy) -> Result<Value, String> {
-    Ok(match ty {
-        ValueTy::Scalar(PrimitiveTy::Int(w)) => Value::int(to_i128(what, v)?, w),
-        ValueTy::Scalar(PrimitiveTy::Uint(w)) => Value::uint(to_u128(what, v)?, w),
-        ValueTy::Scalar(PrimitiveTy::Float(w)) => Value::float(to_f64(what, v)?, w),
-        ValueTy::Scalar(PrimitiveTy::Bit) | ValueTy::Scalar(PrimitiveTy::Bool) => {
-            Value::bit(to_bool(what, v)?)
+    let histograms = PyDict::new(py);
+    for histogram in oqi_vm::histograms(module, &results) {
+        let counts = PyDict::new(py);
+        for (label, count) in histogram.counts {
+            counts.set_item(label, count)?;
         }
-        ValueTy::Scalar(PrimitiveTy::Angle(w)) => {
-            Scalar::new(Primitive::float(to_f64(what, v)?), PrimitiveTy::Angle(w))
-                .map_err(|e| format!("{what}: not representable as `{ty}`: {e:?}"))?
-                .into()
-        }
-        ValueTy::Scalar(PrimitiveTy::BitReg(w)) => Value::bitreg(to_bitreg(what, v, w)?, w),
-        ValueTy::Array(aty) => {
-            if !(v.is_instance_of::<PyList>() || v.is_instance_of::<PyTuple>()) {
-                return Err(format!("{what} must be a list of `{}` values", aty.ty()));
-            }
-            let mut leaves = Vec::new();
-            collect_leaves(v, &mut leaves);
-            let elem_ty = ValueTy::Scalar(aty.ty());
-            let elems = leaves
-                .iter()
-                .enumerate()
-                .map(
-                    |(i, item)| match coerce_scalar(&format!("{what}[{i}]"), item, elem_ty)? {
-                        Value::Scalar(s) => Ok(s.into_value()),
-                        _ => unreachable!("a scalar type coerces to a scalar value"),
-                    },
-                )
-                .collect::<Result<Vec<Primitive>, String>>()?;
-            // `Array::new` validates the element count against the shape.
-            Value::Array(Array::new(elems, aty).map_err(|e| format!("{what}: {e:?}"))?)
-        }
-        _ => {
-            return Err(format!(
-                "{what} has type `{ty}`, unsupported by the Python API"
-            ));
-        }
+        histograms.set_item(histogram.name, counts)?;
+    }
+    Ok(SampleResult {
+        shots,
+        histograms: histograms.into(),
+        backend: session.built.name(),
+        precision: session.built.precision.as_str(),
     })
 }
 
-/// Flatten a nested Python `list`/`tuple` into its scalar leaves, row-major, so
-/// both `[1, 2, 3]` and `[[1, 2], [3, 4]]` feed a multi-dimensional `array[…]`.
-fn collect_leaves<'py>(v: &Bound<'py, PyAny>, out: &mut Vec<Bound<'py, PyAny>>) {
-    if let Ok(list) = v.cast::<PyList>() {
-        for item in list.iter() {
-            collect_leaves(&item, out);
-        }
-    } else if let Ok(tuple) = v.cast::<PyTuple>() {
-        for item in tuple.iter() {
-            collect_leaves(&item, out);
-        }
-    } else {
-        out.push(v.clone());
-    }
+fn type_name(v: &Bound<'_, PyAny>) -> String {
+    v.get_type()
+        .name()
+        .map_or_else(|_| "<unknown>".to_string(), |n| n.to_string())
 }
 
-fn to_i128(what: &str, v: &Bound<'_, PyAny>) -> Result<i128, String> {
-    if !v.is_instance_of::<PyBool>()
-        && let Ok(i) = v.extract::<i128>()
-    {
-        return Ok(i);
-    }
-    if let Ok(s) = v.extract::<String>() {
-        return s
-            .parse()
-            .map_err(|_| format!("{what}: `{s}` is not an integer"));
-    }
-    if let Ok(f) = v.extract::<f64>()
-        && f.fract() == 0.0
-        && f.abs() <= MAX_SAFE_INTEGER
-    {
-        return Ok(f as i128);
-    }
-    Err(format!("{what} must be an int or a decimal string"))
-}
-
-fn to_u128(what: &str, v: &Bound<'_, PyAny>) -> Result<u128, String> {
-    if !v.is_instance_of::<PyBool>()
-        && let Ok(u) = v.extract::<u128>()
-    {
-        return Ok(u);
-    }
-    if let Ok(s) = v.extract::<String>() {
-        return s
-            .parse()
-            .map_err(|_| format!("{what}: `{s}` is not an unsigned integer"));
-    }
-    if let Ok(f) = v.extract::<f64>()
-        && f.fract() == 0.0
-        && (0.0..=MAX_SAFE_INTEGER).contains(&f)
-    {
-        return Ok(f as u128);
-    }
-    Err(format!(
-        "{what} must be a non-negative int or a decimal string"
-    ))
-}
-
-fn to_f64(what: &str, v: &Bound<'_, PyAny>) -> Result<f64, String> {
-    if !v.is_instance_of::<PyBool>()
-        && let Ok(f) = v.extract::<f64>()
-    {
-        return Ok(f);
-    }
-    if let Ok(s) = v.extract::<String>() {
-        return s
-            .parse()
-            .map_err(|_| format!("{what}: `{s}` is not a float"));
-    }
-    Err(format!("{what} must be a number or a decimal string"))
-}
-
-fn to_bool(what: &str, v: &Bound<'_, PyAny>) -> Result<bool, String> {
+/// A Python value as a host value: `bool`, `int`, `float`, `str`, and
+/// (nested) `list`/`tuple`s of those. `None` for anything else.
+fn host_value(v: &Bound<'_, PyAny>) -> Option<HostValue> {
+    // `bool` first: it is a subclass of `int`.
     if v.is_instance_of::<PyBool>() {
-        return v.extract::<bool>().map_err(|e| e.to_string());
+        v.extract().ok().map(HostValue::Bool)
+    } else if v.is_instance_of::<PyInt>() {
+        (v.extract().map(HostValue::Int))
+            .or_else(|_| v.extract().map(HostValue::Uint))
+            // Beyond 128 bits: let coercion report it against the type.
+            .or_else(|_| v.str().map(|s| HostValue::Text(s.to_string())))
+            .ok()
+    } else if v.is_instance_of::<PyFloat>() {
+        v.extract().ok().map(HostValue::Float)
+    } else if v.is_instance_of::<PyString>() {
+        v.extract().ok().map(HostValue::Text)
+    } else if let Ok(list) = v.cast::<PyList>() {
+        list.iter()
+            .map(|item| host_value(&item))
+            .collect::<Option<_>>()
+            .map(HostValue::List)
+    } else if let Ok(tuple) = v.cast::<PyTuple>() {
+        tuple
+            .iter()
+            .map(|item| host_value(&item))
+            .collect::<Option<_>>()
+            .map(HostValue::List)
+    } else {
+        None
     }
-    if let Ok(i) = v.extract::<i64>() {
-        match i {
-            0 => return Ok(false),
-            1 => return Ok(true),
-            _ => {}
-        }
-    }
-    if let Ok(s) = v.extract::<String>() {
-        match s.as_str() {
-            "0" | "false" => return Ok(false),
-            "1" | "true" => return Ok(true),
-            _ => {}
-        }
-    }
-    Err(format!("{what} is not a bit (use 0/1/True/False)"))
 }
 
-/// "0101"-style string, MSB first, exactly `width` chars of 0/1.
-fn to_bitreg(what: &str, v: &Bound<'_, PyAny>, width: u32) -> Result<BitReg, String> {
-    let err = || format!("{what} must be a {width}-character string of 0s and 1s");
-    let Ok(s) = v.extract::<String>() else {
-        return Err(err());
-    };
-    if s.len() != width as usize || !s.bytes().all(|b| matches!(b, b'0' | b'1')) {
-        return Err(err());
+/// A host value as Python sees it: `bool`, exact `int` (any width), `float`,
+/// `complex`, `str`, or `list`.
+fn py_value<'py>(py: Python<'py>, value: HostValue) -> PyResult<Bound<'py, PyAny>> {
+    match value {
+        HostValue::Bool(b) => b.into_bound_py_any(py),
+        HostValue::Int(i) => i.into_bound_py_any(py),
+        HostValue::Uint(u) => u.into_bound_py_any(py),
+        HostValue::Float(f) => f.into_bound_py_any(py),
+        HostValue::Complex(c) => c.into_bound_py_any(py),
+        HostValue::Text(s) => s.into_bound_py_any(py),
+        HostValue::List(items) => items
+            .into_iter()
+            .map(|item| py_value(py, item))
+            .collect::<PyResult<Vec<_>>>()?
+            .into_bound_py_any(py),
     }
-    let mut reg = BitReg::zeros(width);
-    for (i, b) in s.bytes().enumerate() {
-        reg.set_bit(width as usize - 1 - i, b == b'1');
-    }
-    Ok(reg)
 }
 
-/// Extern implementations supplied from Python (`run`'s `externs` option):
-/// name → callable, plus each declared extern's return type (`None` = void),
-/// harvested from the module's symbols — the VM stores extern results
-/// uncast, so returns must be built with their declared type.
+/// Extern implementations supplied from Python (the `externs` option):
+/// name → callable, plus each declared extern's return type (`None` = void)
+/// — the VM stores extern results uncast, so returns must be built with
+/// their declared type.
 struct PyExterns {
     fns: HashMap<String, Py<PyAny>>,
     ret_tys: HashMap<String, Option<ValueTy>>,
@@ -444,10 +416,8 @@ impl PyExterns {
     /// key isn't a string or any value isn't callable.
     fn new(module: &BcModule, externs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
         let ret_tys = module
-            .symbols
-            .iter()
-            .filter(|s| s.kind == SymbolKind::Extern)
-            .map(|s| (s.name.clone(), s.ty.value_ty()))
+            .externs()
+            .map(|(name, ty)| (name.to_string(), ty))
             .collect();
         let mut fns = HashMap::new();
         if let Some(externs) = externs {
@@ -469,108 +439,55 @@ impl PyExterns {
 
 #[async_trait(?Send)]
 impl ExternProvider for PyExterns {
-    async fn call(
-        &mut self,
-        name: &str,
-        args: &[Value],
-    ) -> std::result::Result<Option<Value>, VmErrorKind> {
+    async fn call(&mut self, name: &str, args: &[Value]) -> KindResult<Option<Value>> {
         // Not provided, or not a declared classical extern (ports/frames land
         // here when no pulse handler is installed) — same error as `NoExterns`.
         let (Some(f), Some(ret_ty)) = (self.fns.get(name), self.ret_tys.get(name)) else {
             return Err(VmErrorKind::UnknownExtern(name.to_string()));
         };
+        let failed = |message: String| VmErrorKind::extern_failed(name, message);
         Python::attach(|py| {
             let py_args = args
                 .iter()
-                .map(|a| extern_arg(py, a))
+                .map(|a| py_value(py, HostValue::extern_arg(a)))
                 .collect::<PyResult<Vec<_>>>()
                 .and_then(|a| PyTuple::new(py, a))
-                .map_err(|e| extern_err(name, e.to_string()))?;
+                .map_err(|e| failed(e.to_string()))?;
             let ret = f
                 .bind(py)
                 .call1(py_args)
-                .map_err(|e| extern_err(name, e.to_string()))?;
+                .map_err(|e| failed(e.to_string()))?;
             // Reject awaitables before the void check so a coroutine is never
             // silently dropped unawaited.
             if ret.hasattr("__await__").unwrap_or(false) {
-                return Err(extern_err(
-                    name,
-                    "returned an awaitable; Python externs must be synchronous",
+                return Err(failed(
+                    "returned an awaitable; Python externs must be synchronous".to_string(),
                 ));
             }
             let Some(ty) = ret_ty else {
                 return Ok(None); // void extern: return value ignored
             };
-            coerce_scalar("return value", &ret, *ty)
+            let raw = host_value(&ret).ok_or_else(|| {
+                failed(format!(
+                    "returned an unsupported Python type `{}`",
+                    type_name(&ret)
+                ))
+            })?;
+            oqi_vm::coerce("return value", &raw, *ty)
                 .map(Some)
-                .map_err(|m| extern_err(name, m))
+                .map_err(failed)
         })
     }
-}
-
-fn extern_err(name: &str, message: impl Into<String>) -> VmErrorKind {
-    VmErrorKind::Extern {
-        name: name.to_string(),
-        message: message.into(),
-    }
-}
-
-/// Convert an extern-call argument for a Python callable. Like
-/// [`output_value`], except `bit[n]` becomes an unquoted MSB-first "0101"
-/// string and `angle` a radians float, so values round-trip with the extern
-/// return formats.
-fn extern_arg<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'py, PyAny>> {
-    if let Value::Scalar(s) = v {
-        match s.value() {
-            Primitive::Angle(_) => {
-                if let Ok(f) = s.clone().cast(PrimitiveTy::Float(FloatWidth::F64))
-                    && let Primitive::Float(radians) = f.value()
-                {
-                    return radians.into_bound_py_any(py);
-                }
-            }
-            Primitive::BitReg(reg) => {
-                if let PrimitiveTy::BitReg(w) = s.ty() {
-                    return bitreg_string(reg, w).into_bound_py_any(py);
-                }
-            }
-            _ => {}
-        }
-    }
-    output_value(py, v)
-}
-
-/// Unquoted MSB-first bit string of `reg`'s low `width` bits.
-fn bitreg_string(reg: &BitReg, width: u32) -> String {
-    (0..width as usize)
-        .rev()
-        .map(|i| if reg.get_bit(i) { '1' } else { '0' })
-        .collect()
-}
-
-/// bit → bool, int/uint (any width) → exact Python int, float → float,
-/// complex → complex; everything else (bit registers, durations, angles,
-/// arrays) is its OpenQASM text form.
-fn output_value<'py>(py: Python<'py>, v: &Value) -> PyResult<Bound<'py, PyAny>> {
-    if let Value::Scalar(s) = v {
-        match s.value() {
-            Primitive::Bit(b) => return b.into_bound_py_any(py),
-            Primitive::Int(i) => return i.into_bound_py_any(py),
-            Primitive::Uint(u) => return u.into_bound_py_any(py),
-            Primitive::Float(f) => return f.into_bound_py_any(py),
-            Primitive::Complex(c) => return c.into_bound_py_any(py),
-            _ => {}
-        }
-    }
-    v.to_string().into_bound_py_any(py)
 }
 
 #[pymodule]
 fn oqi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compile, m)?)?;
     m.add_function(wrap_pyfunction!(run, m)?)?;
+    m.add_function(wrap_pyfunction!(sample, m)?)?;
     m.add_class::<CompileResult>()?;
     m.add_class::<RunResult>()?;
+    m.add_class::<SampleResult>()?;
     m.add("OqiError", m.py().get_type::<OqiError>())?;
     Ok(())
 }

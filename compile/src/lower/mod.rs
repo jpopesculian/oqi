@@ -20,6 +20,7 @@ use oqi_classical::{
 };
 use oqi_parse::ast;
 
+use crate::duration::{TableTimings, resolve_durationof};
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::openpulse;
 use crate::resolve::{IncludeResolver, IncludeSource, Resolver};
@@ -40,34 +41,18 @@ mod gate;
 
 // ── Public API ──────────────────────────────────────────────────────────
 
-pub fn compile_ast(
-    program: &ast::Program<'_>,
-    include_resolver: impl IncludeResolver + 'static,
-    options: CompileOptions,
-) -> Result<sir::Program> {
-    let mut lowerer = Lowerer::new(include_resolver, options);
-    lowerer.lower_program(program)?;
-    Ok(lowerer.finish(program))
-}
-
+/// Source → SIR: parse, resolve includes, type-check and lower.
+///
+/// With `timings` supplied (even an empty slice), `durationof` and `stretch`
+/// are resolved at compile time against those `(name, duration literal)`
+/// entries (see [`TableTimings::from_str_entries`]) plus the program's own
+/// defcal and gate bodies. With `None` they are left for the VM's runtime
+/// pass.
 pub fn compile_source(
     source: &str,
     include_resolver: impl IncludeResolver + 'static,
-    source_name: Option<&Path>,
-) -> Result<sir::Program> {
-    let options = CompileOptions {
-        source_name: source_name.map(|p| p.to_path_buf()),
-        ..Default::default()
-    };
-    compile_source_with_options(source, include_resolver, options)
-}
-
-/// [`compile_source`] with explicit [`CompileOptions`] (source name, system
-/// width, `dt`).
-pub fn compile_source_with_options(
-    source: &str,
-    include_resolver: impl IncludeResolver + 'static,
-    options: CompileOptions,
+    options: &CompileOptions,
+    timings: Option<&[(&str, &str)]>,
 ) -> Result<sir::Program> {
     let ast = oqi_parse::parse(source).map_err(|e| {
         // Carry the parser's span through so the error renders with a location
@@ -79,7 +64,16 @@ pub fn compile_source_with_options(
         .with_span(e.span)
         .with_path(options.source_name.clone())
     })?;
-    compile_ast(&ast, include_resolver, options)
+    let mut lowerer = Lowerer::new(include_resolver, options.clone());
+    lowerer.lower_program(&ast)?;
+    let mut program = lowerer.finish(&ast);
+    if let Some(entries) = timings {
+        let table = TableTimings::from_str_entries(entries.iter().copied(), &options.dt)?
+            .with_defcals(&program, &options.dt)
+            .with_program_gates(&program);
+        resolve_durationof(&mut program, &table, options)?;
+    }
+    Ok(program)
 }
 
 // ── Lowerer ─────────────────────────────────────────────────────────────
@@ -2258,7 +2252,12 @@ mod tests {
     }
 
     fn compile_inline(source: &str) -> Result<sir::Program> {
-        compile_source(source, DefaultIncludeResolver, None)
+        compile_source(
+            source,
+            DefaultIncludeResolver,
+            &CompileOptions::default(),
+            None,
+        )
     }
 
     fn typed_expr(ty: Type) -> sir::Expr {
@@ -2313,7 +2312,15 @@ mod tests {
     #[test]
     fn compile_error_in_root_stmt_has_source_path() {
         let path = Path::new("/project/main.qasm");
-        let err = match compile_source("missing_symbol;", DefaultIncludeResolver, Some(path)) {
+        let err = match compile_source(
+            "missing_symbol;",
+            DefaultIncludeResolver,
+            &CompileOptions {
+                source_name: Some(path.to_path_buf()),
+                ..Default::default()
+            },
+            None,
+        ) {
             Ok(_) => panic!("expected lowering to fail"),
             Err(err) => err,
         };
@@ -2334,7 +2341,15 @@ mod tests {
             ),
         ]);
 
-        let err = match compile_source("include \"file/1/path\";", include_resolver, Some(path)) {
+        let err = match compile_source(
+            "include \"file/1/path\";",
+            include_resolver,
+            &CompileOptions {
+                source_name: Some(path.to_path_buf()),
+                ..Default::default()
+            },
+            None,
+        ) {
             Ok(_) => panic!("expected nested include lowering to fail"),
             Err(err) => err,
         };
@@ -2835,7 +2850,7 @@ mod tests {
             Default::default(),
         )
         .unwrap();
-        assert_eq!(result, Type::Classical(ValueTy::uint(iw(usize::BITS))));
+        assert_eq!(result, Type::Classical(ValueTy::uint(iw(64))));
     }
 
     #[test]
@@ -2955,7 +2970,12 @@ mod tests {
 
     #[test]
     fn empty_array_literal_is_rejected() {
-        let err = match compile_source("array[int[32], 1] a = {};", DefaultIncludeResolver, None) {
+        let err = match compile_source(
+            "array[int[32], 1] a = {};",
+            DefaultIncludeResolver,
+            &CompileOptions::default(),
+            None,
+        ) {
             Err(e) => e,
             Ok(_) => panic!("empty array literal should be rejected"),
         };
@@ -2967,6 +2987,7 @@ mod tests {
         let err = match compile_source(
             "reset $99999999999999999999999999;",
             DefaultIncludeResolver,
+            &CompileOptions::default(),
             None,
         ) {
             Err(e) => e,
@@ -3054,10 +3075,7 @@ mod tests {
     #[test]
     fn unrolled_gate_emits_single_block() {
         let program = compile_inline("gate g q { for uint i in [0:2] { U(0, 0, 0) q; } }").unwrap();
-        let cfgs = crate::cfg::build_program(&program).unwrap();
-        let ssa = crate::ssa::build_program(&cfgs, &program.symbols);
-        let layout = crate::qubits::build_layout(&program);
-        let module = crate::bytecode::emit(&ssa, &program, layout).unwrap();
+        let module = crate::bytecode::emit(&program).unwrap();
         let proc = module
             .procedures
             .iter()

@@ -43,14 +43,15 @@ function BackendBadge({
   precision,
   shots,
 }: {
-  backend: 'cpu' | 'gpu';
+  backend: SampleResult['backend'];
   precision: 'f32' | 'f64';
   shots: number;
 }) {
-  const label = `${backend === 'gpu' ? 'GPU' : 'CPU'} · ${precision} · ${shots} shots`;
+  const device = backend === 'gpu' ? 'gpu' : 'cpu';
+  const label = `${device.toUpperCase()} · ${precision} · ${shots} shots`;
   return (
     <div
-      className={`backend-badge ${backend}`}
+      className={`backend-badge ${device}`}
       title="Simulator backend, precision, and shot count"
     >
       {label}

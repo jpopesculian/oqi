@@ -1,21 +1,32 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use oqi_compile::cfg::{self, BasicBlockId, Cfg, ProgramCfgs, Terminator};
-use oqi_compile::error::{CompileError, ErrorKind};
-use oqi_compile::lower::compile_source;
-use oqi_compile::resolve::DefaultIncludeResolver;
-use oqi_compile::sir;
+use crate::cfg::{self, BasicBlockId, Cfg, ProgramCfgs, Terminator};
+use crate::error::{CompileError, ErrorKind};
+use crate::lower::compile_source;
+use crate::resolve::DefaultIncludeResolver;
+use crate::sir;
+use crate::types::CompileOptions;
 
 fn compile(src: &str) -> sir::Program {
-    compile_source(src, DefaultIncludeResolver, None).expect("compile should succeed")
+    compile_source(
+        src,
+        DefaultIncludeResolver,
+        &CompileOptions::default(),
+        None,
+    )
+    .expect("compile should succeed")
 }
 
 fn compile_fixture(name: &str) -> sir::Program {
     let path_str = format!("../fixtures/qasm/{name}");
     let path = Path::new(&path_str);
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path_str}: {e}"));
-    compile_source(&source, DefaultIncludeResolver, Some(path)).expect("compile should succeed")
+    let options = CompileOptions {
+        source_name: Some(path.to_path_buf()),
+        ..Default::default()
+    };
+    compile_source(&source, DefaultIncludeResolver, &options, None).expect("compile should succeed")
 }
 
 fn build(p: &sir::Program) -> ProgramCfgs {

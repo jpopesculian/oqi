@@ -700,162 +700,170 @@ mod tests {
 
     /// The make-or-break test: random Clifford words must match the dense
     /// simulator's full amplitude vector exactly — global phase included.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn random_words_match_dense_exactly() {
-        let n = 4usize;
-        for seed in 0..25u64 {
-            let word = random_word(n, 40, seed);
-            let mut ch = ChForm::zero(n);
-            let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
-            for &g in &word {
-                apply_ch(&mut ch, g);
-                apply_sv(&mut sv, g).await;
+    #[test]
+    fn random_words_match_dense_exactly() {
+        pollster::block_on(async {
+            let n = 4usize;
+            for seed in 0..25u64 {
+                let word = random_word(n, 40, seed);
+                let mut ch = ChForm::zero(n);
+                let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
+                for &g in &word {
+                    apply_ch(&mut ch, g);
+                    apply_sv(&mut sv, g).await;
+                }
+                let a = ch_amplitudes(&ch, n);
+                let b = sv.amplitudes().await.unwrap();
+                assert_close(&a, &b, &format!("seed {seed}"));
             }
-            let a = ch_amplitudes(&ch, n);
-            let b = sv.amplitudes().await.unwrap();
-            assert_close(&a, &b, &format!("seed {seed}"));
-        }
+        })
     }
 
     /// Compiler-lowered `U`/`gphase` calls through the shared detection
     /// path ([`crate::clifford::apply_clifford_u`]) must also be exact —
     /// this exercises `word_phase` compensation on top of the CH form.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn lowered_u_calls_match_dense_exactly() {
-        use crate::clifford::{apply_clifford_gphase, apply_clifford_u};
-        let n = 4usize;
-        for seed in 100..115u64 {
-            let word = random_word(n, 30, seed);
-            let mut ch = ChForm::zero(n);
-            let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
-            let none = GateModifiers::none();
-            let ctrl = |c: usize| GateModifiers {
-                controls: vec![c as u32],
-                neg_controls: vec![],
-                power: 1.0,
-            };
-            for &g in &word {
-                // Route the same lowered (θ,φ,λ)/gphase calls to both.
-                let calls: Vec<(usize, f64, f64, f64, GateModifiers)> = match g {
-                    G::H(q) => vec![(q, FRAC_PI_2, 0.0, PI, none.clone())],
-                    G::S(q) => vec![(q, 0.0, 0.0, FRAC_PI_2, none.clone())],
-                    G::Sdg(q) => vec![(q, 0.0, 0.0, -FRAC_PI_2, none.clone())],
-                    G::X(q) => vec![(q, PI, 0.0, PI, none.clone())],
-                    G::Z(q) => vec![(q, 0.0, 0.0, PI, none.clone())],
-                    G::Cx(c, t) => vec![(t, PI, 0.0, PI, ctrl(c))],
-                    G::Cz(c, t) => vec![(t, 0.0, 0.0, PI, ctrl(c))],
-                    G::Cy(c, t) => vec![(t, PI, FRAC_PI_2, FRAC_PI_2, ctrl(c))],
+    #[test]
+    fn lowered_u_calls_match_dense_exactly() {
+        pollster::block_on(async {
+            use crate::clifford::{apply_clifford_gphase, apply_clifford_u};
+            let n = 4usize;
+            for seed in 100..115u64 {
+                let word = random_word(n, 30, seed);
+                let mut ch = ChForm::zero(n);
+                let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
+                let none = GateModifiers::none();
+                let ctrl = |c: usize| GateModifiers {
+                    controls: vec![c as u32],
+                    neg_controls: vec![],
+                    power: 1.0,
                 };
-                for (t, th, ph, la, m) in calls {
-                    assert!(apply_clifford_u(&mut ch, t as u32, th, ph, la, &m));
-                    sv.u(t as u32, th, ph, la, &m).await;
+                for &g in &word {
+                    // Route the same lowered (θ,φ,λ)/gphase calls to both.
+                    let calls: Vec<(usize, f64, f64, f64, GateModifiers)> = match g {
+                        G::H(q) => vec![(q, FRAC_PI_2, 0.0, PI, none.clone())],
+                        G::S(q) => vec![(q, 0.0, 0.0, FRAC_PI_2, none.clone())],
+                        G::Sdg(q) => vec![(q, 0.0, 0.0, -FRAC_PI_2, none.clone())],
+                        G::X(q) => vec![(q, PI, 0.0, PI, none.clone())],
+                        G::Z(q) => vec![(q, 0.0, 0.0, PI, none.clone())],
+                        G::Cx(c, t) => vec![(t, PI, 0.0, PI, ctrl(c))],
+                        G::Cz(c, t) => vec![(t, 0.0, 0.0, PI, ctrl(c))],
+                        G::Cy(c, t) => vec![(t, PI, FRAC_PI_2, FRAC_PI_2, ctrl(c))],
+                    };
+                    for (t, th, ph, la, m) in calls {
+                        assert!(apply_clifford_u(&mut ch, t as u32, th, ph, la, &m));
+                        sv.u(t as u32, th, ph, la, &m).await;
+                    }
+                    // An occasional uncontrolled gphase to exercise ω.
+                    if let G::S(q) = g {
+                        let alpha = 0.25 + q as f64;
+                        assert!(apply_clifford_gphase(&mut ch, alpha, &none));
+                        sv.gphase(alpha, &none).await;
+                    }
                 }
-                // An occasional uncontrolled gphase to exercise ω.
-                if let G::S(q) = g {
-                    let alpha = 0.25 + q as f64;
-                    assert!(apply_clifford_gphase(&mut ch, alpha, &none));
-                    sv.gphase(alpha, &none).await;
-                }
+                let a = ch_amplitudes(&ch, n);
+                let b = sv.amplitudes().await.unwrap();
+                assert_close(&a, &b, &format!("seed {seed}"));
             }
-            let a = ch_amplitudes(&ch, n);
-            let b = sv.amplitudes().await.unwrap();
-            assert_close(&a, &b, &format!("seed {seed}"));
-        }
+        })
     }
 
     /// ⟨φ|φ⟩ = 1 and ⟨φ|ψ⟩ matches the dense dot product.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn inner_product_matches_dense() {
-        let n = 4usize;
-        for seed in 0..15u64 {
-            let (w1, w2) = (random_word(n, 30, seed), random_word(n, 30, seed + 500));
-            let mut ch1 = ChForm::zero(n);
-            let mut ch2 = ChForm::zero(n);
-            let mut sv1 = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
-            let mut sv2 = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
-            for &g in &w1 {
-                apply_ch(&mut ch1, g);
-                apply_sv(&mut sv1, g).await;
+    #[test]
+    fn inner_product_matches_dense() {
+        pollster::block_on(async {
+            let n = 4usize;
+            for seed in 0..15u64 {
+                let (w1, w2) = (random_word(n, 30, seed), random_word(n, 30, seed + 500));
+                let mut ch1 = ChForm::zero(n);
+                let mut ch2 = ChForm::zero(n);
+                let mut sv1 = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
+                let mut sv2 = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
+                for &g in &w1 {
+                    apply_ch(&mut ch1, g);
+                    apply_sv(&mut sv1, g).await;
+                }
+                for &g in &w2 {
+                    apply_ch(&mut ch2, g);
+                    apply_sv(&mut sv2, g).await;
+                }
+                let dense: Complex<f64> = sv1
+                    .amplitudes()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .zip(sv2.amplitudes().await.unwrap())
+                    .map(|(a, b)| a.conj() * b)
+                    .sum();
+                let got = ch1.inner(&ch2);
+                assert!(
+                    (got - dense).norm() < 1e-9,
+                    "seed {seed}: inner {got} vs dense {dense}",
+                );
+                let self_ip = ch1.inner(&ch1);
+                assert!(
+                    (self_ip - Complex::new(1.0, 0.0)).norm() < 1e-9,
+                    "seed {seed}: ⟨φ|φ⟩ = {self_ip}",
+                );
             }
-            for &g in &w2 {
-                apply_ch(&mut ch2, g);
-                apply_sv(&mut sv2, g).await;
-            }
-            let dense: Complex<f64> = sv1
-                .amplitudes()
-                .await
-                .unwrap()
-                .iter()
-                .zip(sv2.amplitudes().await.unwrap())
-                .map(|(a, b)| a.conj() * b)
-                .sum();
-            let got = ch1.inner(&ch2);
-            assert!(
-                (got - dense).norm() < 1e-9,
-                "seed {seed}: inner {got} vs dense {dense}",
-            );
-            let self_ip = ch1.inner(&ch1);
-            assert!(
-                (self_ip - Complex::new(1.0, 0.0)).norm() < 1e-9,
-                "seed {seed}: ⟨φ|φ⟩ = {self_ip}",
-            );
-        }
+        })
     }
 
     /// `project_z` matches the dense projector on every qubit/outcome and
     /// reports the right determinism class.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn projection_matches_dense() {
-        let n = 4usize;
-        let mut classes = [0u32; 3];
-        for seed in 0..15u64 {
-            let word = random_word(n, 30, seed);
-            for q in 0..n {
-                for b in [false, true] {
-                    let mut ch = ChForm::zero(n);
-                    let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
-                    for &g in &word {
-                        apply_ch(&mut ch, g);
-                        apply_sv(&mut sv, g).await;
-                    }
-                    let pre = sv.amplitudes().await.unwrap();
-                    let bit = 1usize << q;
-                    // Unnormalized dense projection.
-                    let dense: Vec<Complex<f64>> = pre
-                        .iter()
-                        .enumerate()
-                        .map(|(i, a)| {
-                            if (i & bit != 0) == b {
-                                *a
-                            } else {
-                                Complex::new(0.0, 0.0)
+    #[test]
+    fn projection_matches_dense() {
+        pollster::block_on(async {
+            let n = 4usize;
+            let mut classes = [0u32; 3];
+            for seed in 0..15u64 {
+                let word = random_word(n, 30, seed);
+                for q in 0..n {
+                    for b in [false, true] {
+                        let mut ch = ChForm::zero(n);
+                        let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
+                        for &g in &word {
+                            apply_ch(&mut ch, g);
+                            apply_sv(&mut sv, g).await;
+                        }
+                        let pre = sv.amplitudes().await.unwrap();
+                        let bit = 1usize << q;
+                        // Unnormalized dense projection.
+                        let dense: Vec<Complex<f64>> = pre
+                            .iter()
+                            .enumerate()
+                            .map(|(i, a)| {
+                                if (i & bit != 0) == b {
+                                    *a
+                                } else {
+                                    Complex::new(0.0, 0.0)
+                                }
+                            })
+                            .collect();
+                        let p: f64 = dense.iter().map(|a| a.norm_sqr()).sum();
+                        let class = ch.project_z(q, b);
+                        match class {
+                            Projection::Deterministic => {
+                                assert!((p - 1.0).abs() < 1e-9);
+                                classes[0] += 1;
                             }
-                        })
-                        .collect();
-                    let p: f64 = dense.iter().map(|a| a.norm_sqr()).sum();
-                    let class = ch.project_z(q, b);
-                    match class {
-                        Projection::Deterministic => {
-                            assert!((p - 1.0).abs() < 1e-9);
-                            classes[0] += 1;
+                            Projection::Zero => {
+                                assert!(p < 1e-9);
+                                classes[1] += 1;
+                            }
+                            Projection::Half => {
+                                assert!((p - 0.5).abs() < 1e-9);
+                                classes[2] += 1;
+                            }
                         }
-                        Projection::Zero => {
-                            assert!(p < 1e-9);
-                            classes[1] += 1;
-                        }
-                        Projection::Half => {
-                            assert!((p - 0.5).abs() < 1e-9);
-                            classes[2] += 1;
-                        }
+                        let got = ch_amplitudes(&ch, n);
+                        assert_close(&got, &dense, &format!("seed {seed} q{q} b{b}"));
                     }
-                    let got = ch_amplitudes(&ch, n);
-                    assert_close(&got, &dense, &format!("seed {seed} q{q} b{b}"));
                 }
             }
-        }
-        assert!(
-            classes.iter().all(|&c| c > 0),
-            "all projection classes exercised: {classes:?}",
-        );
+            assert!(
+                classes.iter().all(|&c| c > 0),
+                "all projection classes exercised: {classes:?}",
+            );
+        })
     }
 }

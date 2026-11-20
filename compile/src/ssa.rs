@@ -33,9 +33,9 @@ use crate::cfg::{
 };
 use crate::classical::Primitive;
 use crate::sir::{
-    Alias, Annotation, ArrayLiteral, Assignment, Binary, Call, Cast, Delay, GateCall, GateModifier,
-    Index, IndexItem, IndexKind, IndexOp, LValue, Measure, MeasureExpr, MeasureExprKind,
-    QubitOperand, RValue, RangeExpr, Unary,
+    Alias, ArrayLiteral, Assignment, Binary, Call, Cast, Delay, GateCall, GateModifier, Index,
+    IndexItem, IndexKind, IndexOp, LValue, Measure, MeasureExpr, MeasureExprKind, QubitOperand,
+    RValue, RangeExpr, Unary,
 };
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::Type;
@@ -54,14 +54,12 @@ pub struct SsaValue {
 #[derive(Clone)]
 pub struct Phi {
     pub dest: SsaValue,
-    pub ty: Type,
     /// One entry per predecessor of the containing block. The pair is
     /// `(predecessor_block, value_at_predecessor_exit)`. Order matches
     /// the dom-tree-DFS order in which predecessors were visited and
     /// is not stable across builds — consumers should match by
     /// `predecessor_block` rather than positionally.
     pub sources: Vec<(BasicBlockId, SsaValue)>,
-    pub span: Span,
 }
 
 // ── CFG / block ──────────────────────────────────────────────────────
@@ -70,7 +68,6 @@ pub struct Phi {
 pub struct SsaCfg {
     pub blocks: Vec<SsaBlock>,
     pub entry: BasicBlockId,
-    pub exit: BasicBlockId,
     pub owner: ProcOwner,
     /// Reaching definition of each live symbol at the `exit` block —
     /// i.e. the SSA value holding each variable's final value when the
@@ -117,7 +114,6 @@ pub enum SsaExprKind {
 #[derive(Clone)]
 pub struct SsaStmt {
     pub kind: SsaStmtKind,
-    pub annotations: Vec<Annotation>,
     pub span: Span,
 }
 
@@ -608,9 +604,7 @@ fn rename(
             let dest = renamer.alloc(sym);
             phis_by_block[bb_idx].push(Phi {
                 dest,
-                ty: symbols.get(sym).ty.clone(),
                 sources: Vec::new(),
-                span: cfg.blocks[bb_idx].span,
             });
         }
     }
@@ -704,7 +698,6 @@ fn rename(
     SsaCfg {
         blocks,
         entry: cfg.entry,
-        exit: cfg.exit,
         owner: cfg.owner.clone(),
         exit_defs,
     }
@@ -866,7 +859,6 @@ fn lower_block_stmt_with_defs(
     (
         SsaStmt {
             kind,
-            annotations: stmt.annotations.clone(),
             span: stmt.span,
         },
         def,
@@ -1066,9 +1058,16 @@ mod tests {
     use crate::cfg as cfg_mod;
     use crate::lower::compile_source;
     use crate::resolve::DefaultIncludeResolver;
+    use crate::types::CompileOptions;
 
     fn compile(src: &str) -> crate::sir::Program {
-        compile_source(src, DefaultIncludeResolver, None).expect("compile should succeed")
+        compile_source(
+            src,
+            DefaultIncludeResolver,
+            &CompileOptions::default(),
+            None,
+        )
+        .expect("compile should succeed")
     }
 
     fn build(src: &str) -> (crate::sir::Program, SsaCfg) {
@@ -1331,8 +1330,13 @@ mod tests {
         // End-to-end smoke test: build_program over a real fixture must
         // succeed and produce SSA for every CFG it owns.
         let src = include_str!("../../fixtures/qasm/adder.qasm");
-        let program = compile_source(src, DefaultIncludeResolver, None)
-            .expect("adder.qasm should compile to SIR");
+        let program = compile_source(
+            src,
+            DefaultIncludeResolver,
+            &CompileOptions::default(),
+            None,
+        )
+        .expect("adder.qasm should compile to SIR");
         let cfgs = cfg_mod::build_program(&program).expect("CFG build");
         let ssa = build_program(&cfgs, &program.symbols);
 

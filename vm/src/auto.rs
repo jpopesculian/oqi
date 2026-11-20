@@ -30,11 +30,12 @@ use num_complex::Complex;
 use crate::backend::{GateModifiers, QuantumBackend};
 use crate::clifford::{CliffordSink, apply_clifford_gphase, apply_clifford_u};
 use crate::error::VmErrorKind;
-use crate::sim::{Rng, StateVectorSim};
+use crate::rng::Rng;
+use crate::sim::StateVectorSim;
 use crate::stabilizer::Tableau;
 use crate::sum::SumState;
 
-const SEED: u64 = 0x2545F4914F6CDD1D;
+use crate::DEFAULT_SEED;
 
 /// Budget for the sum-over-Cliffords tier.
 #[derive(Clone, Copy, Debug)]
@@ -112,7 +113,7 @@ impl AutoSim {
     /// A fresh simulator with `num_qubits` qubits in |0…0⟩ (default seed
     /// and [`SumPolicy`]).
     pub fn new(num_qubits: u32) -> Self {
-        Self::with_seed(num_qubits, SEED)
+        Self::with_seed(num_qubits, DEFAULT_SEED)
     }
 
     /// A fresh simulator with an explicit RNG seed (for reproducible
@@ -137,7 +138,7 @@ impl AutoSim {
 
     /// Replay a recorded Clifford prefix onto a fresh state vector.
     async fn replay(n: u32, log: &[Op]) -> Option<StateVectorSim<f64>> {
-        let mut sv = StateVectorSim::<f64>::try_zeroed(n, SEED).ok()?;
+        let mut sv = StateVectorSim::<f64>::try_zeroed(n, DEFAULT_SEED).ok()?;
         let none = GateModifiers::none();
         for op in log {
             match op {
@@ -423,6 +424,25 @@ impl QuantumBackend for AutoSim {
         }
     }
 
+    async fn reset_state(&mut self, num_qubits: u32) {
+        match &mut self.mode {
+            // A circuit that outgrew the exact tiers once will again: stay
+            // dense rather than replay the escalation every shot.
+            Mode::StateVector(sv) => sv.reset_state(num_qubits).await,
+            // Back to an empty tableau and log, so shots neither compound
+            // each other's stabilizer terms nor grow the replay log. The
+            // RNG stream carries on, keeping shots independent.
+            Mode::Stabilizer { rng, .. } | Mode::Sum { rng, .. } => {
+                let rng = std::mem::replace(rng, Rng::new(0));
+                self.mode = Mode::Stabilizer {
+                    tab: Tableau::zero(self.n as usize),
+                    log: Vec::new(),
+                    rng,
+                };
+            }
+        }
+    }
+
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
         match &self.mode {
             Mode::StateVector(sv) => sv.amplitudes().await,
@@ -435,6 +455,10 @@ impl QuantumBackend for AutoSim {
                 sv.amplitudes().await
             }
         }
+    }
+
+    fn has_dense_state(&self) -> bool {
+        matches!(self.mode, Mode::StateVector(_))
     }
 
     fn take_error(&mut self) -> Option<VmErrorKind> {
@@ -529,68 +553,74 @@ mod tests {
     /// Differential: every all-qubit measurement the stabilizer tableau
     /// produces must land in the support of the true state (computed by the
     /// state-vector sim). A wrong tableau would yield zero-amplitude outcomes.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn tableau_measurements_lie_in_statevector_support() {
-        let n = 5u32;
-        for seed in 0..12u64 {
-            let circ = random_clifford(n, 40, seed);
+    #[test]
+    fn tableau_measurements_lie_in_statevector_support() {
+        pollster::block_on(async {
+            let n = 5u32;
+            for seed in 0..12u64 {
+                let circ = random_clifford(n, 40, seed);
 
-            let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
-            for &g in &circ {
-                apply(&mut sv, g).await;
-            }
-            let amps = sv.amplitudes().await.unwrap();
-
-            for shot in 0..16u64 {
-                let mut auto = AutoSim::with_seed(n, seed * 1000 + shot + 1);
+                let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
                 for &g in &circ {
-                    apply(&mut auto, g).await;
+                    apply(&mut sv, g).await;
                 }
-                let mut idx = 0usize;
-                for q in 0..n {
-                    if auto.measure(q).await {
-                        idx |= 1 << q;
+                let amps = sv.amplitudes().await.unwrap();
+
+                for shot in 0..16u64 {
+                    let mut auto = AutoSim::with_seed(n, seed * 1000 + shot + 1);
+                    for &g in &circ {
+                        apply(&mut auto, g).await;
                     }
+                    let mut idx = 0usize;
+                    for q in 0..n {
+                        if auto.measure(q).await {
+                            idx |= 1 << q;
+                        }
+                    }
+                    assert!(
+                        amps[idx].norm_sqr() > 1e-9,
+                        "seed {seed} shot {shot}: tableau outcome {idx:b} has ~0 amplitude",
+                    );
                 }
-                assert!(
-                    amps[idx].norm_sqr() > 1e-9,
-                    "seed {seed} shot {shot}: tableau outcome {idx:b} has ~0 amplitude",
-                );
             }
-        }
+        })
     }
 
     /// Entangled correlations: a Bell pair always measures equal bits.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn bell_pair_is_perfectly_correlated() {
-        let mut saw_zero = false;
-        let mut saw_one = false;
-        for seed in 0..40u64 {
-            // Spread seeds so the first RNG draw varies (xorshift mixes weakly
-            // across tiny sequential seeds).
-            let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
-            let mut a = AutoSim::with_seed(2, s);
-            apply(&mut a, G::H(0)).await;
-            apply(&mut a, G::Cx(0, 1)).await;
-            let m0 = a.measure(0).await;
-            let m1 = a.measure(1).await;
-            assert_eq!(m0, m1, "bell pair uncorrelated");
-            saw_zero |= !m0;
-            saw_one |= m0;
-        }
-        assert!(saw_zero && saw_one, "measurement looks non-random");
+    #[test]
+    fn bell_pair_is_perfectly_correlated() {
+        pollster::block_on(async {
+            let mut saw_zero = false;
+            let mut saw_one = false;
+            for seed in 0..40u64 {
+                // Spread seeds so the first RNG draw varies (xorshift mixes weakly
+                // across tiny sequential seeds).
+                let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
+                let mut a = AutoSim::with_seed(2, s);
+                apply(&mut a, G::H(0)).await;
+                apply(&mut a, G::Cx(0, 1)).await;
+                let m0 = a.measure(0).await;
+                let m1 = a.measure(1).await;
+                assert_eq!(m0, m1, "bell pair uncorrelated");
+                saw_zero |= !m0;
+                saw_one |= m0;
+            }
+            assert!(saw_zero && saw_one, "measurement looks non-random");
+        })
     }
 
     /// `H Z H = X`, so |0⟩ → |1⟩ deterministically (tests H/Z phase handling).
-    #[tokio::test(flavor = "multi_thread")]
-    async fn hzh_flips_deterministically() {
-        for seed in 0..8u64 {
-            let mut a = AutoSim::with_seed(1, seed + 1);
-            apply(&mut a, G::H(0)).await;
-            apply(&mut a, G::Z(0)).await;
-            apply(&mut a, G::H(0)).await;
-            assert!(a.measure(0).await, "HZH|0> should always measure 1");
-        }
+    #[test]
+    fn hzh_flips_deterministically() {
+        pollster::block_on(async {
+            for seed in 0..8u64 {
+                let mut a = AutoSim::with_seed(1, seed + 1);
+                apply(&mut a, G::H(0)).await;
+                apply(&mut a, G::Z(0)).await;
+                apply(&mut a, G::H(0)).await;
+                assert!(a.measure(0).await, "HZH|0> should always measure 1");
+            }
+        })
     }
 
     /// Fallback: a Clifford prefix, then a non-Clifford `T`, then more gates.
@@ -612,114 +642,122 @@ mod tests {
 
     /// Fallback: `AutoSim` (tableau → replay → state vector) must match the
     /// pure state-vector sim exactly on a mixed Clifford/non-Clifford circuit.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn fallback_matches_statevector() {
-        let n = 4u32;
-        let mut auto = AutoSim::new(n);
-        mixed_circuit(&mut auto).await;
-        // A few non-Clifford gates fit comfortably in the default budget:
-        // the run must stay exact in the sum tier, not go dense.
-        assert_eq!(auto.mode_name(), "sum");
-        let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
-        mixed_circuit(&mut sv).await;
+    #[test]
+    fn fallback_matches_statevector() {
+        pollster::block_on(async {
+            let n = 4u32;
+            let mut auto = AutoSim::new(n);
+            mixed_circuit(&mut auto).await;
+            // A few non-Clifford gates fit comfortably in the default budget:
+            // the run must stay exact in the sum tier, not go dense.
+            assert_eq!(auto.mode_name(), "sum");
+            let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
+            mixed_circuit(&mut sv).await;
 
-        let a = auto.amplitudes().await.unwrap();
-        let b = sv.amplitudes().await.unwrap();
-        assert_eq!(a.len(), b.len());
-        for (x, y) in a.iter().zip(&b) {
-            assert!((x - y).norm() < 1e-9, "fallback mismatch: {x} vs {y}");
-        }
+            let a = auto.amplitudes().await.unwrap();
+            let b = sv.amplitudes().await.unwrap();
+            assert_eq!(a.len(), b.len());
+            for (x, y) in a.iter().zip(&b) {
+                assert!((x - y).norm() < 1e-9, "fallback mismatch: {x} vs {y}");
+            }
+        })
     }
 
     /// A tiny rank budget forces the third (dense) tier mid-circuit; the
     /// result must still match the pure state-vector sim exactly.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn tiny_budget_escalates_to_dense() {
-        let n = 4u32;
-        let policy = SumPolicy {
-            max_rank: 2,
-            dense_escape: true,
-        };
-        let mut auto = AutoSim::with_policy(n, SEED, policy);
-        mixed_circuit(&mut auto).await;
-        assert_eq!(auto.mode_name(), "dense");
-        assert!(auto.take_error().is_none());
-        let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
-        mixed_circuit(&mut sv).await;
-
-        let a = auto.amplitudes().await.unwrap();
-        let b = sv.amplitudes().await.unwrap();
-        for (x, y) in a.iter().zip(&b) {
-            assert!((x - y).norm() < 1e-9, "escalation mismatch: {x} vs {y}");
-        }
-    }
-
-    /// Measurements recorded in tableau mode replay correctly through the
-    /// tableau → sum handoff — both deterministic and random outcomes.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn handoff_replays_measurements() {
-        let none = GateModifiers::none();
-        for seed in 0..10u64 {
-            let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
-            let mut auto = AutoSim::with_seed(3, s);
-            // Random outcome (Bell pair), then a deterministic one (X|0⟩).
-            apply(&mut auto, G::H(0)).await;
-            apply(&mut auto, G::Cx(0, 1)).await;
-            let o0 = auto.measure(0).await;
-            apply(&mut auto, G::X(2)).await;
-            auto.reset(2).await; // deterministic 1, recorded reset
-            assert_eq!(auto.mode_name(), "stabilizer");
-            // First non-Clifford triggers the handoff replay.
-            auto.u(1, 0.0, 0.0, FRAC_PI_4, &none).await;
-            apply(&mut auto, G::H(1)).await;
-            assert_eq!(auto.mode_name(), "sum");
-
-            let mut sv = StateVectorSim::<f64>::try_zeroed(3, 0).unwrap();
-            apply(&mut sv, G::H(0)).await;
-            apply(&mut sv, G::Cx(0, 1)).await;
-            sv.project(0, o0);
-            apply(&mut sv, G::X(2)).await;
-            sv.project(2, true);
-            apply(&mut sv, G::X(2)).await;
-            sv.u(1, 0.0, 0.0, FRAC_PI_4, &none).await;
-            apply(&mut sv, G::H(1)).await;
+    #[test]
+    fn tiny_budget_escalates_to_dense() {
+        pollster::block_on(async {
+            let n = 4u32;
+            let policy = SumPolicy {
+                max_rank: 2,
+                dense_escape: true,
+            };
+            let mut auto = AutoSim::with_policy(n, DEFAULT_SEED, policy);
+            mixed_circuit(&mut auto).await;
+            assert_eq!(auto.mode_name(), "dense");
+            assert!(auto.take_error().is_none());
+            let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
+            mixed_circuit(&mut sv).await;
 
             let a = auto.amplitudes().await.unwrap();
             let b = sv.amplitudes().await.unwrap();
             for (x, y) in a.iter().zip(&b) {
-                assert!((x - y).norm() < 1e-9, "handoff mismatch: {x} vs {y}");
+                assert!((x - y).norm() < 1e-9, "escalation mismatch: {x} vs {y}");
             }
-        }
+        })
+    }
+
+    /// Measurements recorded in tableau mode replay correctly through the
+    /// tableau → sum handoff — both deterministic and random outcomes.
+    #[test]
+    fn handoff_replays_measurements() {
+        pollster::block_on(async {
+            let none = GateModifiers::none();
+            for seed in 0..10u64 {
+                let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
+                let mut auto = AutoSim::with_seed(3, s);
+                // Random outcome (Bell pair), then a deterministic one (X|0⟩).
+                apply(&mut auto, G::H(0)).await;
+                apply(&mut auto, G::Cx(0, 1)).await;
+                let o0 = auto.measure(0).await;
+                apply(&mut auto, G::X(2)).await;
+                auto.reset(2).await; // deterministic 1, recorded reset
+                assert_eq!(auto.mode_name(), "stabilizer");
+                // First non-Clifford triggers the handoff replay.
+                auto.u(1, 0.0, 0.0, FRAC_PI_4, &none).await;
+                apply(&mut auto, G::H(1)).await;
+                assert_eq!(auto.mode_name(), "sum");
+
+                let mut sv = StateVectorSim::<f64>::try_zeroed(3, 0).unwrap();
+                apply(&mut sv, G::H(0)).await;
+                apply(&mut sv, G::Cx(0, 1)).await;
+                sv.project(0, o0);
+                apply(&mut sv, G::X(2)).await;
+                sv.project(2, true);
+                apply(&mut sv, G::X(2)).await;
+                sv.u(1, 0.0, 0.0, FRAC_PI_4, &none).await;
+                apply(&mut sv, G::H(1)).await;
+
+                let a = auto.amplitudes().await.unwrap();
+                let b = sv.amplitudes().await.unwrap();
+                for (x, y) in a.iter().zip(&b) {
+                    assert!((x - y).norm() < 1e-9, "handoff mismatch: {x} vs {y}");
+                }
+            }
+        })
     }
 
     /// When the budget overflows and the dense state can't be allocated,
     /// the backend parks a `RankOverflow` and no-ops instead of panicking.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn rank_overflow_is_parked_not_panicked() {
-        let n = 60u32; // 2^60 amplitudes can never be allocated
-        let policy = SumPolicy {
-            max_rank: 8,
-            dense_escape: true,
-        };
-        let mut auto = AutoSim::with_policy(n, SEED, policy);
-        let none = GateModifiers::none();
-        apply(&mut auto, G::H(0)).await;
-        for _ in 0..6 {
-            auto.u(0, 0.0, 0.0, FRAC_PI_4, &none).await; // T
-        }
-        assert!(!auto.measure(0).await, "errored backend must no-op");
-        match auto.take_error() {
-            Some(crate::error::VmErrorKind::RankOverflow {
-                rank,
-                max_rank,
-                qubits,
-            }) => {
-                assert!(rank > max_rank);
-                assert_eq!(max_rank, 8);
-                assert_eq!(qubits, n);
+    #[test]
+    fn rank_overflow_is_parked_not_panicked() {
+        pollster::block_on(async {
+            let n = 60u32; // 2^60 amplitudes can never be allocated
+            let policy = SumPolicy {
+                max_rank: 8,
+                dense_escape: true,
+            };
+            let mut auto = AutoSim::with_policy(n, DEFAULT_SEED, policy);
+            let none = GateModifiers::none();
+            apply(&mut auto, G::H(0)).await;
+            for _ in 0..6 {
+                auto.u(0, 0.0, 0.0, FRAC_PI_4, &none).await; // T
             }
-            other => panic!("expected RankOverflow, got {other:?}"),
-        }
-        assert!(auto.take_error().is_none(), "error must be taken once");
+            assert!(!auto.measure(0).await, "errored backend must no-op");
+            match auto.take_error() {
+                Some(crate::error::VmErrorKind::RankOverflow {
+                    rank,
+                    max_rank,
+                    qubits,
+                }) => {
+                    assert!(rank > max_rank);
+                    assert_eq!(max_rank, 8);
+                    assert_eq!(qubits, n);
+                }
+                other => panic!("expected RankOverflow, got {other:?}"),
+            }
+            assert!(auto.take_error().is_none(), "error must be taken once");
+        })
     }
 }

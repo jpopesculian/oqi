@@ -20,9 +20,11 @@ cargo fmt
 cargo clippy --all-targets
 
 # Run the CLI
-cargo run -p oqi-cli -- compile fixtures/qasm/teleport.qasm --dump
+cargo run -p oqi-cli -- compile fixtures/qasm/teleport.qasm --dump      # bytecode
+cargo run -p oqi-cli -- compile fixtures/qasm/teleport.qasm --dump-sir  # structured IR
 cargo run -p oqi-cli -- run fixtures/qasm/adder.qasm --state
 cargo run -p oqi-cli -- run prog.qasm --input n=3 --input theta=0.5
+cargo run -p oqi-cli -- run prog.qasm --shots 1000 --seed 7 --backend auto
 cargo run -p oqi-cli -- fmt --stdout fixtures/qasm/qft.qasm
 ```
 
@@ -36,8 +38,11 @@ source → parse → resolve (includes) → lower → cfg → ssa → bytecode �
 
 - **`lex/`** (`oqi-lex`) — `logos`-based lexer producing `Token`s with spans.
 - **`parse/`** (`oqi-parse`) — hand-written parser; AST in `parse/src/ast.rs`.
-- **`compile/`** (`oqi-compile`) — the heart. `lower::compile_source` is the main
-  entry point (source → `sir::Program`). Key modules:
+- **`compile/`** (`oqi-compile`) — the heart. `oqi_compile::compile` is the main
+  entry point (source → `BcModule`); `compile_source` stops at the SIR
+  (source → `sir::Program`) and `bytecode::emit` lowers that the rest of the
+  way. The pipeline stages (`cfg`, `ssa`, `qubits`, `lower`, `resolve`) are
+  crate-private. Key modules:
   - `lower.rs` — AST → SIR, name resolution, type checking.
   - `resolve.rs` — `include` resolution; `stdgates.inc` is embedded via
     `include_str!` and served as a library include.
@@ -56,7 +61,12 @@ source → parse → resolve (includes) → lower → cfg → ssa → bytecode �
   `QuantumBackend` (the `StateVectorSim`, or future GPU/hardware) and
   `ExternProvider` (host implementations of `extern` functions). Backends supply
   their own `stdgates.inc` decomposing the standard library down to the built-in
-  `U`/`gphase`/measure/reset primitives.
+  `U`/`gphase`/measure/reset primitives. It also holds what the front doors
+  share: `BackendSpec` (backend selection by name), `HostValue` + `coerce`
+  (host values ↔ typed values, `vm/src/host.rs`) and `Vm::sample` (shots).
+- **`cli/`**, **`js/`** (wasm-bindgen), **`py/`** (PyO3) — the three front
+  doors. Keep them thin: native value ↔ `HostValue` mapping and error mapping
+  only; anything two of them need belongs in `vm` or `compile`.
 - **`format/`** (`oqi-format`) — source formatter (the `fmt` subcommand).
 - **`diagnostics/`** (`oqi-diagnostics`) — `ariadne`-based rendering. Errors
   implement the `Diagnostic` trait and carry stable `C####` codes.

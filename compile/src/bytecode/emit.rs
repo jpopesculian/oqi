@@ -1,6 +1,7 @@
-//! Step D + E: SSA → bytecode.
+//! SIR → bytecode.
 //!
-//! Walks each [`SsaCfg`] in `ProgramSsa`, optionally running phi
+//! Builds the control-flow graphs, SSA form and global qubit layout of a
+//! [`sir::Program`], then walks each [`SsaCfg`] in `ProgramSsa`, optionally running phi
 //! elimination first, then converts every [`SsaStmt`](crate::ssa::SsaStmt) into one or more
 //! [`BcInstr`]s. Nested CFGs (Box / inline-Cal / DurationOf) are
 //! recursively lowered to their own procedures and referenced by
@@ -17,6 +18,7 @@ use std::collections::HashMap;
 use oqi_classical::{Value, ValueTy};
 use oqi_lex::Span;
 
+use crate::cfg;
 use crate::classical::PrimitiveTy;
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::qubits::{self, QubitLayout};
@@ -25,7 +27,7 @@ use crate::sir::{
     IndexKind, IndexOp, MeasureExpr, MeasureExprKind, QubitOperand, RValue,
 };
 use crate::ssa::{
-    ProgramSsa, SsaAssignment, SsaBlock, SsaBoxStmt, SsaCalibrationBody, SsaCfg, SsaExpr,
+    self, ProgramSsa, SsaAssignment, SsaBlock, SsaBoxStmt, SsaCalibrationBody, SsaCfg, SsaExpr,
     SsaExprKind, SsaLValue, SsaMeasure, SsaStmtKind, SsaTerminator, SsaValue,
 };
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
@@ -34,15 +36,21 @@ use super::phi_elim::deconstruct_phis;
 use super::regalloc::{RegMap, allocate_registers, reg_value_ty};
 use super::types::{
     BcAliasSegment, BcBlock, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCalibration,
-    BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcProcedure, BcTerminator,
-    BcVersion, BlockId, ConstId, ProcId, ProcOwner, QubitRegion, QubitRegionId, QubitSource,
-    QubitTable, Reg, StringId,
+    BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcProcedure, BcSymbol,
+    BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner, QubitRegion, QubitRegionId,
+    QubitSource, QubitTable, Reg, StringId,
 };
 use crate::types::Type;
 
-/// Entry point: lower an SSA program to bytecode against the global
-/// qubit layout (see [`crate::qubits::build_layout`]).
-pub fn emit(
+/// Lower a SIR program to bytecode.
+pub fn emit(program: &sir::Program) -> Result<BcModule, CompileError> {
+    let cfgs = cfg::build_program(program)?;
+    let ssa = ssa::build_program(&cfgs, &program.symbols);
+    emit_ssa(&ssa, program, qubits::build_layout(program))
+}
+
+/// Lower an SSA program to bytecode against the global qubit layout.
+fn emit_ssa(
     ssa: &ProgramSsa,
     program: &sir::Program,
     layout: QubitLayout,
@@ -80,7 +88,14 @@ pub fn emit(
 
     Ok(BcModule {
         version: BcVersion::CURRENT,
-        symbols: symbols.clone(),
+        symbols: symbols
+            .iter()
+            .map(|s| BcSymbol {
+                name: s.name.clone(),
+                kind: s.kind,
+                ty: s.ty.value_ty(),
+            })
+            .collect(),
         constants: ctx.constants,
         strings: ctx.strings,
         qubits: QubitTable {

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use async_trait::async_trait;
 use oqi_classical::Value;
 
-use crate::error::{Result, VmErrorKind};
+use crate::error::{KindResult, VmErrorKind};
 
 /// Supplies implementations for the program's `extern` functions.
 ///
@@ -21,7 +21,7 @@ use crate::error::{Result, VmErrorKind};
 pub trait ExternProvider {
     /// Call `name` with `args`; return its result (or `None` for a
     /// void extern).
-    async fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>>;
+    async fn call(&mut self, name: &str, args: &[Value]) -> KindResult<Option<Value>>;
 }
 
 /// An [`ExternProvider`] that rejects every call. Use when a program
@@ -30,12 +30,12 @@ pub struct NoExterns;
 
 #[async_trait(?Send)]
 impl ExternProvider for NoExterns {
-    async fn call(&mut self, name: &str, _args: &[Value]) -> Result<Option<Value>> {
+    async fn call(&mut self, name: &str, _args: &[Value]) -> KindResult<Option<Value>> {
         Err(VmErrorKind::UnknownExtern(name.to_string()))
     }
 }
 
-type ExternFn = Box<dyn FnMut(&[Value]) -> Result<Option<Value>>>;
+type ExternFn = Box<dyn FnMut(&[Value]) -> KindResult<Option<Value>>>;
 
 /// A registry of host closures, keyed by extern name.
 #[derive(Default)]
@@ -52,7 +52,7 @@ impl FnRegistry {
     pub fn register(
         &mut self,
         name: impl Into<String>,
-        f: impl FnMut(&[Value]) -> Result<Option<Value>> + 'static,
+        f: impl FnMut(&[Value]) -> KindResult<Option<Value>> + 'static,
     ) -> &mut Self {
         self.fns.insert(name.into(), Box::new(f));
         self
@@ -61,7 +61,7 @@ impl FnRegistry {
 
 #[async_trait(?Send)]
 impl ExternProvider for FnRegistry {
-    async fn call(&mut self, name: &str, args: &[Value]) -> Result<Option<Value>> {
+    async fn call(&mut self, name: &str, args: &[Value]) -> KindResult<Option<Value>> {
         match self.fns.get_mut(name) {
             Some(f) => f(args),
             None => Err(VmErrorKind::UnknownExtern(name.to_string())),

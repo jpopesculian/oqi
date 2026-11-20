@@ -14,10 +14,10 @@
 //! re-uploads — gates (the hot path) stay on the GPU, while a measurement
 //! costs one readback plus one upload.
 //!
-//! All device operations are `async`: [`GpuSim::new`] and the buffer
+//! All device operations are `async`: [`GpuSim::try_zeroed`] and the buffer
 //! readback `.await` rather than block, so the backend works on the browser
 //! main thread (where blocking is illegal) as well as natively (where a
-//! caller drives it with a runtime's `block_on`, e.g. tokio). The only
+//! caller drives it with any `block_on`, e.g. `pollster`). The only
 //! target-specific bit is the readback: natively we drive the GPU with
 //! `device.poll(Wait)`, while on wasm the browser event loop fulfils the
 //! buffer map.
@@ -30,13 +30,13 @@ use oqi_quantum::{Gate, Unitary};
 use wgpu::util::DeviceExt;
 
 use crate::backend::{GateModifiers, QuantumBackend};
-use crate::sim::Rng;
+use crate::error::{VmError, VmErrorKind, VmResult};
+use crate::rng::Rng;
 
 const WORKGROUP_SIZE: u32 = 64;
 /// `dispatch_workgroups` is capped at 65535 per dimension; tile across the
 /// y dimension when the pair count needs more groups than that in x.
 const MAX_DIM: u32 = 65535;
-const DEFAULT_SEED: u64 = 0x2545F4914F6CDD1D;
 
 /// Per-gate uniform: the 2×2 matrix packed as two `vec4` rows, plus the
 /// target bit, control masks, pair count, and dispatch width. Padded to a
@@ -111,20 +111,25 @@ pub struct GpuSim {
 }
 
 impl GpuSim {
-    /// Create a GPU simulator with `num_qubits` qubits in |0…0⟩, or an error
-    /// string if no adapter/device is available or the state can't be
-    /// allocated. Async: `.await` it (native callers can block on it with a
-    /// runtime, e.g. `tokio`; the browser awaits it directly).
-    pub async fn new(num_qubits: u32) -> Result<Self, String> {
-        let len = 1usize
-            .checked_shl(num_qubits)
-            .ok_or_else(|| format!("{num_qubits} qubits: state vector length overflows usize"))?;
+    /// A fresh simulator with `num_qubits` qubits in |0…0⟩ and an explicit
+    /// measurement-RNG seed. Errors with
+    /// [`VmErrorKind::BackendUnavailable`] if no adapter/device is
+    /// available, or [`VmErrorKind::TooManyQubits`] if the state vector's
+    /// length overflows. Async: `.await` it (native callers can block on it,
+    /// e.g. with `pollster`; the browser awaits it directly).
+    pub async fn try_zeroed(num_qubits: u32, seed: u64) -> VmResult<Self> {
+        let unavailable = |why: String| VmError::new(VmErrorKind::BackendUnavailable(why));
+        let len = 1usize.checked_shl(num_qubits).ok_or_else(|| {
+            VmError::new(VmErrorKind::TooManyQubits {
+                requested: num_qubits,
+            })
+        })?;
 
         let instance = wgpu::Instance::default();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
-            .map_err(|e| format!("no suitable GPU adapter found: {e}"))?;
+            .map_err(|e| unavailable(format!("no suitable GPU adapter found: {e}")))?;
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("oqi-gpu"),
@@ -132,7 +137,7 @@ impl GpuSim {
                 ..Default::default()
             })
             .await
-            .map_err(|e| format!("failed to create GPU device: {e}"))?;
+            .map_err(|e| unavailable(format!("failed to create GPU device: {e}")))?;
 
         // Initialise |0…0⟩ on the host and upload.
         let mut init = vec![0f32; len * 2];
@@ -222,15 +227,8 @@ impl GpuSim {
             bind_group,
             len,
             global_phase: 0.0,
-            rng: Rng::new(DEFAULT_SEED),
+            rng: Rng::new(seed),
         })
-    }
-
-    /// Reseed the measurement RNG so runs are reproducible (defaults to
-    /// [`DEFAULT_SEED`] otherwise).
-    pub fn with_seed(mut self, seed: u64) -> Self {
-        self.rng = Rng::new(seed);
-        self
     }
 
     /// Dispatch one gate: write the uniform, encode a compute pass, submit.
@@ -500,25 +498,27 @@ mod tests {
     /// The GPU backend must agree with the reference scalar simulator to
     /// within single-precision tolerance. Skips gracefully when no GPU
     /// adapter is available (e.g. headless CI) rather than failing.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn matches_scalar_within_f32_tolerance() {
-        let mut gpu = match GpuSim::new(5).await {
-            Ok(g) => g,
-            Err(e) => {
-                eprintln!("skipping gpu test: {e}");
-                return;
+    #[test]
+    fn matches_scalar_within_f32_tolerance() {
+        pollster::block_on(async {
+            let mut gpu = match GpuSim::try_zeroed(5, 0).await {
+                Ok(g) => g,
+                Err(e) => {
+                    eprintln!("skipping gpu test: {e}");
+                    return;
+                }
+            };
+            let mut cpu = StateVectorSim::<f64>::try_zeroed(5, 0).unwrap();
+
+            gates(&mut gpu).await;
+            gates(&mut cpu).await;
+
+            let a = gpu.amplitudes().await.unwrap();
+            let b = cpu.amplitudes().await.unwrap();
+            assert_eq!(a.len(), b.len());
+            for (x, y) in a.iter().zip(&b) {
+                assert!((x - y).norm() < 1e-4, "gpu {x} vs scalar {y}");
             }
-        };
-        let mut cpu = StateVectorSim::<f64>::try_zeroed(5, 0).unwrap();
-
-        gates(&mut gpu).await;
-        gates(&mut cpu).await;
-
-        let a = gpu.amplitudes().await.unwrap();
-        let b = cpu.amplitudes().await.unwrap();
-        assert_eq!(a.len(), b.len());
-        for (x, y) in a.iter().zip(&b) {
-            assert!((x - y).norm() < 1e-4, "gpu {x} vs scalar {y}");
-        }
+        })
     }
 }

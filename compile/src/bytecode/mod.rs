@@ -16,13 +16,13 @@
 //!   primary, VM-ingestable form) plus a textual disassembly (debug
 //!   aid).
 
-pub mod analysis;
-pub mod binary;
-pub mod disasm;
-pub mod emit;
-pub mod phi_elim;
-pub mod regalloc;
-pub mod types;
+mod analysis;
+mod binary;
+mod disasm;
+mod emit;
+mod phi_elim;
+mod regalloc;
+mod types;
 
 pub use analysis::is_sample_safe;
 pub use binary::{DecodeError, from_bytes, to_bytes};
@@ -32,21 +32,25 @@ pub use types::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cfg;
-    use crate::lower::compile_source;
     use crate::resolve::DefaultIncludeResolver;
-    use crate::ssa;
+    use crate::types::CompileOptions;
+
+    fn symbol_id(module: &BcModule, name: &str) -> crate::symbol::SymbolId {
+        let pos = module.symbols.iter().position(|s| s.name == name);
+        crate::symbol::SymbolId(pos.expect("symbol"))
+    }
 
     fn build_bytecode(src: &str) -> BcModule {
         try_build_bytecode(src).expect("emit bytecode")
     }
 
     fn try_build_bytecode(src: &str) -> Result<BcModule, crate::error::CompileError> {
-        let program = compile_source(src, DefaultIncludeResolver, None).expect("compile");
-        let cfgs = cfg::build_program(&program).expect("cfg");
-        let ssa = ssa::build_program(&cfgs, &program.symbols);
-        let layout = crate::qubits::build_layout(&program);
-        emit(&ssa, &program, layout)
+        crate::compile(
+            src,
+            DefaultIncludeResolver,
+            &CompileOptions::default(),
+            None,
+        )
     }
 
     #[test]
@@ -149,12 +153,7 @@ mod tests {
                 flip q;
             "#,
         );
-        let flip = module
-            .symbols
-            .iter()
-            .find(|s| s.name == "flip")
-            .expect("flip symbol")
-            .id;
+        let flip = symbol_id(&module, "flip");
         let emits_call = all_ops(&module).any(
             |op| matches!(op, BcOp::Call { callee: BcCallTarget::Symbol(s), .. } if *s == flip),
         );
@@ -443,11 +442,7 @@ mod tests {
     #[test]
     fn end_to_end_fixture_teleport() {
         let src = include_str!("../../../fixtures/qasm/teleport.qasm");
-        let program = compile_source(src, DefaultIncludeResolver, None).expect("compile");
-        let cfgs = cfg::build_program(&program).expect("cfg");
-        let ssa = ssa::build_program(&cfgs, &program.symbols);
-        let layout = crate::qubits::build_layout(&program);
-        let module = emit(&ssa, &program, layout).expect("emit");
+        let module = build_bytecode(src);
 
         let bytes = to_bytes(&module).expect("encode");
         assert!(bytes.len() > 4, "encoded module should be non-trivial");
@@ -465,11 +460,7 @@ mod tests {
     #[test]
     fn end_to_end_fixture_adder() {
         let src = include_str!("../../../fixtures/qasm/adder.qasm");
-        let program = compile_source(src, DefaultIncludeResolver, None).expect("compile");
-        let cfgs = cfg::build_program(&program).expect("cfg");
-        let ssa = ssa::build_program(&cfgs, &program.symbols);
-        let layout = crate::qubits::build_layout(&program);
-        let module = emit(&ssa, &program, layout).expect("emit");
+        let module = build_bytecode(src);
         // adder.qasm: cin(1) + a(4) + b(4) + cout(1).
         assert_eq!(module.qubits.num_qubits, 10);
         let text = format!("{module}");
@@ -488,14 +479,7 @@ mod tests {
         // x $0, x $1, rz, measure, zx90_ix, cx — in declaration order.
         assert_eq!(module.calibrations.len(), 6);
 
-        let sym = |name: &str| {
-            module
-                .symbols
-                .iter()
-                .find(|s| s.name == name)
-                .map(|s| s.id)
-                .expect("symbol")
-        };
+        let sym = |name: &str| symbol_id(&module, name);
 
         // The two `defcal x` share the gate symbol and differ in operand.
         let x = sym("x");

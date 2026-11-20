@@ -12,9 +12,7 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use oqi_vm::{GateModifiers, QuantumBackend, SimdSim, StateVectorSim};
-
-const SEED: u64 = 0x2545F4914F6CDD1D;
+use oqi_vm::{DEFAULT_SEED as SEED, GateModifiers, QuantumBackend, SimdSim, StateVectorSim};
 
 /// A representative workload: a Hadamard layer, several rotation layers
 /// (uncontrolled — the vectorized path), then a CX ladder (controlled — the
@@ -108,17 +106,13 @@ fn bench_backends(c: &mut Criterion) {
     let n = 20u32;
     let layers = 8;
 
-    // Multi-threaded tokio runtime to drive the async VM. `block_on` runs the
-    // workload on the calling thread, so the `?Send` backend futures are fine.
-    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-
     let mut group = c.benchmark_group("apply_workload_20q");
     group.sample_size(10);
     for (name, make) in variants(n) {
         group.bench_function(name, |b| {
             b.iter_batched_ref(
                 &make,
-                |sim| rt.block_on(workload(&mut **sim, n, layers)),
+                |sim| pollster::block_on(workload(&mut **sim, n, layers)),
                 BatchSize::SmallInput,
             );
         });
@@ -132,12 +126,12 @@ fn bench_backends(c: &mut Criterion) {
     // force GPU completion, so we time execution rather than just command
     // submission (this adds one readback the CPU variants don't pay).
     #[cfg(feature = "gpu")]
-    match rt.block_on(oqi_vm::GpuSim::new(n)) {
+    match pollster::block_on(oqi_vm::GpuSim::try_zeroed(n, SEED)) {
         Ok(mut sim) => {
             group.bench_function("gpu-f32", |b| {
                 b.iter(|| {
-                    rt.block_on(workload(&mut sim, n, layers));
-                    let _ = rt.block_on(sim.amplitudes());
+                    pollster::block_on(workload(&mut sim, n, layers));
+                    let _ = pollster::block_on(sim.amplitudes());
                 });
             });
         }

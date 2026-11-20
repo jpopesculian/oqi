@@ -7,31 +7,27 @@ use std::rc::Rc;
 
 use num_complex::Complex64;
 use oqi_classical::{Duration, DurationUnit};
-use oqi_compile::bytecode::{BcModule, emit};
-use oqi_compile::lower::compile_source;
-use oqi_compile::resolve::DefaultIncludeResolver;
-use oqi_compile::{cfg, qubits, ssa};
+use oqi_compile::bytecode::BcModule;
+use oqi_compile::{CompileOptions, DefaultIncludeResolver};
 use oqi_vm::{
-    FrameHandle, NoExterns, OpaqueCalHandler, OpenPulseHandler, PortHandle, Result as VmResult,
+    FrameHandle, KindResult, NoExterns, OpaqueCalHandler, OpenPulseHandler, PortHandle,
     StateVectorSim, Vm, VmErrorKind, WaveformHandle,
 };
 
-/// Drive an async VM call to completion on a shared multi-threaded tokio
-/// runtime (mirrors `run.rs`, which each test crate must carry itself).
+/// Drive an async VM call to completion (the VM is async; tests are sync).
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
-    use std::sync::OnceLock;
-    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RT.get_or_init(|| tokio::runtime::Runtime::new().expect("tokio runtime"))
-        .block_on(fut)
+    pollster::block_on(fut)
 }
 
 /// Compile source straight through to a bytecode module.
 fn build(src: &str) -> BcModule {
-    let program = compile_source(src, DefaultIncludeResolver, None).expect("compile");
-    let cfgs = cfg::build_program(&program).expect("cfg");
-    let ssa = ssa::build_program(&cfgs, &program.symbols);
-    let layout = qubits::build_layout(&program);
-    emit(&ssa, &program, layout).expect("emit")
+    oqi_compile::compile(
+        src,
+        DefaultIncludeResolver,
+        &CompileOptions::default(),
+        None,
+    )
+    .expect("compile")
 }
 
 fn sim_for(module: &BcModule) -> StateVectorSim {
@@ -104,12 +100,17 @@ impl MockPulse {
 const MOCK_IQ: Complex64 = Complex64::new(0.25, -0.5);
 
 impl OpenPulseHandler for MockPulse {
-    fn port(&mut self, name: &str) -> VmResult<PortHandle> {
+    fn port(&mut self, name: &str) -> KindResult<PortHandle> {
         self.events.borrow_mut().push(Event::Port(name.to_string()));
         Ok(PortHandle(self.mint()))
     }
 
-    fn new_frame(&mut self, port: PortHandle, frequency: f64, phase: f64) -> VmResult<FrameHandle> {
+    fn new_frame(
+        &mut self,
+        port: PortHandle,
+        frequency: f64,
+        phase: f64,
+    ) -> KindResult<FrameHandle> {
         self.events.borrow_mut().push(Event::NewFrame {
             port: port.0,
             frequency,
@@ -123,7 +124,7 @@ impl OpenPulseHandler for MockPulse {
         amp: f64,
         duration: Duration,
         sigma: Duration,
-    ) -> VmResult<WaveformHandle> {
+    ) -> KindResult<WaveformHandle> {
         self.events.borrow_mut().push(Event::Gaussian {
             amp,
             duration: (duration.value, duration.unit),
@@ -134,7 +135,7 @@ impl OpenPulseHandler for MockPulse {
         Ok(WaveformHandle(h))
     }
 
-    fn play(&mut self, frame: FrameHandle, waveform: WaveformHandle) -> VmResult<()> {
+    fn play(&mut self, frame: FrameHandle, waveform: WaveformHandle) -> KindResult<()> {
         self.events.borrow_mut().push(Event::Play {
             frame: frame.0,
             waveform: waveform.0,
@@ -142,7 +143,7 @@ impl OpenPulseHandler for MockPulse {
         Ok(())
     }
 
-    fn capture(&mut self, frame: FrameHandle, samples: u64) -> VmResult<Complex64> {
+    fn capture(&mut self, frame: FrameHandle, samples: u64) -> KindResult<Complex64> {
         self.events.borrow_mut().push(Event::Capture {
             frame: frame.0,
             samples,
@@ -150,7 +151,7 @@ impl OpenPulseHandler for MockPulse {
         Ok(MOCK_IQ)
     }
 
-    fn shift_phase(&mut self, frame: FrameHandle, phase: f64) -> VmResult<()> {
+    fn shift_phase(&mut self, frame: FrameHandle, phase: f64) -> KindResult<()> {
         self.events.borrow_mut().push(Event::ShiftPhase {
             frame: frame.0,
             phase,
@@ -158,14 +159,14 @@ impl OpenPulseHandler for MockPulse {
         Ok(())
     }
 
-    fn threshold(&mut self, iq: Complex64, discriminator: u64) -> VmResult<bool> {
+    fn threshold(&mut self, iq: Complex64, discriminator: u64) -> KindResult<bool> {
         self.events
             .borrow_mut()
             .push(Event::Threshold { iq, discriminator });
         Ok(true)
     }
 
-    fn waveform_duration(&mut self, waveform: WaveformHandle) -> VmResult<Duration> {
+    fn waveform_duration(&mut self, waveform: WaveformHandle) -> KindResult<Duration> {
         self.waveforms
             .get(&waveform.0)
             .copied()
@@ -203,7 +204,7 @@ fn defcal_fixture_dispatches_to_pulse_handler() {
     let c = result
         .outputs
         .iter()
-        .find(|(sym, _)| module.symbols.get(*sym).name == "c")
+        .find(|(sym, _)| module.symbol(*sym).name == "c")
         .map(|(_, v)| v.to_string())
         .expect("output c");
     assert_eq!(c, "1");
@@ -440,7 +441,7 @@ type CalCalls = Rc<RefCell<Vec<(Option<String>, String)>>>;
 struct MockCal(CalCalls);
 
 impl OpaqueCalHandler for MockCal {
-    fn cal(&mut self, grammar: Option<&str>, text: &str) -> VmResult<()> {
+    fn cal(&mut self, grammar: Option<&str>, text: &str) -> KindResult<()> {
         self.0
             .borrow_mut()
             .push((grammar.map(str::to_string), text.to_string()));
@@ -488,7 +489,7 @@ fn output_str(module: &BcModule, result: &oqi_vm::RunResult, name: &str) -> Stri
     result
         .outputs
         .iter()
-        .find(|(sym, _)| module.symbols.get(*sym).name == name)
+        .find(|(sym, _)| module.symbol(*sym).name == name)
         .map(|(_, v)| v.to_string())
         .unwrap_or_else(|| panic!("output {name}"))
 }
@@ -545,25 +546,25 @@ fn durationof_takes_max_across_frames() {
 struct MinimalPulse;
 
 impl OpenPulseHandler for MinimalPulse {
-    fn port(&mut self, _name: &str) -> VmResult<PortHandle> {
+    fn port(&mut self, _name: &str) -> KindResult<PortHandle> {
         Ok(PortHandle(1))
     }
-    fn new_frame(&mut self, _port: PortHandle, _freq: f64, _phase: f64) -> VmResult<FrameHandle> {
+    fn new_frame(&mut self, _port: PortHandle, _freq: f64, _phase: f64) -> KindResult<FrameHandle> {
         Ok(FrameHandle(2))
     }
-    fn gaussian(&mut self, _amp: f64, _d: Duration, _s: Duration) -> VmResult<WaveformHandle> {
+    fn gaussian(&mut self, _amp: f64, _d: Duration, _s: Duration) -> KindResult<WaveformHandle> {
         Ok(WaveformHandle(3))
     }
-    fn play(&mut self, _f: FrameHandle, _w: WaveformHandle) -> VmResult<()> {
+    fn play(&mut self, _f: FrameHandle, _w: WaveformHandle) -> KindResult<()> {
         Ok(())
     }
-    fn capture(&mut self, _f: FrameHandle, _s: u64) -> VmResult<Complex64> {
+    fn capture(&mut self, _f: FrameHandle, _s: u64) -> KindResult<Complex64> {
         Ok(Complex64::new(0.0, 0.0))
     }
-    fn shift_phase(&mut self, _f: FrameHandle, _p: f64) -> VmResult<()> {
+    fn shift_phase(&mut self, _f: FrameHandle, _p: f64) -> KindResult<()> {
         Ok(())
     }
-    fn threshold(&mut self, _iq: Complex64, _d: u64) -> VmResult<bool> {
+    fn threshold(&mut self, _iq: Complex64, _d: u64) -> KindResult<bool> {
         Ok(false)
     }
 }

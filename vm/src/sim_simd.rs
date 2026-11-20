@@ -17,8 +17,8 @@ use oqi_quantum::{Gate, Unitary};
 use wide::{f32x8, f64x4};
 
 use crate::backend::{GateModifiers, QuantumBackend};
-use crate::error::{VmError, VmErrorKind};
-use crate::sim::Rng;
+use crate::error::{VmError, VmErrorKind, VmResult};
+use crate::rng::Rng;
 
 /// Copy the first `N` elements of `s` into a fixed-size array.
 fn arr<T: Copy, const N: usize>(s: &[T]) -> [T; N] {
@@ -125,7 +125,7 @@ impl<F: SimdLane> SimdSim<F> {
     /// A fresh simulator with an explicit seed, or a
     /// [`VmErrorKind::TooManyQubits`] error if the `2^num_qubits`-amplitude
     /// arrays can't be allocated.
-    pub fn try_zeroed(num_qubits: u32, seed: u64) -> std::result::Result<Self, VmError> {
+    pub fn try_zeroed(num_qubits: u32, seed: u64) -> VmResult<Self> {
         let too_many = || {
             VmError::new(VmErrorKind::TooManyQubits {
                 requested: num_qubits,
@@ -402,65 +402,71 @@ mod tests {
         b.gphase(0.3, &plain).await;
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn matches_scalar_for_single_qubit_gates() {
-        let mut scalar = StateVectorSim::<f64>::try_zeroed(5, 0xABCD).unwrap();
-        let mut simd = SimdSim::<f64>::try_zeroed(5, 0xABCD).unwrap();
-        single_qubit_gates(&mut scalar).await;
-        single_qubit_gates(&mut simd).await;
-        assert_close(
-            &scalar.amplitudes().await.unwrap(),
-            &simd.amplitudes().await.unwrap(),
-        );
+    #[test]
+    fn matches_scalar_for_single_qubit_gates() {
+        pollster::block_on(async {
+            let mut scalar = StateVectorSim::<f64>::try_zeroed(5, 0xABCD).unwrap();
+            let mut simd = SimdSim::<f64>::try_zeroed(5, 0xABCD).unwrap();
+            single_qubit_gates(&mut scalar).await;
+            single_qubit_gates(&mut simd).await;
+            assert_close(
+                &scalar.amplitudes().await.unwrap(),
+                &simd.amplitudes().await.unwrap(),
+            );
+        })
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn matches_scalar_for_controlled_and_gphase() {
-        let mut scalar = StateVectorSim::<f64>::try_zeroed(4, 0xABCD).unwrap();
-        let mut simd = SimdSim::<f64>::try_zeroed(4, 0xABCD).unwrap();
-        controlled_gates(&mut scalar).await;
-        controlled_gates(&mut simd).await;
-        assert_close(
-            &scalar.amplitudes().await.unwrap(),
-            &simd.amplitudes().await.unwrap(),
-        );
+    #[test]
+    fn matches_scalar_for_controlled_and_gphase() {
+        pollster::block_on(async {
+            let mut scalar = StateVectorSim::<f64>::try_zeroed(4, 0xABCD).unwrap();
+            let mut simd = SimdSim::<f64>::try_zeroed(4, 0xABCD).unwrap();
+            controlled_gates(&mut scalar).await;
+            controlled_gates(&mut simd).await;
+            assert_close(
+                &scalar.amplitudes().await.unwrap(),
+                &simd.amplitudes().await.unwrap(),
+            );
+        })
     }
 
     /// The rayon block path must produce exactly the same state as the
     /// serial path (it partitions the same independent blocks).
     #[cfg(feature = "parallel")]
-    #[tokio::test(flavor = "multi_thread")]
-    async fn parallel_matches_serial() {
-        async fn gates(b: &mut dyn QuantumBackend) {
-            let h = GateModifiers::none();
-            for q in 0..8 {
-                b.u(
-                    q,
-                    std::f64::consts::FRAC_PI_2,
-                    0.0,
-                    std::f64::consts::PI,
-                    &h,
-                )
-                .await;
+    #[test]
+    fn parallel_matches_serial() {
+        pollster::block_on(async {
+            async fn gates(b: &mut dyn QuantumBackend) {
+                let h = GateModifiers::none();
+                for q in 0..8 {
+                    b.u(
+                        q,
+                        std::f64::consts::FRAC_PI_2,
+                        0.0,
+                        std::f64::consts::PI,
+                        &h,
+                    )
+                    .await;
+                }
+                for q in 0..8 {
+                    b.u(q, 0.21, 0.13, 0.42, &h).await;
+                }
             }
-            for q in 0..8 {
-                b.u(q, 0.21, 0.13, 0.42, &h).await;
+            let mut serial = SimdSim::<f64>::try_zeroed(8, 0xABCD).unwrap();
+            let mut parallel = SimdSim::<f64>::try_zeroed(8, 0xABCD)
+                .unwrap()
+                .with_parallel(true);
+            gates(&mut serial).await;
+            gates(&mut parallel).await;
+            for (x, y) in serial
+                .amplitudes()
+                .await
+                .unwrap()
+                .iter()
+                .zip(&parallel.amplitudes().await.unwrap())
+            {
+                assert_eq!(x, y, "parallel and serial SIMD paths diverged");
             }
-        }
-        let mut serial = SimdSim::<f64>::try_zeroed(8, 0xABCD).unwrap();
-        let mut parallel = SimdSim::<f64>::try_zeroed(8, 0xABCD)
-            .unwrap()
-            .with_parallel(true);
-        gates(&mut serial).await;
-        gates(&mut parallel).await;
-        for (x, y) in serial
-            .amplitudes()
-            .await
-            .unwrap()
-            .iter()
-            .zip(&parallel.amplitudes().await.unwrap())
-        {
-            assert_eq!(x, y, "parallel and serial SIMD paths diverged");
-        }
+        })
     }
 }

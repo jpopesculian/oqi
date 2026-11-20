@@ -58,9 +58,9 @@ impl Default for GateModifiers {
 /// without blocking — essential in the browser, where the main thread can't
 /// block. CPU backends implement them as ready futures. `?Send` keeps the
 /// trait object-safe (via `async_trait`'s boxed futures) and works with
-/// `!Send` web GPU types: a multi-threaded runtime's `block_on` still drives
-/// the future on the calling thread, so the trait's futures need not be
-/// `Send` (native callers use tokio; wasm uses the browser event loop).
+/// `!Send` web GPU types: `block_on` drives the future on the calling
+/// thread, so the trait's futures need not be `Send` (native callers use
+/// `pollster`; wasm uses the browser event loop).
 #[async_trait(?Send)]
 pub trait QuantumBackend {
     /// Apply `U(θ, φ, λ)` to `target` under the given modifiers.
@@ -122,6 +122,16 @@ pub trait QuantumBackend {
         None
     }
 
+    /// Whether [`amplitudes`](Self::amplitudes) is a cheap copy of a state
+    /// vector the backend already holds. `false` for backends whose native
+    /// representation is something smaller (a stabilizer tableau, a sum
+    /// over Cliffords), where materializing 2ⁿ amplitudes can cost far more
+    /// than running the circuit — shot sampling then re-runs the circuit
+    /// per shot instead of snapshotting the state.
+    fn has_dense_state(&self) -> bool {
+        true
+    }
+
     /// Take a deferred error raised by an earlier primitive. The methods
     /// above are infallible; a backend that can fail mid-run (e.g. the
     /// auto-router when its sum-over-Cliffords budget is exhausted and no
@@ -177,6 +187,10 @@ impl QuantumBackend for Box<dyn QuantumBackend> {
 
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
         (**self).amplitudes().await
+    }
+
+    fn has_dense_state(&self) -> bool {
+        (**self).has_dense_state()
     }
 
     fn take_error(&mut self) -> Option<VmErrorKind> {

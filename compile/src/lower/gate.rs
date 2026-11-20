@@ -11,7 +11,6 @@ use oqi_parse::ast;
 
 use crate::classical::{PrimitiveTy, Value, iw};
 use crate::error::{CompileError, ErrorKind, Result};
-use crate::scope::ScopeKind;
 use crate::sir;
 use crate::symbol::SymbolKind;
 use crate::types::{Type, eval_const_expr, resolve_scalar_type};
@@ -19,12 +18,12 @@ use crate::types::{Type, eval_const_expr, resolve_scalar_type};
 use super::Lowerer;
 
 impl Lowerer {
-    pub(super) fn lower_gate_body(&mut self, scope: &ast::Scope<'_>) -> Result<sir::GateBody> {
+    pub(super) fn lower_gate_body(&mut self, scope: &ast::Scope<'_>) -> Result<Vec<sir::Stmt>> {
         let mut stmts = Vec::new();
         for item in &scope.body {
             self.lower_gate_item(item, &mut stmts)?;
         }
-        Ok(sir::GateBody { body: stmts })
+        Ok(stmts)
     }
 
     /// Lower one gate-body item, unrolling `for` loops and rejecting
@@ -35,14 +34,12 @@ impl Lowerer {
         out: &mut Vec<sir::Stmt>,
     ) -> Result<()> {
         match item {
-            ast::StmtOrScope::Scope(scope) => {
-                self.with_scope(ScopeKind::Anonymous, scope.span, |this| {
-                    for it in &scope.body {
-                        this.lower_gate_item(it, out)?;
-                    }
-                    Ok(())
-                })
-            }
+            ast::StmtOrScope::Scope(scope) => self.with_scope(|this| {
+                for it in &scope.body {
+                    this.lower_gate_item(it, out)?;
+                }
+                Ok(())
+            }),
             ast::StmtOrScope::Stmt(stmt) => self.lower_gate_stmt(stmt, out),
         }
     }
@@ -85,13 +82,9 @@ impl Lowerer {
     ) -> Result<()> {
         let var_ty = resolve_scalar_type(ty, self.resolver.symbols(), self.resolver.options())?;
         let values = self.gate_for_values(iterable)?;
-        let body_span = match body {
-            ast::StmtOrScope::Stmt(s) => s.span,
-            ast::StmtOrScope::Scope(sc) => sc.span,
-        };
         for v in values {
             let cv = gate_loop_value(&var_ty, v);
-            self.with_scope(ScopeKind::For, body_span, |this| {
+            self.with_scope(|this| {
                 let var_sym =
                     this.resolver
                         .declare(var.name, SymbolKind::Const, var_ty.clone(), var.span)?;

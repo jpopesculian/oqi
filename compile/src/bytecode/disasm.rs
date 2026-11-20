@@ -5,8 +5,8 @@ use std::fmt;
 
 use super::types::{
     BcAliasSegment, BcBlock, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCallTarget,
-    BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcSwitchLabels, BcTerminator, BlockId,
-    ConstId, ProcId, ProcOwner, QubitSource, Reg, StringId,
+    BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcTerminator, BlockId, ConstId, ProcId,
+    ProcOwner, QubitSource, Reg, StringId,
 };
 
 impl fmt::Display for BcModule {
@@ -411,23 +411,15 @@ fn fmt_terminator(f: &mut fmt::Formatter<'_>, term: &BcTerminator) -> fmt::Resul
             fmt_operand(f, target)?;
             for (labels, bb) in cases {
                 write!(f, " | ")?;
-                match labels {
-                    BcSwitchLabels::Default => write!(f, "default")?,
-                    BcSwitchLabels::Values(vs) => {
-                        for (i, v) in vs.iter().enumerate() {
-                            if i > 0 {
-                                write!(f, ", ")?;
-                            }
-                            fmt_operand(f, v)?;
-                        }
+                for (i, v) in labels.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
                     }
+                    fmt_operand(f, v)?;
                 }
                 write!(f, " -> {}", fmt_block_id(*bb))?;
             }
-            if let Some(d) = default {
-                write!(f, " | default -> {}", fmt_block_id(*d))?;
-            }
-            Ok(())
+            write!(f, " | default -> {}", fmt_block_id(*default))
         }
         BcTerminator::Return(rv) => {
             write!(f, "return")?;

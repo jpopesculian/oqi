@@ -8,21 +8,17 @@ pub mod ops;
 mod primitive;
 mod scalar;
 mod shared;
-mod ty;
 mod value;
 
-pub use array::{
-    Array, ArrayDim, ArrayShape, ArrayTy, BaseArray, BaseArrayTy, ScalarIter, adim, ashape,
-};
-pub use array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, BaseArrayRef, BaseArrayRefTy, RefAccess};
+pub use array::{Array, ArrayDim, ArrayShape, ArrayTy, adim, ashape};
+pub use array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
 pub use bitreg::BitReg;
 pub use duration::{Duration, DurationUnit};
 pub use error::{Error, Result};
 pub use index::Index;
 pub use primitive::{FloatWidth, IntWidth, Primitive, PrimitiveTy, iw};
-pub use scalar::{BaseScalar, Scalar};
-pub use shared::Shared;
-pub use value::{BaseValue, BaseValueTy, Value, ValueTy};
+pub use scalar::Scalar;
+pub use value::{Value, ValueTy};
 
 #[cfg(test)]
 mod serde_tests {

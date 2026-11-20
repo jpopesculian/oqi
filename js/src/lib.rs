@@ -30,8 +30,8 @@ use wasm_bindgen_futures::JsFuture;
 /// Name used for the root source in rendered diagnostics.
 const SOURCE_NAME: &str = "<source>";
 
-/// Default RNG seed (matches the CLI's `DEFAULT_SEED` / `StateVectorSim::new`,
-/// so CLI and JS runs of the same program and seed agree).
+/// Default RNG seed (matches the CLI's `DEFAULT_SEED`, so CLI and JS runs
+/// of the same program and seed agree).
 const DEFAULT_SEED: u64 = 0x2545F4914F6CDD1D;
 
 /// Largest integer a JS `number` represents exactly (2^53 - 1).
@@ -682,7 +682,10 @@ fn coerce_value(what: &str, raw: &InputValue, ty: ValueTy) -> Result<Value, Stri
         ValueTy::Scalar(PrimitiveTy::BitReg(w)) => Value::bitreg(raw.to_bitreg(what, w)?, w),
         ValueTy::Array(aty) => {
             if !matches!(raw, InputValue::Array(_)) {
-                return Err(format!("{what} must be a JSON array of `{}` values", aty.ty()));
+                return Err(format!(
+                    "{what} must be a JSON array of `{}` values",
+                    aty.ty()
+                ));
             }
             let mut leaves: Vec<&InputValue> = Vec::new();
             collect_leaves(raw, &mut leaves);

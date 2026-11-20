@@ -34,9 +34,9 @@ use super::phi_elim::deconstruct_phis;
 use super::regalloc::{RegMap, allocate_registers, reg_value_ty};
 use super::types::{
     BcAliasSegment, BcBlock, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCalibration,
-    BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcProcedure, BcSwitchLabels,
-    BcTerminator, BcVersion, BlockId, ConstId, ProcId, ProcOwner, QubitRegion, QubitRegionId,
-    QubitSource, QubitTable, Reg, StringId,
+    BcCallTarget, BcGateModifier, BcInstr, BcModule, BcOp, BcOperand, BcProcedure, BcTerminator,
+    BcVersion, BlockId, ConstId, ProcId, ProcOwner, QubitRegion, QubitRegionId, QubitSource,
+    QubitTable, Reg, StringId,
 };
 use crate::types::Type;
 
@@ -51,12 +51,10 @@ pub fn emit(
     let mut ctx = EmitCtx::new(symbols, &program.calibrations, layout);
     let entry = ctx.emit_root(&ssa.top_level, ProcOwner::TopLevel)?;
     for sub in &ssa.subroutines {
-        let owner = sub_owner(&sub.owner);
-        ctx.emit_root(sub, owner)?;
+        ctx.emit_root(sub, sub.owner.clone())?;
     }
     for gate in &ssa.gates {
-        let owner = gate_owner(&gate.owner);
-        ctx.emit_root(gate, owner)?;
+        ctx.emit_root(gate, gate.owner.clone())?;
     }
     let mut cal_procs: Vec<Option<ProcId>> = vec![None; ssa.calibrations.len()];
     for (i, cal) in ssa.calibrations.iter().enumerate() {
@@ -101,20 +99,6 @@ pub fn emit(
         calibrations,
         calibration_grammar,
     })
-}
-
-fn sub_owner(owner: &crate::cfg::CfgOwner) -> ProcOwner {
-    match owner {
-        crate::cfg::CfgOwner::Subroutine(s) => ProcOwner::Subroutine(*s),
-        _ => unreachable!("subroutine CFG with non-subroutine owner"),
-    }
-}
-
-fn gate_owner(owner: &crate::cfg::CfgOwner) -> ProcOwner {
-    match owner {
-        crate::cfg::CfgOwner::Gate(s) => ProcOwner::Gate(*s),
-        _ => unreachable!("gate CFG with non-gate owner"),
-    }
 }
 
 /// Mutable emission state shared across procedures.
@@ -164,7 +148,7 @@ enum AliasSrc {
     },
     Alias(qubits::DynAlias),
     /// A qubit subroutine parameter, bound to a qubit list at call time and
-    /// resolved at run time via [`BcOperand::QubitParam`].
+    /// resolved at run time via its [`QubitSource::Slot`].
     Param {
         slot: u32,
         len: Option<usize>,
@@ -401,10 +385,7 @@ impl<'a> EmitCtx<'a> {
     }
 
     fn emit_block(&mut self, block: &SsaBlock, reg_map: &mut RegMap) -> Result<BcBlock> {
-        // phi_elim has already cleared phis; if any remain (e.g. a
-        // future caller skipped phi elimination), record them as
-        // placeholder Moves — but assert empty to keep the bytecode
-        // honest.
+        // phi_elim has already cleared phis.
         debug_assert!(
             block.phis.is_empty(),
             "phi_elim must clear all phis before emit_block"
@@ -1109,7 +1090,7 @@ impl<'a> EmitCtx<'a> {
     }
 
     /// Lower a runtime-bound `let` alias to a [`BcOp::AliasBind`] and
-    /// register its slot/length for later [`BcOperand::QubitAlias`]
+    /// register its slot/length for later [`QubitSource::Slot`]
     /// references. Each `++` operand becomes one or more segments.
     fn lower_dynamic_alias(
         &mut self,
@@ -1262,7 +1243,7 @@ impl<'a> EmitCtx<'a> {
     /// Materialize a runtime multi-element slice (`q[{a, b}]`, `q[i:j]`)
     /// used directly as an operand: allocate an anonymous alias slot, emit
     /// its [`BcOp::AliasBind`], and return the slot. The caller wraps it in
-    /// a [`BcOperand::QubitAlias`].
+    /// a [`QubitSource::Slot`].
     fn bind_transient_alias(
         &mut self,
         src: &AliasSrc,
@@ -1577,21 +1558,17 @@ impl<'a> EmitCtx<'a> {
                 let cases = cases
                     .iter()
                     .map(|(labels, bb)| {
-                        let lab = match labels {
-                            crate::sir::SwitchLabels::Default => BcSwitchLabels::Default,
-                            crate::sir::SwitchLabels::Values(vs) => BcSwitchLabels::Values(
-                                vs.iter()
-                                    .map(|v| self.lower_expr_to_operand(v, instrs, reg_map))
-                                    .collect::<Result<_>>()?,
-                            ),
-                        };
-                        Ok((lab, BlockId(bb.0 as u32)))
+                        let labels = labels
+                            .iter()
+                            .map(|v| self.lower_expr_to_operand(v, instrs, reg_map))
+                            .collect::<Result<_>>()?;
+                        Ok((labels, BlockId(bb.0 as u32)))
                     })
                     .collect::<Result<_>>()?;
                 BcTerminator::Switch {
                     target,
                     cases,
-                    default: default.map(|b| BlockId(b.0 as u32)),
+                    default: BlockId(default.0 as u32),
                 }
             }
             SsaTerminator::Return(rv) => BcTerminator::Return(

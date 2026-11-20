@@ -45,7 +45,7 @@ pub enum Type {
     /// Physical qubit reference: `$0`, `$1`.
     PhysicalQubit,
     /// OpenPulse primitive (`port`, `frame`, `waveform`).
-    Openpulse(openpulse::ValueTy),
+    Openpulse(openpulse::PrimitiveTy),
 }
 
 impl Type {
@@ -569,14 +569,13 @@ pub fn resolve_scalar_type(
             }
         }
 
-        ast::ScalarType::Waveform(_) => Ok(Type::Openpulse(openpulse::ValueTy::Scalar(
-            openpulse::PrimitiveTy::waveform(options.system_width.fw()),
+        ast::ScalarType::Waveform(_) => Ok(Type::Openpulse(openpulse::PrimitiveTy::Waveform(
+            options.system_width.fw(),
         ))),
-        ast::ScalarType::Port(_) => Ok(Type::Openpulse(openpulse::ValueTy::Scalar(
-            openpulse::PrimitiveTy::port(),
-        ))),
-        ast::ScalarType::Frame(_) => Ok(Type::Openpulse(openpulse::ValueTy::Scalar(
-            openpulse::PrimitiveTy::frame(options.system_width.fw(), options.system_width.iw()),
+        ast::ScalarType::Port(_) => Ok(Type::Openpulse(openpulse::PrimitiveTy::Port)),
+        ast::ScalarType::Frame(_) => Ok(Type::Openpulse(openpulse::PrimitiveTy::Frame(
+            options.system_width.fw(),
+            options.system_width.iw(),
         ))),
     }
 }

@@ -32,8 +32,8 @@ use pyo3::types::{PyBool, PyDict, PyList, PyTuple};
 /// Name used for the root source in rendered diagnostics.
 const SOURCE_NAME: &str = "<source>";
 
-/// Default RNG seed (matches the CLI's `DEFAULT_SEED` / `StateVectorSim::new`,
-/// so CLI, JS, and Python runs of the same program and seed agree).
+/// Default RNG seed (matches the CLI's `DEFAULT_SEED`, so CLI, JS, and
+/// Python runs of the same program and seed agree).
 const DEFAULT_SEED: u64 = 0x2545F4914F6CDD1D;
 
 /// Largest integer a `float` represents exactly (2^53 - 1).
@@ -303,10 +303,12 @@ fn coerce_scalar(what: &str, v: &Bound<'_, PyAny>, ty: ValueTy) -> Result<Value,
             let elems = leaves
                 .iter()
                 .enumerate()
-                .map(|(i, item)| match coerce_scalar(&format!("{what}[{i}]"), item, elem_ty)? {
-                    Value::Scalar(s) => Ok(s.into_value()),
-                    _ => unreachable!("a scalar type coerces to a scalar value"),
-                })
+                .map(
+                    |(i, item)| match coerce_scalar(&format!("{what}[{i}]"), item, elem_ty)? {
+                        Value::Scalar(s) => Ok(s.into_value()),
+                        _ => unreachable!("a scalar type coerces to a scalar value"),
+                    },
+                )
                 .collect::<Result<Vec<Primitive>, String>>()?;
             // `Array::new` validates the element count against the shape.
             Value::Array(Array::new(elems, aty).map_err(|e| format!("{what}: {e:?}"))?)

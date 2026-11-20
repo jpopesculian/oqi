@@ -8,7 +8,6 @@ oqi-lex = { path = "../lex" }
 oqi-parse = { path = "../parse" }
 oqi-diagnostics = { path = "../diagnostics" }
 oqi-classical = { path = "../classical" }
-oqi-openpulse = { path = "../openpulse" }
 oqi-quantum = { path = "../quantum", default-features = false }
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }

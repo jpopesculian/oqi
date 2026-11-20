@@ -7,7 +7,6 @@ mod bitnot;
 mod bitor;
 mod bitxor;
 mod ceiling;
-mod concat;
 mod cos;
 mod div;
 mod eq;
@@ -49,7 +48,6 @@ pub use bitnot::BitNot;
 pub use bitor::BitOr;
 pub use bitxor::BitXor;
 pub use ceiling::Ceiling;
-pub use concat::Concat;
 pub use cos::Cos;
 pub use div::Div;
 pub use eq::Eq;
@@ -284,7 +282,7 @@ pub trait BinOp {
     }
 
     fn check(lhs: ValueTy, rhs: ValueTy) -> Result<(ValueTy, ValueTy, ValueTy)> {
-        use crate::value::BaseValueTy::*;
+        use crate::value::ValueTy::*;
         match (lhs, rhs) {
             (Scalar(lht), Scalar(rht)) => Self::scalar_check(lht, rht)
                 .map(|(lht, rht, out)| (Scalar(lht), Scalar(rht), Scalar(out))),
@@ -407,7 +405,7 @@ pub trait UnOp {
     }
 
     fn check(arg: ValueTy) -> Result<(ValueTy, ValueTy)> {
-        use crate::value::BaseValueTy::*;
+        use crate::value::ValueTy::*;
         match arg {
             Scalar(ty) => {
                 Self::scalar_check(ty).map(|(arg_ty, out_ty)| (Scalar(arg_ty), Scalar(out_ty)))

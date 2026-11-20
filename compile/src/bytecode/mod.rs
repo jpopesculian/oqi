@@ -25,7 +25,7 @@ pub mod regalloc;
 pub mod types;
 
 pub use analysis::is_sample_safe;
-pub use binary::{DecodeError, EncodeError, from_bytes, to_bytes};
+pub use binary::{DecodeError, from_bytes, to_bytes};
 pub use emit::emit;
 pub use types::*;
 
@@ -326,7 +326,7 @@ mod tests {
     #[test]
     fn runtime_indexed_alias_emits_aliasbind_and_qubit_alias() {
         // A `let` over a runtime index set binds a slot at run time
-        // (BcOp::AliasBind) and references resolve to BcOperand::QubitAlias.
+        // (BcOp::AliasBind) and references resolve to that QubitSource::Slot.
         let module = build_bytecode(
             "input uint[32] i; qubit[8] q; let bp = q[{2*i, 2*i + 1}]; reset bp; reset bp[1];",
         );

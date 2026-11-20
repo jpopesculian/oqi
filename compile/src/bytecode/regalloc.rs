@@ -13,7 +13,7 @@ use oqi_classical::{PrimitiveTy, ValueTy, iw};
 
 use crate::sir::{
     Alias, Binary, Call, Cast, Delay, GateCall, GateModifier, Index, IndexItem, IndexKind, IndexOp,
-    MeasureExpr, MeasureExprKind, QubitOperand, RValue, RangeExpr, SwitchLabels, Unary,
+    MeasureExpr, MeasureExprKind, QubitOperand, RValue, RangeExpr, Unary,
 };
 use crate::ssa::{
     SsaAssignment, SsaCfg, SsaExpr, SsaExprKind, SsaLValue, SsaMeasure, SsaStmtKind, SsaTerminator,
@@ -147,10 +147,8 @@ fn visit_terminator(term: &SsaTerminator, map: &mut RegMap, symbols: &SymbolTabl
         SsaTerminator::Switch { target, cases, .. } => {
             visit_expr(target, map, symbols);
             for (labels, _) in cases {
-                if let SwitchLabels::Values(vs) = labels {
-                    for v in vs {
-                        visit_expr(v, map, symbols);
-                    }
+                for v in labels {
+                    visit_expr(v, map, symbols);
                 }
             }
         }

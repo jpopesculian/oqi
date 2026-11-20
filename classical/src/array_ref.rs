@@ -2,23 +2,23 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::array::{Array, ArrayDim, ArrayShape, ArrayTy, BaseArray, BaseArrayTy};
+use crate::array::{Array, ArrayDim, ArrayShape, ArrayTy};
 use crate::error::{Error, Result};
 use crate::index::Index;
-use crate::primitive::{Primitive, PrimitiveTy};
+use crate::primitive::PrimitiveTy;
 use crate::shared::Shared;
 use crate::value::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BaseArrayRef<V, T> {
-    array: Shared<BaseArray<V, T>>,
+pub struct ArrayRef {
+    array: Shared<Array>,
     indices: Vec<Index>,
-    ty: BaseArrayRefTy<T>,
+    ty: ArrayRefTy,
 }
 
-impl<V, T> BaseArrayRef<V, T> {
+impl ArrayRef {
     #[inline]
-    pub fn array(&self) -> &Shared<BaseArray<V, T>> {
+    pub fn array(&self) -> &Shared<Array> {
         &self.array
     }
 
@@ -26,25 +26,19 @@ impl<V, T> BaseArrayRef<V, T> {
     pub fn indices(&self) -> &[Index] {
         &self.indices
     }
-}
 
-impl<V, T: Copy> BaseArrayRef<V, T> {
     #[inline]
-    pub fn ty(&self) -> BaseArrayRefTy<T> {
+    pub fn ty(&self) -> ArrayRefTy {
         self.ty
     }
-}
 
-pub type ArrayRef = BaseArrayRef<Primitive, PrimitiveTy>;
-
-impl ArrayRef {
     pub fn new(array: Shared<Array>, indices: Vec<Index>, access: RefAccess) -> Result<Self> {
         let array_ty = array.borrow()?.ty();
         let mut shape = array_ty.shape();
         for idx in &indices {
             let new_shape = idx
                 .shape(shape.get())
-                .and_then(|shape| if shape.is_empty() { None } else { Some(shape) })
+                .filter(|shape| !shape.is_empty())
                 .ok_or_else(|| Error::IndexOutOfBounds {
                     value: Box::new(array_ty.into()),
                     index: indices.clone(),
@@ -182,15 +176,15 @@ impl fmt::Display for ArrayRefShape {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct BaseArrayRefTy<T> {
-    ty: T,
+pub struct ArrayRefTy {
+    ty: PrimitiveTy,
     shape: ArrayRefShape,
     access: RefAccess,
 }
 
-impl<T> BaseArrayRefTy<T> {
+impl ArrayRefTy {
     #[inline]
-    pub const fn new(ty: T, shape: ArrayRefShape, access: RefAccess) -> Self {
+    pub const fn new(ty: PrimitiveTy, shape: ArrayRefShape, access: RefAccess) -> Self {
         Self { ty, shape, access }
     }
 
@@ -203,11 +197,9 @@ impl<T> BaseArrayRefTy<T> {
     pub fn access(&self) -> RefAccess {
         self.access
     }
-}
 
-impl<T: Copy> BaseArrayRefTy<T> {
     #[inline]
-    pub fn readonly(array: BaseArrayTy<T>) -> Self {
+    pub fn readonly(array: ArrayTy) -> Self {
         Self::new(
             array.ty(),
             ArrayRefShape::Fixed(array.shape()),
@@ -216,7 +208,7 @@ impl<T: Copy> BaseArrayRefTy<T> {
     }
 
     #[inline]
-    pub fn mutable(array: BaseArrayTy<T>) -> Self {
+    pub fn mutable(array: ArrayTy) -> Self {
         Self::new(
             array.ty(),
             ArrayRefShape::Fixed(array.shape()),
@@ -225,12 +217,12 @@ impl<T: Copy> BaseArrayRefTy<T> {
     }
 
     #[inline]
-    pub fn ty(&self) -> T {
+    pub fn ty(&self) -> PrimitiveTy {
         self.ty
     }
 
     #[inline]
-    pub fn with_ty(&self, ty: T) -> Self {
+    pub fn with_ty(&self, ty: PrimitiveTy) -> Self {
         Self { ty, ..*self }
     }
 
@@ -238,11 +230,7 @@ impl<T: Copy> BaseArrayRefTy<T> {
     pub fn with_shape(&self, shape: ArrayRefShape) -> Self {
         Self { shape, ..*self }
     }
-}
 
-pub type ArrayRefTy = BaseArrayRefTy<PrimitiveTy>;
-
-impl ArrayRefTy {
     pub fn to_owned(self) -> Result<ArrayTy> {
         let shape = match self.shape {
             ArrayRefShape::Fixed(shape) => shape,
@@ -283,7 +271,7 @@ impl From<ArrayTy> for ArrayRefTy {
     }
 }
 
-impl<T: fmt::Display> fmt::Display for BaseArrayRefTy<T> {
+impl fmt::Display for ArrayRefTy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} array[{}, {}]", self.access, self.ty, self.shape)
     }

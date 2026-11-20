@@ -378,7 +378,7 @@ async fn run(
     }
 }
 
-/// Default RNG seed (matches `StateVectorSim::new`).
+/// Default RNG seed.
 const DEFAULT_SEED: u64 = 0x2545F4914F6CDD1D;
 
 /// Parse a `--dt` duration ("0.5ns"): timing-literal syntax, except the
@@ -500,9 +500,7 @@ fn parse_inputs(
                         _ => unreachable!("a scalar type parses to a scalar value"),
                     })
                     .collect::<Result<Vec<Primitive>, String>>()?;
-                Value::Array(
-                    Array::new(elems, aty).map_err(|e| format!("input `{name}`: {e:?}"))?,
-                )
+                Value::Array(Array::new(elems, aty).map_err(|e| format!("input `{name}`: {e:?}"))?)
             }
             scalar_ty => parse_scalar(name, raw, scalar_ty)?,
         };

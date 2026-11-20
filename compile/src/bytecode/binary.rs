@@ -6,17 +6,6 @@ use super::types::{BcModule, BcVersion};
 const MAGIC: [u8; 4] = *b"OQIB";
 
 #[derive(Debug)]
-pub enum EncodeError {
-    Postcard(postcard::Error),
-}
-
-impl From<postcard::Error> for EncodeError {
-    fn from(e: postcard::Error) -> Self {
-        EncodeError::Postcard(e)
-    }
-}
-
-#[derive(Debug)]
 pub enum DecodeError {
     BadMagic,
     IncompatibleVersion {
@@ -33,7 +22,7 @@ impl From<postcard::Error> for DecodeError {
 }
 
 /// Encode a module to bytes. Output is `MAGIC | postcard(module)`.
-pub fn to_bytes(module: &BcModule) -> Result<Vec<u8>, EncodeError> {
+pub fn to_bytes(module: &BcModule) -> Result<Vec<u8>, postcard::Error> {
     let mut out = Vec::new();
     out.extend_from_slice(&MAGIC);
     let body = postcard::to_allocvec(module)?;

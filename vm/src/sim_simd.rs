@@ -231,7 +231,7 @@ impl<F: SimdLane> SimdSim<F> {
     }
 
     fn apply_x(&mut self, target: usize) {
-        // U(π, 0, π) is exactly Pauli-X (no spurious phase).
+        // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
         let x = Unitary::new(
             Self::cast(std::f64::consts::PI),
             F::zero(),

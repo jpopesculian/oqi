@@ -1,5 +1,6 @@
 use super::{Add, BinOp, unsupported_scalar_binop};
 use crate::array::{Array, ArrayShape, ArrayTy, shape};
+use crate::index::flat_to_multi;
 use crate::primitive::{FloatWidth, PrimitiveTy, promote_arithmetic};
 use crate::scalar::Scalar;
 use crate::value::Value;
@@ -159,7 +160,7 @@ impl BinOp for Mul {
         };
 
         for batch_flat in 0..batch_total {
-            let coords = flat_to_coords(&plan.batch_out, batch_flat);
+            let coords = flat_to_multi(&plan.batch_out, batch_flat);
             let a_base = batch_offset(&coords, &batch_a, plan.batch_out.len()) * a_mat;
             let b_base = batch_offset(&coords, &batch_b, plan.batch_out.len()) * b_mat;
 
@@ -226,16 +227,6 @@ fn broadcast_shape(a: &[usize], b: &[usize]) -> Option<Vec<usize>> {
         }
     }
     Some(out)
-}
-
-/// Convert flat index to multi-dimensional coordinates.
-fn flat_to_coords(shape: &[usize], mut flat: usize) -> Vec<usize> {
-    let mut coords = vec![0; shape.len()];
-    for i in (0..shape.len()).rev() {
-        coords[i] = flat % shape[i];
-        flat /= shape[i];
-    }
-    coords
 }
 
 /// Compute flat batch offset in a source array given broadcast output coordinates.

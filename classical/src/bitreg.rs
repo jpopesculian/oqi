@@ -1,6 +1,4 @@
-use std::cmp::Ordering;
 use std::fmt;
-use std::iter::repeat;
 use std::ops::{BitAnd, BitOr, BitXor, Not, Range, Shl, Shr};
 
 use serde::{Deserialize, Serialize};
@@ -24,16 +22,6 @@ impl BitReg {
             Self::Stack(0)
         } else {
             Self::Heap(vec![0u8; ceil_div_8(width)].into_boxed_slice())
-        }
-    }
-
-    pub fn new(bytes: &[u8]) -> Self {
-        if bytes.len() <= STACK_BYTES {
-            let mut buf = [0u8; STACK_BYTES];
-            buf[..bytes.len()].copy_from_slice(bytes);
-            Self::Stack(u128::from_le_bytes(buf))
-        } else {
-            Self::Heap(bytes.to_vec().into_boxed_slice())
         }
     }
 
@@ -97,19 +85,6 @@ impl BitReg {
     pub fn set_bits(&mut self, ops: impl IntoIterator<Item = (usize, bool)>) {
         for (pos, value) in ops {
             self.set_bit(pos, value);
-        }
-    }
-
-    pub fn get_slice(&self, range: Range<u32>) -> Self {
-        self.get_bits((range.start as usize)..(range.end as usize))
-    }
-
-    pub fn set_slice(&mut self, range: Range<u32>, other: &BitReg) {
-        let len = (range.end - range.start) as usize;
-        let mut bits = other.iter_bits().chain(repeat(false)).take(len);
-        for pos in range.start..range.end {
-            let bit = bits.next().unwrap_or(false);
-            self.set_bit(pos as usize, bit);
         }
     }
 
@@ -278,24 +253,7 @@ impl PartialEq for BitReg {
 
 impl Eq for BitReg {}
 
-impl PartialOrd for BitReg {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp_lex(other))
-    }
-}
-
-impl BitReg {
-    pub fn cmp_lex(&self, other: &Self) -> Ordering {
-        let n = self.storage_byte_count().max(other.storage_byte_count());
-        for i in (0..n).rev() {
-            match self.storage_byte(i).cmp(&other.storage_byte(i)) {
-                Ordering::Equal => continue,
-                neq => return neq,
-            }
-        }
-        Ordering::Equal
-    }
-}
+impl BitReg {}
 
 impl PartialEq<u128> for BitReg {
     fn eq(&self, other: &u128) -> bool {
@@ -473,28 +431,6 @@ mod tests {
     }
 
     #[test]
-    fn new_chooses_stack_for_short_bytes() {
-        let r = BitReg::new(&[0xAA, 0x55]);
-        match r {
-            BitReg::Stack(v) => assert_eq!(v, 0x55AA),
-            _ => panic!("expected stack"),
-        }
-    }
-
-    #[test]
-    fn new_chooses_heap_for_long_bytes() {
-        let bytes: Vec<u8> = (0..20).collect();
-        let r = BitReg::new(&bytes);
-        match r {
-            BitReg::Heap(b) => {
-                assert_eq!(b.len(), 20);
-                assert_eq!(&b[..], &bytes[..]);
-            }
-            _ => panic!("expected heap"),
-        }
-    }
-
-    #[test]
     fn from_u128_is_stack() {
         let r = BitReg::from(0xCAFE_u128);
         assert!(matches!(r, BitReg::Stack(0xCAFE)));
@@ -583,25 +519,6 @@ mod tests {
             rebuilt.set_bit(i, b);
         }
         assert_eq!(r, rebuilt);
-    }
-
-    #[test]
-    fn get_slice_across_byte_boundary() {
-        // 16-bit value 0xABCD in heap form: bytes are little-endian, so byte0=0xCD, byte1=0xAB
-        let r = BitReg::from(Box::new([0xCD_u8, 0xAB]) as Box<[u8]>);
-        // Slice bits 4..12 = bits 4,5,6,7 of byte 0 (0xC) + bits 0,1,2,3 of byte 1 (0xB) = 0xBC
-        let s = r.get_slice(4..12);
-        match &s {
-            BitReg::Stack(v) => assert_eq!(*v, 0xBC),
-            _ => panic!("expected stack output"),
-        }
-    }
-
-    #[test]
-    fn set_slice_does_not_disturb_neighbors() {
-        let mut r = BitReg::zeros(32);
-        r.set_slice(8..16, &BitReg::from(0xFF_u128));
-        assert_eq!(r.as_u128() & 0xFFFF_FFFF, 0x0000_FF00);
     }
 
     #[test]
@@ -717,14 +634,5 @@ mod tests {
         assert_eq!(s.count_ones(), 5);
         let h = BitReg::from(Box::new([0xFF_u8, 0x0F]) as Box<[u8]>);
         assert_eq!(h.count_ones(), 12);
-    }
-
-    #[test]
-    fn cmp_lex_orders_by_msb() {
-        let a = BitReg::Stack(0b0001);
-        let b = BitReg::Stack(0b0010);
-        assert_eq!(a.cmp_lex(&b), Ordering::Less);
-        assert_eq!(b.cmp_lex(&a), Ordering::Greater);
-        assert_eq!(a.cmp_lex(&a), Ordering::Equal);
     }
 }

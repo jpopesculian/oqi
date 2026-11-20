@@ -7,7 +7,6 @@ members = [
   "compile",
   "cli",
   "classical",
-  "openpulse",
   "quantum",
   "vm",
   "js",

@@ -275,7 +275,7 @@ impl GpuSim {
     }
 
     fn apply_x(&mut self, target: u32) {
-        // U(π, 0, π) is exactly Pauli-X (no spurious phase).
+        // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
         let x = Unitary::<f32>::new(std::f32::consts::PI, 0.0, std::f32::consts::PI).matrix();
         self.run_gate(&x, target, &[], &[]);
     }
@@ -315,9 +315,7 @@ impl GpuSim {
             .expect("map_async callback dropped")
             .expect("buffer map failed");
 
-        let data = slice
-            .get_mapped_range()
-            .expect("buffer mapped just above");
+        let data = slice.get_mapped_range().expect("buffer mapped just above");
         let floats: &[f32] = bytemuck::cast_slice(&data);
         let out = (0..self.len)
             .map(|k| Complex::new(floats[2 * k] as f64, floats[2 * k + 1] as f64))

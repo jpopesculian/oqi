@@ -47,10 +47,10 @@ source → parse → resolve (includes) → lower → cfg → ssa → bytecode �
     then the flat phi-free bytecode (`bytecode::emit`). Bytecode is
     postcard-encoded binary with a textual disassembler (`bytecode/disasm.rs`).
   - `types.rs`, `symbol.rs`, `scope.rs` — type system, symbol table, scoping.
-- **`classical/`** (`oqi-classical`) — classical value/type system (ints of
-  arbitrary width via `awint`, floats, complex, arrays, bit registers) and all
+  - `openpulse.rs` — OpenPulse types (port, frame, waveform).
+- **`classical/`** (`oqi-classical`) — classical value/type system (ints up to
+  128 bits, floats, complex, arrays, bit registers of any width) and all
   scalar operations under `classical/src/ops/`. Used by both compile and vm.
-- **`openpulse/`** (`oqi-openpulse`) — OpenPulse types (waveforms, frames, ports).
 - **`quantum/`** (`oqi-quantum`) — quantum memory model and complex-amplitude math.
 - **`vm/`** (`oqi-vm`) — interprets bytecode. Two pluggable extension points:
   `QuantumBackend` (the `StateVectorSim`, or future GPU/hardware) and

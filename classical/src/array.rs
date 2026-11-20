@@ -2,42 +2,36 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::array_ref::{ArrayRef, ArrayRefShape, BaseArrayRefTy, RefAccess};
+use crate::array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
 use crate::primitive::{Primitive, PrimitiveTy};
 use crate::scalar::Scalar;
 use crate::shared::Shared;
 use crate::{Error, Result};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BaseArray<V, T> {
-    values: Vec<V>,
-    ty: BaseArrayTy<T>,
+pub struct Array {
+    values: Vec<Primitive>,
+    ty: ArrayTy,
 }
 
-impl<V, T> BaseArray<V, T> {
+impl Array {
     #[inline]
-    pub fn new_unchecked(values: Vec<V>, ty: BaseArrayTy<T>) -> Self {
-        BaseArray { values, ty }
+    pub fn new_unchecked(values: Vec<Primitive>, ty: ArrayTy) -> Self {
+        Array { values, ty }
     }
 
-    pub fn values(&self) -> &[V] {
+    pub fn values(&self) -> &[Primitive] {
         &self.values
     }
 
-    pub fn values_mut(&mut self) -> &mut [V] {
+    pub fn values_mut(&mut self) -> &mut [Primitive] {
         &mut self.values
     }
-}
 
-impl<V, T: Copy> BaseArray<V, T> {
-    pub fn ty(&self) -> BaseArrayTy<T> {
+    pub fn ty(&self) -> ArrayTy {
         self.ty
     }
-}
 
-pub type Array = BaseArray<Primitive, PrimitiveTy>;
-
-impl Array {
     pub fn new(mut values: Vec<Primitive>, ty: ArrayTy) -> Result<Self> {
         if values.len() != ty.shape().total() {
             return Err(Error::UnsupportedCast {
@@ -264,14 +258,14 @@ macro_rules! shape {
 pub(crate) use shape;
 
 #[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct BaseArrayTy<T> {
-    ty: T,
+pub struct ArrayTy {
+    ty: PrimitiveTy,
     shape: ArrayShape,
 }
 
-impl<T> BaseArrayTy<T> {
+impl ArrayTy {
     #[inline]
-    pub const fn new(ty: T, shape: ArrayShape) -> Self {
+    pub const fn new(ty: PrimitiveTy, shape: ArrayShape) -> Self {
         Self { ty, shape }
     }
 
@@ -279,11 +273,9 @@ impl<T> BaseArrayTy<T> {
     pub const fn shape(&self) -> ArrayShape {
         self.shape
     }
-}
 
-impl<T: Copy> BaseArrayTy<T> {
     #[inline]
-    pub const fn with_ty(&self, ty: T) -> Self {
+    pub const fn with_ty(&self, ty: PrimitiveTy) -> Self {
         Self { ty, ..*self }
     }
 
@@ -293,13 +285,13 @@ impl<T: Copy> BaseArrayTy<T> {
     }
 
     #[inline]
-    pub const fn ty(&self) -> T {
+    pub const fn ty(&self) -> PrimitiveTy {
         self.ty
     }
 
     #[inline]
-    pub const fn as_ref(&self) -> BaseArrayRefTy<T> {
-        BaseArrayRefTy::new(
+    pub const fn as_ref(&self) -> ArrayRefTy {
+        ArrayRefTy::new(
             self.ty,
             ArrayRefShape::Fixed(self.shape),
             RefAccess::Readonly,
@@ -307,18 +299,14 @@ impl<T: Copy> BaseArrayTy<T> {
     }
 
     #[inline]
-    pub const fn as_ref_mut(&self) -> BaseArrayRefTy<T> {
-        BaseArrayRefTy::new(
+    pub const fn as_ref_mut(&self) -> ArrayRefTy {
+        ArrayRefTy::new(
             self.ty,
             ArrayRefShape::Fixed(self.shape),
             RefAccess::Mutable,
         )
     }
-}
 
-pub type ArrayTy = BaseArrayTy<PrimitiveTy>;
-
-impl ArrayTy {
     #[inline]
     pub fn cast(self, to: ArrayTy) -> Result<Self> {
         if self.shape.total() != to.shape.total() {
@@ -332,7 +320,7 @@ impl ArrayTy {
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for BaseArrayTy<T> {
+impl fmt::Debug for ArrayTy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ArrayTy")
             .field("ty", &self.ty)
@@ -341,7 +329,7 @@ impl<T: fmt::Debug> fmt::Debug for BaseArrayTy<T> {
     }
 }
 
-impl<T: fmt::Display> fmt::Display for BaseArrayTy<T> {
+impl fmt::Display for ArrayTy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "array[{}, {}]", self.ty, self.shape)
     }

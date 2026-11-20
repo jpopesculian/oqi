@@ -49,8 +49,8 @@ pub struct QubitLayout {
     /// Runtime-bound qubit `let` aliases (built from non-constant index
     /// expressions or derived from another dynamic alias); populated
     /// during bytecode emission. References resolve to a
-    /// [`BcOperand::QubitAlias`](super::bytecode::BcOperand) slot bound
-    /// at run time by [`BcOp::AliasBind`](super::bytecode::BcOp).
+    /// [`QubitSource::Slot`](super::bytecode::QubitSource) bound at run
+    /// time by [`BcOp::AliasBind`](super::bytecode::BcOp).
     dynamic_aliases: HashMap<SymbolId, DynAlias>,
     /// Gate qubit params and qubit-typed subroutine params, mapped to
     /// their positional slot (gate: position in the declared qubit

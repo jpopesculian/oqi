@@ -15,8 +15,7 @@ use oqi_classical::{
 };
 use oqi_compile::bytecode::{
     BcAliasSegment, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCallTarget, BcGateModifier,
-    BcModule, BcOp, BcOperand, BcSwitchLabels, BcTerminator, BlockId, ProcId, ProcOwner,
-    QubitSource, Reg,
+    BcModule, BcOp, BcOperand, BcTerminator, BlockId, ProcId, ProcOwner, QubitSource, Reg,
 };
 use oqi_compile::sir::Intrinsic;
 use oqi_compile::symbol::{SymbolId, SymbolKind};
@@ -32,8 +31,6 @@ use crate::extern_fns::ExternProvider;
 pub struct RunResult {
     /// Measurement outcomes in execution order: (global qubit index, bit).
     pub measurements: Vec<(u32, bool)>,
-    /// Final register file of the top-level procedure, for inspection.
-    pub registers: Vec<Option<Value>>,
     /// Named program outputs and their final values. Each `SymbolId`
     /// resolves to a name via [`BcModule::symbols`]. See
     /// [`BcModule::outputs`] for the selection rule.
@@ -410,7 +407,6 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             .collect();
         Ok(RunResult {
             measurements: std::mem::take(&mut self.measurements),
-            registers: frame.regs,
             outputs,
         })
     }
@@ -470,21 +466,17 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         &self,
         frame: &Frame,
         target: i128,
-        cases: &[(BcSwitchLabels, BlockId)],
-        default: Option<BlockId>,
+        cases: &[(Vec<BcOperand>, BlockId)],
+        default: BlockId,
     ) -> Result<BlockId> {
         for (labels, bb) in cases {
-            if let BcSwitchLabels::Values(vs) = labels {
-                for v in vs {
-                    if value_i128(&self.eval(frame, v)?)? == target {
-                        return Ok(*bb);
-                    }
+            for v in labels {
+                if value_i128(&self.eval(frame, v)?)? == target {
+                    return Ok(*bb);
                 }
             }
         }
-        default.ok_or_else(|| {
-            VmErrorKind::Unsupported("switch with no matching case or default".into())
-        })
+        Ok(default)
     }
 
     async fn exec_op(&mut self, op: &BcOp, frame: &mut Frame) -> Result<()> {

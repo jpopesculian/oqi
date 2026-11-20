@@ -2,7 +2,6 @@ use oqi_lex::Span;
 use serde::{Deserialize, Serialize};
 
 use crate::classical::Primitive;
-use crate::scope::ScopeTable;
 use crate::symbol::{SymbolId, SymbolTable};
 use crate::types::Type;
 
@@ -12,7 +11,6 @@ pub struct Program {
     pub version: Option<String>,
     pub calibration_grammar: Option<String>,
     pub symbols: SymbolTable,
-    pub scopes: ScopeTable,
     pub gates: Vec<GateDecl>,
     pub subroutines: Vec<SubroutineDecl>,
     pub externs: Vec<ExternDecl>,
@@ -26,12 +24,8 @@ pub struct GateDecl {
     pub symbol: SymbolId,
     pub params: Vec<SymbolId>,
     pub qubits: Vec<SymbolId>,
-    pub body: GateBody,
-    pub span: Span,
-}
-
-pub struct GateBody {
     pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 pub struct SubroutineDecl {
@@ -383,13 +377,13 @@ pub enum ForIterable {
 
 #[derive(Clone)]
 pub struct SwitchCase {
-    pub labels: SwitchLabels<Expr>,
+    pub labels: SwitchLabels,
     pub body: Vec<Stmt>,
 }
 
 #[derive(Clone)]
-pub enum SwitchLabels<E> {
-    Values(Vec<E>),
+pub enum SwitchLabels {
+    Values(Vec<Expr>),
     Default,
 }
 
@@ -444,314 +438,4 @@ pub enum Intrinsic {
 pub enum RValue<E> {
     Expr(Box<E>),
     Measure(Box<MeasureExpr<E>>),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::classical::{Primitive, ValueTy, iw};
-    use crate::symbol::SymbolKind;
-    use crate::types::FloatWidth;
-
-    fn stmt(kind: StmtKind, span: Span) -> Stmt {
-        Stmt {
-            kind,
-            annotations: vec![],
-            span,
-        }
-    }
-
-    fn float_expr(val: f64, span: Span) -> Expr {
-        Expr {
-            kind: ExprKind::Literal(Primitive::float(val)),
-            ty: Type::Classical(ValueTy::float(FloatWidth::F64)),
-            span,
-        }
-    }
-
-    fn var_expr(sym: SymbolId, ty: Type, span: Span) -> Expr {
-        Expr {
-            kind: ExprKind::Var(sym),
-            ty,
-            span,
-        }
-    }
-
-    fn uint_expr(val: u128, span: Span) -> Expr {
-        Expr {
-            kind: ExprKind::Literal(Primitive::uint(val)),
-            ty: Type::Classical(ValueTy::uint(iw(64))),
-            span,
-        }
-    }
-
-    fn indexed_qubit(sym: SymbolId, idx: u128, span: Span) -> QubitOperand<Expr> {
-        QubitOperand::Indexed {
-            symbol: sym,
-            indices: vec![IndexOp {
-                kind: IndexKind::Items(vec![IndexItem::Single(Box::new(uint_expr(idx, span)))]),
-                span,
-            }],
-        }
-    }
-
-    fn bare_qubit(sym: SymbolId) -> QubitOperand<Expr> {
-        QubitOperand::Indexed {
-            symbol: sym,
-            indices: vec![],
-        }
-    }
-
-    fn gate_call(
-        gate: SymbolId,
-        args: Vec<Expr>,
-        qubits: Vec<QubitOperand<Expr>>,
-        span: Span,
-    ) -> Stmt {
-        stmt(
-            StmtKind::GateCall(GateCall {
-                gate,
-                modifiers: vec![],
-                args,
-                qubits,
-                duration: None,
-            }),
-            span,
-        )
-    }
-
-    fn measure_assign(target: SymbolId, qubit: QubitOperand<Expr>, span: Span) -> Stmt {
-        stmt(
-            StmtKind::Measure(Measure {
-                measure: MeasureExpr {
-                    kind: MeasureExprKind::Measure { operand: qubit },
-                    ty: Type::Classical(ValueTy::bit()),
-                    span,
-                },
-                target: Some(LValue::Var(target)),
-            }),
-            span,
-        )
-    }
-
-    /// Construct the SIR for teleport.qasm by hand — verifies that the
-    /// IR type definitions are expressive enough to represent a real program.
-    #[test]
-    fn test_teleport_manual_construction() {
-        let mut symbols = SymbolTable::new();
-        let mut scopes = ScopeTable::new();
-
-        // stdgates symbols (include "stdgates.inc")
-        let h_gate = symbols.insert(
-            "h".into(),
-            SymbolKind::Gate,
-            Type::Void,
-            Default::default(),
-            None,
-        );
-        let cx_gate = symbols.insert(
-            "cx".into(),
-            SymbolKind::Gate,
-            Type::Void,
-            Default::default(),
-            None,
-        );
-        let u_gate = symbols.insert(
-            "U".into(),
-            SymbolKind::Gate,
-            Type::Void,
-            Default::default(),
-            None,
-        );
-        let z_gate = symbols.insert(
-            "z".into(),
-            SymbolKind::Gate,
-            Type::Void,
-            Default::default(),
-            None,
-        );
-        let x_gate = symbols.insert(
-            "x".into(),
-            SymbolKind::Gate,
-            Type::Void,
-            Default::default(),
-            None,
-        );
-
-        // qubit[3] q;
-        let q = symbols.insert(
-            "q".into(),
-            SymbolKind::Qubit,
-            Type::QubitReg(3),
-            Default::default(),
-            None,
-        );
-        // bit c0; bit c1; bit c2;
-        let c0 = symbols.insert(
-            "c0".into(),
-            SymbolKind::Variable,
-            Type::Classical(ValueTy::bit()),
-            Default::default(),
-            None,
-        );
-        let c1 = symbols.insert(
-            "c1".into(),
-            SymbolKind::Variable,
-            Type::Classical(ValueTy::bit()),
-            Default::default(),
-            None,
-        );
-        let c2 = symbols.insert(
-            "c2".into(),
-            SymbolKind::Variable,
-            Type::Classical(ValueTy::bit()),
-            Default::default(),
-            None,
-        );
-        // gate post q { }
-        let post_gate = symbols.insert(
-            "post".into(),
-            SymbolKind::Gate,
-            Type::Void,
-            Default::default(),
-            None,
-        );
-        let gate_scope = scopes.create(crate::scope::ScopeKind::Gate, None, Default::default());
-        let post_q = symbols.insert(
-            "q".into(),
-            SymbolKind::GateQubit,
-            Type::Qubit,
-            Default::default(),
-            Some(gate_scope),
-        );
-
-        let s: Span = Default::default(); // placeholder span
-
-        // Declarations (q, c0, c1, c2) carry no runtime effect — symbol table only.
-        let _ = (c0, c1, c2);
-        let body = vec![
-            // reset q;
-            stmt(StmtKind::Reset(bare_qubit(q)), s),
-            // U(0.3, 0.2, 0.1) q[0];
-            gate_call(
-                u_gate,
-                vec![float_expr(0.3, s), float_expr(0.2, s), float_expr(0.1, s)],
-                vec![indexed_qubit(q, 0, s)],
-                s,
-            ),
-            // h q[1];
-            gate_call(h_gate, vec![], vec![indexed_qubit(q, 1, s)], s),
-            // cx q[1], q[2];
-            gate_call(
-                cx_gate,
-                vec![],
-                vec![indexed_qubit(q, 1, s), indexed_qubit(q, 2, s)],
-                s,
-            ),
-            // barrier q;
-            stmt(StmtKind::Barrier(vec![bare_qubit(q)]), s),
-            // cx q[0], q[1];
-            gate_call(
-                cx_gate,
-                vec![],
-                vec![indexed_qubit(q, 0, s), indexed_qubit(q, 1, s)],
-                s,
-            ),
-            // h q[0];
-            gate_call(h_gate, vec![], vec![indexed_qubit(q, 0, s)], s),
-            // c0 = measure q[0];
-            measure_assign(c0, indexed_qubit(q, 0, s), s),
-            // c1 = measure q[1];
-            measure_assign(c1, indexed_qubit(q, 1, s), s),
-            // if (c0 == 1) z q[2];
-            stmt(
-                StmtKind::If(If {
-                    condition: Expr {
-                        kind: ExprKind::Binary(Binary {
-                            op: BinOp::Eq,
-                            left: Box::new(var_expr(c0, Type::Classical(ValueTy::bit()), s)),
-                            right: Box::new(uint_expr(1, s)),
-                        }),
-                        ty: Type::Classical(ValueTy::bool()),
-                        span: s,
-                    },
-                    then_body: vec![gate_call(z_gate, vec![], vec![indexed_qubit(q, 2, s)], s)],
-                    else_body: None,
-                }),
-                s,
-            ),
-            // if (c1 == 1) { x q[2]; }
-            stmt(
-                StmtKind::If(If {
-                    condition: Expr {
-                        kind: ExprKind::Binary(Binary {
-                            op: BinOp::Eq,
-                            left: Box::new(var_expr(c1, Type::Classical(ValueTy::bit()), s)),
-                            right: Box::new(uint_expr(1, s)),
-                        }),
-                        ty: Type::Classical(ValueTy::bool()),
-                        span: s,
-                    },
-                    then_body: vec![gate_call(x_gate, vec![], vec![indexed_qubit(q, 2, s)], s)],
-                    else_body: None,
-                }),
-                s,
-            ),
-            // post q[2];
-            gate_call(post_gate, vec![], vec![indexed_qubit(q, 2, s)], s),
-            // c2 = measure q[2];
-            measure_assign(c2, indexed_qubit(q, 2, s), s),
-        ];
-
-        let gates = vec![GateDecl {
-            symbol: post_gate,
-            params: vec![],
-            qubits: vec![post_q],
-            body: GateBody { body: vec![] },
-            span: s,
-        }];
-
-        let program = Program {
-            version: Some("3".into()),
-            calibration_grammar: None,
-            symbols,
-            scopes,
-            gates,
-            subroutines: vec![],
-            externs: vec![],
-            calibrations: vec![],
-            body,
-        };
-
-        // Verify structure
-        assert_eq!(program.version.as_deref(), Some("3"));
-        assert_eq!(program.gates.len(), 1);
-        assert_eq!(program.body.len(), 13);
-        assert_eq!(program.symbols.len(), 11); // 5 stdgates + q + c0 + c1 + c2 + post + post_q
-
-        // Verify gate decl
-        assert_eq!(program.symbols.get(program.gates[0].symbol).name, "post");
-        assert!(program.gates[0].body.body.is_empty());
-
-        // Verify first body stmt is reset (declarations are symbol-table only)
-        assert!(matches!(program.body[0].kind, StmtKind::Reset(_)));
-
-        // Verify last stmt is a measure into c2
-        assert!(matches!(
-            program.body[12].kind,
-            StmtKind::Measure(Measure {
-                target: Some(_),
-                ..
-            })
-        ));
-
-        // Verify an if-statement is present
-        assert!(matches!(
-            program.body[9].kind,
-            StmtKind::If(If {
-                else_body: None,
-                ..
-            })
-        ));
-    }
 }

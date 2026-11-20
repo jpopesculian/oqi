@@ -5,37 +5,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     BitReg, FloatWidth, IntWidth, Primitive,
-    array::{Array, ArrayShape, ArrayTy, BaseArray, BaseArrayTy},
-    array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, BaseArrayRef, BaseArrayRefTy, RefAccess},
+    array::{Array, ArrayShape, ArrayTy},
+    array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess},
     duration::{Duration, DurationUnit},
     error::{Error, Result},
     primitive::PrimitiveTy,
-    scalar::{BaseScalar, Scalar},
+    scalar::Scalar,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub enum BaseValue<V, T> {
-    Scalar(BaseScalar<V, T>),
-    Array(BaseArray<V, T>),
-    ArrayRef(BaseArrayRef<V, T>),
+pub enum Value {
+    Scalar(Scalar),
+    Array(Array),
+    ArrayRef(ArrayRef),
 }
-
-impl<V, T: Copy> BaseValue<V, T> {
-    pub fn ty(&self) -> BaseValueTy<T> {
-        match self {
-            BaseValue::Scalar(s) => BaseValueTy::Scalar(s.ty()),
-            BaseValue::Array(a) => BaseValueTy::Array(a.ty()),
-            BaseValue::ArrayRef(ar) => BaseValueTy::ArrayRef(ar.ty()),
-        }
-    }
-}
-
-pub type Value = BaseValue<Primitive, PrimitiveTy>;
 
 impl Value {
     pub const PI: Self = Value::Scalar(Scalar::PI);
     pub const TAU: Self = Value::Scalar(Scalar::TAU);
     pub const E: Self = Value::Scalar(Scalar::E);
+
+    pub fn ty(&self) -> ValueTy {
+        match self {
+            Value::Scalar(s) => ValueTy::Scalar(s.ty()),
+            Value::Array(a) => ValueTy::Array(a.ty()),
+            Value::ArrayRef(ar) => ValueTy::ArrayRef(ar.ty()),
+        }
+    }
 
     pub fn cast(self, ty: ValueTy) -> Result<Self> {
         match (self, ty) {
@@ -160,13 +156,11 @@ impl fmt::Display for Value {
 }
 
 #[derive(Clone, Debug, Copy, PartialEq, Serialize, Deserialize)]
-pub enum BaseValueTy<T> {
-    Scalar(T),
-    Array(BaseArrayTy<T>),
-    ArrayRef(BaseArrayRefTy<T>),
+pub enum ValueTy {
+    Scalar(PrimitiveTy),
+    Array(ArrayTy),
+    ArrayRef(ArrayRefTy),
 }
-
-pub type ValueTy = BaseValueTy<PrimitiveTy>;
 
 impl ValueTy {
     pub fn cast(self, ty: ValueTy) -> Result<Self> {
@@ -306,12 +300,12 @@ impl From<ArrayRefTy> for ValueTy {
     }
 }
 
-impl<T: fmt::Display + Copy> fmt::Display for BaseValueTy<T> {
+impl fmt::Display for ValueTy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            BaseValueTy::Scalar(s) => write!(f, "{}", s),
-            BaseValueTy::Array(a) => write!(f, "{}", a),
-            BaseValueTy::ArrayRef(ar) => write!(f, "{}", ar),
+            ValueTy::Scalar(s) => write!(f, "{}", s),
+            ValueTy::Array(a) => write!(f, "{}", a),
+            ValueTy::ArrayRef(ar) => write!(f, "{}", ar),
         }
     }
 }

@@ -61,7 +61,10 @@ impl fmt::Display for VmErrorKind {
                 write!(f, "no value supplied for input `{name}`")
             }
             VmErrorKind::UnknownInput(name) => {
-                write!(f, "value supplied for `{name}`, which is not a declared input")
+                write!(
+                    f,
+                    "value supplied for `{name}`, which is not a declared input"
+                )
             }
             VmErrorKind::UnknownExtern(name) => {
                 write!(f, "extern function `{name}` is not provided")

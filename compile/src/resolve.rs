@@ -7,7 +7,7 @@ use oqi_lex::Span;
 
 use crate::classical::{Value, ValueTy};
 use crate::error::{CompileError, ErrorKind, Result};
-use crate::scope::{ScopeId, ScopeKind, ScopeTable};
+use crate::scope::ScopeId;
 use crate::sir::{CallTarget, Intrinsic};
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::{CompileOptions, FloatWidth, Type};
@@ -44,7 +44,8 @@ impl IncludeResolver for DefaultIncludeResolver {}
 
 pub struct Resolver {
     symbols: SymbolTable,
-    scope_table: ScopeTable,
+    /// Number of non-global scopes opened so far; the next [`ScopeId`].
+    scope_count: usize,
     /// Name → SymbolId chain. `lookup_stack[0]` is always the global lookup
     /// map; further entries correspond one-to-one with `scope_stack`. Hence
     /// `lookup_stack.len() == scope_stack.len() + 1`.
@@ -60,12 +61,10 @@ pub struct Resolver {
 impl Resolver {
     pub fn new(include_resolver: impl IncludeResolver + 'static, options: CompileOptions) -> Self {
         let mut symbols = SymbolTable::new();
-        let scope_table = ScopeTable::new();
         let mut global = HashMap::new();
 
         // Built-in symbols are conceptually global — `scope = None`.
         // Seed built-in constants
-        // tau = 0 (full turn wraps to zero)
         let tau_id = symbols.insert(
             "tau".into(),
             SymbolKind::Const,
@@ -77,7 +76,6 @@ impl Resolver {
         global.insert("tau".into(), tau_id);
         global.insert("τ".into(), tau_id);
 
-        // pi = 1 << (width - 1) (half turn)
         let pi_id = symbols.insert(
             "pi".into(),
             SymbolKind::Const,
@@ -89,7 +87,6 @@ impl Resolver {
         global.insert("pi".into(), pi_id);
         global.insert("π".into(), pi_id);
 
-        // euler's number has no exact angle representation
         let euler_id = symbols.insert(
             "euler".into(),
             SymbolKind::Const,
@@ -123,7 +120,7 @@ impl Resolver {
 
         Self {
             symbols,
-            scope_table,
+            scope_count: 0,
             lookup_stack: vec![global],
             scope_stack: Vec::new(),
             include_stack: Vec::new(),
@@ -132,9 +129,9 @@ impl Resolver {
         }
     }
 
-    pub fn push_scope(&mut self, kind: ScopeKind, span: Span) -> ScopeId {
-        let parent = self.scope_stack.last().copied();
-        let id = self.scope_table.create(kind, parent, span);
+    pub fn push_scope(&mut self) -> ScopeId {
+        let id = ScopeId(self.scope_count);
+        self.scope_count += 1;
         self.scope_stack.push(id);
         self.lookup_stack.push(HashMap::new());
         id
@@ -144,14 +141,6 @@ impl Resolver {
         assert!(!self.scope_stack.is_empty(), "cannot pop global scope");
         self.scope_stack.pop();
         self.lookup_stack.pop();
-    }
-
-    pub fn scope_depth(&self) -> usize {
-        self.scope_stack.len()
-    }
-
-    pub fn is_global_scope(&self) -> bool {
-        self.scope_stack.is_empty()
     }
 
     /// `Some(id)` for non-global scopes, `None` at global scope. Use this
@@ -265,16 +254,12 @@ impl Resolver {
         &mut self.symbols
     }
 
-    pub fn scopes(&self) -> &ScopeTable {
-        &self.scope_table
-    }
-
     pub fn options(&self) -> &CompileOptions {
         &self.options
     }
 
-    pub fn into_parts(self) -> (SymbolTable, ScopeTable) {
-        (self.symbols, self.scope_table)
+    pub fn into_symbols(self) -> SymbolTable {
+        self.symbols
     }
 }
 
@@ -364,7 +349,7 @@ mod tests {
             r.resolve("euler", Default::default()).unwrap()
         );
 
-        // pi is an angle with bit (width-1) set
+        // pi is a float constant
         let pi_id = r.resolve("pi", Default::default()).unwrap();
         let pi_sym = r.symbols().get(pi_id);
         assert_eq!(pi_sym.kind, SymbolKind::Const);
@@ -377,7 +362,7 @@ mod tests {
             other => panic!("expected Float::PI, got {other:?}"),
         }
 
-        // tau is an angle with value 0
+        // tau is a float constant
         let tau_id = r.resolve("tau", Default::default()).unwrap();
         let tau_sym = r.symbols().get(tau_id);
         assert_eq!(tau_sym.kind, SymbolKind::Const);
@@ -453,7 +438,7 @@ mod tests {
             )
             .unwrap();
 
-        r.push_scope(ScopeKind::Anonymous, Default::default());
+        r.push_scope();
         let inner = r
             .declare(
                 "x",
@@ -466,21 +451,6 @@ mod tests {
 
         r.pop_scope();
         assert_eq!(r.resolve("x", Default::default()).unwrap(), outer);
-    }
-
-    #[test]
-    fn scope_depth() {
-        let mut r = default_resolver();
-        assert_eq!(r.scope_depth(), 0);
-        assert!(r.is_global_scope());
-
-        r.push_scope(ScopeKind::Anonymous, Default::default());
-        assert_eq!(r.scope_depth(), 1);
-        assert!(!r.is_global_scope());
-
-        r.pop_scope();
-        assert_eq!(r.scope_depth(), 0);
-        assert!(r.is_global_scope());
     }
 
     #[test]
@@ -497,8 +467,8 @@ mod tests {
             .unwrap();
         assert_eq!(r.symbols().get(g).scope, None);
 
-        // Inside a For scope → scope = Some(for_id)
-        let for_id = r.push_scope(ScopeKind::For, span(2, 3));
+        // Inside a scope → scope = Some(for_id)
+        let for_id = r.push_scope();
         let l = r
             .declare(
                 "l",
@@ -509,8 +479,8 @@ mod tests {
             .unwrap();
         assert_eq!(r.symbols().get(l).scope, Some(for_id));
 
-        // Nested IfThen under For → parent chain
-        let if_id = r.push_scope(ScopeKind::IfThen, span(6, 7));
+        // Nested scope → its own id
+        let if_id = r.push_scope();
         let n = r
             .declare(
                 "n",
@@ -520,8 +490,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(r.symbols().get(n).scope, Some(if_id));
-        assert_eq!(r.scopes().get(if_id).parent, Some(for_id));
-        assert_eq!(r.scopes().get(if_id).kind, ScopeKind::IfThen);
+        assert_ne!(if_id, for_id);
 
         r.pop_scope();
         r.pop_scope();

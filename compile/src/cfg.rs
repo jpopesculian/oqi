@@ -12,6 +12,7 @@ use std::cmp::Ordering;
 
 use oqi_lex::Span;
 
+use crate::bytecode::ProcOwner;
 use crate::classical::{Primitive, PrimitiveTy, ValueTy};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{
@@ -109,14 +110,13 @@ pub enum Terminator {
         then_bb: BasicBlockId,
         else_bb: BasicBlockId,
     },
-    /// Multi-way dispatch on `target`. Cases are checked in order; if none match
-    /// and `default` is `None`, control falls through to whatever block comes
-    /// after the switch (the merge block) — the builder always populates
-    /// `default` with that merge target.
+    /// Multi-way dispatch on `target`. Cases are checked in order; if none
+    /// match, control goes to `default` (the source `default` case, or the
+    /// merge block after the switch when there is none).
     Switch {
         target: BlockExpr,
-        cases: Vec<(SwitchLabels<BlockExpr>, BasicBlockId)>,
-        default: Option<BasicBlockId>,
+        cases: Vec<(Vec<BlockExpr>, BasicBlockId)>,
+        default: BasicBlockId,
     },
     /// Explicit `return` from a subroutine (or implicit fall-off-the-end).
     Return(Option<RValue<BlockExpr>>),
@@ -139,7 +139,7 @@ impl Terminator {
             } => SuccessorsInner::Two(Some(*then_bb), Some(*else_bb)),
             Terminator::Switch { cases, default, .. } => SuccessorsInner::Switch {
                 cases: cases.iter(),
-                default: *default,
+                default: Some(*default),
             },
             Terminator::Return(_) | Terminator::End | Terminator::Unreachable => {
                 SuccessorsInner::Empty
@@ -158,7 +158,7 @@ enum SuccessorsInner<'a> {
     One(Option<BasicBlockId>),
     Two(Option<BasicBlockId>, Option<BasicBlockId>),
     Switch {
-        cases: std::slice::Iter<'a, (SwitchLabels<BlockExpr>, BasicBlockId)>,
+        cases: std::slice::Iter<'a, (Vec<BlockExpr>, BasicBlockId)>,
         default: Option<BasicBlockId>,
     },
 }
@@ -179,21 +179,6 @@ impl Iterator for Successors<'_> {
 }
 
 #[derive(Clone)]
-pub enum CfgOwner {
-    TopLevel,
-    Subroutine(SymbolId),
-    Gate(SymbolId),
-    Calibration(usize),
-    /// Body of a `box { ... }` block statement.
-    Box,
-    /// Body of an inline `cal { ... }` block statement (top-level `defcal`s
-    /// use [`CfgOwner::Calibration`]).
-    InlineCal,
-    /// Body of a `durationof({...})` expression.
-    DurationOf,
-}
-
-#[derive(Clone)]
 pub struct Cfg {
     /// May contain blocks unreachable from `entry`: dead statements
     /// after a `break`/`continue`/`return`/`end` land in a fresh block
@@ -208,20 +193,7 @@ pub struct Cfg {
     /// predecessors). Analyses that walk from `entry` simply won't
     /// visit it in the dangling case.
     pub exit: BasicBlockId,
-    pub owner: CfgOwner,
-}
-
-impl Cfg {
-    /// Pair this CFG with a symbol table for [`std::fmt::Display`].
-    /// Use as `format!("{}", cfg.display(&symbols))`.
-    pub fn display<'a>(&'a self, symbols: &'a SymbolTable) -> CfgDisplay<'a> {
-        CfgDisplay { cfg: self, symbols }
-    }
-}
-
-pub struct CfgDisplay<'a> {
-    pub(crate) cfg: &'a Cfg,
-    pub(crate) symbols: &'a SymbolTable,
+    pub owner: ProcOwner,
 }
 
 pub struct ProgramCfgs {
@@ -235,7 +207,7 @@ pub struct ProgramCfgs {
 pub fn build_program(program: &sir::Program) -> Result<ProgramCfgs> {
     let top_level = build_body(
         program.body.clone(),
-        CfgOwner::TopLevel,
+        ProcOwner::TopLevel,
         false,
         &program.symbols,
     )?;
@@ -245,7 +217,7 @@ pub fn build_program(program: &sir::Program) -> Result<ProgramCfgs> {
         .map(|s| {
             build_body(
                 s.body.clone(),
-                CfgOwner::Subroutine(s.symbol),
+                ProcOwner::Subroutine(s.symbol),
                 true,
                 &program.symbols,
             )
@@ -256,8 +228,8 @@ pub fn build_program(program: &sir::Program) -> Result<ProgramCfgs> {
         .iter()
         .map(|g| {
             build_body(
-                g.body.body.clone(),
-                CfgOwner::Gate(g.symbol),
+                g.body.clone(),
+                ProcOwner::Gate(g.symbol),
                 false,
                 &program.symbols,
             )
@@ -270,7 +242,7 @@ pub fn build_program(program: &sir::Program) -> Result<ProgramCfgs> {
         .map(|(i, c)| match &c.body {
             CalibrationBody::OpenPulse(stmts) => Ok(Some(build_body(
                 stmts.clone(),
-                CfgOwner::Calibration(i),
+                ProcOwner::Calibration(i as u32),
                 c.return_ty.is_some(),
                 &program.symbols,
             )?)),
@@ -296,7 +268,7 @@ pub fn build_program(program: &sir::Program) -> Result<ProgramCfgs> {
 /// predecessor edges point at it.
 fn build_body(
     stmts: Vec<Stmt>,
-    owner: CfgOwner,
+    owner: ProcOwner,
     allow_return: bool,
     symbols: &SymbolTable,
 ) -> Result<Cfg> {
@@ -600,7 +572,7 @@ impl<'a> CfgBuilder<'a> {
                     Some(e) => Some(self.lower_expr(e)?),
                     None => None,
                 };
-                let inner = build_body(body, CfgOwner::Box, self.allow_return, self.symbols)?;
+                let inner = build_body(body, ProcOwner::Box, self.allow_return, self.symbols)?;
                 BlockStmtKind::Box(BlockBoxStmt {
                     duration,
                     body: inner,
@@ -610,7 +582,7 @@ impl<'a> CfgBuilder<'a> {
                 BlockStmtKind::Cal(BlockCalibrationBody::Opaque(s))
             }
             StmtKind::Cal(CalibrationBody::OpenPulse(stmts)) => {
-                let inner = build_body(stmts, CfgOwner::InlineCal, false, self.symbols)?;
+                let inner = build_body(stmts, ProcOwner::InlineCal, false, self.symbols)?;
                 BlockStmtKind::Cal(BlockCalibrationBody::OpenPulse(inner))
             }
             StmtKind::If(_)
@@ -770,7 +742,7 @@ impl<'a> CfgBuilder<'a> {
 
         // Allocate one block per case up front so the dispatcher can reference
         // them all before any case body is lowered.
-        let mut case_blocks: Vec<(SwitchLabels<BlockExpr>, BasicBlockId)> = Vec::new();
+        let mut case_blocks: Vec<(Vec<BlockExpr>, BasicBlockId)> = Vec::new();
         let mut default: Option<BasicBlockId> = None;
         let mut allocated: Vec<BasicBlockId> = Vec::with_capacity(cases.len());
         for case in &cases {
@@ -784,7 +756,7 @@ impl<'a> CfgBuilder<'a> {
                         .cloned()
                         .map(|v| self.lower_expr(v))
                         .collect::<Result<Vec<_>>>()?;
-                    case_blocks.push((SwitchLabels::Values(lowered_vals), bb));
+                    case_blocks.push((lowered_vals, bb));
                 }
                 SwitchLabels::Default => default = Some(bb),
             }
@@ -793,7 +765,7 @@ impl<'a> CfgBuilder<'a> {
         self.terminate(Terminator::Switch {
             target,
             cases: case_blocks,
-            default: Some(default.unwrap_or(after_bb)),
+            default: default.unwrap_or(after_bb),
         });
 
         self.frames.push(FrameKind::Switch {
@@ -853,7 +825,7 @@ impl<'a> CfgBuilder<'a> {
                 BlockExprKind::Call(Call { callee, args })
             }
             ExprKind::DurationOf(stmts) => {
-                let inner = build_body(stmts, CfgOwner::DurationOf, false, self.symbols)?;
+                let inner = build_body(stmts, ProcOwner::DurationOf, false, self.symbols)?;
                 BlockExprKind::DurationOf(inner)
             }
             ExprKind::ArrayLiteral(ArrayLiteral {
@@ -1095,7 +1067,7 @@ mod tests {
             span: Span::default(),
         };
         let cfg =
-            build_body(vec![box_stmt], CfgOwner::TopLevel, false, &symbols).expect("build_body");
+            build_body(vec![box_stmt], ProcOwner::TopLevel, false, &symbols).expect("build_body");
 
         let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::Box(_)));
         let BlockStmtKind::Box(BlockBoxStmt { body, .. }) = inner else {
@@ -1108,7 +1080,7 @@ mod tests {
             "expected inner CFG to have multiple blocks (got {})",
             body.blocks.len()
         );
-        assert!(matches!(body.owner, CfgOwner::Box));
+        assert!(matches!(body.owner, ProcOwner::Box));
     }
 
     #[test]
@@ -1122,7 +1094,7 @@ mod tests {
             span: Span::default(),
         };
         let cfg =
-            build_body(vec![cal_stmt], CfgOwner::TopLevel, false, &symbols).expect("build_body");
+            build_body(vec![cal_stmt], ProcOwner::TopLevel, false, &symbols).expect("build_body");
 
         let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::Cal(_)));
         let BlockStmtKind::Cal(BlockCalibrationBody::OpenPulse(body)) = inner else {
@@ -1133,7 +1105,7 @@ mod tests {
             "expected inner CFG to have multiple blocks (got {})",
             body.blocks.len()
         );
-        assert!(matches!(body.owner, CfgOwner::InlineCal));
+        assert!(matches!(body.owner, ProcOwner::InlineCal));
     }
 
     #[test]
@@ -1145,7 +1117,7 @@ mod tests {
             span: Span::default(),
         };
         let cfg =
-            build_body(vec![cal_stmt], CfgOwner::TopLevel, false, &symbols).expect("build_body");
+            build_body(vec![cal_stmt], ProcOwner::TopLevel, false, &symbols).expect("build_body");
 
         let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::Cal(_)));
         assert!(matches!(
@@ -1173,7 +1145,7 @@ mod tests {
             span: Span::default(),
         };
         let cfg =
-            build_body(vec![expr_stmt], CfgOwner::TopLevel, false, &symbols).expect("build_body");
+            build_body(vec![expr_stmt], ProcOwner::TopLevel, false, &symbols).expect("build_body");
 
         let inner = find_unique_block_stmt(&cfg, |k| matches!(k, BlockStmtKind::ExprStmt(_)));
         let BlockStmtKind::ExprStmt(BlockExpr {
@@ -1188,7 +1160,7 @@ mod tests {
             "expected inner CFG to have multiple blocks (got {})",
             inner_cfg.blocks.len()
         );
-        assert!(matches!(inner_cfg.owner, CfgOwner::DurationOf));
+        assert!(matches!(inner_cfg.owner, ProcOwner::DurationOf));
     }
 
     #[test]
@@ -1200,7 +1172,7 @@ mod tests {
         let symbols = SymbolTable::new();
         let if_only = if_stmt(vec![], vec![]);
         let cfg =
-            build_body(vec![if_only], CfgOwner::TopLevel, false, &symbols).expect("build_body");
+            build_body(vec![if_only], ProcOwner::TopLevel, false, &symbols).expect("build_body");
 
         let mut found_branch = false;
         for block in &cfg.blocks {

@@ -113,7 +113,7 @@ impl<F: Float + Send + Sync> StateVectorSim<F> {
     }
 
     fn apply_x(&mut self, target: u32) {
-        // U(π, 0, π) is exactly Pauli-X (no spurious phase).
+        // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
         let x = Unitary::new(
             Self::cast(std::f64::consts::PI),
             F::zero(),
@@ -149,35 +149,6 @@ impl<F: Float + Send + Sync> StateVectorSim<F> {
                 *a = zero;
             }
         }
-    }
-}
-
-impl StateVectorSim<f64> {
-    /// A fresh `f64` simulator with `num_qubits` qubits in |0…0⟩, default seed.
-    ///
-    /// Panics if the state vector can't be allocated; use
-    /// [`try_new`](Self::try_new) to handle that gracefully.
-    pub fn new(num_qubits: u32) -> Self {
-        Self::with_seed(num_qubits, 0x2545F4914F6CDD1D)
-    }
-
-    /// A fresh simulator with an explicit RNG seed (for reproducibility).
-    /// Panics if the state vector can't be allocated.
-    pub fn with_seed(num_qubits: u32, seed: u64) -> Self {
-        Self::try_with_seed(num_qubits, seed).unwrap_or_else(|e| panic!("{e}"))
-    }
-
-    /// A fresh simulator with the default seed, or a
-    /// [`VmErrorKind::TooManyQubits`] error if its state vector can't be
-    /// allocated.
-    pub fn try_new(num_qubits: u32) -> std::result::Result<Self, VmError> {
-        Self::try_with_seed(num_qubits, 0x2545F4914F6CDD1D)
-    }
-
-    /// A fresh `f64` simulator with an explicit seed, or a
-    /// [`VmErrorKind::TooManyQubits`] error if it can't be allocated.
-    pub fn try_with_seed(num_qubits: u32, seed: u64) -> std::result::Result<Self, VmError> {
-        Self::try_zeroed(num_qubits, seed)
     }
 }
 

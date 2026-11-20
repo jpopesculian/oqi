@@ -26,15 +26,16 @@ use std::collections::{HashMap, HashSet};
 
 use oqi_lex::Span;
 
+use crate::bytecode::ProcOwner;
 use crate::cfg::{
     BasicBlockId, BlockCalibrationBody, BlockExpr, BlockExprKind, BlockStmt, BlockStmtKind, Cfg,
-    CfgOwner, ProgramCfgs, Terminator,
+    ProgramCfgs, Terminator,
 };
 use crate::classical::Primitive;
 use crate::sir::{
     Alias, Annotation, ArrayLiteral, Assignment, Binary, Call, Cast, Delay, GateCall, GateModifier,
     Index, IndexItem, IndexKind, IndexOp, LValue, Measure, MeasureExpr, MeasureExprKind,
-    QubitOperand, RValue, RangeExpr, SwitchLabels, Unary,
+    QubitOperand, RValue, RangeExpr, Unary,
 };
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::Type;
@@ -70,7 +71,7 @@ pub struct SsaCfg {
     pub blocks: Vec<SsaBlock>,
     pub entry: BasicBlockId,
     pub exit: BasicBlockId,
-    pub owner: CfgOwner,
+    pub owner: ProcOwner,
     /// Reaching definition of each live symbol at the `exit` block —
     /// i.e. the SSA value holding each variable's final value when the
     /// body falls off the end. Empty when `exit` is unreachable (the
@@ -185,8 +186,8 @@ pub enum SsaTerminator {
     },
     Switch {
         target: SsaExpr,
-        cases: Vec<(SwitchLabels<SsaExpr>, BasicBlockId)>,
-        default: Option<BasicBlockId>,
+        cases: Vec<(Vec<SsaExpr>, BasicBlockId)>,
+        default: BasicBlockId,
     },
     Return(Option<RValue<SsaExpr>>),
     End,
@@ -929,22 +930,13 @@ fn lower_terminator(term: &Terminator, r: &Renamer<'_>) -> SsaTerminator {
             target: lower_expr(target, r),
             cases: cases
                 .iter()
-                .map(|(labels, bb)| (lower_switch_labels(labels, r), *bb))
+                .map(|(labels, bb)| (labels.iter().map(|e| lower_expr(e, r)).collect(), *bb))
                 .collect(),
             default: *default,
         },
         Terminator::Return(rv) => SsaTerminator::Return(rv.as_ref().map(|v| lower_rvalue(v, r))),
         Terminator::End => SsaTerminator::End,
         Terminator::Unreachable => SsaTerminator::Unreachable,
-    }
-}
-
-fn lower_switch_labels(labels: &SwitchLabels<BlockExpr>, r: &Renamer<'_>) -> SwitchLabels<SsaExpr> {
-    match labels {
-        SwitchLabels::Values(vs) => {
-            SwitchLabels::Values(vs.iter().map(|e| lower_expr(e, r)).collect())
-        }
-        SwitchLabels::Default => SwitchLabels::Default,
     }
 }
 

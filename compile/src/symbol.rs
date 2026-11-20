@@ -121,8 +121,8 @@ impl SymbolTable {
         &mut self.symbols[id.0]
     }
 
-    /// Look up a symbol by name (linear scan; the resolver will maintain
-    /// scope-aware lookup in later phases).
+    /// Look up a symbol by name, ignoring scopes (linear scan; the latest
+    /// declaration wins). Scope-aware lookup lives in the resolver.
     pub fn lookup(&self, name: &str) -> Option<SymbolId> {
         self.symbols
             .iter()

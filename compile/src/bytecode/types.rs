@@ -494,7 +494,7 @@ pub enum BcOp {
         value: Vec<BcOperand>,
     },
     /// Bind a body-local qubit alias `slot` to the concatenation of the
-    /// resolved `segments`, for later [`BcOperand::QubitAlias`] references.
+    /// resolved `segments`, for later [`QubitSource::Slot`] references.
     AliasBind {
         slot: u32,
         segments: Vec<BcAliasSegment>,
@@ -530,16 +530,10 @@ pub enum BcTerminator {
     },
     Switch {
         target: BcOperand,
-        cases: Vec<(BcSwitchLabels, BlockId)>,
-        default: Option<BlockId>,
+        cases: Vec<(Vec<BcOperand>, BlockId)>,
+        default: BlockId,
     },
     Return(Option<BcOperand>),
     End,
     Unreachable,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub enum BcSwitchLabels {
-    Values(Vec<BcOperand>),
-    Default,
 }

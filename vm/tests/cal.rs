@@ -35,7 +35,7 @@ fn build(src: &str) -> BcModule {
 }
 
 fn sim_for(module: &BcModule) -> StateVectorSim {
-    StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD)
+    StateVectorSim::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap()
 }
 
 const DEFCAL_QASM: &str = include_str!("../../fixtures/qasm/defcal.qasm");

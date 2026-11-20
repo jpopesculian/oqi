@@ -179,7 +179,7 @@ pub fn resolve_durationof<T: Timings>(
     // own processing is not a problem.
     let n_gates = program.gates.len();
     for i in 0..n_gates {
-        let mut body = std::mem::take(&mut program.gates[i].body.body);
+        let mut body = std::mem::take(&mut program.gates[i].body);
         let result: Result<()> = (|| {
             let mut ctx = ResolveCtx {
                 timings,
@@ -192,7 +192,7 @@ pub fn resolve_durationof<T: Timings>(
             }
             Ok(())
         })();
-        program.gates[i].body.body = body;
+        program.gates[i].body = body;
         result?;
     }
 
@@ -707,7 +707,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                     inner_frame.qubits.insert(*sym, qr.clone());
                 }
                 let (inner_qubits, inner_dur) =
-                    self.compute_scope_duration_with(&decl.body.body, &inner_frame, span)?;
+                    self.compute_scope_duration_with(&decl.body, &inner_frame, span)?;
                 let _ = inner_qubits;
                 Ok((qubit_refs, inner_dur))
             }
@@ -1177,9 +1177,9 @@ fn err(kind: ErrorKind, span: Span) -> CompileError {
     CompileError::new(kind).with_span(span)
 }
 
-/// Spec-wise `stretch` resolves at compile time too, but no solver exists
-/// yet — give it an honest error rather than a generic non-constant one
-/// (clean seam for the future pass).
+/// The stretch solver ([`stretch`]) rewrites resolved stretch references
+/// to constants; one that reaches constant evaluation unresolved gets an
+/// honest error rather than a generic non-constant one.
 fn stretch_err(span: Span) -> CompileError {
     err(
         ErrorKind::InvalidContext(

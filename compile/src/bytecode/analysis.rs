@@ -99,9 +99,7 @@ fn successors(term: &BcTerminator) -> Vec<u32> {
         } => vec![then_bb.0, else_bb.0],
         BcTerminator::Switch { cases, default, .. } => {
             let mut v: Vec<u32> = cases.iter().map(|(_, b)| b.0).collect();
-            if let Some(d) = default {
-                v.push(d.0);
-            }
+            v.push(default.0);
             v
         }
         BcTerminator::Return(_) | BcTerminator::End | BcTerminator::Unreachable => Vec::new(),

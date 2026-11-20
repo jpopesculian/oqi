@@ -65,12 +65,15 @@ fn build(src: &str) -> BcModule {
 /// Run with the CPU simulator and no externs; return the measurement log.
 fn run_measurements(src: &str) -> Vec<(u32, bool)> {
     let module = build(src);
-    let sim = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     block_on(vm.run()).expect("run").measurements
 }
 
 const TOL: f64 = 1e-9;
+
+/// Default simulator seed for tests whose outcome doesn't depend on it.
+const SEED: u64 = 0x2545F4914F6CDD1D;
 
 #[test]
 fn classical_arithmetic_drives_a_branch() {
@@ -211,7 +214,7 @@ fn auto_backend_matches_scalar_on_fixtures() {
         include_str!("../../fixtures/qasm/cphase.qasm"),
     ] {
         let module = build(src);
-        let scalar = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
+        let scalar = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap();
         let mut vm = Vm::new(&module, scalar, NoExterns);
         let expect = block_on(vm.run()).expect("scalar run").measurements;
 
@@ -247,7 +250,7 @@ fn bell_state_amplitudes() {
             cx q[0], q[1];
         "#,
     );
-    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     block_on(vm.run()).expect("run");
     let amps = vm.backend().state();
@@ -332,7 +335,7 @@ fn extern_function_result_is_used() {
         };
         Ok(Some(Value::int(n + 1, iw(32))))
     });
-    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
     let mut vm = Vm::new(&module, sim, registry);
     let result = block_on(vm.run()).expect("run");
     assert_eq!(result.measurements, vec![(0, true)]);
@@ -575,7 +578,7 @@ fn mismatched_register_broadcast_is_rejected() {
             cx a, b;
         "#,
     );
-    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     match block_on(vm.run()) {
         Err(VmError {
@@ -590,7 +593,7 @@ fn mismatched_register_broadcast_is_rejected() {
 /// the run is deterministic). Amplitudes ignore global phase.
 fn final_state(src: &str) -> Vec<(f64, f64)> {
     let module = build(src);
-    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     block_on(vm.run()).expect("run");
     vm.backend().state().iter().map(|c| (c.re, c.im)).collect()
@@ -709,7 +712,7 @@ fn fractional_pow_of_multi_qubit_composite_is_rejected() {
             pow(0.5) @ swap q[0], q[1];
         "#,
     );
-    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     match block_on(vm.run()) {
         Err(VmError {
@@ -1030,20 +1033,20 @@ fn oversized_qubit_count_is_a_graceful_error() {
     // must surface a TooManyQubits error via the fallible allocation, not
     // abort the process. 50 qubits is 2^54 bytes — unallocatable anywhere.
     assert!(matches!(
-        StateVectorSim::try_new(50),
+        StateVectorSim::<f64>::try_zeroed(50, SEED),
         Err(VmError {
             kind: VmErrorKind::TooManyQubits { .. },
             ..
         })
     ));
     // A small register allocates fine.
-    assert!(StateVectorSim::try_new(1).is_ok());
+    assert!(StateVectorSim::<f64>::try_zeroed(1, SEED).is_ok());
 }
 
 /// Run and return named outputs as `(name, displayed value)`, sorted by name.
 fn run_outputs(src: &str) -> Vec<(String, String)> {
     let module = build(src);
-    let sim = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let result = block_on(vm.run()).expect("run");
     let mut out: Vec<(String, String)> = result
@@ -1123,7 +1126,7 @@ fn input_value_drives_a_branch() {
     let module = build(INPUT_BRANCH_SRC);
     let n = sym_id(&module, "n");
     for (val, expect) in [(1i128, true), (0, false)] {
-        let sim = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
+        let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap();
         let mut vm = Vm::new(&module, sim, NoExterns);
         let inputs = HashMap::from([(n, Value::int(val, iw(32)))]);
         let r = block_on(vm.run_with_inputs(inputs)).expect("run");
@@ -1134,7 +1137,7 @@ fn input_value_drives_a_branch() {
 #[test]
 fn missing_input_is_rejected() {
     let module = build(INPUT_BRANCH_SRC);
-    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     match block_on(vm.run_with_inputs(HashMap::new())) {
         Err(VmError {
@@ -1152,7 +1155,7 @@ fn physical_qubit_program_sizes_its_register() {
     // with an out-of-range error.
     let module = build("OPENQASM 3.0;\nU(0, 0, 0) $0;\n");
     assert_eq!(module.qubits.num_qubits, 1);
-    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     block_on(vm.run()).expect("physical-qubit program should run");
 }
@@ -1162,7 +1165,7 @@ fn value_for_non_input_symbol_is_rejected() {
     let module = build(INPUT_BRANCH_SRC);
     let n = sym_id(&module, "n");
     let q = sym_id(&module, "q");
-    let sim = StateVectorSim::new(module.qubits.num_qubits);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let inputs = HashMap::from([(n, Value::int(1, iw(32))), (q, Value::int(0, iw(32)))]);
     match block_on(vm.run_with_inputs(inputs)) {
@@ -1234,7 +1237,7 @@ fn durationof_does_not_execute_gates() {
             bit c = measure q;
         "#,
     );
-    let sim = StateVectorSim::with_seed(module.qubits.num_qubits, 0xABCD);
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let result = block_on(vm.run()).expect("run");
     // The X inside durationof never applied: q measures 0.

@@ -391,11 +391,7 @@ pub struct IntWidth(u32);
 
 impl IntWidth {
     pub const B128: IntWidth = IntWidth(128);
-    pub const B72: IntWidth = IntWidth(72);
     pub const B64: IntWidth = IntWidth(64);
-    pub const B32: IntWidth = IntWidth(32);
-    pub const B16: IntWidth = IntWidth(16);
-    pub const B8: IntWidth = IntWidth(8);
 
     #[inline]
     pub const fn new(bits: u32) -> Result<Self> {

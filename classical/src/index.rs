@@ -206,8 +206,8 @@ impl ExactSizeIterator for SliceIter {
     }
 }
 
-/// multi-dimensional index to flat index
-fn flat_to_multi(shape: &[usize], mut flat: usize) -> Vec<usize> {
+/// flat index to multi-dimensional index
+pub(crate) fn flat_to_multi(shape: &[usize], mut flat: usize) -> Vec<usize> {
     let mut result = vec![0; shape.len()];
     for i in (0..shape.len()).rev() {
         result[i] = flat % shape[i];
@@ -216,7 +216,7 @@ fn flat_to_multi(shape: &[usize], mut flat: usize) -> Vec<usize> {
     result
 }
 
-/// flat index to multi-dimensional index
+/// multi-dimensional index to flat index
 fn multi_to_flat(shape: &[usize], index: &[usize]) -> usize {
     let mut flat = 0;
     let mut stride = 1;

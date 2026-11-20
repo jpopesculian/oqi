@@ -1064,7 +1064,7 @@ fn boundary_scan(program: &Program) -> Result<()> {
         }
     }
     for g in &program.gates {
-        if stmts_have_stretch_var(&g.body.body, &program.symbols) {
+        if stmts_have_stretch_var(&g.body, &program.symbols) {
             return Err(err(
                 ErrorKind::InvalidContext("stretch cannot be used inside gate bodies".into()),
                 g.span,

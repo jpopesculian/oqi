@@ -327,7 +327,7 @@ fn switch_dispatches_to_each_case_then_merges() {
     };
 
     assert_eq!(cases.len(), 2, "two value-labelled cases expected");
-    let default_bb = default.expect("default branch should be set");
+    let default_bb = *default;
 
     // Every case + default should go to the same merge block.
     let merge_targets: HashSet<BasicBlockId> = cases

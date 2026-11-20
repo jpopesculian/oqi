@@ -9,41 +9,35 @@ use crate::error::Result;
 use crate::primitive::{FloatWidth, IntWidth, Primitive, PrimitiveTy, iw};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BaseScalar<V, T> {
-    value: V,
-    ty: T,
+pub struct Scalar {
+    value: Primitive,
+    ty: PrimitiveTy,
 }
-
-impl<V, T> BaseScalar<V, T> {
-    #[inline]
-    pub const fn new_unchecked(value: V, ty: T) -> Self {
-        BaseScalar { value, ty }
-    }
-
-    #[inline]
-    pub const fn value(&self) -> &V {
-        &self.value
-    }
-
-    #[inline]
-    pub fn into_value(self) -> V {
-        self.value
-    }
-}
-
-impl<V, T: Copy> BaseScalar<V, T> {
-    #[inline]
-    pub const fn ty(&self) -> T {
-        self.ty
-    }
-}
-
-pub type Scalar = BaseScalar<Primitive, PrimitiveTy>;
 
 impl Scalar {
     pub const PI: Self = Self::new_unchecked(Primitive::PI, PrimitiveTy::Float(FloatWidth::F64));
     pub const TAU: Self = Self::new_unchecked(Primitive::TAU, PrimitiveTy::Float(FloatWidth::F64));
     pub const E: Self = Self::new_unchecked(Primitive::E, PrimitiveTy::Float(FloatWidth::F64));
+
+    #[inline]
+    pub const fn new_unchecked(value: Primitive, ty: PrimitiveTy) -> Self {
+        Scalar { value, ty }
+    }
+
+    #[inline]
+    pub const fn value(&self) -> &Primitive {
+        &self.value
+    }
+
+    #[inline]
+    pub fn into_value(self) -> Primitive {
+        self.value
+    }
+
+    #[inline]
+    pub const fn ty(&self) -> PrimitiveTy {
+        self.ty
+    }
 
     pub fn new(value: Primitive, ty: PrimitiveTy) -> Result<Self> {
         Ok(Scalar::new_unchecked(value.as_ty(ty)?, ty))

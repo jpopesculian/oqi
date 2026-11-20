@@ -6,6 +6,8 @@ use crate::types::Type;
 
 #[derive(Debug, Clone)]
 pub enum ErrorKind {
+    /// A lexical or syntax error, carrying the parser's message.
+    Syntax(String),
     UndefinedName(String),
     DuplicateDefinition {
         name: String,
@@ -15,6 +17,9 @@ pub enum ErrorKind {
         expected: Box<Type>,
         got: Box<Type>,
     },
+    /// An operator applied to operands it is not defined for; the message
+    /// names the operation.
+    InvalidOperands(String),
     NonConstantDesignator,
     NonConstantExpression,
     /// A type whose width or rank is out of range (`int[200]`, an array of
@@ -43,9 +48,15 @@ pub struct CompileError {
 impl CompileError {
     #[inline]
     pub const fn new(kind: ErrorKind) -> Self {
+        Self::at(kind, Span::new(0, 0))
+    }
+
+    /// An error of `kind` located at `span`.
+    #[inline]
+    pub const fn at(kind: ErrorKind, span: Span) -> Self {
         Self {
             kind,
-            span: Span::new(0, 0),
+            span,
             path: None,
         }
     }
@@ -72,8 +83,15 @@ impl From<ErrorKind> for CompileError {
     }
 }
 
+impl From<oqi_lex::Error> for CompileError {
+    fn from(error: oqi_lex::Error) -> Self {
+        CompileError::at(ErrorKind::Syntax(error.message), error.span)
+    }
+}
+
 pub type Result<T, E = CompileError> = std::result::Result<T, E>;
 
+/// Locating an error after the fact, on the `Result` that carries it.
 pub trait ResultExt {
     fn with_span(self, span: Span) -> Self;
     fn with_path(self, path: Option<PathBuf>) -> Self;
@@ -87,16 +105,5 @@ impl<T> ResultExt for Result<T> {
     #[inline]
     fn with_path(self, path: Option<PathBuf>) -> Self {
         self.map_err(|e| e.with_path(path))
-    }
-}
-
-impl ResultExt for CompileError {
-    #[inline]
-    fn with_span(self, span: Span) -> Self {
-        self.with_span(span)
-    }
-    #[inline]
-    fn with_path(self, path: Option<PathBuf>) -> Self {
-        self.with_path(path)
     }
 }

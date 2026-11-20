@@ -57,6 +57,32 @@ fn compile_runs_the_whole_pipeline() {
 }
 
 #[test]
+fn syntax_errors_are_reported_alike_by_every_subcommand() {
+    let broken = file("syntax.qasm", "// µ\nint x = ;\n");
+    let broken = broken.to_str().unwrap();
+    for subcommand in ["compile", "run", "fmt"] {
+        let (success, _, stderr) = oqi(&[subcommand, broken]);
+        assert!(!success);
+        assert!(stderr.contains("S0001"), "{subcommand}: {stderr}");
+        assert!(
+            stderr.contains("expected expression"),
+            "{subcommand}: {stderr}"
+        );
+        // The labelled snippet survives the multi-byte character before it.
+        assert!(stderr.contains("syntax error"), "{subcommand}: {stderr}");
+    }
+}
+
+#[test]
+fn fmt_keeps_comments_and_the_final_newline() {
+    let source = "qubit q; // one\n// two\n";
+    let path = file("fmt_comments.qasm", source);
+    ok(&["fmt", path.to_str().unwrap()]);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+    assert_eq!(ok(&["fmt", "--stdout", path.to_str().unwrap()]), source);
+}
+
+#[test]
 fn seed_reproduces_a_run() {
     let bell = file("seed_bell.qasm", BELL);
     let bell = bell.to_str().unwrap();

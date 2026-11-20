@@ -159,7 +159,7 @@ mod tests {
     use crate::classical::{Value, ValueTy, iw};
 
     fn span(start: usize, end: usize) -> Span {
-        oqi_lex::span(start, end)
+        oqi_lex::Span::new(start, end)
     }
 
     #[test]

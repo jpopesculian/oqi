@@ -5,302 +5,8 @@ mod token;
 use logos::Logos;
 
 pub use error::{Error, Result};
-pub use span::{Span, span};
+pub use span::Span;
 pub use token::Token;
-
-// ---------------------------------------------------------------------------
-// Internal logos-derived enum for default mode tokenization
-// ---------------------------------------------------------------------------
-
-// Shared regex fragments (for documentation; repeated inline in attributes):
-//   DEC  = [0-9](_?[0-9])*
-//   EXP  = [eE][+-]?[0-9](_?[0-9])*
-//   FLOAT = DEC EXP | \.DEC EXP? | DEC\.DEC? EXP?
-//   NUM   = FLOAT | DEC
-
-#[derive(Logos, Debug, PartialEq)]
-#[logos(skip r"[ \t]+")]
-#[logos(skip r"[\r\n]+")]
-enum RawToken {
-    // ---- Keywords ----
-    #[token("OPENQASM")]
-    OpenQasm,
-    #[token("include")]
-    Include,
-    #[token("defcalgrammar")]
-    DefCalGrammar,
-    #[token("def")]
-    Def,
-    #[token("cal")]
-    Cal,
-    #[token("defcal")]
-    DefCal,
-    #[token("gate")]
-    Gate,
-    #[token("extern")]
-    Extern,
-    #[token("box")]
-    Box_,
-    #[token("let")]
-    Let,
-    #[token("break")]
-    Break,
-    #[token("continue")]
-    Continue,
-    #[token("if")]
-    If,
-    #[token("else")]
-    Else,
-    #[token("end")]
-    End,
-    #[token("return")]
-    Return,
-    #[token("for")]
-    For,
-    #[token("while")]
-    While,
-    #[token("in")]
-    In,
-    #[token("switch")]
-    Switch,
-    #[token("case")]
-    Case,
-    #[token("default")]
-    Default_,
-    #[token("nop")]
-    Nop,
-
-    #[regex(r"#?pragma", priority = 3)]
-    Pragma,
-
-    #[regex(r"@[\p{L}\p{Nl}_][\p{L}\p{Nl}0-9_]*(\.[\p{L}\p{Nl}_][\p{L}\p{Nl}0-9_]*)*")]
-    AnnotationKeyword,
-
-    // ---- Type keywords ----
-    #[token("input")]
-    Input,
-    #[token("output")]
-    Output,
-    #[token("const")]
-    Const,
-    #[token("readonly")]
-    Readonly,
-    #[token("mutable")]
-    Mutable,
-    #[token("qreg")]
-    Qreg,
-    #[token("qubit")]
-    Qubit,
-    #[token("creg")]
-    Creg,
-    #[token("bool")]
-    Bool,
-    #[token("bit")]
-    Bit,
-    #[token("int")]
-    Int,
-    #[token("uint")]
-    Uint,
-    #[token("float")]
-    Float,
-    #[token("angle")]
-    Angle,
-    #[token("complex")]
-    Complex,
-    #[token("array")]
-    Array,
-    #[token("void")]
-    Void,
-    #[token("duration")]
-    Duration,
-    #[token("stretch")]
-    Stretch,
-
-    // ---- OpenPulse-only type keywords (default mode lexes these as identifiers) ----
-    #[token("waveform")]
-    Waveform,
-    #[token("port")]
-    Port,
-    #[token("frame")]
-    Frame,
-
-    // ---- Builtin identifiers ----
-    #[token("gphase")]
-    Gphase,
-    #[token("inv")]
-    Inv,
-    #[token("pow")]
-    Pow,
-    #[token("ctrl")]
-    Ctrl,
-    #[token("negctrl")]
-    Negctrl,
-    #[token("#dim")]
-    Dim,
-    #[token("durationof")]
-    Durationof,
-    #[token("delay")]
-    Delay,
-    #[token("reset")]
-    Reset,
-    #[token("measure")]
-    Measure,
-    #[token("barrier")]
-    Barrier,
-
-    #[token("true")]
-    True,
-    #[token("false")]
-    False,
-
-    // ---- Symbols ----
-    #[token("[")]
-    LBracket,
-    #[token("]")]
-    RBracket,
-    #[token("{")]
-    LBrace,
-    #[token("}")]
-    RBrace,
-    #[token("(")]
-    LParen,
-    #[token(")")]
-    RParen,
-    #[token(":")]
-    Colon,
-    #[token(";")]
-    Semicolon,
-    #[token(".")]
-    Dot,
-    #[token(",")]
-    Comma,
-    #[token("=")]
-    Equals,
-    #[token("->")]
-    Arrow,
-    #[token("+")]
-    Plus,
-    #[token("++")]
-    DoublePlus,
-    #[token("-")]
-    Minus,
-    #[token("*")]
-    Asterisk,
-    #[token("**")]
-    DoubleAsterisk,
-    #[token("/")]
-    Slash,
-    #[token("%")]
-    Percent,
-    #[token("|")]
-    Pipe,
-    #[token("||")]
-    DoublePipe,
-    #[token("&")]
-    Ampersand,
-    #[token("&&")]
-    DoubleAmpersand,
-    #[token("^")]
-    Caret,
-    #[token("@")]
-    At,
-    #[token("~")]
-    Tilde,
-    #[token("!")]
-    ExclamationPoint,
-
-    // ---- Multi-value operators ----
-    #[token("==")]
-    DoubleEquals,
-    #[token("!=")]
-    ExclamationEquals,
-
-    #[token("+=")]
-    PlusEquals,
-    #[token("-=")]
-    MinusEquals,
-    #[token("*=")]
-    AsteriskEquals,
-    #[token("/=")]
-    SlashEquals,
-    #[token("&=")]
-    AmpersandEquals,
-    #[token("|=")]
-    PipeEquals,
-    #[token("^=")]
-    CaretEquals,
-    #[token("<<=")]
-    LeftShiftEquals,
-    #[token(">>=")]
-    RightShiftEquals,
-    #[token("%=")]
-    PercentEquals,
-    #[token("**=")]
-    DoubleAsteriskEquals,
-
-    #[token(">")]
-    GreaterThan,
-    #[token("<")]
-    LessThan,
-    #[token(">=")]
-    GreaterThanEquals,
-    #[token("<=")]
-    LessThanEquals,
-
-    #[token(">>")]
-    DoubleGreater,
-    #[token("<<")]
-    DoubleLess,
-
-    #[token("im")]
-    Imag,
-
-    // ---- Composite literals (number + suffix) ----
-    // ImaginaryLiteral: (DEC|FLOAT) [ \t]* 'im'
-    #[regex(
-        r"([0-9](_?[0-9])*[eE][+-]?[0-9](_?[0-9])*|\.[0-9](_?[0-9])*([eE][+-]?[0-9](_?[0-9])*)?|[0-9](_?[0-9])*\.([0-9](_?[0-9])*)?([eE][+-]?[0-9](_?[0-9])*)?|[0-9](_?[0-9])*)[ \t]*im"
-    )]
-    ImaginaryLiteral,
-
-    // TimingLiteral: (DEC|FLOAT) [ \t]* TimeUnit
-    #[regex(
-        r"([0-9](_?[0-9])*[eE][+-]?[0-9](_?[0-9])*|\.[0-9](_?[0-9])*([eE][+-]?[0-9](_?[0-9])*)?|[0-9](_?[0-9])*\.([0-9](_?[0-9])*)?([eE][+-]?[0-9](_?[0-9])*)?|[0-9](_?[0-9])*)[ \t]*(dt|ns|us|µs|ms|s)"
-    )]
-    TimingLiteral,
-
-    // ---- Number literals ----
-    #[regex(r"0[bB][01](_?[01])*")]
-    BinaryIntegerLiteral,
-    #[regex(r"0o[0-7](_?[0-7])*")]
-    OctalIntegerLiteral,
-    #[regex(r"0[xX][0-9a-fA-F](_?[0-9a-fA-F])*")]
-    HexIntegerLiteral,
-
-    // FloatLiteral (three alternatives, longest match beats DecimalIntegerLiteral)
-    #[regex(
-        r"[0-9](_?[0-9])*[eE][+-]?[0-9](_?[0-9])*|\.[0-9](_?[0-9])*([eE][+-]?[0-9](_?[0-9])*)?|[0-9](_?[0-9])*\.([0-9](_?[0-9])*)?([eE][+-]?[0-9](_?[0-9])*)?"
-    )]
-    FloatLiteral,
-
-    #[regex(r"[0-9](_?[0-9])*")]
-    DecimalIntegerLiteral,
-
-    #[regex(r#""[01](_?[01])*""#)]
-    BitstringLiteral,
-
-    // ---- Identifiers ----
-    #[regex(r"[\p{L}\p{Nl}_][\p{L}\p{Nl}0-9_]*")]
-    Identifier,
-
-    #[regex(r"\$[0-9]+")]
-    HardwareQubit,
-
-    // ---- Comments ----
-    #[regex(r"//[^\r\n]*", allow_greedy = true)]
-    LineComment,
-    #[regex(r"/\*[^*]*(\*+[^/*][^*]*)*\*+/")]
-    BlockComment,
-}
 
 // ---------------------------------------------------------------------------
 // Mode management
@@ -321,6 +27,8 @@ enum Mode {
 // Lexer
 // ---------------------------------------------------------------------------
 
+type Lexed<'a> = Option<Result<(Token<'a>, Span)>>;
+
 #[derive(Clone)]
 pub struct Lexer<'a> {
     source: &'a str,
@@ -339,19 +47,15 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    /// Construct a lexer for an OpenPulse calibration body.
+    /// Lex an OpenPulse calibration body.
     ///
-    /// In this mode `waveform`/`port`/`frame` are emitted as keyword tokens
-    /// (rather than identifiers), and `cal`/`defcal` are demoted to identifiers
-    /// (per the openpulse grammar's "turn off mode switching" comment) so the
-    /// lexer never re-enters the `CalPrelude`/`DefcalPrelude`/`CalBlock` modes.
-    pub fn new_openpulse(source: &'a str) -> Self {
-        Self {
-            source,
-            pos: 0,
-            mode_stack: vec![Mode::Default],
-            openpulse: true,
-        }
+    /// `waveform`/`port`/`frame` are emitted as keyword tokens (rather than
+    /// identifiers), and `cal`/`defcal` are demoted to identifiers (per the
+    /// openpulse grammar's "turn off mode switching" comment) so the lexer
+    /// never enters the `CalPrelude`/`DefcalPrelude`/`CalBlock` modes.
+    pub fn openpulse(mut self) -> Self {
+        self.openpulse = true;
+        self
     }
 
     fn current_mode(&self) -> Mode {
@@ -372,486 +76,202 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn rest(&self) -> &'a str {
+        &self.source[self.pos..]
+    }
+
+    fn skip(&mut self, skipped: impl Fn(char) -> bool) {
+        self.pos = self.source.len() - self.rest().trim_start_matches(skipped).len();
+    }
+
+    fn skip_whitespace(&mut self) {
+        self.skip(|c| matches!(c, ' ' | '\t' | '\r' | '\n'));
+    }
+
+    /// Consume the next `len` bytes as one token.
+    fn take(&mut self, len: usize, token: fn(&'a str) -> Token<'a>) -> (Token<'a>, Span) {
+        let span = Span::new(self.pos, self.pos + len);
+        self.pos = span.end;
+        (token(&self.source[span]), span)
+    }
+
+    /// Consume the next character and report it as an error.
+    fn reject_char(&mut self, message: &str) -> Error {
+        let len = self.rest().chars().next().map_or(0, char::len_utf8);
+        let span = Span::new(self.pos, self.pos + len);
+        self.pos = span.end;
+        Error::new(span, message)
+    }
+
     // ------------------------------------------------------------------
     // Default / DefcalPrelude mode — delegates to logos
     // ------------------------------------------------------------------
 
-    fn lex_default(&mut self) -> Option<Result<(Token<'a>, Span)>> {
-        let remaining = &self.source[self.pos..];
-        if remaining.is_empty() {
-            return None;
-        }
-
-        let mut raw = RawToken::lexer(remaining);
-        let result = raw.next()?;
-        let span = Span::from(raw.span());
-        let slice = &remaining[span];
-        let abs = span.offset(self.pos);
-        self.pos += span.end;
-
-        match result {
-            Ok(raw_token) => {
-                let token = self.map_raw(raw_token, slice);
-                Some(Ok((token, abs)))
-            }
-            Err(()) => Some(Err(Error {
-                span: abs,
-                message: "unexpected character".into(),
-            })),
-        }
+    fn lex_default(&mut self) -> Lexed<'a> {
+        let mut lexer = Token::lexer(self.rest());
+        let result = lexer.next()?;
+        let span = Span::from(lexer.span()).offset(self.pos);
+        self.pos = span.end;
+        Some(match result {
+            Ok(token) => Ok((self.enter_mode(token), span)),
+            Err(()) => Err(Error::new(span, "unexpected character")),
+        })
     }
 
-    fn map_raw(&mut self, raw: RawToken, slice: &'a str) -> Token<'a> {
-        let in_defcal = self.current_mode() == Mode::DefcalPrelude;
-
-        match raw {
-            // Mode-switching keywords
-            RawToken::OpenQasm => {
-                self.push_mode(Mode::VersionIdentifier);
-                Token::OpenQasm
+    /// Apply the mode switch a default-mode token triggers, and the OpenPulse
+    /// keyword adjustments.
+    fn enter_mode(&mut self, token: Token<'a>) -> Token<'a> {
+        match token {
+            Token::OpenQasm => self.push_mode(Mode::VersionIdentifier),
+            Token::Include | Token::DefCalGrammar => self.push_mode(Mode::ArbitraryString),
+            Token::Pragma | Token::AnnotationKeyword(_) => self.push_mode(Mode::EatToLineEnd),
+            Token::LBrace if self.current_mode() == Mode::DefcalPrelude => {
+                self.set_mode(Mode::CalBlock)
             }
-            RawToken::Include => {
-                self.push_mode(Mode::ArbitraryString);
-                Token::Include
-            }
-            RawToken::DefCalGrammar => {
-                self.push_mode(Mode::ArbitraryString);
-                Token::DefCalGrammar
-            }
-            RawToken::Cal => {
-                if self.openpulse {
-                    Token::Identifier(slice)
-                } else {
-                    self.set_mode(Mode::CalPrelude);
-                    Token::Cal
-                }
-            }
-            RawToken::DefCal => {
-                if self.openpulse {
-                    Token::Identifier(slice)
-                } else {
-                    self.set_mode(Mode::DefcalPrelude);
-                    Token::DefCal
-                }
-            }
-            RawToken::Pragma => {
-                self.push_mode(Mode::EatToLineEnd);
-                Token::Pragma
-            }
-            RawToken::AnnotationKeyword => {
-                self.push_mode(Mode::EatToLineEnd);
-                Token::AnnotationKeyword(slice)
-            }
-            RawToken::LBrace => {
-                if in_defcal {
-                    self.set_mode(Mode::CalBlock);
-                }
-                Token::LBrace
-            }
-
-            // Simple keywords
-            RawToken::Def => Token::Def,
-            RawToken::Gate => Token::Gate,
-            RawToken::Extern => Token::Extern,
-            RawToken::Box_ => Token::Box,
-            RawToken::Let => Token::Let,
-            RawToken::Break => Token::Break,
-            RawToken::Continue => Token::Continue,
-            RawToken::If => Token::If,
-            RawToken::Else => Token::Else,
-            RawToken::End => Token::End,
-            RawToken::Return => Token::Return,
-            RawToken::For => Token::For,
-            RawToken::While => Token::While,
-            RawToken::In => Token::In,
-            RawToken::Switch => Token::Switch,
-            RawToken::Case => Token::Case,
-            RawToken::Default_ => Token::Default,
-            RawToken::Nop => Token::Nop,
-
-            // Types
-            RawToken::Input => Token::Input,
-            RawToken::Output => Token::Output,
-            RawToken::Const => Token::Const,
-            RawToken::Readonly => Token::Readonly,
-            RawToken::Mutable => Token::Mutable,
-            RawToken::Qreg => Token::Qreg,
-            RawToken::Qubit => Token::Qubit,
-            RawToken::Creg => Token::Creg,
-            RawToken::Bool => Token::Bool,
-            RawToken::Bit => Token::Bit,
-            RawToken::Int => Token::Int,
-            RawToken::Uint => Token::Uint,
-            RawToken::Float => Token::Float,
-            RawToken::Angle => Token::Angle,
-            RawToken::Complex => Token::Complex,
-            RawToken::Array => Token::Array,
-            RawToken::Void => Token::Void,
-            RawToken::Duration => Token::Duration,
-            RawToken::Stretch => Token::Stretch,
-
-            // OpenPulse-only keywords: only emit as keywords in openpulse mode,
-            // otherwise treat as plain identifiers so OpenQASM 3 lexing is
-            // unchanged.
-            RawToken::Waveform => {
-                if self.openpulse {
-                    Token::Waveform
-                } else {
-                    Token::Identifier(slice)
-                }
-            }
-            RawToken::Port => {
-                if self.openpulse {
-                    Token::Port
-                } else {
-                    Token::Identifier(slice)
-                }
-            }
-            RawToken::Frame => {
-                if self.openpulse {
-                    Token::Frame
-                } else {
-                    Token::Identifier(slice)
-                }
-            }
-
-            // Builtins
-            RawToken::Gphase => Token::Gphase,
-            RawToken::Inv => Token::Inv,
-            RawToken::Pow => Token::Pow,
-            RawToken::Ctrl => Token::Ctrl,
-            RawToken::Negctrl => Token::Negctrl,
-            RawToken::Dim => Token::Dim,
-            RawToken::Durationof => Token::Durationof,
-            RawToken::Delay => Token::Delay,
-            RawToken::Reset => Token::Reset,
-            RawToken::Measure => Token::Measure,
-            RawToken::Barrier => Token::Barrier,
-
-            // Booleans
-            RawToken::True => Token::True,
-            RawToken::False => Token::False,
-
-            // Symbols
-            RawToken::LBracket => Token::LBracket,
-            RawToken::RBracket => Token::RBracket,
-            RawToken::RBrace => Token::RBrace,
-            RawToken::LParen => Token::LParen,
-            RawToken::RParen => Token::RParen,
-            RawToken::Colon => Token::Colon,
-            RawToken::Semicolon => Token::Semicolon,
-            RawToken::Dot => Token::Dot,
-            RawToken::Comma => Token::Comma,
-            RawToken::Equals => Token::Equals,
-            RawToken::Arrow => Token::Arrow,
-            RawToken::Plus => Token::Plus,
-            RawToken::DoublePlus => Token::DoublePlus,
-            RawToken::Minus => Token::Minus,
-            RawToken::Asterisk => Token::Asterisk,
-            RawToken::DoubleAsterisk => Token::DoubleAsterisk,
-            RawToken::Slash => Token::Slash,
-            RawToken::Percent => Token::Percent,
-            RawToken::Pipe => Token::Pipe,
-            RawToken::DoublePipe => Token::DoublePipe,
-            RawToken::Ampersand => Token::Ampersand,
-            RawToken::DoubleAmpersand => Token::DoubleAmpersand,
-            RawToken::Caret => Token::Caret,
-            RawToken::At => Token::At,
-            RawToken::Tilde => Token::Tilde,
-            RawToken::ExclamationPoint => Token::ExclamationPoint,
-
-            // Multi-value operators
-            RawToken::DoubleEquals => Token::DoubleEquals,
-            RawToken::ExclamationEquals => Token::ExclamationEquals,
-            RawToken::PlusEquals => Token::PlusEquals,
-            RawToken::MinusEquals => Token::MinusEquals,
-            RawToken::AsteriskEquals => Token::AsteriskEquals,
-            RawToken::SlashEquals => Token::SlashEquals,
-            RawToken::AmpersandEquals => Token::AmpersandEquals,
-            RawToken::PipeEquals => Token::PipeEquals,
-            RawToken::CaretEquals => Token::CaretEquals,
-            RawToken::LeftShiftEquals => Token::LeftShiftEquals,
-            RawToken::RightShiftEquals => Token::RightShiftEquals,
-            RawToken::PercentEquals => Token::PercentEquals,
-            RawToken::DoubleAsteriskEquals => Token::DoubleAsteriskEquals,
-            RawToken::GreaterThan => Token::GreaterThan,
-            RawToken::LessThan => Token::LessThan,
-            RawToken::GreaterThanEquals => Token::GreaterThanEquals,
-            RawToken::LessThanEquals => Token::LessThanEquals,
-            RawToken::DoubleGreater => Token::DoubleGreater,
-            RawToken::DoubleLess => Token::DoubleLess,
-
-            // Literals
-            RawToken::Imag => Token::Imag,
-            RawToken::ImaginaryLiteral => Token::ImaginaryLiteral(slice),
-            RawToken::TimingLiteral => Token::TimingLiteral(slice),
-            RawToken::BinaryIntegerLiteral => Token::BinaryIntegerLiteral(slice),
-            RawToken::OctalIntegerLiteral => Token::OctalIntegerLiteral(slice),
-            RawToken::HexIntegerLiteral => Token::HexIntegerLiteral(slice),
-            RawToken::FloatLiteral => Token::FloatLiteral(slice),
-            RawToken::DecimalIntegerLiteral => Token::DecimalIntegerLiteral(slice),
-            RawToken::BitstringLiteral => Token::BitstringLiteral(slice),
-            RawToken::Identifier => Token::Identifier(slice),
-            RawToken::HardwareQubit => Token::HardwareQubit(slice),
-
-            // Comments
-            RawToken::LineComment => Token::LineComment(slice),
-            RawToken::BlockComment => Token::BlockComment(slice),
+            Token::Cal if self.openpulse => return Token::Identifier("cal"),
+            Token::DefCal if self.openpulse => return Token::Identifier("defcal"),
+            Token::Cal => self.set_mode(Mode::CalPrelude),
+            Token::DefCal => self.set_mode(Mode::DefcalPrelude),
+            Token::Identifier("waveform") if self.openpulse => return Token::Waveform,
+            Token::Identifier("port") if self.openpulse => return Token::Port,
+            Token::Identifier("frame") if self.openpulse => return Token::Frame,
+            _ => {}
         }
+        token
     }
 
     // ------------------------------------------------------------------
     // VERSION_IDENTIFIER mode — after OPENQASM
     // ------------------------------------------------------------------
 
-    fn lex_version_identifier(&mut self) -> Option<Result<(Token<'a>, Span)>> {
+    fn lex_version_identifier(&mut self) -> Lexed<'a> {
+        self.pop_mode();
         self.skip_whitespace();
-        if self.pos >= self.source.len() {
-            self.pop_mode();
+        let rest = self.rest();
+        if rest.is_empty() {
             return None;
         }
 
-        let remaining = &self.source[self.pos..];
-        let bytes = remaining.as_bytes();
-
-        // Match [0-9]+ ('.' [0-9]+)?
-        let mut end = 0;
-        while end < bytes.len() && bytes[end].is_ascii_digit() {
-            end += 1;
+        // [0-9]+ ('.' [0-9]*)?
+        let digits = |s: &str| s.len() - s.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let mut len = digits(rest);
+        if len == 0 {
+            return Some(Err(self.reject_char("expected version specifier")));
         }
-        if end == 0 {
-            let span = span(self.pos, self.pos + 1);
-            self.pos += 1;
-            self.pop_mode();
-            return Some(Err(Error {
-                span,
-                message: "expected version specifier".into(),
-            }));
+        if rest[len..].starts_with('.') {
+            len += 1 + digits(&rest[len + 1..]);
         }
-        if end < bytes.len() && bytes[end] == b'.' {
-            end += 1;
-            while end < bytes.len() && bytes[end].is_ascii_digit() {
-                end += 1;
-            }
-        }
-
-        let span = span(self.pos, self.pos + end);
-        let slice = &self.source[span];
-        self.pos += end;
-        self.pop_mode();
-        Some(Ok((Token::VersionSpecifier(slice), span)))
+        Some(Ok(self.take(len, Token::VersionSpecifier)))
     }
 
     // ------------------------------------------------------------------
     // ARBITRARY_STRING mode — after include / defcalgrammar
     // ------------------------------------------------------------------
 
-    fn lex_arbitrary_string(&mut self) -> Option<Result<(Token<'a>, Span)>> {
-        self.skip_whitespace();
-        if self.pos >= self.source.len() {
-            self.pop_mode();
-            return None;
-        }
-
-        let remaining = &self.source[self.pos..];
-        let bytes = remaining.as_bytes();
-        let quote = bytes[0];
-
-        if quote != b'"' && quote != b'\'' {
-            let span = span(self.pos, self.pos + 1);
-            self.pos += 1;
-            self.pop_mode();
-            return Some(Err(Error {
-                span,
-                message: "expected quoted string".into(),
-            }));
-        }
-
-        let mut end = 1;
-        while end < bytes.len() {
-            let b = bytes[end];
-            if b == quote {
-                end += 1; // include closing quote
-                break;
-            }
-            if b == b'\r' || b == b'\n' || b == b'\t' {
-                break; // invalid in string
-            }
-            end += 1;
-        }
-
-        let span = span(self.pos, self.pos + end);
-        let slice = &self.source[span];
-        self.pos += end;
+    fn lex_arbitrary_string(&mut self) -> Lexed<'a> {
         self.pop_mode();
-        Some(Ok((Token::StringLiteral(slice), span)))
+        self.skip_whitespace();
+        let rest = self.rest();
+        let quote = rest.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            return Some(Err(self.reject_char("expected quoted string")));
+        }
+
+        // Up to and including the closing quote; a line break or tab ends an
+        // unterminated string early.
+        let len = match rest[1..].find([quote, '\r', '\n', '\t']) {
+            Some(i) if rest[1 + i..].starts_with(quote) => i + 2,
+            Some(i) => i + 1,
+            None => rest.len(),
+        };
+        Some(Ok(self.take(len, Token::StringLiteral)))
     }
 
     // ------------------------------------------------------------------
     // EAT_TO_LINE_END mode — after pragma / annotation
     // ------------------------------------------------------------------
 
-    /// Returns `None` when no token is emitted (bare newline); the outer loop
-    /// retries in the restored mode.
-    fn lex_eat_to_line_end(&mut self) -> Option<Result<(Token<'a>, Span)>> {
-        // Skip leading spaces/tabs only (not newlines)
-        while self.pos < self.source.len() {
-            match self.source.as_bytes()[self.pos] {
-                b' ' | b'\t' => self.pos += 1,
-                _ => break,
-            }
-        }
-
-        if self.pos >= self.source.len() {
+    /// Returns `None` when no token is emitted (the line is exhausted); the
+    /// outer loop retries in the restored mode.
+    fn lex_eat_to_line_end(&mut self) -> Lexed<'a> {
+        self.skip(|c| matches!(c, ' ' | '\t'));
+        let rest = self.rest();
+        let len = rest.find(['\r', '\n']).unwrap_or(rest.len());
+        if len == 0 {
+            // End of the line (or of the input): consume the line break.
+            self.pos += if rest.starts_with("\r\n") {
+                2
+            } else {
+                rest.len().min(1)
+            };
             self.pop_mode();
             return None;
         }
-
-        // Newline → pop mode, emit nothing
-        let b = self.source.as_bytes()[self.pos];
-        if b == b'\r' || b == b'\n' {
-            if b == b'\r'
-                && self.pos + 1 < self.source.len()
-                && self.source.as_bytes()[self.pos + 1] == b'\n'
-            {
-                self.pos += 2;
-            } else {
-                self.pos += 1;
-            }
-            self.pop_mode();
-            return None; // caller loops
-        }
-
-        // Collect remaining line content
-        let start = self.pos;
-        while self.pos < self.source.len() {
-            let c = self.source.as_bytes()[self.pos];
-            if c == b'\r' || c == b'\n' {
-                break;
-            }
-            self.pos += 1;
-        }
-
-        let span = span(start, self.pos);
-        let slice = &self.source[span];
-        // Don't pop yet — next call sees newline and pops
-        Some(Ok((Token::RemainingLineContent(slice), span)))
+        // Don't pop yet — the next call sees the line break and pops.
+        Some(Ok(self.take(len, Token::RemainingLineContent)))
     }
 
     // ------------------------------------------------------------------
     // CAL_PRELUDE mode — skip ws/comments, then '{' → CalBlock
     // ------------------------------------------------------------------
 
-    fn lex_cal_prelude(&mut self) -> Option<Result<(Token<'a>, Span)>> {
+    fn lex_cal_prelude(&mut self) -> Lexed<'a> {
         self.skip_whitespace();
-        if self.pos >= self.source.len() {
+        let rest = self.rest();
+        if rest.is_empty() {
             self.set_mode(Mode::Default);
             return None;
         }
 
-        let remaining = &self.source[self.pos..];
-
-        // Line comment
-        if remaining.starts_with("//") {
-            let end = remaining.find(['\r', '\n']).unwrap_or(remaining.len());
-            let span = span(self.pos, self.pos + end);
-            let slice = &self.source[span];
-            self.pos += end;
-            return Some(Ok((Token::LineComment(slice), span)));
-        }
-
-        // Block comment
-        if let Some(stripped) = remaining.strip_prefix("/*") {
-            if let Some(i) = stripped.find("*/") {
-                let end = i + 4; // include the closing */
-                let span = span(self.pos, self.pos + end);
-                let slice = &self.source[span];
-                self.pos += end;
-                return Some(Ok((Token::BlockComment(slice), span)));
-            } else {
-                let span = span(self.pos, self.source.len());
-                self.pos = self.source.len();
-                return Some(Err(Error {
-                    span,
-                    message: "unterminated block comment".into(),
-                }));
+        Some(if rest.starts_with("//") {
+            let len = rest.find(['\r', '\n']).unwrap_or(rest.len());
+            Ok(self.take(len, Token::LineComment))
+        } else if let Some(body) = rest.strip_prefix("/*") {
+            match body.find("*/") {
+                Some(i) => Ok(self.take(i + 4, Token::BlockComment)),
+                None => {
+                    let span = Span::new(self.pos, self.source.len());
+                    self.pos = span.end;
+                    Err(Error::new(span, "unterminated block comment"))
+                }
             }
-        }
-
-        // Opening brace
-        if remaining.starts_with('{') {
-            let span = span(self.pos, self.pos + 1);
-            self.pos += 1;
+        } else if rest.starts_with('{') {
             self.set_mode(Mode::CalBlock);
-            return Some(Ok((Token::LBrace, span)));
-        }
-
-        // Unexpected
-        let span = span(self.pos, self.pos + 1);
-        self.pos += 1;
-        Some(Err(Error {
-            span,
-            message: "unexpected character".into(),
-        }))
+            Ok(self.take(1, |_| Token::LBrace))
+        } else {
+            Err(self.reject_char("unexpected character"))
+        })
     }
 
     // ------------------------------------------------------------------
     // CAL_BLOCK mode — balanced-brace content, then '}'
     // ------------------------------------------------------------------
 
-    fn lex_cal_block(&mut self) -> Option<Result<(Token<'a>, Span)>> {
-        if self.pos >= self.source.len() {
-            self.set_mode(Mode::Default);
-            return None;
-        }
-
-        // Closing brace at top level
-        if self.source.as_bytes()[self.pos] == b'}' {
-            let span = span(self.pos, self.pos + 1);
-            self.pos += 1;
-            self.set_mode(Mode::Default);
-            return Some(Ok((Token::RBrace, span)));
-        }
-
-        // Consume content with balanced braces
-        let start = self.pos;
-        let bytes = self.source.as_bytes();
-        let mut depth: usize = 0;
-        while self.pos < bytes.len() {
-            match bytes[self.pos] {
+    fn lex_cal_block(&mut self) -> Lexed<'a> {
+        // Content up to the brace that closes the block.
+        let mut depth = 0usize;
+        let rest = self.rest();
+        let len = rest
+            .bytes()
+            .position(|b| match b {
                 b'{' => {
                     depth += 1;
-                    self.pos += 1;
+                    false
                 }
                 b'}' if depth > 0 => {
                     depth -= 1;
-                    self.pos += 1;
+                    false
                 }
-                b'}' => break, // top-level closing brace
-                _ => self.pos += 1,
-            }
+                b'}' => true,
+                _ => false,
+            })
+            .unwrap_or(rest.len());
+
+        if len == 0 {
+            self.set_mode(Mode::Default);
+            return Some(Ok(self.take(1, |_| Token::RBrace)));
         }
-
-        if self.pos == start {
-            return None;
-        }
-
-        let span = span(start, self.pos);
-        let slice = &self.source[span];
-        Some(Ok((Token::CalibrationBlock(slice), span)))
-    }
-
-    // ------------------------------------------------------------------
-    // Helpers
-    // ------------------------------------------------------------------
-
-    fn skip_whitespace(&mut self) {
-        while self.pos < self.source.len() {
-            match self.source.as_bytes()[self.pos] {
-                b' ' | b'\t' | b'\r' | b'\n' => self.pos += 1,
-                _ => break,
-            }
-        }
+        Some(Ok(self.take(len, Token::CalibrationBlock)))
     }
 }
 
@@ -1050,6 +470,42 @@ mod tests {
     #[test]
     fn boolean_literal() {
         assert_eq!(lex("true false"), vec![Token::True, Token::False]);
+    }
+
+    #[test]
+    fn openpulse_keywords() {
+        let openpulse: Vec<_> = Lexer::new("waveform port frame cal defcal")
+            .openpulse()
+            .map(|r| r.unwrap().0)
+            .collect();
+        assert_eq!(
+            openpulse,
+            vec![
+                Token::Waveform,
+                Token::Port,
+                Token::Frame,
+                Token::Identifier("cal"),
+                Token::Identifier("defcal"),
+            ]
+        );
+        assert_eq!(
+            lex("waveform port frame"),
+            vec![
+                Token::Identifier("waveform"),
+                Token::Identifier("port"),
+                Token::Identifier("frame"),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejected_character_is_consumed_whole() {
+        // The error covers the whole multi-byte character, so lexing can go on.
+        for src in ["include é;", "OPENQASM é;", "cal é { }"] {
+            let results: Vec<_> = Lexer::new(src).collect();
+            let err = results.iter().find_map(|r| r.as_ref().err()).unwrap();
+            assert_eq!(&src[err.span], "é", "{src}");
+        }
     }
 
     #[test]

@@ -39,11 +39,9 @@ fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> JsValue {
         Path::new(SOURCE_NAME),
         source,
     ));
-    if let Some(label) = diag.labels().into_iter().find(|l| l.primary) {
-        let mut start = label.span.start;
-        let mut end = label.span.end;
-        // A `0..0` span is the "no location" sentinel; skip it.
-        if (start != 0 || end != 0) && start <= source.len() && end <= source.len() {
+    if let Some(span) = oqi_diagnostics::primary_span(diag) {
+        let (mut start, mut end) = (span.start, span.end);
+        if start <= source.len() && end <= source.len() {
             // Widen a zero-width span (e.g. a parser "expected ';'") to one
             // character so the editor has a visible range. Prefer the char
             // *before* the gap — for a missing `;` the position sits on the

@@ -524,7 +524,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                 let dur = value_to_duration(&dur_val, d.duration.span)?;
                 let qubits = resolve_qubit_operands(&d.operands, self.symbols, frame, span)?;
                 if qubits.is_empty() {
-                    return Err(err(
+                    return Err(CompileError::at(
                         ErrorKind::InvalidContext(
                             "delay requires at least one qubit operand".into(),
                         ),
@@ -560,7 +560,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                 }
                 Ok(())
             }
-            _ => Err(err(
+            _ => Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "statement not supported inside `durationof` when compile-time timings \
                      are supplied (control flow and classical statements cannot be timed \
@@ -628,7 +628,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             let v = self.eval_const_expr(d, frame)?;
             let dur = value_to_duration(&v, d.span)?;
             if dur.to_unit(DurationUnit::Ns).value < 0.0 {
-                return Err(err(
+                return Err(CompileError::at(
                     ErrorKind::InvalidContext(format!(
                         "gate duration designator is negative ({dur})"
                     )),
@@ -669,7 +669,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                     .iter()
                     .find(|g| g.symbol == gate)
                     .ok_or_else(|| {
-                        err(
+                        CompileError::at(
                             ErrorKind::InvalidContext(format!(
                                 "gate `{}` not found for duration recursion",
                                 call_args.name
@@ -678,7 +678,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                         )
                     })?;
                 if decl.params.len() != resolved_args.len() {
-                    return Err(err(
+                    return Err(CompileError::at(
                         ErrorKind::InvalidContext(format!(
                             "gate `{}` expects {} arg(s), got {}",
                             call_args.name,
@@ -689,7 +689,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                     ));
                 }
                 if decl.qubits.len() != qubit_refs.len() {
-                    return Err(err(
+                    return Err(CompileError::at(
                         ErrorKind::InvalidContext(format!(
                             "gate `{}` expects {} qubit(s), got {}",
                             call_args.name,
@@ -811,39 +811,42 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
                 }
                 sym.const_value
                     .clone()
-                    .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span))
+                    .ok_or_else(|| CompileError::at(ErrorKind::NonConstantExpression, expr.span))
             }
             ExprKind::Binary(b) => {
                 let lv = self.eval_const_expr(&b.left, frame)?;
                 let rv = self.eval_const_expr(&b.right, frame)?;
                 b.op.apply(lv, rv)
-                    .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
+                    .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, expr.span))
             }
             ExprKind::Unary(u) => {
                 let v = self.eval_const_expr(&u.operand, frame)?;
                 u.op.apply(v)
-                    .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
+                    .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, expr.span))
             }
             ExprKind::Cast(c) => {
                 let v = self.eval_const_expr(&c.operand, frame)?;
                 let ty = c
                     .target_ty
                     .value_ty()
-                    .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span))?;
+                    .ok_or_else(|| CompileError::at(ErrorKind::NonConstantExpression, expr.span))?;
                 v.cast(ty)
-                    .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
+                    .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, expr.span))
             }
             ExprKind::Call(c) => match &c.callee {
                 CallTarget::Intrinsic(i) => self.eval_intrinsic(i, &c.args, frame, expr.span),
-                CallTarget::Symbol(_) => Err(err(ErrorKind::NonConstantExpression, expr.span)),
+                CallTarget::Symbol(_) => Err(CompileError::at(
+                    ErrorKind::NonConstantExpression,
+                    expr.span,
+                )),
             },
             ExprKind::DurationOf(stmts) => {
                 let d = self.compute_scope_duration(stmts, expr.span)?;
                 Ok(Value::from(d))
             }
-            ExprKind::Index(_) | ExprKind::HardwareQubit(_) | ExprKind::ArrayLiteral(_) => {
-                Err(err(ErrorKind::NonConstantExpression, expr.span))
-            }
+            ExprKind::Index(_) | ExprKind::HardwareQubit(_) | ExprKind::ArrayLiteral(_) => Err(
+                CompileError::at(ErrorKind::NonConstantExpression, expr.span),
+            ),
         }
     }
 
@@ -858,7 +861,7 @@ impl<'a, T: Timings> ResolveCtx<'a, T> {
             .iter()
             .map(|a| self.eval_const_expr(a, frame))
             .collect::<Result<_>>()?;
-        let non_const = || err(ErrorKind::NonConstantExpression, span);
+        let non_const = || CompileError::at(ErrorKind::NonConstantExpression, span);
         i.apply(vals)
             .ok_or_else(non_const)?
             .map_err(|_| non_const())
@@ -953,7 +956,7 @@ fn resolve_qubit_operand(
         QubitOperand::Indexed { symbol, indices } => {
             if let Some(subst) = frame.qubits.get(symbol) {
                 if !indices.is_empty() {
-                    return Err(err(
+                    return Err(CompileError::at(
                         ErrorKind::InvalidContext(
                             "cannot index a formal qubit parameter inside `durationof`".into(),
                         ),
@@ -976,14 +979,14 @@ fn resolve_qubit_operand(
                             })
                             .collect())
                     }
-                    _ => Err(err(
+                    _ => Err(CompileError::at(
                         ErrorKind::InvalidContext(format!("`{name}` is not a qubit")),
                         span,
                     )),
                 }
             } else {
                 if indices.len() != 1 {
-                    return Err(err(
+                    return Err(CompileError::at(
                         ErrorKind::InvalidContext(
                             "multi-dimensional qubit indexing is not supported in `durationof`"
                                 .into(),
@@ -1005,7 +1008,7 @@ fn single_index(op: &IndexOp<Expr>, symbols: &SymbolTable, frame: &Frame) -> Res
     let items = match &op.kind {
         IndexKind::Items(items) => items,
         IndexKind::Set(_) => {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "set indices are not supported in `durationof` qubit operands".into(),
                 ),
@@ -1014,7 +1017,7 @@ fn single_index(op: &IndexOp<Expr>, symbols: &SymbolTable, frame: &Frame) -> Res
         }
     };
     if items.len() != 1 {
-        return Err(err(
+        return Err(CompileError::at(
             ErrorKind::InvalidContext(
                 "multi-dimensional qubit indexing is not supported in `durationof`".into(),
             ),
@@ -1034,7 +1037,7 @@ fn single_index(op: &IndexOp<Expr>, symbols: &SymbolTable, frame: &Frame) -> Res
                 _ => None,
             };
             v.as_ref().and_then(value_as_usize).ok_or_else(|| {
-                err(
+                CompileError::at(
                     ErrorKind::InvalidContext(
                         "qubit index must be a compile-time non-negative integer".into(),
                     ),
@@ -1042,7 +1045,7 @@ fn single_index(op: &IndexOp<Expr>, symbols: &SymbolTable, frame: &Frame) -> Res
                 )
             })
         }
-        IndexItem::Range(_) => Err(err(
+        IndexItem::Range(_) => Err(CompileError::at(
             ErrorKind::InvalidContext(
                 "range indices are not supported in `durationof` qubit operands".into(),
             ),
@@ -1055,7 +1058,7 @@ fn single_index(op: &IndexOp<Expr>, symbols: &SymbolTable, frame: &Frame) -> Res
 
 fn value_to_duration(v: &Value, span: Span) -> Result<Duration> {
     let mismatch = || {
-        err(
+        CompileError::at(
             ErrorKind::TypeMismatch {
                 expected: Box::new(Type::Classical(ValueTy::duration())),
                 got: Box::new(Type::Classical(v.ty())),
@@ -1075,15 +1078,11 @@ fn value_to_duration(v: &Value, span: Span) -> Result<Duration> {
         .ok_or_else(mismatch)
 }
 
-fn err(kind: ErrorKind, span: Span) -> CompileError {
-    CompileError::new(kind).with_span(span)
-}
-
 /// The stretch solver ([`stretch`]) rewrites resolved stretch references
 /// to constants; one that reaches constant evaluation unresolved gets an
 /// honest error rather than a generic non-constant one.
 fn stretch_err(span: Span) -> CompileError {
-    err(
+    CompileError::at(
         ErrorKind::InvalidContext(
             "stretch resolution is not implemented; `stretch` values cannot \
              be used where timings are resolved at compile time"
@@ -1348,7 +1347,7 @@ impl DefcalTable {
     /// (mirroring the VM's runtime `TimingState`).
     fn body_duration(&self, cal: &CalibrationDecl, call_args: &[Value]) -> Result<Duration> {
         let CalibrationBody::OpenPulse(stmts) = &cal.body else {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("opaque defcal bodies cannot be timed".into()),
                 cal.span,
             ));
@@ -1445,7 +1444,7 @@ impl CalWalk<'_> {
                             targets.push(*symbol);
                         }
                         _ => {
-                            return Err(err(
+                            return Err(CompileError::at(
                                 ErrorKind::InvalidContext(
                                     "delay operands in a timed defcal body must be frames".into(),
                                 ),
@@ -1492,7 +1491,7 @@ impl CalWalk<'_> {
                 Ok(())
             }
             StmtKind::Nop(_) => Ok(()),
-            _ => Err(err(
+            _ => Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "statement not supported in a defcal body timed at compile time".into(),
                 ),
@@ -1537,7 +1536,7 @@ impl CalWalk<'_> {
     /// body against this walk's frame clocks.
     fn gate_call(&mut self, gc: &crate::sir::GateCall<Expr>, span: Span) -> Result<()> {
         if gc.duration.is_some() {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "gate duration designators are not supported in a timed defcal body".into(),
                 ),
@@ -1557,7 +1556,7 @@ impl CalWalk<'_> {
                     });
                 }
                 _ => {
-                    return Err(err(
+                    return Err(CompileError::at(
                         ErrorKind::InvalidContext(
                             "indexed qubit operands are not supported in a timed defcal body"
                                 .into(),
@@ -1577,7 +1576,7 @@ impl CalWalk<'_> {
             .get(&name)
             .and_then(|cals| DefcalTable::find(cals, &qubits, call_args.len()))
             .ok_or_else(|| {
-                err(
+                CompileError::at(
                     ErrorKind::InvalidContext(format!(
                         "no defcal matches `{name}` inside a timed defcal body"
                     )),
@@ -1585,7 +1584,7 @@ impl CalWalk<'_> {
                 )
             })?;
         let CalibrationBody::OpenPulse(stmts) = &cal.body else {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("opaque defcal bodies cannot be timed".into()),
                 cal.span,
             ));
@@ -1606,20 +1605,20 @@ impl CalWalk<'_> {
 
     fn play(&mut self, args: &[Expr], span: Span) -> Result<()> {
         let [frame, wf] = args else {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("play expects (frame, waveform)".into()),
                 span,
             ));
         };
         let ExprKind::Var(frame_sid) = &frame.kind else {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("play frame must be a frame variable".into()),
                 frame.span,
             ));
         };
         let dur = match &wf.kind {
             ExprKind::Var(wf_sid) => self.waveforms.get(wf_sid).copied().ok_or_else(|| {
-                err(
+                CompileError::at(
                     ErrorKind::InvalidContext(
                         "played waveform's duration is not statically known".into(),
                     ),
@@ -1634,20 +1633,20 @@ impl CalWalk<'_> {
 
     fn capture(&mut self, args: &[Expr], span: Span) -> Result<()> {
         let [frame, samples] = args else {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("capture expects (frame, samples)".into()),
                 span,
             ));
         };
         let ExprKind::Var(frame_sid) = &frame.kind else {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("capture frame must be a frame variable".into()),
                 frame.span,
             ));
         };
         let v = eval_cal_expr(samples, &self.params, self.table)?;
         let n = value_as_usize(&v).ok_or_else(|| {
-            err(
+            CompileError::at(
                 ErrorKind::InvalidContext(
                     "capture sample count must be a constant non-negative integer".into(),
                 ),
@@ -1662,13 +1661,13 @@ impl CalWalk<'_> {
     /// Duration of a waveform constructor call (`gaussian(amp, dur, sigma)`).
     fn waveform_duration(&self, e: &Expr) -> Result<Duration> {
         let ExprKind::Call(c) = &e.kind else {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("waveform value is not a constructor call".into()),
                 e.span,
             ));
         };
         let CallTarget::Symbol(callee) = &c.callee else {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("waveform value is not a constructor call".into()),
                 e.span,
             ));
@@ -1676,7 +1675,7 @@ impl CalWalk<'_> {
         match self.name(*callee) {
             "gaussian" => {
                 let dur_expr = c.args.get(1).ok_or_else(|| {
-                    err(
+                    CompileError::at(
                         ErrorKind::InvalidContext("gaussian expects (amp, duration, sigma)".into()),
                         e.span,
                     )
@@ -1684,7 +1683,7 @@ impl CalWalk<'_> {
                 let v = eval_cal_expr(dur_expr, &self.params, self.table)?;
                 value_to_duration(&v, dur_expr.span)
             }
-            other => Err(err(
+            other => Err(CompileError::at(
                 ErrorKind::InvalidContext(format!(
                     "cannot statically time waveform constructor `{other}`"
                 )),
@@ -1711,29 +1710,32 @@ fn eval_cal_expr(
                 .get(sid)
                 .or_else(|| table.consts.get(sid))
                 .cloned()
-                .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span))
+                .ok_or_else(|| CompileError::at(ErrorKind::NonConstantExpression, expr.span))
         }
         ExprKind::Binary(b) => {
             let lv = eval_cal_expr(&b.left, params, table)?;
             let rv = eval_cal_expr(&b.right, params, table)?;
             b.op.apply(lv, rv)
-                .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
+                .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, expr.span))
         }
         ExprKind::Unary(u) => {
             let v = eval_cal_expr(&u.operand, params, table)?;
             u.op.apply(v)
-                .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
+                .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, expr.span))
         }
         ExprKind::Cast(c) => {
             let v = eval_cal_expr(&c.operand, params, table)?;
             let ty = c
                 .target_ty
                 .value_ty()
-                .ok_or_else(|| err(ErrorKind::NonConstantExpression, expr.span))?;
+                .ok_or_else(|| CompileError::at(ErrorKind::NonConstantExpression, expr.span))?;
             v.cast(ty)
-                .map_err(|_| err(ErrorKind::NonConstantExpression, expr.span))
+                .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, expr.span))
         }
-        _ => Err(err(ErrorKind::NonConstantExpression, expr.span)),
+        _ => Err(CompileError::at(
+            ErrorKind::NonConstantExpression,
+            expr.span,
+        )),
     }
 }
 

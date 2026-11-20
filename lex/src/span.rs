@@ -14,6 +14,15 @@ impl Span {
         Self { start, end }
     }
 
+    /// The span from the start of `self` to the end of `end`.
+    #[inline]
+    pub const fn to(self, end: Span) -> Self {
+        Self {
+            start: self.start,
+            end: end.end,
+        }
+    }
+
     #[inline]
     pub const fn offset(self, offset: usize) -> Self {
         Self {
@@ -44,10 +53,6 @@ impl Span {
         }
         (line, column)
     }
-}
-
-pub const fn span(start: usize, end: usize) -> Span {
-    Span::new(start, end)
 }
 
 impl From<Range<usize>> for Span {

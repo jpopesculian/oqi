@@ -13,7 +13,7 @@
 //!
 //! - `C####` — compile errors (`oqi_compile::ErrorKind`)
 //! - `R####` — runtime errors (`oqi_vm::VmError`)
-//! - `S####` — syntax / parse errors (`oqi_parse::Error`)
+//! - `S####` — syntax errors (`oqi_lex::Error`, also `oqi_parse::Error`)
 
 use std::borrow::Cow;
 use std::fmt;
@@ -22,7 +22,7 @@ use std::ops::Range;
 use std::path::Path;
 use std::str::FromStr;
 
-use ariadne::{Config, Label, Report, ReportKind, Source};
+use ariadne::{Config, IndexType, Label, Report, ReportKind, Source};
 use oqi_lex::Span;
 
 /// Tab width used when resolving a byte offset to a `line:column` position.
@@ -175,9 +175,12 @@ pub fn render_to_string(diag: &dyn Diagnostic, root_path: &Path, root_source: &s
     String::from_utf8_lossy(&buf).into_owned()
 }
 
-/// A span carries no location when it is the default `0..0` sentinel.
-fn has_location(span: Span) -> bool {
-    span.start != 0 || span.end != 0
+/// The span `diag` primarily points at, or `None` when it carries no location
+/// (the default `0..0` span).
+pub fn primary_span(diag: &dyn Diagnostic) -> Option<Span> {
+    let labels = diag.labels();
+    let primary = labels.iter().find(|l| l.primary).or(labels.first())?;
+    (primary.span != Span::default()).then_some(primary.span)
 }
 
 fn render(
@@ -197,12 +200,14 @@ fn render(
         Cow::Borrowed(root_source)
     };
 
-    let labels = diag.labels();
-    let primary = labels.iter().find(|l| l.primary).or_else(|| labels.first());
+    // A span fits the source when it lies inside it, on character
+    // boundaries. One that does not belongs to text we could not load (an
+    // include that is not a file, say), and cannot be shown.
+    let fits = |span: Span| source.get(span.start..span.end).is_some();
 
     // Without a usable span there is nothing to point at — fall back to a
     // single headline line so the diagnostic still reaches the user.
-    let Some(primary) = primary.filter(|l| has_location(l.span)) else {
+    let Some(primary) = primary_span(diag).filter(|&span| fits(span)) else {
         let _ = writeln!(
             w,
             "{}: error[{}]: {}",
@@ -213,18 +218,20 @@ fn render(
         return;
     };
 
-    let (line, column) = primary
-        .span
-        .doc_position(source.as_ref(), DIAGNOSTIC_TAB_SIZE);
+    let (line, column) = primary.doc_position(source.as_ref(), DIAGNOSTIC_TAB_SIZE);
     let filename = diagnostic_path.display().to_string();
     let headline = format!("{filename}:{line}:{column}: {}", diag.message());
 
-    let mut report = Report::build(ReportKind::Error, (&filename, Range::from(primary.span)))
-        .with_config(Config::default().with_color(color))
+    let mut report = Report::build(ReportKind::Error, (&filename, Range::from(primary)))
+        .with_config(
+            Config::default()
+                .with_color(color)
+                .with_index_type(IndexType::Byte),
+        )
         .with_code(diag.code())
         .with_message(headline);
 
-    for label in &labels {
+    for label in diag.labels().iter().filter(|label| fits(label.span)) {
         report = report.with_label(
             Label::new((&filename, Range::from(label.span))).with_message(&label.message),
         );
@@ -310,6 +317,48 @@ mod tests {
             out.contains("a name may only be defined once per scope"),
             "missing note:\n{out}"
         );
+    }
+
+    #[test]
+    fn spans_are_byte_offsets() {
+        // The span is in bytes: characters before it that take several bytes
+        // must not shift (or lose) the snippet.
+        let source = "// µµµµ ééé\nint x = ;\n";
+        let at = source.find(';').unwrap();
+        let err = oqi_lex::Error::new(Span::new(at, at + 1), "expected expression");
+        let out = render_to_string(&err, Path::new("test.qasm"), source);
+        assert!(out.contains("test.qasm:2:9"), "{out}");
+        assert!(out.contains("int x = ;"), "missing snippet:\n{out}");
+        assert!(out.contains("syntax error"), "missing label:\n{out}");
+    }
+
+    #[test]
+    fn a_span_outside_the_source_still_renders() {
+        // E.g. an error inside an included file that cannot be re-read.
+        for span in [Span::new(40, 45), Span::new(3, 400), Span::new(1, 2)] {
+            let err = oqi_lex::Error::new(span, "somewhere else");
+            let out = render_to_string(&err, Path::new("test.qasm"), "é;\n");
+            assert!(out.contains("S0001"), "{out}");
+            assert!(out.contains("somewhere else"), "{out}");
+        }
+    }
+
+    #[test]
+    fn an_empty_span_at_the_end_of_the_source_renders() {
+        // Where the parser reports what it expected after the last token.
+        for source in ["int x =", "int x =\n", "é"] {
+            let end = source.len();
+            let err = oqi_lex::Error::new(Span::new(end, end), "expected expression");
+            let out = render_to_string(&err, Path::new("test.qasm"), source);
+            assert!(out.contains("syntax error"), "missing label:\n{out}");
+        }
+    }
+
+    #[test]
+    fn primary_span_skips_the_no_location_sentinel() {
+        assert_eq!(primary_span(&Fake), Some(Span::new(10, 11)));
+        let nowhere = oqi_lex::Error::new(Span::default(), "nowhere");
+        assert_eq!(primary_span(&nowhere), None);
     }
 
     #[test]

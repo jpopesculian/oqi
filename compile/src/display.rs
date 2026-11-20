@@ -1,6 +1,5 @@
 use std::fmt;
 
-use crate::error::{CompileError, ErrorKind};
 use crate::sir::*;
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::Type;
@@ -67,53 +66,6 @@ impl fmt::Display for Intrinsic {
 }
 
 // ── Error display ───────────────────────────────────────────────────
-
-impl fmt::Display for ErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ErrorKind::UndefinedName(name) => write!(f, "undefined name '{name}'"),
-            ErrorKind::DuplicateDefinition { name, .. } => {
-                write!(f, "duplicate definition of '{name}'")
-            }
-            ErrorKind::TypeMismatch { expected, got } => {
-                write!(f, "type mismatch: expected {expected}, got {got}")
-            }
-            ErrorKind::NonConstantDesignator => {
-                write!(f, "designator must be a constant expression")
-            }
-            ErrorKind::NonConstantExpression => write!(f, "expression must be constant"),
-            ErrorKind::InvalidType(msg) => write!(f, "invalid type: {msg}"),
-            ErrorKind::IncludeNotFound(path) => write!(f, "include file not found: {path}"),
-            ErrorKind::IncludeCycle(chain) => {
-                write!(f, "include cycle: {}", chain.join(" -> "))
-            }
-            ErrorKind::MissingSourceContext => {
-                write!(
-                    f,
-                    "cannot resolve relative include without source file context"
-                )
-            }
-            ErrorKind::InvalidContext(msg) => write!(f, "{msg}"),
-            ErrorKind::InvalidGateBody(msg) => write!(f, "invalid gate body: {msg}"),
-            ErrorKind::InvalidLiteral(msg) => write!(f, "invalid literal: {msg}"),
-            ErrorKind::Unsupported(msg) => write!(f, "unsupported: {msg}"),
-            ErrorKind::QubitIndexOutOfRange { index, len } => {
-                write!(
-                    f,
-                    "qubit index {index} out of range for register of length {len}"
-                )
-            }
-        }
-    }
-}
-
-impl fmt::Display for CompileError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.kind)
-    }
-}
-
-impl std::error::Error for CompileError {}
 
 // ── Program display ─────────────────────────────────────────────────
 

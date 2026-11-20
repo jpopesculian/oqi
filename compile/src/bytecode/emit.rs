@@ -21,7 +21,7 @@ use oqi_lex::Span;
 use crate::cfg;
 use crate::classical::PrimitiveTy;
 use crate::error::{CompileError, ErrorKind, Result};
-use crate::qubits::{self, QubitLayout};
+use crate::qubits::{self, QubitLayout, Resolved};
 use crate::sir::{
     self, Alias, Binary, Call, CallTarget, Cast, Delay, GateCall, GateModifier, Index, IndexItem,
     IndexKind, IndexOp, MeasureExpr, MeasureExprKind, QubitOperand, RValue,
@@ -445,13 +445,12 @@ impl<'a> EmitCtx<'a> {
                     // Static qubit aliases resolve into the layout and
                     // emit nothing; a non-constant index falls back to a
                     // runtime bind; classical aliases keep their metadata op.
-                    match self.layout.resolve_alias_value(value, self.symbols) {
-                        Ok(Some(reg)) => self.layout.define_alias(*symbol, reg),
-                        Err(e) if matches!(e.kind, ErrorKind::NonConstantExpression) => {
+                    match self.layout.resolve_alias_value(value, self.symbols)? {
+                        Some(Resolved::Static(reg)) => self.layout.define_alias(*symbol, reg),
+                        Some(Resolved::Dynamic) => {
                             self.lower_dynamic_alias(*symbol, value, instrs, reg_map, span)?;
                         }
-                        Err(e) => return Err(e),
-                        Ok(None) => {
+                        None => {
                             let value = value
                                 .iter()
                                 .map(|e| self.lower_expr_to_operand(e, instrs, reg_map))
@@ -480,10 +479,12 @@ impl<'a> EmitCtx<'a> {
                 // by the qubit operands (the order bare syntax always yields).
                 if self.symbols.get(*gate).kind == SymbolKind::Subroutine {
                     if !modifiers.is_empty() {
-                        return Err(CompileError::new(ErrorKind::InvalidContext(
-                            "gate modifiers cannot be applied to a subroutine call".into(),
-                        ))
-                        .with_span(span));
+                        return Err(CompileError::at(
+                            ErrorKind::InvalidContext(
+                                "gate modifiers cannot be applied to a subroutine call".into(),
+                            ),
+                            span,
+                        ));
                     }
                     let mut call_args: Vec<BcOperand> = args
                         .iter()
@@ -684,7 +685,9 @@ impl<'a> EmitCtx<'a> {
                 if let Some(io) = indices.first().filter(|io| is_multi_index(io))
                     && let Some(len) = self.symbol_bit_len(old.symbol)
                 {
-                    let positions = qubits::resolve_static_index(io, len)?;
+                    let Resolved::Static(positions) = qubits::resolve_index(io, len)? else {
+                        return Err(CompileError::at(ErrorKind::NonConstantExpression, io.span));
+                    };
                     let value = self.rvalue_to_operand(value, instrs, reg_map)?;
                     instrs.push(BcInstr {
                         op: BcOp::StoreSlice {
@@ -948,21 +951,23 @@ impl<'a> EmitCtx<'a> {
                     }
                     None => {
                         let len = self.qubit_param_len(symbol).ok_or_else(|| {
-                            CompileError::new(ErrorKind::Unsupported(
-                                "slice of a non-register qubit parameter".into(),
-                            ))
-                            .with_span(io.span)
+                            CompileError::at(
+                                ErrorKind::Unsupported(
+                                    "slice of a non-register qubit parameter".into(),
+                                ),
+                                io.span,
+                            )
                         })?;
-                        match qubits::resolve_static_index(io, len) {
+                        match qubits::resolve_index(io, len).map_err(|e| e.with_span(io.span))? {
                             // Static slice / discrete set: resolve positions
                             // against the declared length at compile time.
-                            Ok(positions) => Ok(BcOperand::Select {
+                            Resolved::Static(positions) => Ok(BcOperand::Select {
                                 source: QubitSource::Slot(slot),
                                 positions: positions.iter().map(|&p| p as u32).collect(),
                             }),
                             // Runtime slice bounds: materialize a transient
                             // alias bound to the parameter's qubits at run time.
-                            Err(e) if matches!(e.kind, ErrorKind::NonConstantExpression) => {
+                            Resolved::Dynamic => {
                                 let src = AliasSrc::Param {
                                     slot,
                                     len: Some(len),
@@ -971,14 +976,13 @@ impl<'a> EmitCtx<'a> {
                                     self.bind_transient_alias(&src, &[io], instrs, reg_map, span)?;
                                 Ok(BcOperand::Whole(QubitSource::Slot(alias)))
                             }
-                            Err(e) => Err(e.with_span(io.span)),
                         }
                     }
                 },
-                _ => Err(CompileError::new(ErrorKind::Unsupported(
-                    "multi-dimensional index on a quantum register".into(),
-                ))
-                .with_span(span)),
+                _ => Err(CompileError::at(
+                    ErrorKind::Unsupported("multi-dimensional index on a quantum register".into()),
+                    span,
+                )),
             };
         }
 
@@ -995,8 +999,8 @@ impl<'a> EmitCtx<'a> {
                         )))
                     }
                 }
-                [io] => match qubits::resolve_static_index(io, reg.len()) {
-                    Ok(idxs) => {
+                [io] => match qubits::resolve_index(io, reg.len())? {
+                    Resolved::Static(idxs) => {
                         if let [only] = idxs.as_slice() {
                             Ok(BcOperand::Qubit(self.must_global(&reg, *only)))
                         } else {
@@ -1008,7 +1012,7 @@ impl<'a> EmitCtx<'a> {
                     }
                     // Runtime single index: the VM maps the logical
                     // index through the region's ranges.
-                    Err(e) if matches!(e.kind, ErrorKind::NonConstantExpression) => {
+                    Resolved::Dynamic => {
                         match qubits::single_index_expr(io) {
                             Some(e) => {
                                 let region = self.region_for(&reg, Some(symbol));
@@ -1032,12 +1036,11 @@ impl<'a> EmitCtx<'a> {
                             }
                         }
                     }
-                    Err(e) => Err(e),
                 },
-                _ => Err(CompileError::new(ErrorKind::Unsupported(
-                    "multi-dimensional index on a quantum register".into(),
-                ))
-                .with_span(span)),
+                _ => Err(CompileError::at(
+                    ErrorKind::Unsupported("multi-dimensional index on a quantum register".into()),
+                    span,
+                )),
             };
         }
 
@@ -1061,18 +1064,20 @@ impl<'a> EmitCtx<'a> {
                         Ok(BcOperand::Whole(QubitSource::Slot(slot)))
                     }
                 },
-                _ => Err(CompileError::new(ErrorKind::Unsupported(
-                    "multi-dimensional index on a quantum register".into(),
-                ))
-                .with_span(span)),
+                _ => Err(CompileError::at(
+                    ErrorKind::Unsupported("multi-dimensional index on a quantum register".into()),
+                    span,
+                )),
             };
         }
 
-        Err(CompileError::new(ErrorKind::Unsupported(format!(
-            "cannot resolve qubit reference `{}`",
-            self.symbols.get(symbol).name
-        )))
-        .with_span(span))
+        Err(CompileError::at(
+            ErrorKind::Unsupported(format!(
+                "cannot resolve qubit reference `{}`",
+                self.symbols.get(symbol).name
+            )),
+            span,
+        ))
     }
 
     /// Declared length of a qubit parameter (`qubit q` → 1, `qubit[n]` → n),
@@ -1127,16 +1132,18 @@ impl<'a> EmitCtx<'a> {
         reg_map: &mut RegMap,
     ) -> Result<Option<usize>> {
         if matches!(expr.kind, SsaExprKind::HardwareQubit(_)) {
-            return Err(CompileError::new(ErrorKind::Unsupported(
-                "physical qubits cannot be aliased".into(),
-            ))
-            .with_span(expr.span));
+            return Err(CompileError::at(
+                ErrorKind::Unsupported("physical qubits cannot be aliased".into()),
+                expr.span,
+            ));
         }
         let Some((sym, ops)) = qubits::peel_index_chain(expr) else {
-            return Err(CompileError::new(ErrorKind::Unsupported(
-                "cannot mix quantum and classical operands in an alias".into(),
-            ))
-            .with_span(expr.span));
+            return Err(CompileError::at(
+                ErrorKind::Unsupported(
+                    "cannot mix quantum and classical operands in an alias".into(),
+                ),
+                expr.span,
+            ));
         };
         // The base this operand indexes: a qubit parameter (bound at call
         // time), a declared register / static alias, or another runtime-bound
@@ -1154,11 +1161,13 @@ impl<'a> EmitCtx<'a> {
         } else if let Some(da) = self.layout.dynamic_alias_of(sym) {
             AliasSrc::Alias(da)
         } else {
-            return Err(CompileError::new(ErrorKind::Unsupported(format!(
-                "cannot resolve qubit reference `{}`",
-                self.symbols.get(sym).name
-            )))
-            .with_span(expr.span));
+            return Err(CompileError::at(
+                ErrorKind::Unsupported(format!(
+                    "cannot resolve qubit reference `{}`",
+                    self.symbols.get(sym).name
+                )),
+                expr.span,
+            ));
         };
 
         self.alias_segments_for(&src, &ops, out, instrs, reg_map, expr.span)
@@ -1184,10 +1193,12 @@ impl<'a> EmitCtx<'a> {
             [io] => match &io.kind {
                 IndexKind::Set(es) => {
                     if es.is_empty() {
-                        return Err(CompileError::new(ErrorKind::InvalidContext(
-                            "a quantum register cannot be indexed by an empty index set".into(),
-                        ))
-                        .with_span(io.span));
+                        return Err(CompileError::at(
+                            ErrorKind::InvalidContext(
+                                "a quantum register cannot be indexed by an empty index set".into(),
+                            ),
+                            io.span,
+                        ));
                     }
                     for e in es {
                         let op = self.alias_element_operand(src, e, instrs, reg_map)?;
@@ -1223,16 +1234,18 @@ impl<'a> EmitCtx<'a> {
                         // Length depends on runtime bounds.
                         Ok(None)
                     }
-                    _ => Err(CompileError::new(ErrorKind::Unsupported(
-                        "multi-dimensional index on a quantum register".into(),
-                    ))
-                    .with_span(io.span)),
+                    _ => Err(CompileError::at(
+                        ErrorKind::Unsupported(
+                            "multi-dimensional index on a quantum register".into(),
+                        ),
+                        io.span,
+                    )),
                 },
             },
-            _ => Err(CompileError::new(ErrorKind::Unsupported(
-                "multi-dimensional index on a quantum register".into(),
-            ))
-            .with_span(span)),
+            _ => Err(CompileError::at(
+                ErrorKind::Unsupported("multi-dimensional index on a quantum register".into()),
+                span,
+            )),
         }
     }
 
@@ -1340,10 +1353,10 @@ impl<'a> EmitCtx<'a> {
                     oqi_classical::iw(64),
                 ))))
             }
-            (Some(k), None) if k < 0 => Err(CompileError::new(ErrorKind::Unsupported(
-                "negative index into a runtime-length alias".into(),
-            ))
-            .with_span(e.span)),
+            (Some(k), None) if k < 0 => Err(CompileError::at(
+                ErrorKind::Unsupported("negative index into a runtime-length alias".into()),
+                e.span,
+            )),
             _ => self.lower_expr_to_operand(e, instrs, reg_map),
         }
     }

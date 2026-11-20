@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use oqi_format::{Config, format};
-use oqi_parse::parse;
+use oqi_parse::{parse, parse_with_comments};
 
 fn normalize_ast(source: &str) -> String {
     let program = parse(source).unwrap_or_else(|error| {
@@ -139,6 +139,27 @@ fn check_fixture(name: &str) {
         expected, compact,
         "{name}: AST changed after formatting\nformatted:\n{formatted_compact}"
     );
+
+    // Formatting is idempotent.
+    for (config, formatted) in [
+        (Config::default(), &formatted_default),
+        (Config::compact(), &formatted_compact),
+    ] {
+        let again = format(formatted, config).unwrap();
+        assert_eq!(&again, formatted, "{name}: formatting is not idempotent");
+    }
+
+    // Every comment survives (compact mode drops them by design).
+    assert_eq!(
+        comments(&source),
+        comments(&formatted_default),
+        "{name}: comments changed after formatting\nformatted:\n{formatted_default}"
+    );
+}
+
+fn comments(source: &str) -> Vec<&str> {
+    let (_, comments) = parse_with_comments(source).unwrap();
+    comments.iter().map(|comment| comment.text).collect()
 }
 
 macro_rules! fixture_test {

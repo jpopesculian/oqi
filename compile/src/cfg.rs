@@ -439,10 +439,10 @@ impl<'a> CfgBuilder<'a> {
             }
             StmtKind::Break => {
                 let target = self.innermost_break().ok_or_else(|| {
-                    CompileError::new(ErrorKind::InvalidContext(
-                        "`break` outside of loop or switch".into(),
-                    ))
-                    .with_span(span)
+                    CompileError::at(
+                        ErrorKind::InvalidContext("`break` outside of loop or switch".into()),
+                        span,
+                    )
                 })?;
                 self.terminate(Terminator::Goto(target));
                 Ok(())
@@ -452,20 +452,20 @@ impl<'a> CfgBuilder<'a> {
                     .innermost_loop()
                     .map(|l| l.continue_target)
                     .ok_or_else(|| {
-                        CompileError::new(ErrorKind::InvalidContext(
-                            "`continue` outside of loop".into(),
-                        ))
-                        .with_span(span)
+                        CompileError::at(
+                            ErrorKind::InvalidContext("`continue` outside of loop".into()),
+                            span,
+                        )
                     })?;
                 self.terminate(Terminator::Goto(target));
                 Ok(())
             }
             StmtKind::Return(value) => {
                 if !self.allow_return {
-                    return Err(CompileError::new(ErrorKind::InvalidContext(
-                        "`return` outside of subroutine".into(),
-                    ))
-                    .with_span(span));
+                    return Err(CompileError::at(
+                        ErrorKind::InvalidContext("`return` outside of subroutine".into()),
+                        span,
+                    ));
                 }
                 let lowered = match value {
                     Some(rv) => Some(self.lower_rvalue(rv)?),
@@ -601,17 +601,21 @@ impl<'a> CfgBuilder<'a> {
         let (start, step, end) = match iterable {
             ForIterable::Range { start, step, end } => (start, step, end),
             ForIterable::Set(_) | ForIterable::Expr(_) => {
-                return Err(CompileError::new(ErrorKind::Unsupported(
-                    "CFG construction for non-range for-loops not yet implemented".into(),
-                ))
-                .with_span(span));
+                return Err(CompileError::at(
+                    ErrorKind::Unsupported(
+                        "CFG construction for non-range for-loops not yet implemented".into(),
+                    ),
+                    span,
+                ));
             }
         };
         let end = end.ok_or_else(|| {
-            CompileError::new(ErrorKind::Unsupported(
-                "CFG construction requires an explicit end in range for-loops".into(),
-            ))
-            .with_span(span)
+            CompileError::at(
+                ErrorKind::Unsupported(
+                    "CFG construction requires an explicit end in range for-loops".into(),
+                ),
+                span,
+            )
         })?;
 
         let var_ty = self.symbols.get(var).ty.clone();
@@ -648,23 +652,23 @@ impl<'a> CfgBuilder<'a> {
             Some(s) => self.lower_expr(*s)?,
             None => block_literal_int(&var_ty, 1, span),
         };
-        let cmp_op = match const_step_sign(&step_expr) {
-            Some(Ordering::Greater) => BinOp::Lte,
-            Some(Ordering::Less) => BinOp::Gte,
-            Some(Ordering::Equal) => {
-                return Err(CompileError::new(ErrorKind::InvalidContext(
-                    "for-loop range step must be non-zero".into(),
-                ))
-                .with_span(span));
-            }
-            None => {
-                return Err(CompileError::new(ErrorKind::Unsupported(
+        let cmp_op =
+            match const_step_sign(&step_expr) {
+                Some(Ordering::Greater) => BinOp::Lte,
+                Some(Ordering::Less) => BinOp::Gte,
+                Some(Ordering::Equal) => {
+                    return Err(CompileError::at(
+                        ErrorKind::InvalidContext("for-loop range step must be non-zero".into()),
+                        span,
+                    ));
+                }
+                None => {
+                    return Err(CompileError::at(ErrorKind::Unsupported(
                     "CFG construction requires a compile-time constant step in range for-loops"
                         .into(),
-                ))
-                .with_span(span));
-            }
-        };
+                ), span));
+                }
+            };
 
         let end_block = self.lower_expr(*end)?;
         let in_range = |value: BlockExpr, end: BlockExpr| BlockExpr {

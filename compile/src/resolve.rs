@@ -179,11 +179,13 @@ impl Resolver {
         let current = self.lookup_stack.last().unwrap();
         if let Some(&prior_id) = current.get(name) {
             let prior = self.symbols.get(prior_id).span;
-            return Err(CompileError::new(ErrorKind::DuplicateDefinition {
-                name: name.to_string(),
-                prior,
-            })
-            .with_span(span));
+            return Err(CompileError::at(
+                ErrorKind::DuplicateDefinition {
+                    name: name.to_string(),
+                    prior,
+                },
+                span,
+            ));
         }
         let scope = self.current_scope();
         let id = self.symbols.insert(name.to_string(), kind, ty, span, scope);
@@ -200,7 +202,10 @@ impl Resolver {
                 return Ok(id);
             }
         }
-        Err(CompileError::new(ErrorKind::UndefinedName(name.to_string())).with_span(span))
+        Err(CompileError::at(
+            ErrorKind::UndefinedName(name.to_string()),
+            span,
+        ))
     }
 
     pub fn resolve_call(&self, name: &str, span: Span) -> Result<CallTarget> {
@@ -224,7 +229,7 @@ impl Resolver {
         }
         let base = self
             .current_source_path()
-            .ok_or(CompileError::new(ErrorKind::MissingSourceContext).with_span(span))?;
+            .ok_or(CompileError::at(ErrorKind::MissingSourceContext, span))?;
         let dir = base.parent().unwrap_or(base);
         Ok(IncludeSource::Path(normalize_path(dir.join(path))))
     }
@@ -232,15 +237,13 @@ impl Resolver {
     pub fn resolve_source(&self, source: &IncludeSource, span: Span) -> Result<Cow<'_, str>> {
         match source {
             IncludeSource::Lib(name) => self.include_resolver.resolve_lib(name).map_err(|e| {
-                CompileError::new(ErrorKind::IncludeNotFound(format!("{name}: {e}")))
-                    .with_span(span)
+                CompileError::at(ErrorKind::IncludeNotFound(format!("{name}: {e}")), span)
             }),
             IncludeSource::Path(path) => self.include_resolver.resolve_path(path).map_err(|e| {
-                CompileError::new(ErrorKind::IncludeNotFound(format!(
-                    "{}: {e}",
-                    path.display()
-                )))
-                .with_span(span)
+                CompileError::at(
+                    ErrorKind::IncludeNotFound(format!("{}: {e}", path.display())),
+                    span,
+                )
             }),
         }
     }
@@ -315,7 +318,7 @@ mod tests {
     use std::path::Path;
 
     fn span(start: usize, end: usize) -> Span {
-        oqi_lex::span(start, end)
+        oqi_lex::Span::new(start, end)
     }
 
     fn default_resolver() -> Resolver {

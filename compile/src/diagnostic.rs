@@ -1,32 +1,92 @@
-//! [`Diagnostic`] implementation for [`CompileError`], mapping each
-//! [`ErrorKind`] to a stable `C####` code, a short primary label, and — where
-//! useful — secondary labels and help notes.
+//! How a [`CompileError`] is presented: each [`ErrorKind`]'s stable code
+//! (`C####`, or `S0001` for syntax errors), its headline message, the label
+//! under the offending span, and — where useful — secondary labels and help
+//! notes.
 
+use std::fmt;
 use std::path::Path;
 
 use oqi_diagnostics::{Code, DiagLabel, Diagnostic};
 
 use crate::error::{CompileError, ErrorKind};
 
+impl ErrorKind {
+    /// The kind's stable code and the label under the offending span.
+    fn code_and_label(&self) -> (Code, &'static str) {
+        let (num, label) = match self {
+            ErrorKind::Syntax(_) => return (Code::syntax(1), "syntax error"),
+            ErrorKind::UndefinedName(_) => (1, "not found in this scope"),
+            ErrorKind::DuplicateDefinition { .. } => (2, "redefined here"),
+            ErrorKind::TypeMismatch { .. } => (3, "type mismatch"),
+            ErrorKind::InvalidOperands(_) => (3, "not defined for these types"),
+            ErrorKind::NonConstantDesignator => (4, "not a constant"),
+            ErrorKind::NonConstantExpression => (5, "not a constant"),
+            ErrorKind::InvalidType(_) => (6, "invalid type"),
+            ErrorKind::IncludeNotFound(_) => (7, "include not found"),
+            ErrorKind::IncludeCycle(_) => (8, "include cycle"),
+            ErrorKind::MissingSourceContext => (9, "needs a source-file context"),
+            ErrorKind::InvalidContext(_) => (10, "not allowed here"),
+            ErrorKind::InvalidGateBody(_) => (11, "not allowed in a gate body"),
+            ErrorKind::Unsupported(_) => (13, "unsupported"),
+            ErrorKind::InvalidLiteral(_) => (14, "invalid literal"),
+            ErrorKind::QubitIndexOutOfRange { .. } => (15, "index out of range"),
+        };
+        (Code::compile(num), label)
+    }
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorKind::Syntax(msg) => write!(f, "{msg}"),
+            ErrorKind::UndefinedName(name) => write!(f, "undefined name '{name}'"),
+            ErrorKind::DuplicateDefinition { name, .. } => {
+                write!(f, "duplicate definition of '{name}'")
+            }
+            ErrorKind::TypeMismatch { expected, got } => {
+                write!(f, "type mismatch: expected {expected}, got {got}")
+            }
+            ErrorKind::InvalidOperands(msg) => write!(f, "{msg}"),
+            ErrorKind::NonConstantDesignator => {
+                write!(f, "designator must be a constant expression")
+            }
+            ErrorKind::NonConstantExpression => write!(f, "expression must be constant"),
+            ErrorKind::InvalidType(msg) => write!(f, "invalid type: {msg}"),
+            ErrorKind::IncludeNotFound(path) => write!(f, "include file not found: {path}"),
+            ErrorKind::IncludeCycle(chain) => {
+                write!(f, "include cycle: {}", chain.join(" -> "))
+            }
+            ErrorKind::MissingSourceContext => {
+                write!(
+                    f,
+                    "cannot resolve relative include without source file context"
+                )
+            }
+            ErrorKind::InvalidContext(msg) => write!(f, "{msg}"),
+            ErrorKind::InvalidGateBody(msg) => write!(f, "invalid gate body: {msg}"),
+            ErrorKind::InvalidLiteral(msg) => write!(f, "invalid literal: {msg}"),
+            ErrorKind::Unsupported(msg) => write!(f, "unsupported: {msg}"),
+            ErrorKind::QubitIndexOutOfRange { index, len } => {
+                write!(
+                    f,
+                    "qubit index {index} out of range for register of length {len}"
+                )
+            }
+        }
+    }
+}
+
+impl fmt::Display for CompileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.kind)
+    }
+}
+
+impl std::error::Error for CompileError {}
+
 impl Diagnostic for CompileError {
     fn code(&self) -> Code {
-        let num = match self.kind {
-            ErrorKind::UndefinedName(_) => 1,
-            ErrorKind::DuplicateDefinition { .. } => 2,
-            ErrorKind::TypeMismatch { .. } => 3,
-            ErrorKind::NonConstantDesignator => 4,
-            ErrorKind::NonConstantExpression => 5,
-            ErrorKind::InvalidType(_) => 6,
-            ErrorKind::IncludeNotFound(_) => 7,
-            ErrorKind::IncludeCycle(_) => 8,
-            ErrorKind::MissingSourceContext => 9,
-            ErrorKind::InvalidContext(_) => 10,
-            ErrorKind::InvalidGateBody(_) => 11,
-            ErrorKind::Unsupported(_) => 13,
-            ErrorKind::InvalidLiteral(_) => 14,
-            ErrorKind::QubitIndexOutOfRange { .. } => 15,
-        };
-        Code::compile(num)
+        self.kind.code_and_label().0
     }
 
     fn message(&self) -> String {
@@ -34,23 +94,7 @@ impl Diagnostic for CompileError {
     }
 
     fn labels(&self) -> Vec<DiagLabel> {
-        let pointer = match &self.kind {
-            ErrorKind::UndefinedName(_) => "not found in this scope",
-            ErrorKind::DuplicateDefinition { .. } => "redefined here",
-            ErrorKind::TypeMismatch { .. } => "type mismatch",
-            ErrorKind::NonConstantDesignator | ErrorKind::NonConstantExpression => "not a constant",
-            ErrorKind::InvalidType(_) => "invalid type",
-            ErrorKind::IncludeNotFound(_) => "include not found",
-            ErrorKind::IncludeCycle(_) => "include cycle",
-            ErrorKind::MissingSourceContext => "needs a source-file context",
-            ErrorKind::InvalidContext(_) => "not allowed here",
-            ErrorKind::InvalidGateBody(_) => "not allowed in a gate body",
-            ErrorKind::Unsupported(_) => "unsupported",
-            ErrorKind::InvalidLiteral(_) => "invalid literal",
-            ErrorKind::QubitIndexOutOfRange { .. } => "index out of range",
-        };
-
-        let mut labels = vec![DiagLabel::primary(self.span, pointer)];
+        let mut labels = vec![DiagLabel::primary(self.span, self.kind.code_and_label().1)];
         if let ErrorKind::DuplicateDefinition { prior, .. } = &self.kind {
             labels.push(DiagLabel::secondary(*prior, "first defined here"));
         }

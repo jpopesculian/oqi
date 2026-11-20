@@ -207,36 +207,41 @@ impl QubitLayout {
         &self,
         exprs: &[SsaExpr],
         symbols: &SymbolTable,
-    ) -> Result<Option<QuantumRegister>> {
-        let mut iter = exprs.iter();
-        let Some(first) = iter.next() else {
-            return Ok(None);
-        };
-        let Some(mut combined) = self.resolve_alias_operand(first, symbols)? else {
-            return Ok(None);
-        };
-        for expr in iter {
-            let Some(reg) = self.resolve_alias_operand(expr, symbols)? else {
-                return Err(CompileError::new(ErrorKind::Unsupported(
-                    "cannot mix quantum and classical operands in an alias".into(),
-                ))
-                .with_span(expr.span));
-            };
-            combined = combined.concat(reg);
+    ) -> Result<Option<Resolved<QuantumRegister>>> {
+        let mut combined = QuantumRegister::new();
+        for (i, expr) in exprs.iter().enumerate() {
+            match self.resolve_alias_operand(expr, symbols)? {
+                Some(Resolved::Static(reg)) => combined = combined.concat(reg),
+                Some(Resolved::Dynamic) => return Ok(Some(Resolved::Dynamic)),
+                None if i == 0 => return Ok(None),
+                None => {
+                    return Err(CompileError::at(
+                        ErrorKind::Unsupported(
+                            "cannot mix quantum and classical operands in an alias".into(),
+                        ),
+                        expr.span,
+                    ));
+                }
+            }
         }
+        let Some(first) = exprs.first() else {
+            return Ok(None);
+        };
 
         // "A register cannot be concatenated with any part of itself"
         // (docs/types.rst) — reject overlapping global indices.
         let mut seen = HashSet::new();
         for g in combined.iter() {
             if !seen.insert(g) {
-                return Err(CompileError::new(ErrorKind::InvalidContext(
-                    "a quantum register cannot be concatenated with any part of itself".into(),
-                ))
-                .with_span(first.span));
+                return Err(CompileError::at(
+                    ErrorKind::InvalidContext(
+                        "a quantum register cannot be concatenated with any part of itself".into(),
+                    ),
+                    first.span,
+                ));
             }
         }
-        Ok(Some(combined))
+        Ok(Some(Resolved::Static(combined)))
     }
 
     /// Resolve a single alias operand to a register, or `Ok(None)` if
@@ -245,46 +250,48 @@ impl QubitLayout {
         &self,
         expr: &SsaExpr,
         symbols: &SymbolTable,
-    ) -> Result<Option<QuantumRegister>> {
+    ) -> Result<Option<Resolved<QuantumRegister>>> {
         if matches!(expr.kind, SsaExprKind::HardwareQubit(_)) {
-            return Err(CompileError::new(ErrorKind::Unsupported(
-                "physical qubits cannot be aliased".into(),
-            ))
-            .with_span(expr.span));
+            return Err(CompileError::at(
+                ErrorKind::Unsupported("physical qubits cannot be aliased".into()),
+                expr.span,
+            ));
         }
         let Some((sym, ops)) = peel_index_chain(expr) else {
             return Ok(None);
         };
         if self.param_slots.contains_key(&sym) {
-            return Err(CompileError::new(ErrorKind::Unsupported(
-                "aliases of qubit parameters are not supported".into(),
-            ))
-            .with_span(expr.span));
+            return Err(CompileError::at(
+                ErrorKind::Unsupported("aliases of qubit parameters are not supported".into()),
+                expr.span,
+            ));
         }
         let Some(reg) = self.register_of(sym) else {
             return if matches!(
                 symbols.get(sym).kind,
                 SymbolKind::Qubit | SymbolKind::GateQubit
             ) {
-                Err(CompileError::new(ErrorKind::Unsupported(format!(
-                    "cannot resolve qubit reference `{}`",
-                    symbols.get(sym).name
-                )))
-                .with_span(expr.span))
+                Err(CompileError::at(
+                    ErrorKind::Unsupported(format!(
+                        "cannot resolve qubit reference `{}`",
+                        symbols.get(sym).name
+                    )),
+                    expr.span,
+                ))
             } else {
                 Ok(None)
             };
         };
         match ops.as_slice() {
-            [] => Ok(Some(reg.clone())),
+            [] => Ok(Some(Resolved::Static(reg.clone()))),
             [io] => {
-                let idxs = resolve_static_index(io, reg.len()).map_err(|e| e.with_span(io.span))?;
-                Ok(Some(select(reg, &idxs)))
+                let idxs = resolve_index(io, reg.len()).map_err(|e| e.with_span(io.span))?;
+                Ok(Some(idxs.map(|idxs| select(reg, &idxs))))
             }
-            _ => Err(CompileError::new(ErrorKind::Unsupported(
-                "multi-dimensional index on a quantum register".into(),
-            ))
-            .with_span(expr.span)),
+            _ => Err(CompileError::at(
+                ErrorKind::Unsupported("multi-dimensional index on a quantum register".into()),
+                expr.span,
+            )),
         }
     }
 }
@@ -324,37 +331,60 @@ pub fn single_index_expr(io: &IndexOp<SsaExpr>) -> Option<&SsaExpr> {
     }
 }
 
-/// Statically evaluate an index op against a register of length `len`,
-/// returning the selected local indices in order. Implements the index
-/// set semantics from docs/types.rst: single (possibly negative)
-/// integers, discrete sets `{a,b,c}`, and inclusive ranges `a:b` /
-/// `a:c:b` = {a, a+c, ..., a+mc} with m maximized. Negative members
-/// select from the end. All constituent expressions must be integer
-/// literals.
-pub fn resolve_static_index(io: &IndexOp<SsaExpr>, len: usize) -> Result<Vec<usize>> {
+/// Something resolved at compile time, unless it depends on an index
+/// that is only known at run time.
+#[derive(Debug)]
+pub enum Resolved<T> {
+    Static(T),
+    Dynamic,
+}
+
+impl<T> Resolved<T> {
+    pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Resolved<U> {
+        match self {
+            Resolved::Static(value) => Resolved::Static(f(value)),
+            Resolved::Dynamic => Resolved::Dynamic,
+        }
+    }
+}
+
+/// Evaluate an index op against a register of length `len`, returning
+/// the selected local indices in order. Implements the index set
+/// semantics from docs/types.rst: single (possibly negative) integers,
+/// discrete sets `{a,b,c}`, and inclusive ranges `a:b` / `a:c:b` =
+/// {a, a+c, ..., a+mc} with m maximized. Negative members select from
+/// the end. The selection is static when every constituent expression
+/// is an integer literal, and dynamic otherwise.
+pub fn resolve_index(io: &IndexOp<SsaExpr>, len: usize) -> Result<Resolved<Vec<usize>>> {
+    let normalize = |raw: Option<Vec<i128>>| -> Result<Option<Vec<usize>>> {
+        let normalized = raw.map(|raw| raw.into_iter().map(|i| normalize_index(i, len)).collect());
+        normalized.transpose()
+    };
     let idxs = match &io.kind {
-        IndexKind::Set(es) => es
-            .iter()
-            .map(|e| normalize_index(const_index(e)?, len))
-            .collect::<Result<Vec<_>>>()?,
+        IndexKind::Set(es) => normalize(es.iter().map(literal_index).collect())?,
         IndexKind::Items(items) => match items.as_slice() {
-            [IndexItem::Single(e)] => vec![normalize_index(const_index(e)?, len)?],
+            [IndexItem::Single(e)] => normalize(literal_index(e).map(|i| vec![i]))?,
             [IndexItem::Range(r)] => expand_range(r, len)?,
             _ => {
-                return Err(CompileError::new(ErrorKind::Unsupported(
-                    "multi-dimensional index on a quantum register".into(),
-                ))
-                .with_span(io.span));
+                return Err(CompileError::at(
+                    ErrorKind::Unsupported("multi-dimensional index on a quantum register".into()),
+                    io.span,
+                ));
             }
         },
     };
+    let Some(idxs) = idxs else {
+        return Ok(Resolved::Dynamic);
+    };
     if idxs.is_empty() {
-        return Err(CompileError::new(ErrorKind::InvalidContext(
-            "a quantum register cannot be indexed by an empty index set".into(),
-        ))
-        .with_span(io.span));
+        return Err(CompileError::at(
+            ErrorKind::InvalidContext(
+                "a quantum register cannot be indexed by an empty index set".into(),
+            ),
+            io.span,
+        ));
     }
-    Ok(idxs)
+    Ok(Resolved::Static(idxs))
 }
 
 /// Build a register selecting `indices` (in order) from `reg`, using a
@@ -375,11 +405,6 @@ pub fn select(reg: &QuantumRegister, indices: &[usize]) -> QuantumRegister {
     out
 }
 
-fn const_index(e: &SsaExpr) -> Result<i128> {
-    literal_index(e)
-        .ok_or_else(|| CompileError::new(ErrorKind::NonConstantExpression).with_span(e.span))
-}
-
 /// Map a possibly-negative index into `0..len`.
 pub fn normalize_index(idx: i128, len: usize) -> Result<usize> {
     let n = len as i128;
@@ -397,37 +422,26 @@ pub fn normalize_index(idx: i128, len: usize) -> Result<usize> {
 /// Expand an inclusive range per the spec: the member set is generated
 /// arithmetically from the raw (possibly negative) bounds, then each
 /// member is normalized as an index. A direction mismatch yields the
-/// empty set (rejected by the caller).
-fn expand_range(r: &RangeExpr<SsaExpr>, len: usize) -> Result<Vec<usize>> {
-    let step = match &r.step {
-        Some(e) => const_index(e)?,
-        None => 1,
+/// empty set (rejected by the caller). `None` when a bound or the step
+/// is not an integer literal.
+fn expand_range(r: &RangeExpr<SsaExpr>, len: usize) -> Result<Option<Vec<usize>>> {
+    // A component left out takes `default`.
+    let component = |e: &Option<Box<SsaExpr>>, default: i128| match e {
+        Some(e) => literal_index(e),
+        None => Some(default),
+    };
+    let Some(step) = component(&r.step, 1) else {
+        return Ok(None);
     };
     if step == 0 {
         return Err(CompileError::new(ErrorKind::InvalidContext(
             "range step must be non-zero".into(),
         )));
     }
-    let n = len as i128;
-    let start = match &r.start {
-        Some(e) => const_index(e)?,
-        None => {
-            if step > 0 {
-                0
-            } else {
-                n - 1
-            }
-        }
-    };
-    let end = match &r.end {
-        Some(e) => const_index(e)?,
-        None => {
-            if step > 0 {
-                n - 1
-            } else {
-                0
-            }
-        }
+    let last = len as i128 - 1;
+    let (first, last) = if step > 0 { (0, last) } else { (last, 0) };
+    let (Some(start), Some(end)) = (component(&r.start, first), component(&r.end, last)) else {
+        return Ok(None);
     };
 
     let mut out = Vec::new();
@@ -436,7 +450,7 @@ fn expand_range(r: &RangeExpr<SsaExpr>, len: usize) -> Result<Vec<usize>> {
         out.push(normalize_index(cur, len)?);
         cur += step;
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 #[cfg(test)]
@@ -468,7 +482,8 @@ mod tests {
         for block in &ssa_prog.top_level.blocks {
             for stmt in &block.stmts {
                 if let SsaStmtKind::Alias(a) = &stmt.kind
-                    && let Some(reg) = layout.resolve_alias_value(&a.value, &p.symbols)?
+                    && let Some(Resolved::Static(reg)) =
+                        layout.resolve_alias_value(&a.value, &p.symbols)?
                 {
                     layout.define_alias(a.symbol, reg);
                 }
@@ -579,9 +594,22 @@ mod tests {
     }
 
     #[test]
-    fn alias_runtime_index_is_rejected() {
-        let err = layout_err("input uint[32] i; qubit[4] q; let bad = q[{i}];");
-        assert!(matches!(err.kind, ErrorKind::NonConstantExpression));
+    fn alias_runtime_index_is_dynamic() {
+        let p = compile("input uint[32] i; qubit[4] q; let late = q[{i}] ++ q[{0}];");
+        let cfgs = cfg_mod::build_program(&p).expect("cfg");
+        let ssa_prog = ssa::build_program(&cfgs, &p.symbols);
+        let alias = ssa_prog
+            .top_level
+            .blocks
+            .iter()
+            .flat_map(|block| &block.stmts)
+            .find_map(|stmt| match &stmt.kind {
+                SsaStmtKind::Alias(alias) => Some(alias),
+                _ => None,
+            })
+            .expect("alias");
+        let resolved = build_layout(&p).resolve_alias_value(&alias.value, &p.symbols);
+        assert!(matches!(resolved, Ok(Some(Resolved::Dynamic))));
     }
 
     #[test]

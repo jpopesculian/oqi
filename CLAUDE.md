@@ -36,8 +36,12 @@ The end-to-end flow (see `compile/src/bytecode/mod.rs` and `cli/src/main.rs`):
 source → parse → resolve (includes) → lower → cfg → ssa → bytecode → vm
 ```
 
-- **`lex/`** (`oqi-lex`) — `logos`-based lexer producing `Token`s with spans.
+- **`lex/`** (`oqi-lex`) — lexer producing `Token`s with spans. `Token` derives
+  `logos::Logos` for the default mode; `Lexer` adds the grammar's other modes
+  (version, strings, pragmas, calibration blocks) by hand.
 - **`parse/`** (`oqi-parse`) — hand-written parser; AST in `parse/src/ast.rs`.
+  `parse` and `parse_with_comments` are the whole public API. Every list goes
+  through `comma_list`, which implements the grammar's trailing-comma rule.
 - **`compile/`** (`oqi-compile`) — the heart. `oqi_compile::compile` is the main
   entry point (source → `BcModule`); `compile_source` stops at the SIR
   (source → `sir::Program`) and `bytecode::emit` lowers that the rest of the
@@ -73,17 +77,22 @@ source → parse → resolve (includes) → lower → cfg → ssa → bytecode �
 - **`cli/`**, **`js/`** (wasm-bindgen), **`py/`** (PyO3) — the three front
   doors. Keep them thin: native value ↔ `HostValue` mapping and error mapping
   only; anything two of them need belongs in `vm` or `compile`.
-- **`format/`** (`oqi-format`) — source formatter (the `fmt` subcommand).
+- **`format/`** (`oqi-format`) — source formatter (the `fmt` subcommand):
+  `format(source, Config)`. Output ends with one newline and keeps comments
+  (compact mode drops them); formatting is idempotent.
 - **`diagnostics/`** (`oqi-diagnostics`) — `ariadne`-based rendering. Errors
-  implement the `Diagnostic` trait and carry stable `C####` codes.
+  implement the `Diagnostic` trait and carry stable codes (`C####` compile,
+  `R####` runtime, `S0001` syntax). Spans are byte offsets.
 
 ## Diagnostics & error codes
 
 `CompileError` (`compile/src/error.rs`) has an `ErrorKind` enum; each variant maps
 to a stable numeric code in `compile/src/diagnostic.rs` (`C0001` = undefined name,
-etc.). When adding an `ErrorKind`, add its code, primary label, and any help text
-in `diagnostic.rs`. `oqi_diagnostics::emit` renders an error against source.
-`oqi_diagnostics::render_to_string` is the testable variant.
+etc.; a syntax error keeps the parser's `S0001`). When adding an `ErrorKind`, add
+its code and label, its message, and any help text in `diagnostic.rs`. Build
+located errors with `CompileError::at(kind, span)`. `oqi_diagnostics::emit`
+renders an error against source. `oqi_diagnostics::render_to_string` is the
+testable variant.
 
 ## Testing & fixtures
 

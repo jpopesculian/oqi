@@ -182,7 +182,7 @@ pub(crate) fn eval_designator(
 ) -> Result<usize> {
     let cv = eval_const_expr(expr, symbols, options)?;
     value_as_usize(&cv)
-        .ok_or_else(|| CompileError::new(ErrorKind::NonConstantDesignator).with_span(expr.span()))
+        .ok_or_else(|| CompileError::at(ErrorKind::NonConstantDesignator, expr.span()))
 }
 
 /// Evaluate a constant expression, returning a `Value`.
@@ -215,15 +215,15 @@ pub(crate) fn eval_const_expr(
         ast::Expr::Paren(inner, _) => eval_const_expr(inner, symbols, options),
         ast::Expr::Ident(ident) => {
             let sym_id = symbols.lookup(ident.name).ok_or_else(|| {
-                CompileError::new(ErrorKind::UndefinedName(ident.name.to_string()))
-                    .with_span(ident.span)
+                CompileError::at(ErrorKind::UndefinedName(ident.name.to_string()), ident.span)
             })?;
             let sym = symbols.get(sym_id);
             match &sym.const_value {
                 Some(cv) => Ok(cv.clone()),
-                None => {
-                    Err(CompileError::new(ErrorKind::NonConstantExpression).with_span(ident.span))
-                }
+                None => Err(CompileError::at(
+                    ErrorKind::NonConstantExpression,
+                    ident.span,
+                )),
             }
         }
         ast::Expr::BinOp {
@@ -236,27 +236,30 @@ pub(crate) fn eval_const_expr(
             let rv = eval_const_expr(right, symbols, options)?;
             bin_op(*op)
                 .apply(lv, rv)
-                .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(*span))
+                .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, *span))
         }
         ast::Expr::UnaryOp { op, operand, span } => {
             let v = eval_const_expr(operand, symbols, options)?;
             un_op(*op)
                 .apply(v)
-                .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(*span))
+                .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, *span))
         }
         ast::Expr::Call { name, args, span } => {
             const_intrinsic_call(name.name, args, symbols, options, *span)
         }
         ast::Expr::Cast { ty, operand, span } => {
             let target = resolve_type(ty, symbols, options)?;
-            let target_vty = target.value_ty().ok_or_else(|| {
-                CompileError::new(ErrorKind::NonConstantExpression).with_span(*span)
-            })?;
+            let target_vty = target
+                .value_ty()
+                .ok_or_else(|| CompileError::at(ErrorKind::NonConstantExpression, *span))?;
             let v = eval_const_expr(operand, symbols, options)?;
             v.cast(target_vty)
-                .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(*span))
+                .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, *span))
         }
-        other => Err(CompileError::new(ErrorKind::NonConstantExpression).with_span(other.span())),
+        other => Err(CompileError::at(
+            ErrorKind::NonConstantExpression,
+            other.span(),
+        )),
     }
 }
 
@@ -301,7 +304,7 @@ fn const_intrinsic_call(
     options: &CompileOptions,
     span: Span,
 ) -> Result<Value> {
-    let non_const = || CompileError::new(ErrorKind::NonConstantExpression).with_span(span);
+    let non_const = || CompileError::at(ErrorKind::NonConstantExpression, span);
     let intrinsic = Intrinsic::lookup(name).ok_or_else(non_const)?;
     if intrinsic == Intrinsic::Sizeof {
         return const_sizeof(args, symbols, options, span);
@@ -325,7 +328,7 @@ fn const_sizeof(
     let (value_expr, dim_expr) = match args {
         [value] => (value, None),
         [value, dim] => (value, Some(dim)),
-        _ => return Err(CompileError::new(ErrorKind::NonConstantExpression).with_span(span)),
+        _ => return Err(CompileError::at(ErrorKind::NonConstantExpression, span)),
     };
 
     let dim_value = dim_expr
@@ -334,13 +337,13 @@ fn const_sizeof(
 
     if let ast::Expr::Ident(ident) = value_expr {
         let sym_id = symbols.lookup(ident.name).ok_or_else(|| {
-            CompileError::new(ErrorKind::UndefinedName(ident.name.to_string()))
-                .with_span(ident.span)
+            CompileError::at(ErrorKind::UndefinedName(ident.name.to_string()), ident.span)
         })?;
-        let value_ty =
-            symbols.get(sym_id).ty.value_ty().ok_or_else(|| {
-                CompileError::new(ErrorKind::NonConstantExpression).with_span(span)
-            })?;
+        let value_ty = symbols
+            .get(sym_id)
+            .ty
+            .value_ty()
+            .ok_or_else(|| CompileError::at(ErrorKind::NonConstantExpression, span))?;
         return const_sizeof_ty(value_ty, dim_value, span);
     }
 
@@ -349,13 +352,12 @@ fn const_sizeof(
 }
 
 fn const_sizeof_ty(value_ty: ValueTy, dim: Option<Value>, span: Span) -> Result<Value> {
-    ops::sizeof(value_ty, dim)
-        .map_err(|_| CompileError::new(ErrorKind::NonConstantExpression).with_span(span))
+    ops::sizeof(value_ty, dim).map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, span))
 }
 
 /// A type error from the classical layer (an out-of-range width or rank).
 pub(crate) fn invalid_type(err: oqi_classical::Error, span: Span) -> CompileError {
-    CompileError::new(ErrorKind::InvalidType(err.to_string())).with_span(span)
+    CompileError::at(ErrorKind::InvalidType(err.to_string()), span)
 }
 
 /// The width an `int`/`uint`/`angle` designator asks for.
@@ -523,10 +525,10 @@ pub(crate) fn resolve_scalar_type(
             let inner_ty = resolve_scalar_type(inner, symbols, options)?;
             match inner_ty.scalar_ty() {
                 Some(PrimitiveTy::Float(fw)) => Ok(Type::Classical(ValueTy::complex(fw))),
-                _ => Err(CompileError::new(ErrorKind::Unsupported(
-                    "complex designator must be a float type".to_string(),
-                ))
-                .with_span(ty.span())),
+                _ => Err(CompileError::at(
+                    ErrorKind::Unsupported("complex designator must be a float type".to_string()),
+                    ty.span(),
+                )),
             }
         }
 
@@ -647,7 +649,7 @@ mod tests {
     use crate::classical::{PrimitiveTy, ashape, iw};
 
     fn span(start: usize, end: usize) -> oqi_lex::Span {
-        oqi_lex::span(start, end)
+        oqi_lex::Span::new(start, end)
     }
 
     fn empty_symbols() -> SymbolTable {

@@ -9,71 +9,86 @@ use oqi_lex::{Lexer, Token};
 // ---------------------------------------------------------------------------
 
 pub fn parse(source: &str) -> Result<Program<'_>> {
-    Parser::new(Lexer::new(source).collect::<Result<Vec<_>>>()?).parse_program()
+    Ok(parse_with_comments(source)?.0)
+}
+
+/// Parse `source`, also returning its comments in source order — including
+/// those inside OpenPulse calibration bodies.
+pub fn parse_with_comments(source: &str) -> Result<(Program<'_>, Vec<Comment<'_>>)> {
+    let mut parser = Parser::new(Lexer::new(source), 0)?;
+    let program = parser.parse_program()?;
+    parser.comments.sort_by_key(|comment| comment.span.start);
+    Ok((program, parser.comments))
 }
 
 // ---------------------------------------------------------------------------
-// OpenPulse sub-parser
+// Token classification
 // ---------------------------------------------------------------------------
 
-/// Re-lex `body` (a calibration block's contents) using the OpenPulse lexer
-/// mode and parse it as a sequence of openpulse statements. `offset` is the
-/// absolute byte position of `body` inside the original source, used so that
-/// emitted spans (and any error spans) refer back to the original document.
-fn parse_openpulse_block(body: &str, offset: usize) -> Result<Vec<StmtOrScope<'_>>> {
-    let tokens: Vec<(Token<'_>, Span)> = Lexer::new_openpulse(body)
-        .map(|r| match r {
-            Ok((t, s)) => Ok((t, s.offset(offset))),
-            Err(e) => Err(Error {
-                span: e.span.offset(offset),
-                message: e.message,
-            }),
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let mut sub = Parser::new(tokens);
-    sub.openpulse = true;
-    let mut body_stmts = Vec::new();
-    while !sub.at_end() {
-        // Inside a calibrationBlock, only the openpulseStatement subset is
-        // allowed. The lexer has already demoted `cal` and `defcal` to
-        // identifiers, so we only need to reject `gate` and `nop` here (the
-        // rest of the openpulse exclusions — `calStatement`, `defcalStatement`
-        // — can no longer appear).
-        match sub.peek() {
-            Some(Token::Gate) => {
-                return Err(sub.error(
-                    "`gate` declarations are not allowed inside an OpenPulse calibration block",
-                ));
-            }
-            Some(Token::Nop) => {
-                return Err(sub.error("`nop` is not allowed inside an OpenPulse calibration block"));
-            }
-            Some(Token::DefCalGrammar) => {
-                return Err(sub.error(
-                    "`defcalgrammar` is not allowed inside an OpenPulse calibration block",
-                ));
-            }
-            _ => {}
-        }
-        body_stmts.push(sub.parse_stmt_or_scope()?);
-    }
-    Ok(body_stmts)
-}
-
-// ---------------------------------------------------------------------------
-// Type Utilities
-// ---------------------------------------------------------------------------
 type DecomposedGateHead<'a> = (Ident<'a>, Option<Vec<Expr<'a>>>, Option<Box<Expr<'a>>>);
+
+fn bin_op(token: Token) -> Option<BinOp> {
+    Some(match token {
+        Token::Plus => BinOp::Add,
+        Token::Minus => BinOp::Sub,
+        Token::Asterisk => BinOp::Mul,
+        Token::Slash => BinOp::Div,
+        Token::Percent => BinOp::Mod,
+        Token::DoubleAsterisk => BinOp::Pow,
+        Token::Ampersand => BinOp::BitAnd,
+        Token::Pipe => BinOp::BitOr,
+        Token::Caret => BinOp::BitXor,
+        Token::DoubleAmpersand => BinOp::LogAnd,
+        Token::DoublePipe => BinOp::LogOr,
+        Token::DoubleEquals => BinOp::Eq,
+        Token::ExclamationEquals => BinOp::Neq,
+        Token::LessThan => BinOp::Lt,
+        Token::GreaterThan => BinOp::Gt,
+        Token::LessThanEquals => BinOp::Lte,
+        Token::GreaterThanEquals => BinOp::Gte,
+        Token::DoubleLess => BinOp::Shl,
+        Token::DoubleGreater => BinOp::Shr,
+        _ => return None,
+    })
+}
+
+fn un_op(token: Token) -> Option<UnOp> {
+    Some(match token {
+        Token::Minus => UnOp::Neg,
+        Token::Tilde => UnOp::BitNot,
+        Token::ExclamationPoint => UnOp::LogNot,
+        _ => return None,
+    })
+}
+
+fn assign_op(token: Token) -> Option<AssignOp> {
+    Some(match token {
+        Token::Equals => AssignOp::Assign,
+        Token::PlusEquals => AssignOp::AddAssign,
+        Token::MinusEquals => AssignOp::SubAssign,
+        Token::AsteriskEquals => AssignOp::MulAssign,
+        Token::SlashEquals => AssignOp::DivAssign,
+        Token::AmpersandEquals => AssignOp::BitAndAssign,
+        Token::PipeEquals => AssignOp::BitOrAssign,
+        Token::CaretEquals => AssignOp::BitXorAssign,
+        Token::LeftShiftEquals => AssignOp::LeftShiftAssign,
+        Token::RightShiftEquals => AssignOp::RightShiftAssign,
+        Token::PercentEquals => AssignOp::ModAssign,
+        Token::DoubleAsteriskEquals => AssignOp::PowAssign,
+        _ => return None,
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
 
-pub struct Parser<'a> {
+struct Parser<'a> {
     tokens: Vec<(Token<'a>, Span)>,
-    max_pos: usize,
+    comments: Vec<Comment<'a>>,
     pos: usize,
+    /// End of the last token, where an error at the end of input points.
+    end: usize,
     /// Set when the program has declared `defcalgrammar "openpulse";`.
     /// Causes `cal`/`defcal` bodies to be re-lexed and re-parsed against the
     /// OpenPulse grammar instead of being kept as raw `&str` slices.
@@ -81,33 +96,44 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: impl IntoIterator<Item = (Token<'a>, Span)>) -> Self {
-        let tokens = tokens
-            .into_iter()
-            .filter(|(tok, _)| !matches!(tok, Token::LineComment(_) | Token::BlockComment(_)))
-            .collect::<Vec<_>>();
-        let max_pos = tokens.last().map(|(_, s)| s.end).unwrap_or(0);
-        Self {
-            tokens,
-            max_pos,
-            pos: 0,
-            openpulse: false,
+    /// Lex everything up front, setting the comments aside. `offset` is the
+    /// position of the lexed text within the document, so that spans (and
+    /// error spans) refer to the document.
+    fn new(lexer: Lexer<'a>, offset: usize) -> Result<Self> {
+        let mut tokens = Vec::new();
+        let mut comments = Vec::new();
+        for item in lexer {
+            let (token, span) = item.map_err(|e| Error::new(e.span.offset(offset), e.message))?;
+            let span = span.offset(offset);
+            match token {
+                Token::LineComment(text) | Token::BlockComment(text) => {
+                    comments.push(Comment { text, span })
+                }
+                _ => tokens.push((token, span)),
+            }
         }
+        let end = tokens.last().map_or(0, |(_, span)| span.end);
+        Ok(Self {
+            tokens,
+            comments,
+            pos: 0,
+            end,
+            openpulse: false,
+        })
     }
 
     // ------------------------------------------------------------------
-    // Utility methods
+    // Token helpers
     // ------------------------------------------------------------------
 
-    fn peek(&self) -> Option<&Token<'a>> {
-        self.tokens.get(self.pos).map(|(t, _)| t)
+    fn peek(&self) -> Option<Token<'a>> {
+        self.tokens.get(self.pos).map(|&(token, _)| token)
     }
 
     fn peek_span(&self) -> Span {
         self.tokens
             .get(self.pos)
-            .map(|(_, s)| *s)
-            .unwrap_or(oqi_lex::span(self.max_pos, self.max_pos))
+            .map_or(Span::new(self.end, self.end), |&(_, span)| span)
     }
 
     fn advance(&mut self) -> (Token<'a>, Span) {
@@ -124,82 +150,52 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn at_end(&self) -> bool {
-        self.pos >= self.tokens.len()
-    }
-
     fn error(&self, msg: impl Into<String>) -> Error {
-        Error {
-            span: self.peek_span(),
-            message: msg.into(),
-        }
+        Error::new(self.peek_span(), msg)
     }
 
-    fn expect_semi(&mut self) -> Result<Span> {
-        if matches!(self.peek(), Some(Token::Semicolon)) {
-            Ok(self.advance().1)
-        } else {
-            Err(self.error("expected ';'"))
-        }
+    /// Whether the next token is `token` (a token without a payload).
+    fn at(&self, token: Token<'a>) -> bool {
+        self.peek() == Some(token)
     }
 
-    fn expect_lparen(&mut self) -> Result<Span> {
-        if matches!(self.peek(), Some(Token::LParen)) {
-            Ok(self.advance().1)
-        } else {
-            Err(self.error("expected '('"))
-        }
+    /// Whether the next token is one of `tokens`, or the input has ended.
+    fn at_any(&self, tokens: &[Token<'a>]) -> bool {
+        self.peek().is_none_or(|token| tokens.contains(&token))
     }
 
-    fn expect_rparen(&mut self) -> Result<Span> {
-        if matches!(self.peek(), Some(Token::RParen)) {
-            Ok(self.advance().1)
-        } else {
-            Err(self.error("expected ')'"))
-        }
+    /// Consume `token` if it is next.
+    fn eat(&mut self, token: Token<'a>) -> Option<Span> {
+        self.at(token).then(|| self.advance().1)
     }
 
-    fn expect_lbracket(&mut self) -> Result<Span> {
-        if matches!(self.peek(), Some(Token::LBracket)) {
-            Ok(self.advance().1)
-        } else {
-            Err(self.error("expected '['"))
-        }
+    /// Consume `token`, or fail with "expected `what`".
+    fn expect(&mut self, token: Token<'a>, what: &str) -> Result<Span> {
+        self.eat(token)
+            .ok_or_else(|| self.error(format!("expected {what}")))
     }
 
-    fn expect_rbracket(&mut self) -> Result<Span> {
-        if matches!(self.peek(), Some(Token::RBracket)) {
-            Ok(self.advance().1)
-        } else {
-            Err(self.error("expected ']'"))
-        }
-    }
-
-    fn expect_lbrace(&mut self) -> Result<Span> {
-        if matches!(self.peek(), Some(Token::LBrace)) {
-            Ok(self.advance().1)
-        } else {
-            Err(self.error("expected '{'"))
-        }
-    }
-
-    fn expect_rbrace(&mut self) -> Result<Span> {
-        if matches!(self.peek(), Some(Token::RBrace)) {
-            Ok(self.advance().1)
-        } else {
-            Err(self.error("expected '}'"))
-        }
+    fn semi(&mut self) -> Result<Span> {
+        self.expect(Token::Semicolon, "';'")
     }
 
     fn expect_ident(&mut self) -> Result<Ident<'a>> {
-        if matches!(self.peek(), Some(Token::Identifier(_))) {
-            let (tok, span) = self.advance();
-            let Token::Identifier(name) = tok else {
-                unreachable!()
-            };
-            Ok(Ident { name, span })
-        } else {
-            Err(self.error("expected identifier"))
+        match self.peek() {
+            Some(Token::Identifier(name)) => Ok(Ident {
+                name,
+                span: self.advance().1,
+            }),
+            _ => Err(self.error("expected identifier")),
+        }
+    }
+
+    fn expect_string(&mut self) -> Result<&'a str> {
+        match self.peek() {
+            Some(Token::StringLiteral(string)) => {
+                self.advance();
+                Ok(string)
+            }
+            _ => Err(self.error("expected string literal")),
         }
     }
 
@@ -229,49 +225,102 @@ impl<'a> Parser<'a> {
     }
 
     // ------------------------------------------------------------------
+    // Lists
+    // ------------------------------------------------------------------
+
+    /// `item (COMMA item)* COMMA?` — every list in the grammar has this shape.
+    /// `close` are the tokens that may follow the list, which is how a
+    /// trailing comma is told apart from a separator.
+    fn comma_list<T>(
+        &mut self,
+        close: &[Token<'a>],
+        mut item: impl FnMut(&mut Self) -> Result<T>,
+    ) -> Result<Vec<T>> {
+        let mut items = vec![item(self)?];
+        while self.eat(Token::Comma).is_some() && !self.at_any(close) {
+            items.push(item(self)?);
+        }
+        Ok(items)
+    }
+
+    /// An optional [`comma_list`](Self::comma_list): empty when one of
+    /// `close` is next.
+    fn opt_comma_list<T>(
+        &mut self,
+        close: &[Token<'a>],
+        item: impl FnMut(&mut Self) -> Result<T>,
+    ) -> Result<Vec<T>> {
+        if self.at_any(close) {
+            Ok(vec![])
+        } else {
+            self.comma_list(close, item)
+        }
+    }
+
+    /// `( list? )`, returning the items and the span of the closing paren.
+    fn paren_list<T>(
+        &mut self,
+        item: impl FnMut(&mut Self) -> Result<T>,
+    ) -> Result<(Vec<T>, Span)> {
+        self.expect(Token::LParen, "'('")?;
+        let items = self.opt_comma_list(&[Token::RParen], item)?;
+        let end = self.expect(Token::RParen, "')'")?;
+        Ok((items, end))
+    }
+
+    /// A [`paren_list`](Self::paren_list) that may be left out entirely.
+    fn opt_paren_list<T>(
+        &mut self,
+        item: impl FnMut(&mut Self) -> Result<T>,
+    ) -> Result<Option<Vec<T>>> {
+        if self.at(Token::LParen) {
+            Ok(Some(self.paren_list(item)?.0))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// `expressionList` followed by `close`.
+    fn expr_list(&mut self, close: Token<'a>) -> Result<Vec<Expr<'a>>> {
+        self.comma_list(&[close], Self::expr)
+    }
+
+    // ------------------------------------------------------------------
     // Program structure
     // ------------------------------------------------------------------
 
-    pub fn parse_program(&mut self) -> Result<Program<'a>> {
-        let version = if matches!(self.peek(), Some(Token::OpenQasm)) {
+    fn parse_program(&mut self) -> Result<Program<'a>> {
+        let version = if self.at(Token::OpenQasm) {
             Some(self.parse_version()?)
         } else {
             None
         };
         let mut body = Vec::new();
-        while !self.at_end() {
+        while self.peek().is_some() {
             body.push(self.parse_stmt_or_scope()?);
         }
         Ok(Program {
             version,
             body,
-            span: oqi_lex::span(0, self.max_pos),
+            span: Span::new(0, self.end),
         })
     }
 
     fn parse_version(&mut self) -> Result<Version<'a>> {
-        let (_, start) = self.advance(); // eat OPENQASM
-        let spec_span = self.peek_span();
-        if matches!(self.peek(), Some(Token::VersionSpecifier(_))) {
-            let (tok, _) = self.advance();
-            let Token::VersionSpecifier(specifier) = tok else {
-                unreachable!()
-            };
-            let end = self.expect_semi()?;
-            Ok(Version {
-                specifier,
-                span: oqi_lex::span(start.start, end.end),
-            })
-        } else {
-            Err(Error {
-                span: spec_span,
-                message: "expected version specifier".into(),
-            })
-        }
+        let start = self.advance().1; // eat OPENQASM
+        let Some(Token::VersionSpecifier(specifier)) = self.peek() else {
+            return Err(self.error("expected version specifier"));
+        };
+        self.advance();
+        let end = self.semi()?;
+        Ok(Version {
+            specifier,
+            span: start.to(end),
+        })
     }
 
     fn parse_stmt_or_scope(&mut self) -> Result<StmtOrScope<'a>> {
-        if matches!(self.peek(), Some(Token::LBrace)) {
+        if self.at(Token::LBrace) {
             Ok(StmtOrScope::Scope(self.parse_scope()?))
         } else {
             Ok(StmtOrScope::Stmt(Box::new(self.parse_statement()?)))
@@ -279,66 +328,54 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_scope(&mut self) -> Result<Scope<'a>> {
-        let start = self.expect_lbrace()?;
+        let start = self.expect(Token::LBrace, "'{'")?;
         let mut body = Vec::new();
-        while !matches!(self.peek(), Some(Token::RBrace) | None) {
+        while !self.at_any(&[Token::RBrace]) {
             body.push(self.parse_stmt_or_scope()?);
         }
-        let end = self.expect_rbrace()?;
+        let end = self.expect(Token::RBrace, "'}'")?;
         Ok(Scope {
             body,
-            span: oqi_lex::span(start.start, end.end),
+            span: start.to(end),
         })
     }
 
     fn parse_statement(&mut self) -> Result<Stmt<'a>> {
         let start = self.peek_span();
-
-        // Pragma doesn't have annotations
-        if matches!(self.peek(), Some(Token::Pragma)) {
-            let kind = self.parse_pragma()?;
-            let end = self.prev_span();
-            return Ok(Stmt {
-                annotations: vec![],
-                kind,
-                span: oqi_lex::span(start.start, end.end),
-            });
-        }
-
-        let annotations = self.parse_annotations();
-        let kind = self.parse_stmt_kind()?;
-        let end = self.prev_span();
+        // A pragma takes no annotations.
+        let (annotations, kind) = if self.at(Token::Pragma) {
+            (vec![], self.parse_pragma()?)
+        } else {
+            (self.parse_annotations(), self.parse_stmt_kind()?)
+        };
         Ok(Stmt {
             annotations,
             kind,
-            span: oqi_lex::span(start.start, end.end),
+            span: start.to(self.prev_span()),
         })
     }
 
     fn parse_annotations(&mut self) -> Vec<Annotation<'a>> {
         let mut annotations = Vec::new();
-        while matches!(self.peek(), Some(Token::AnnotationKeyword(_))) {
-            let (tok, kw_span) = self.advance();
-            let Token::AnnotationKeyword(keyword) = tok else {
-                unreachable!()
-            };
-            let content = if matches!(self.peek(), Some(Token::RemainingLineContent(_))) {
-                let (tok, _) = self.advance();
-                let Token::RemainingLineContent(c) = tok else {
-                    unreachable!()
-                };
-                Some(c)
-            } else {
-                None
-            };
-            let end = self.prev_span();
+        while let Some(Token::AnnotationKeyword(keyword)) = self.peek() {
+            let start = self.advance().1;
+            let content = self.remaining_line();
             annotations.push(Annotation {
                 keyword,
                 content,
-                span: oqi_lex::span(kw_span.start, end.end),
+                span: start.to(self.prev_span()),
             });
         }
         annotations
+    }
+
+    /// The rest of a pragma or annotation line, if it has any content.
+    fn remaining_line(&mut self) -> Option<&'a str> {
+        let Some(Token::RemainingLineContent(content)) = self.peek() else {
+            return None;
+        };
+        self.advance();
+        Some(content)
     }
 
     // ------------------------------------------------------------------
@@ -346,46 +383,70 @@ impl<'a> Parser<'a> {
     // ------------------------------------------------------------------
 
     fn parse_stmt_kind(&mut self) -> Result<StmtKind<'a>> {
-        let Some(tok) = self.peek().cloned() else {
+        let Some(tok) = self.peek() else {
             return Err(self.error("expected statement"));
         };
         match tok {
-            Token::Include => self.parse_include(),
+            Token::Include => {
+                self.advance();
+                let path = self.expect_string()?;
+                self.semi()?;
+                Ok(StmtKind::Include(path))
+            }
             Token::DefCalGrammar => self.parse_calibration_grammar(),
-            Token::Break => {
+            Token::Break | Token::Continue | Token::End => {
                 self.advance();
-                self.expect_semi()?;
-                Ok(StmtKind::Break)
-            }
-            Token::Continue => {
-                self.advance();
-                self.expect_semi()?;
-                Ok(StmtKind::Continue)
-            }
-            Token::End => {
-                self.advance();
-                self.expect_semi()?;
-                Ok(StmtKind::End)
+                self.semi()?;
+                Ok(match tok {
+                    Token::Break => StmtKind::Break,
+                    Token::Continue => StmtKind::Continue,
+                    _ => StmtKind::End,
+                })
             }
             Token::For => self.parse_for(),
             Token::If => self.parse_if(),
             Token::Return => self.parse_return(),
             Token::While => self.parse_while(),
             Token::Switch => self.parse_switch(),
-            Token::Barrier => self.parse_barrier(),
+            Token::Barrier => {
+                self.advance();
+                Ok(StmtKind::Barrier(self.opt_gate_operands()?))
+            }
             Token::Box => self.parse_box(),
-            Token::Delay => self.parse_delay(),
-            Token::Nop => self.parse_nop(),
-            Token::Reset => self.parse_reset(),
+            Token::Delay => {
+                self.advance();
+                Ok(StmtKind::Delay {
+                    designator: self.parse_designator()?,
+                    operands: self.opt_gate_operands()?,
+                })
+            }
+            Token::Nop => {
+                self.advance();
+                Ok(StmtKind::Nop(self.opt_gate_operands()?))
+            }
+            Token::Reset => {
+                self.advance();
+                let operand = self.parse_gate_operand()?;
+                self.semi()?;
+                Ok(StmtKind::Reset(operand))
+            }
             Token::Let => self.parse_alias(),
             Token::Const => self.parse_const_decl(),
             Token::Input | Token::Output => self.parse_io_decl(),
             Token::Creg | Token::Qreg => self.parse_old_style_decl(),
-            Token::Qubit => self.parse_quantum_decl(),
+            Token::Qubit => {
+                let ty = self.parse_qubit_type()?;
+                let name = self.expect_ident()?;
+                self.semi()?;
+                Ok(StmtKind::QuantumDecl { ty, name })
+            }
             Token::Def => self.parse_def(),
             Token::Extern => self.parse_extern(),
             Token::Gate => self.parse_gate(),
-            Token::Cal => self.parse_cal(),
+            Token::Cal => {
+                self.advance();
+                Ok(StmtKind::Cal(self.parse_cal_body()?))
+            }
             Token::DefCal => self.parse_defcal(),
             Token::Measure => self.parse_measure_arrow(),
             Token::Gphase => self.parse_gphase_call(vec![]),
@@ -420,53 +481,21 @@ impl<'a> Parser<'a> {
 
     fn parse_pragma(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat pragma
-        if matches!(self.peek(), Some(Token::RemainingLineContent(_))) {
-            let (tok, _) = self.advance();
-            let Token::RemainingLineContent(content) = tok else {
-                unreachable!()
-            };
-            Ok(StmtKind::Pragma(content))
-        } else {
-            Err(self.error("expected pragma content"))
-        }
-    }
-
-    fn parse_include(&mut self) -> Result<StmtKind<'a>> {
-        self.advance(); // eat include
-        if matches!(self.peek(), Some(Token::StringLiteral(_))) {
-            let (tok, _) = self.advance();
-            let Token::StringLiteral(path) = tok else {
-                unreachable!()
-            };
-            self.expect_semi()?;
-            Ok(StmtKind::Include(path))
-        } else {
-            Err(self.error("expected string literal"))
+        match self.remaining_line() {
+            Some(content) => Ok(StmtKind::Pragma(content)),
+            None => Err(self.error("expected pragma content")),
         }
     }
 
     fn parse_calibration_grammar(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat defcalgrammar
-        if matches!(self.peek(), Some(Token::StringLiteral(_))) {
-            let (tok, _) = self.advance();
-            let Token::StringLiteral(path) = tok else {
-                unreachable!()
-            };
-            self.expect_semi()?;
-            // The string literal includes the surrounding quotes; strip them
-            // before comparing.
-            let inner = path
-                .strip_prefix('"')
-                .and_then(|s| s.strip_suffix('"'))
-                .or_else(|| path.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-                .unwrap_or(path);
-            if inner == "openpulse" {
-                self.openpulse = true;
-            }
-            Ok(StmtKind::CalibrationGrammar(path))
-        } else {
-            Err(self.error("expected string literal"))
+        let path = self.expect_string()?;
+        self.semi()?;
+        // The string literal includes the surrounding quotes.
+        if matches!(path, "\"openpulse\"" | "'openpulse'") {
+            self.openpulse = true;
         }
+        Ok(StmtKind::CalibrationGrammar(path))
     }
 
     // ------------------------------------------------------------------
@@ -477,11 +506,7 @@ impl<'a> Parser<'a> {
         self.advance(); // eat for
         let ty = self.parse_scalar_type()?;
         let var = self.expect_ident()?;
-        // eat IN
-        if !matches!(self.peek(), Some(Token::In)) {
-            return Err(self.error("expected 'in'"));
-        }
-        self.advance();
+        self.expect(Token::In, "'in'")?;
 
         let iterable = match self.peek() {
             Some(Token::LBrace) => {
@@ -491,10 +516,10 @@ impl<'a> Parser<'a> {
             Some(Token::LBracket) => {
                 let start = self.advance().1;
                 let range = self.parse_range_expression()?;
-                let end = self.expect_rbracket()?;
-                ForIterable::Range(range, oqi_lex::span(start.start, end.end))
+                let end = self.expect(Token::RBracket, "']'")?;
+                ForIterable::Range(range, start.to(end))
             }
-            _ => ForIterable::Expr(self.parse_expr(0)?),
+            _ => ForIterable::Expr(self.expr()?),
         };
 
         let body = self.parse_stmt_or_scope()?;
@@ -508,12 +533,9 @@ impl<'a> Parser<'a> {
 
     fn parse_if(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat if
-        self.expect_lparen()?;
-        let condition = self.parse_expr(0)?;
-        self.expect_rparen()?;
+        let (condition, _) = self.parenthesized()?;
         let then_body = self.parse_stmt_or_scope()?;
-        let else_body = if matches!(self.peek(), Some(Token::Else)) {
-            self.advance();
+        let else_body = if self.eat(Token::Else).is_some() {
             Some(Box::new(self.parse_stmt_or_scope()?))
         } else {
             None
@@ -527,20 +549,17 @@ impl<'a> Parser<'a> {
 
     fn parse_return(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat return
-        if matches!(self.peek(), Some(Token::Semicolon)) {
-            self.advance();
+        if self.eat(Token::Semicolon).is_some() {
             return Ok(StmtKind::Return(None));
         }
         let value = self.parse_expr_or_measure()?;
-        self.expect_semi()?;
+        self.semi()?;
         Ok(StmtKind::Return(Some(value)))
     }
 
     fn parse_while(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat while
-        self.expect_lparen()?;
-        let condition = self.parse_expr(0)?;
-        self.expect_rparen()?;
+        let (condition, _) = self.parenthesized()?;
         let body = self.parse_stmt_or_scope()?;
         Ok(StmtKind::While {
             condition,
@@ -550,28 +569,22 @@ impl<'a> Parser<'a> {
 
     fn parse_switch(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat switch
-        self.expect_lparen()?;
-        let target = self.parse_expr(0)?;
-        self.expect_rparen()?;
-        self.expect_lbrace()?;
+        let (target, _) = self.parenthesized()?;
+        self.expect(Token::LBrace, "'{'")?;
         let mut cases = Vec::new();
-        while !matches!(self.peek(), Some(Token::RBrace) | None) {
+        while !self.at_any(&[Token::RBrace]) {
             cases.push(self.parse_switch_case()?);
         }
-        self.expect_rbrace()?;
+        self.expect(Token::RBrace, "'}'")?;
         Ok(StmtKind::Switch { target, cases })
     }
 
     fn parse_switch_case(&mut self) -> Result<SwitchCase<'a>> {
-        if matches!(self.peek(), Some(Token::Default)) {
-            self.advance();
-            let scope = self.parse_scope()?;
-            Ok(SwitchCase::Default(scope))
-        } else if matches!(self.peek(), Some(Token::Case)) {
-            self.advance();
-            let exprs = self.parse_expression_list()?;
-            let scope = self.parse_scope()?;
-            Ok(SwitchCase::Case(exprs, scope))
+        if self.eat(Token::Default).is_some() {
+            Ok(SwitchCase::Default(self.parse_scope()?))
+        } else if self.eat(Token::Case).is_some() {
+            let exprs = self.expr_list(Token::LBrace)?;
+            Ok(SwitchCase::Case(exprs, self.parse_scope()?))
         } else {
             Err(self.error("expected 'case' or 'default'"))
         }
@@ -581,76 +594,36 @@ impl<'a> Parser<'a> {
     // Quantum statements
     // ------------------------------------------------------------------
 
-    fn parse_barrier(&mut self) -> Result<StmtKind<'a>> {
-        self.advance(); // eat barrier
-        let operands = if self.peek_is_gate_operand() {
-            self.parse_gate_operand_list()?
-        } else {
-            vec![]
-        };
-        self.expect_semi()?;
-        Ok(StmtKind::Barrier(operands))
+    /// `gateOperandList? SEMICOLON`
+    fn opt_gate_operands(&mut self) -> Result<Vec<GateOperand<'a>>> {
+        let operands = self.opt_comma_list(&[Token::Semicolon], Self::parse_gate_operand)?;
+        self.semi()?;
+        Ok(operands)
     }
 
     fn parse_box(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat box
-        let designator = if matches!(self.peek(), Some(Token::LBracket)) {
-            Some(self.parse_designator()?)
-        } else {
-            None
-        };
+        let designator = self.opt_designator()?;
         let body = self.parse_scope()?;
         Ok(StmtKind::Box { designator, body })
     }
 
-    fn parse_delay(&mut self) -> Result<StmtKind<'a>> {
-        self.advance(); // eat delay
-        let designator = self.parse_designator()?;
-        let operands = if self.peek_is_gate_operand() {
-            self.parse_gate_operand_list()?
-        } else {
-            vec![]
-        };
-        self.expect_semi()?;
-        Ok(StmtKind::Delay {
-            designator,
-            operands,
-        })
-    }
-
-    fn parse_nop(&mut self) -> Result<StmtKind<'a>> {
-        self.advance(); // eat nop
-        let operands = if self.peek_is_gate_operand() {
-            self.parse_gate_operand_list()?
-        } else {
-            vec![]
-        };
-        self.expect_semi()?;
-        Ok(StmtKind::Nop(operands))
-    }
-
-    fn parse_reset(&mut self) -> Result<StmtKind<'a>> {
-        self.advance(); // eat reset
+    /// `MEASURE gateOperand`
+    fn parse_measure(&mut self) -> Result<MeasureExpr<'a>> {
+        let start = self.advance().1; // eat measure
         let operand = self.parse_gate_operand()?;
-        self.expect_semi()?;
-        Ok(StmtKind::Reset(operand))
+        let span = start.to(operand.span());
+        Ok(MeasureExpr::Measure { operand, span })
     }
 
     fn parse_measure_arrow(&mut self) -> Result<StmtKind<'a>> {
-        let start = self.advance().1; // eat measure
-        let operand = self.parse_gate_operand()?;
-        let mspan = oqi_lex::span(start.start, operand.span().end);
-        let measure = MeasureExpr::Measure {
-            operand,
-            span: mspan,
-        };
-        let target = if matches!(self.peek(), Some(Token::Arrow)) {
-            self.advance();
+        let measure = self.parse_measure()?;
+        let target = if self.eat(Token::Arrow).is_some() {
             Some(self.parse_indexed_identifier()?)
         } else {
             None
         };
-        self.expect_semi()?;
+        self.semi()?;
         Ok(StmtKind::MeasureArrow { measure, target })
     }
 
@@ -659,104 +632,69 @@ impl<'a> Parser<'a> {
     // ------------------------------------------------------------------
 
     fn parse_ambiguous_stmt(&mut self) -> Result<StmtKind<'a>> {
-        let expr = self.parse_expr(0)?;
+        let expr = self.expr()?;
 
-        match self.peek() {
-            Some(Token::Semicolon) => {
-                self.advance();
-                Ok(StmtKind::Expr(expr))
-            }
-            Some(
-                Token::Equals
-                | Token::PlusEquals
-                | Token::MinusEquals
-                | Token::AsteriskEquals
-                | Token::SlashEquals
-                | Token::AmpersandEquals
-                | Token::PipeEquals
-                | Token::CaretEquals
-                | Token::LeftShiftEquals
-                | Token::RightShiftEquals
-                | Token::PercentEquals
-                | Token::DoubleAsteriskEquals,
-            ) => {
-                let target = self.expr_to_indexed_ident(expr)?;
-                let (tok, _) = self.advance();
-                let op = match tok {
-                    Token::Equals => AssignOp::Assign,
-                    Token::PlusEquals => AssignOp::AddAssign,
-                    Token::MinusEquals => AssignOp::SubAssign,
-                    Token::AsteriskEquals => AssignOp::MulAssign,
-                    Token::SlashEquals => AssignOp::DivAssign,
-                    Token::AmpersandEquals => AssignOp::BitAndAssign,
-                    Token::PipeEquals => AssignOp::BitOrAssign,
-                    Token::CaretEquals => AssignOp::BitXorAssign,
-                    Token::LeftShiftEquals => AssignOp::LeftShiftAssign,
-                    Token::RightShiftEquals => AssignOp::RightShiftAssign,
-                    Token::PercentEquals => AssignOp::ModAssign,
-                    Token::DoubleAsteriskEquals => AssignOp::PowAssign,
-                    _ => unreachable!(),
-                };
-                let value = self.parse_expr_or_measure()?;
-                self.expect_semi()?;
-                Ok(StmtKind::Assignment { target, op, value })
-            }
-            Some(Token::Identifier(_) | Token::HardwareQubit(_)) => {
-                // Gate call or quantum call expression
-                let (name, args, designator) = self.decompose_gate_head(expr)?;
-                let operands = self.parse_gate_operand_list()?;
-                if matches!(self.peek(), Some(Token::Arrow)) {
-                    if designator.is_some() {
-                        return Err(
-                            self.error("duration designator is not supported on measure calls")
-                        );
-                    }
-                    self.advance();
-                    let target = self.parse_indexed_identifier()?;
-                    self.expect_semi()?;
-                    let span = oqi_lex::span(name.span.start, target.span.end);
-                    Ok(StmtKind::MeasureArrow {
-                        measure: MeasureExpr::QuantumCall {
-                            name,
-                            args: args.unwrap_or_default(),
-                            operands,
-                            span,
-                        },
-                        target: Some(target),
-                    })
-                } else {
-                    self.expect_semi()?;
-                    Ok(StmtKind::GateCall {
-                        modifiers: vec![],
-                        name,
-                        args,
-                        designator,
-                        operands,
-                    })
-                }
-            }
-            _ => Err(self.error("expected ';', '=', or gate operand after expression")),
+        if self.eat(Token::Semicolon).is_some() {
+            return Ok(StmtKind::Expr(expr));
         }
+
+        if let Some(op) = self.peek().and_then(assign_op) {
+            let target = Self::expr_to_indexed_ident(expr)?;
+            self.advance();
+            let value = self.parse_expr_or_measure()?;
+            self.semi()?;
+            return Ok(StmtKind::Assignment { target, op, value });
+        }
+
+        if !self.peek_is_gate_operand() {
+            return Err(self.error("expected ';', '=', or gate operand after expression"));
+        }
+
+        // Gate call or quantum call expression
+        let (name, args, designator) = Self::decompose_gate_head(expr)?;
+        let operands =
+            self.comma_list(&[Token::Semicolon, Token::Arrow], Self::parse_gate_operand)?;
+        if !self.at(Token::Arrow) {
+            self.semi()?;
+            return Ok(StmtKind::GateCall {
+                modifiers: vec![],
+                name,
+                args,
+                designator,
+                operands,
+            });
+        }
+        if designator.is_some() {
+            return Err(self.error("duration designator is not supported on measure calls"));
+        }
+        self.advance(); // eat ->
+        let target = self.parse_indexed_identifier()?;
+        self.semi()?;
+        let span = name.span.to(target.span);
+        Ok(StmtKind::MeasureArrow {
+            measure: MeasureExpr::QuantumCall {
+                name,
+                args: args.unwrap_or_default(),
+                operands,
+                span,
+            },
+            target: Some(target),
+        })
     }
 
     fn parse_modified_gate_call(&mut self) -> Result<StmtKind<'a>> {
         let mut modifiers = Vec::new();
-        while matches!(
-            self.peek(),
-            Some(Token::Inv | Token::Pow | Token::Ctrl | Token::Negctrl)
-        ) {
-            modifiers.push(self.parse_gate_modifier()?);
+        while let Some(modifier) = self.parse_gate_modifier()? {
+            modifiers.push(modifier);
         }
 
-        if matches!(self.peek(), Some(Token::Gphase)) {
+        if self.at(Token::Gphase) {
             return self.parse_gphase_call(modifiers);
         }
 
-        // Must be Identifier
-        let expr = self.parse_expr(0)?;
-        let (name, args, designator) = self.decompose_gate_head(expr)?;
-        let operands = self.parse_gate_operand_list()?;
-        self.expect_semi()?;
+        let (name, args, designator) = Self::decompose_gate_head(self.expr()?)?;
+        let operands = self.comma_list(&[Token::Semicolon], Self::parse_gate_operand)?;
+        self.semi()?;
         Ok(StmtKind::GateCall {
             modifiers,
             name,
@@ -767,34 +705,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_gphase_call(&mut self, modifiers: Vec<GateModifier<'a>>) -> Result<StmtKind<'a>> {
-        let (_, gspan) = self.advance(); // eat gphase
         let name = Ident {
             name: "gphase",
-            span: gspan,
+            span: self.advance().1,
         };
-        let args = if matches!(self.peek(), Some(Token::LParen)) {
-            self.advance();
-            let list = if matches!(self.peek(), Some(Token::RParen)) {
-                vec![]
-            } else {
-                self.parse_expression_list()?
-            };
-            self.expect_rparen()?;
-            Some(list)
-        } else {
-            None
-        };
-        let designator = if matches!(self.peek(), Some(Token::LBracket)) {
-            Some(Box::new(self.parse_designator()?))
-        } else {
-            None
-        };
-        let operands = if self.peek_is_gate_operand() {
-            self.parse_gate_operand_list()?
-        } else {
-            vec![]
-        };
-        self.expect_semi()?;
+        let args = self.opt_paren_list(Self::expr)?;
+        let designator = self.opt_designator()?.map(Box::new);
+        let operands = self.opt_gate_operands()?;
         Ok(StmtKind::GateCall {
             modifiers,
             name,
@@ -804,69 +721,26 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_gate_modifier(&mut self) -> Result<GateModifier<'a>> {
-        let start = self.peek_span();
-        let tok = self.peek().cloned();
-        match tok {
-            Some(Token::Inv) => {
-                self.advance();
-                if !matches!(self.peek(), Some(Token::At)) {
-                    return Err(self.error("expected '@'"));
-                }
-                let end = self.advance().1;
-                Ok(GateModifier::Inv(oqi_lex::span(start.start, end.end)))
-            }
-            Some(Token::Pow) => {
-                self.advance();
-                self.expect_lparen()?;
-                let expr = self.parse_expr(0)?;
-                self.expect_rparen()?;
-                if !matches!(self.peek(), Some(Token::At)) {
-                    return Err(self.error("expected '@'"));
-                }
-                let end = self.advance().1;
-                Ok(GateModifier::Pow(expr, oqi_lex::span(start.start, end.end)))
-            }
-            Some(Token::Ctrl) => {
-                self.advance();
-                let expr = if matches!(self.peek(), Some(Token::LParen)) {
-                    self.advance();
-                    let e = self.parse_expr(0)?;
-                    self.expect_rparen()?;
-                    Some(e)
-                } else {
-                    None
-                };
-                if !matches!(self.peek(), Some(Token::At)) {
-                    return Err(self.error("expected '@'"));
-                }
-                let end = self.advance().1;
-                Ok(GateModifier::Ctrl(
-                    expr,
-                    oqi_lex::span(start.start, end.end),
-                ))
-            }
-            Some(Token::Negctrl) => {
-                self.advance();
-                let expr = if matches!(self.peek(), Some(Token::LParen)) {
-                    self.advance();
-                    let e = self.parse_expr(0)?;
-                    self.expect_rparen()?;
-                    Some(e)
-                } else {
-                    None
-                };
-                if !matches!(self.peek(), Some(Token::At)) {
-                    return Err(self.error("expected '@'"));
-                }
-                let end = self.advance().1;
-                Ok(GateModifier::NegCtrl(
-                    expr,
-                    oqi_lex::span(start.start, end.end),
-                ))
-            }
-            _ => Err(self.error("expected gate modifier")),
-        }
+    /// A `gateModifier`, if one is next.
+    fn parse_gate_modifier(&mut self) -> Result<Option<GateModifier<'a>>> {
+        let Some(tok @ (Token::Inv | Token::Pow | Token::Ctrl | Token::Negctrl)) = self.peek()
+        else {
+            return Ok(None);
+        };
+        let start = self.advance().1;
+        // `pow` requires an argument; the control count is optional.
+        let arg = if tok == Token::Pow || (tok != Token::Inv && self.at(Token::LParen)) {
+            Some(self.parenthesized()?.0)
+        } else {
+            None
+        };
+        let span = start.to(self.expect(Token::At, "'@'")?);
+        Ok(Some(match (tok, arg) {
+            (Token::Pow, Some(exponent)) => GateModifier::Pow(exponent, span),
+            (Token::Ctrl, count) => GateModifier::Ctrl(count, span),
+            (Token::Negctrl, count) => GateModifier::NegCtrl(count, span),
+            _ => GateModifier::Inv(span),
+        }))
     }
 
     // ------------------------------------------------------------------
@@ -876,17 +750,13 @@ impl<'a> Parser<'a> {
     fn parse_alias(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat let
         let name = self.expect_ident()?;
-        if !matches!(self.peek(), Some(Token::Equals)) {
-            return Err(self.error("expected '='"));
-        }
-        self.advance();
+        self.expect(Token::Equals, "'='")?;
         // aliasExpression: expression (DOUBLE_PLUS expression)*
-        let mut value = vec![self.parse_expr(0)?];
-        while matches!(self.peek(), Some(Token::DoublePlus)) {
-            self.advance();
-            value.push(self.parse_expr(0)?);
+        let mut value = vec![self.expr()?];
+        while self.eat(Token::DoublePlus).is_some() {
+            value.push(self.expr()?);
         }
-        self.expect_semi()?;
+        self.semi()?;
         Ok(StmtKind::Alias { name, value })
     }
 
@@ -901,13 +771,12 @@ impl<'a> Parser<'a> {
             return self.parse_expression_stmt();
         }
         let name = self.expect_ident()?;
-        let init = if matches!(self.peek(), Some(Token::Equals)) {
-            self.advance();
+        let init = if self.eat(Token::Equals).is_some() {
             Some(self.parse_expr_or_measure()?)
         } else {
             None
         };
-        self.expect_semi()?;
+        self.semi()?;
         Ok(StmtKind::ClassicalDecl { ty, name, init })
     }
 
@@ -915,44 +784,33 @@ impl<'a> Parser<'a> {
         self.advance(); // eat const
         let ty = self.parse_type_expr()?;
         let name = self.expect_ident()?;
-        if !matches!(self.peek(), Some(Token::Equals)) {
-            return Err(self.error("expected '='"));
-        }
-        self.advance();
+        self.expect(Token::Equals, "'='")?;
         let init = self.parse_expr_or_measure()?;
-        self.expect_semi()?;
+        self.semi()?;
         Ok(StmtKind::ConstDecl { ty, name, init })
     }
 
     fn parse_io_decl(&mut self) -> Result<StmtKind<'a>> {
-        let dir = if matches!(self.peek(), Some(Token::Input)) {
-            self.advance();
+        let dir = if self.advance().0 == Token::Input {
             IoDir::Input
         } else {
-            self.advance(); // output
             IoDir::Output
         };
         let ty = self.parse_type_expr()?;
         let name = self.expect_ident()?;
-        self.expect_semi()?;
+        self.semi()?;
         Ok(StmtKind::IoDecl { dir, ty, name })
     }
 
     fn parse_old_style_decl(&mut self) -> Result<StmtKind<'a>> {
-        let keyword = if matches!(self.peek(), Some(Token::Creg)) {
-            self.advance();
+        let keyword = if self.advance().0 == Token::Creg {
             OldStyleKind::Creg
         } else {
-            self.advance(); // qreg
             OldStyleKind::Qreg
         };
         let name = self.expect_ident()?;
-        let designator = if matches!(self.peek(), Some(Token::LBracket)) {
-            Some(Box::new(self.parse_designator()?))
-        } else {
-            None
-        };
-        self.expect_semi()?;
+        let designator = self.opt_designator()?.map(Box::new);
+        self.semi()?;
         Ok(StmtKind::OldStyleDecl {
             keyword,
             name,
@@ -960,33 +818,24 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_quantum_decl(&mut self) -> Result<StmtKind<'a>> {
-        let ty = self.parse_qubit_type()?;
-        let name = self.expect_ident()?;
-        self.expect_semi()?;
-        Ok(StmtKind::QuantumDecl { ty, name })
-    }
-
     // ------------------------------------------------------------------
     // Higher-order definitions
     // ------------------------------------------------------------------
 
+    /// `returnSignature?`
+    fn opt_return_signature(&mut self) -> Result<Option<ScalarType<'a>>> {
+        if self.eat(Token::Arrow).is_some() {
+            Ok(Some(self.parse_scalar_type()?))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn parse_def(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat def
         let name = self.expect_ident()?;
-        self.expect_lparen()?;
-        let params = if matches!(self.peek(), Some(Token::RParen)) {
-            vec![]
-        } else {
-            self.parse_arg_def_list()?
-        };
-        self.expect_rparen()?;
-        let return_ty = if matches!(self.peek(), Some(Token::Arrow)) {
-            self.advance();
-            Some(self.parse_scalar_type()?)
-        } else {
-            None
-        };
+        let (params, _) = self.paren_list(Self::parse_arg_def)?;
+        let return_ty = self.opt_return_signature()?;
         let body = self.parse_scope()?;
         Ok(StmtKind::Def {
             name,
@@ -1001,35 +850,22 @@ impl<'a> Parser<'a> {
 
         // OpenPulse-only forms: `extern frame Identifier ;` and
         // `extern port Identifier ;`. The Frame/Port tokens are only emitted
-        // by the openpulse-mode lexer, so checking unconditionally is safe.
-        if matches!(self.peek(), Some(Token::Frame)) {
+        // by the OpenPulse lexer, so checking unconditionally is safe.
+        if let Some(tok @ (Token::Frame | Token::Port)) = self.peek() {
             self.advance();
             let name = self.expect_ident()?;
-            self.expect_semi()?;
-            return Ok(StmtKind::ExternFrame { name });
-        }
-        if matches!(self.peek(), Some(Token::Port)) {
-            self.advance();
-            let name = self.expect_ident()?;
-            self.expect_semi()?;
-            return Ok(StmtKind::ExternPort { name });
+            self.semi()?;
+            return Ok(if tok == Token::Frame {
+                StmtKind::ExternFrame { name }
+            } else {
+                StmtKind::ExternPort { name }
+            });
         }
 
         let name = self.expect_ident()?;
-        self.expect_lparen()?;
-        let params = if matches!(self.peek(), Some(Token::RParen)) {
-            vec![]
-        } else {
-            self.parse_extern_arg_list()?
-        };
-        self.expect_rparen()?;
-        let return_ty = if matches!(self.peek(), Some(Token::Arrow)) {
-            self.advance();
-            Some(self.parse_scalar_type()?)
-        } else {
-            None
-        };
-        self.expect_semi()?;
+        let (params, _) = self.paren_list(Self::parse_extern_arg)?;
+        let return_ty = self.opt_return_signature()?;
+        self.semi()?;
         Ok(StmtKind::Extern {
             name,
             params,
@@ -1040,19 +876,8 @@ impl<'a> Parser<'a> {
     fn parse_gate(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat gate
         let name = self.expect_ident()?;
-        let params = if matches!(self.peek(), Some(Token::LParen)) {
-            self.advance();
-            let list = if matches!(self.peek(), Some(Token::RParen)) {
-                vec![]
-            } else {
-                self.parse_identifier_list()?
-            };
-            self.expect_rparen()?;
-            list
-        } else {
-            vec![]
-        };
-        let qubits = self.parse_identifier_list()?;
+        let params = self.opt_paren_list(Self::expect_ident)?.unwrap_or_default();
+        let qubits = self.comma_list(&[Token::LBrace], Self::expect_ident)?;
         let body = self.parse_scope()?;
         Ok(StmtKind::Gate {
             name,
@@ -1066,81 +891,73 @@ impl<'a> Parser<'a> {
     // Cal / Defcal
     // ------------------------------------------------------------------
 
-    fn parse_cal(&mut self) -> Result<StmtKind<'a>> {
-        self.advance(); // eat cal
-        self.expect_lbrace()?;
-        let body = self.take_cal_body()?;
-        self.expect_rbrace()?;
-        Ok(StmtKind::Cal(body))
+    /// `LBRACE CalibrationBlock? RBRACE` — parsed as OpenPulse or kept raw,
+    /// per the program's `defcalgrammar` selection.
+    fn parse_cal_body(&mut self) -> Result<CalBody<'a>> {
+        self.expect(Token::LBrace, "'{'")?;
+        let body = match self.peek() {
+            Some(Token::CalibrationBlock(body)) => {
+                let offset = self.advance().1.start;
+                if self.openpulse {
+                    CalBody::OpenPulse(self.parse_openpulse_block(body, offset)?)
+                } else {
+                    CalBody::Raw(Some(body))
+                }
+            }
+            _ => CalBody::Raw(None),
+        };
+        self.expect(Token::RBrace, "'}'")?;
+        Ok(body)
     }
 
-    /// After consuming the opening `{`, take the `Token::CalibrationBlock`
-    /// (if present) and either parse it as an OpenPulse block or wrap it raw,
-    /// per the program's `defcalgrammar` selection.
-    fn take_cal_body(&mut self) -> Result<CalBody<'a>> {
-        if !matches!(self.peek(), Some(Token::CalibrationBlock(_))) {
-            return Ok(CalBody::Raw(None));
+    /// Re-lex `body` (a calibration block's contents, at `offset` in the
+    /// document) with the OpenPulse lexer and parse it as a sequence of
+    /// OpenPulse statements.
+    fn parse_openpulse_block(
+        &mut self,
+        body: &'a str,
+        offset: usize,
+    ) -> Result<Vec<StmtOrScope<'a>>> {
+        let mut sub = Parser::new(Lexer::new(body).openpulse(), offset)?;
+        let mut stmts = Vec::new();
+        while let Some(tok) = sub.peek() {
+            // Directly inside a calibration block only the grammar's
+            // `openpulseStatement` subset is allowed. The lexer has already
+            // demoted `cal` and `defcal` to identifiers, so those cannot
+            // appear; the rest of the exclusions are rejected here.
+            let excluded = match tok {
+                Token::Gate => Some("`gate` declarations are"),
+                Token::Nop => Some("`nop` is"),
+                Token::DefCalGrammar => Some("`defcalgrammar` is"),
+                _ => None,
+            };
+            if let Some(what) = excluded {
+                return Err(sub.error(format!(
+                    "{what} not allowed inside an OpenPulse calibration block"
+                )));
+            }
+            stmts.push(sub.parse_stmt_or_scope()?);
         }
-        let (tok, span) = self.advance();
-        let Token::CalibrationBlock(body) = tok else {
-            unreachable!()
-        };
-        if self.openpulse {
-            parse_openpulse_block(body, span.start).map(CalBody::OpenPulse)
-        } else {
-            Ok(CalBody::Raw(Some(body)))
-        }
+        self.comments.append(&mut sub.comments);
+        Ok(stmts)
     }
 
     fn parse_defcal(&mut self) -> Result<StmtKind<'a>> {
         self.advance(); // eat defcal
 
-        // defcalTarget
-        let target = match self.peek().cloned() {
-            Some(Token::Measure) => {
-                let s = self.advance().1;
-                DefcalTarget::Measure(s)
-            }
-            Some(Token::Reset) => {
-                let s = self.advance().1;
-                DefcalTarget::Reset(s)
-            }
-            Some(Token::Delay) => {
-                let s = self.advance().1;
-                DefcalTarget::Delay(s)
-            }
+        let target = match self.peek() {
+            Some(Token::Measure) => DefcalTarget::Measure(self.advance().1),
+            Some(Token::Reset) => DefcalTarget::Reset(self.advance().1),
+            Some(Token::Delay) => DefcalTarget::Delay(self.advance().1),
             _ => DefcalTarget::Ident(self.expect_ident()?),
         };
-
-        // Optional (args)
-        let args = if matches!(self.peek(), Some(Token::LParen)) {
-            self.advance();
-            let list = if matches!(self.peek(), Some(Token::RParen)) {
-                vec![]
-            } else {
-                self.parse_defcal_arg_def_list()?
-            };
-            self.expect_rparen()?;
-            list
-        } else {
-            vec![]
-        };
-
-        // defcalOperandList
-        let operands = self.parse_defcal_operand_list()?;
-
-        // Optional return signature
-        let return_ty = if matches!(self.peek(), Some(Token::Arrow)) {
-            self.advance();
-            Some(self.parse_scalar_type()?)
-        } else {
-            None
-        };
-
-        // Body
-        self.expect_lbrace()?;
-        let body = self.take_cal_body()?;
-        self.expect_rbrace()?;
+        let args = self
+            .opt_paren_list(Self::parse_defcal_arg_def)?
+            .unwrap_or_default();
+        let operands =
+            self.opt_comma_list(&[Token::Arrow, Token::LBrace], Self::parse_defcal_operand)?;
+        let return_ty = self.opt_return_signature()?;
+        let body = self.parse_cal_body()?;
 
         Ok(StmtKind::Defcal {
             target,
@@ -1156,8 +973,8 @@ impl<'a> Parser<'a> {
     // ------------------------------------------------------------------
 
     fn parse_expression_stmt(&mut self) -> Result<StmtKind<'a>> {
-        let expr = self.parse_expr(0)?;
-        self.expect_semi()?;
+        let expr = self.expr()?;
+        self.semi()?;
         Ok(StmtKind::Expr(expr))
     }
 
@@ -1166,77 +983,71 @@ impl<'a> Parser<'a> {
     // ------------------------------------------------------------------
 
     fn parse_expr_or_measure(&mut self) -> Result<ExprOrMeasure<'a>> {
-        if matches!(self.peek(), Some(Token::Measure)) {
-            let start = self.peek_span();
-            self.advance();
-            let operand = self.parse_gate_operand()?;
-            let span = oqi_lex::span(start.start, operand.span().end);
-            return Ok(ExprOrMeasure::Measure(MeasureExpr::Measure {
-                operand,
-                span,
-            }));
+        if self.at(Token::Measure) {
+            return Ok(ExprOrMeasure::Measure(self.parse_measure()?));
         }
 
-        let expr = self.parse_expr(0)?;
-
-        // Check for quantum call: expression followed by gate operands
-        if self.peek_is_gate_operand() {
-            let (name, args, designator) = self.decompose_gate_head(expr)?;
-            if designator.is_some() {
-                return Err(self.error("duration designator is not supported on measure calls"));
-            }
-            let operands = self.parse_gate_operand_list()?;
-            let end = operands.last().unwrap().span().end;
-            let span = oqi_lex::span(name.span.start, end);
-            return Ok(ExprOrMeasure::Measure(MeasureExpr::QuantumCall {
-                name,
-                args: args.unwrap_or_default(),
-                operands,
-                span,
-            }));
+        let expr = self.expr()?;
+        if !self.peek_is_gate_operand() {
+            return Ok(ExprOrMeasure::Expr(expr));
         }
 
-        Ok(ExprOrMeasure::Expr(expr))
+        // Quantum call: an expression followed by gate operands
+        let (name, args, designator) = Self::decompose_gate_head(expr)?;
+        if designator.is_some() {
+            return Err(self.error("duration designator is not supported on measure calls"));
+        }
+        let operands = self.comma_list(&[Token::Semicolon], Self::parse_gate_operand)?;
+        let span = name
+            .span
+            .to(operands.last().map_or(name.span, GateOperand::span));
+        Ok(ExprOrMeasure::Measure(MeasureExpr::QuantumCall {
+            name,
+            args: args.unwrap_or_default(),
+            operands,
+            span,
+        }))
     }
 
     fn parse_array_literal(&mut self) -> Result<ArrayLiteral<'a>> {
-        let start = self.expect_lbrace()?;
-        let mut items = Vec::new();
-        if !matches!(self.peek(), Some(Token::RBrace)) {
-            loop {
-                items.push(self.parse_expr(0)?);
-                if !matches!(self.peek(), Some(Token::Comma)) {
-                    break;
-                }
-                self.advance(); // eat comma
-                if matches!(self.peek(), Some(Token::RBrace)) {
-                    break; // trailing comma
-                }
-            }
-        }
-        let end = self.expect_rbrace()?;
+        let start = self.expect(Token::LBrace, "'{'")?;
+        let items = self.opt_comma_list(&[Token::RBrace], Self::expr)?;
+        let end = self.expect(Token::RBrace, "'}'")?;
         Ok(ArrayLiteral {
             items,
-            span: oqi_lex::span(start.start, end.end),
+            span: start.to(end),
         })
+    }
+
+    /// `( expression )`, returning the expression and the span of the whole.
+    fn parenthesized(&mut self) -> Result<(Expr<'a>, Span)> {
+        let start = self.expect(Token::LParen, "'('")?;
+        let expr = self.expr()?;
+        let end = self.expect(Token::RParen, "')'")?;
+        Ok((expr, start.to(end)))
     }
 
     // ------------------------------------------------------------------
     // Pratt expression parser
     // ------------------------------------------------------------------
 
-    pub fn parse_expr(&mut self, min_bp: u8) -> Result<Expr<'a>> {
+    fn expr(&mut self) -> Result<Expr<'a>> {
+        self.parse_expr(0)
+    }
+
+    /// Parse an expression whose operators all bind at least as tightly as
+    /// `min_precedence`.
+    fn parse_expr(&mut self, min_precedence: u8) -> Result<Expr<'a>> {
         let mut lhs = self.parse_primary_expr()?;
 
         loop {
             // Postfix: index operator
-            if matches!(self.peek(), Some(Token::LBracket)) {
-                let postfix_bp: u8 = 26;
-                if postfix_bp < min_bp {
+            if self.at(Token::LBracket) {
+                if IndexOp::PRECEDENCE < min_precedence {
                     break;
                 }
                 let index = self.parse_index_operator()?;
-                let span = oqi_lex::span(lhs.span().start, index.span.end);
+                let span = lhs.span().to(index.span);
                 lhs = Expr::Index {
                     expr: Box::new(lhs),
                     index,
@@ -1246,17 +1057,22 @@ impl<'a> Parser<'a> {
             }
 
             // Infix binary operators
-            let Some((l_bp, r_bp)) = self.peek().and_then(Self::infix_bp) else {
+            let Some(op) = self.peek().and_then(bin_op) else {
                 break;
             };
-            if l_bp < min_bp {
+            let precedence = op.precedence();
+            if precedence < min_precedence {
                 break;
             }
-
-            let (op_token, _) = self.advance();
-            let op = Self::token_to_binop(&op_token);
-            let rhs = self.parse_expr(r_bp)?;
-            let span = oqi_lex::span(lhs.span().start, rhs.span().end);
+            self.advance();
+            // The right operand of a left-associative operator must bind
+            // tighter than the operator itself.
+            let rhs = self.parse_expr(if op.is_right_associative() {
+                precedence - 1
+            } else {
+                precedence + 1
+            })?;
+            let span = lhs.span().to(rhs.span());
             lhs = Expr::BinOp {
                 left: Box::new(lhs),
                 op,
@@ -1269,197 +1085,78 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_primary_expr(&mut self) -> Result<Expr<'a>> {
+        let Some(tok) = self.peek() else {
+            return Err(self.error("expected expression"));
+        };
+        let span = self.peek_span();
+
         // Prefix unary operators
-        if let Some(bp) = self.peek().and_then(Self::prefix_bp) {
-            let (op_token, op_span) = self.advance();
-            let op = match op_token {
-                Token::Minus => UnOp::Neg,
-                Token::Tilde => UnOp::BitNot,
-                Token::ExclamationPoint => UnOp::LogNot,
-                _ => unreachable!(),
-            };
-            let operand = self.parse_expr(bp)?;
-            let span = oqi_lex::span(op_span.start, operand.span().end);
+        if let Some(op) = un_op(tok) {
+            self.advance();
+            let operand = self.parse_expr(UnOp::PRECEDENCE)?;
             return Ok(Expr::UnaryOp {
                 op,
+                span: span.to(operand.span()),
                 operand: Box::new(operand),
-                span,
-            });
-        }
-
-        // Parenthesized expression
-        if matches!(self.peek(), Some(Token::LParen)) {
-            let start = self.advance().1;
-            let inner = self.parse_expr(0)?;
-            let end = self.expect_rparen()?;
-            return Ok(Expr::Paren(
-                Box::new(inner),
-                oqi_lex::span(start.start, end.end),
-            ));
-        }
-
-        // Array literal
-        if matches!(self.peek(), Some(Token::LBrace)) {
-            return Ok(Expr::ArrayLiteral(self.parse_array_literal()?));
-        }
-
-        // DurationOf
-        if matches!(self.peek(), Some(Token::Durationof)) {
-            let start = self.advance().1;
-            self.expect_lparen()?;
-            let scope = self.parse_scope()?;
-            let end = self.expect_rparen()?;
-            return Ok(Expr::DurationOf {
-                scope,
-                span: oqi_lex::span(start.start, end.end),
             });
         }
 
         // Type cast: (scalarType | arrayType) LPAREN expression RPAREN
         if self.peek_is_type_keyword() {
-            let start = self.peek_span();
             let ty = self.parse_type_expr()?;
-            self.expect_lparen()?;
-            let operand = self.parse_expr(0)?;
-            let end = self.expect_rparen()?;
+            let (operand, parens) = self.parenthesized()?;
             return Ok(Expr::Cast {
                 ty: Box::new(ty),
                 operand: Box::new(operand),
-                span: oqi_lex::span(start.start, end.end),
+                span: span.to(parens),
             });
         }
 
-        // Identifier or function call
-        if matches!(self.peek(), Some(Token::Identifier(_))) {
-            let (tok, span) = self.advance();
-            let Token::Identifier(name) = tok else {
-                unreachable!()
-            };
-            let ident = Ident { name, span };
-
-            // Check for call: Identifier LPAREN expressionList? RPAREN
-            if matches!(self.peek(), Some(Token::LParen)) {
-                self.advance(); // eat (
-                let args = if matches!(self.peek(), Some(Token::RParen)) {
-                    vec![]
-                } else {
-                    self.parse_expression_list()?
-                };
-                let end = self.expect_rparen()?;
-                return Ok(Expr::Call {
-                    name: ident,
-                    args,
-                    span: oqi_lex::span(span.start, end.end),
+        let literal = match tok {
+            Token::LParen => {
+                let (inner, span) = self.parenthesized()?;
+                return Ok(Expr::Paren(Box::new(inner), span));
+            }
+            Token::LBrace => return Ok(Expr::ArrayLiteral(self.parse_array_literal()?)),
+            Token::Durationof => {
+                self.advance();
+                self.expect(Token::LParen, "'('")?;
+                let scope = self.parse_scope()?;
+                let end = self.expect(Token::RParen, "')'")?;
+                return Ok(Expr::DurationOf {
+                    scope,
+                    span: span.to(end),
                 });
             }
-
-            return Ok(Expr::Ident(ident));
-        }
-
-        // Literals
-        if let Some(tok) = self.peek().cloned() {
-            match tok {
-                Token::DecimalIntegerLiteral(s) => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::IntLiteral(s, IntEncoding::Decimal, span));
+            // Identifier or call: Identifier LPAREN expressionList? RPAREN
+            Token::Identifier(name) => {
+                self.advance();
+                let name = Ident { name, span };
+                if !self.at(Token::LParen) {
+                    return Ok(Expr::Ident(name));
                 }
-                Token::BinaryIntegerLiteral(s) => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::IntLiteral(s, IntEncoding::Binary, span));
-                }
-                Token::OctalIntegerLiteral(s) => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::IntLiteral(s, IntEncoding::Octal, span));
-                }
-                Token::HexIntegerLiteral(s) => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::IntLiteral(s, IntEncoding::Hex, span));
-                }
-                Token::FloatLiteral(s) => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::FloatLiteral(s, span));
-                }
-                Token::ImaginaryLiteral(s) => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::ImagLiteral(s, span));
-                }
-                Token::True => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::BoolLiteral(true, span));
-                }
-                Token::False => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::BoolLiteral(false, span));
-                }
-                Token::BitstringLiteral(s) => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::BitstringLiteral(s, span));
-                }
-                Token::TimingLiteral(s) => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::TimingLiteral(s, span));
-                }
-                Token::HardwareQubit(s) => {
-                    let (_, span) = self.advance();
-                    return Ok(Expr::HardwareQubit(s, span));
-                }
-                _ => {}
+                let (args, end) = self.paren_list(Self::expr)?;
+                return Ok(Expr::Call {
+                    name,
+                    args,
+                    span: span.to(end),
+                });
             }
-        }
-
-        Err(self.error("expected expression"))
-    }
-
-    fn infix_bp(token: &Token) -> Option<(u8, u8)> {
-        match token {
-            Token::DoublePipe => Some((2, 3)),
-            Token::DoubleAmpersand => Some((4, 5)),
-            Token::Pipe => Some((6, 7)),
-            Token::Caret => Some((8, 9)),
-            Token::Ampersand => Some((10, 11)),
-            Token::DoubleEquals | Token::ExclamationEquals => Some((12, 13)),
-            Token::GreaterThan
-            | Token::LessThan
-            | Token::GreaterThanEquals
-            | Token::LessThanEquals => Some((14, 15)),
-            Token::DoubleGreater | Token::DoubleLess => Some((16, 17)),
-            Token::Plus | Token::Minus => Some((18, 19)),
-            Token::Asterisk | Token::Slash | Token::Percent => Some((20, 21)),
-            Token::DoubleAsterisk => Some((22, 21)), // right-associative
-            _ => None,
-        }
-    }
-
-    fn prefix_bp(token: &Token) -> Option<u8> {
-        match token {
-            Token::Minus | Token::Tilde | Token::ExclamationPoint => Some(21),
-            _ => None,
-        }
-    }
-
-    fn token_to_binop(token: &Token) -> BinOp {
-        match token {
-            Token::Plus => BinOp::Add,
-            Token::Minus => BinOp::Sub,
-            Token::Asterisk => BinOp::Mul,
-            Token::Slash => BinOp::Div,
-            Token::Percent => BinOp::Mod,
-            Token::DoubleAsterisk => BinOp::Pow,
-            Token::Ampersand => BinOp::BitAnd,
-            Token::Pipe => BinOp::BitOr,
-            Token::Caret => BinOp::BitXor,
-            Token::DoubleAmpersand => BinOp::LogAnd,
-            Token::DoublePipe => BinOp::LogOr,
-            Token::DoubleEquals => BinOp::Eq,
-            Token::ExclamationEquals => BinOp::Neq,
-            Token::LessThan => BinOp::Lt,
-            Token::GreaterThan => BinOp::Gt,
-            Token::LessThanEquals => BinOp::Lte,
-            Token::GreaterThanEquals => BinOp::Gte,
-            Token::DoubleLess => BinOp::Shl,
-            Token::DoubleGreater => BinOp::Shr,
-            _ => unreachable!(),
-        }
+            Token::DecimalIntegerLiteral(s) => Expr::IntLiteral(s, IntEncoding::Decimal, span),
+            Token::BinaryIntegerLiteral(s) => Expr::IntLiteral(s, IntEncoding::Binary, span),
+            Token::OctalIntegerLiteral(s) => Expr::IntLiteral(s, IntEncoding::Octal, span),
+            Token::HexIntegerLiteral(s) => Expr::IntLiteral(s, IntEncoding::Hex, span),
+            Token::FloatLiteral(s) => Expr::FloatLiteral(s, span),
+            Token::ImaginaryLiteral(s) => Expr::ImagLiteral(s, span),
+            Token::True => Expr::BoolLiteral(true, span),
+            Token::False => Expr::BoolLiteral(false, span),
+            Token::BitstringLiteral(s) => Expr::BitstringLiteral(s, span),
+            Token::TimingLiteral(s) => Expr::TimingLiteral(s, span),
+            Token::HardwareQubit(s) => Expr::HardwareQubit(s, span),
+            _ => return Err(self.error("expected expression")),
+        };
+        self.advance();
+        Ok(literal)
     }
 
     // ------------------------------------------------------------------
@@ -1467,42 +1164,29 @@ impl<'a> Parser<'a> {
     // ------------------------------------------------------------------
 
     fn parse_index_operator(&mut self) -> Result<IndexOp<'a>> {
-        let start = self.expect_lbracket()?;
-
-        let kind = if matches!(self.peek(), Some(Token::LBrace)) {
-            let (exprs, _) = self.parse_set_expression()?;
-            IndexKind::Set(exprs)
+        let start = self.expect(Token::LBracket, "'['")?;
+        let kind = if self.at(Token::LBrace) {
+            IndexKind::Set(self.parse_set_expression()?.0)
         } else {
-            let mut items = vec![self.parse_index_item()?];
-            while matches!(self.peek(), Some(Token::Comma)) {
-                self.advance();
-                if matches!(self.peek(), Some(Token::RBracket)) {
-                    break;
-                }
-                items.push(self.parse_index_item()?);
-            }
-            IndexKind::Items(items)
+            IndexKind::Items(self.comma_list(&[Token::RBracket], Self::parse_index_item)?)
         };
-
-        let end = self.expect_rbracket()?;
+        let end = self.expect(Token::RBracket, "']'")?;
         Ok(IndexOp {
             kind,
-            span: oqi_lex::span(start.start, end.end),
+            span: start.to(end),
         })
     }
 
     fn parse_index_item(&mut self) -> Result<IndexItem<'a>> {
         // If starts with ':', it's a range with no start
-        if matches!(self.peek(), Some(Token::Colon)) {
-            self.advance();
+        if self.eat(Token::Colon).is_some() {
             return Ok(IndexItem::Range(self.parse_range_after_colon(None)?));
         }
 
-        let expr = self.parse_expr(0)?;
+        let expr = self.expr()?;
 
         // If followed by ':', it's a range
-        if matches!(self.peek(), Some(Token::Colon)) {
-            self.advance();
+        if self.eat(Token::Colon).is_some() {
             return Ok(IndexItem::Range(self.parse_range_after_colon(Some(expr))?));
         }
 
@@ -1510,16 +1194,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_range_expression(&mut self) -> Result<RangeExpr<'a>> {
-        let start = if !matches!(self.peek(), Some(Token::Colon)) {
-            Some(self.parse_expr(0)?)
-        } else {
+        let start = if self.at(Token::Colon) {
             None
+        } else {
+            Some(self.expr()?)
         };
-        // Expect first colon
-        if !matches!(self.peek(), Some(Token::Colon)) {
-            return Err(self.error("expected ':'"));
-        }
-        self.advance();
+        self.expect(Token::Colon, "':'")?;
         self.parse_range_after_colon(start)
     }
 
@@ -1528,23 +1208,12 @@ impl<'a> Parser<'a> {
     /// `start : end` or `start : step : end` — the component after the
     /// first colon is the step only when a second colon follows.
     fn parse_range_after_colon(&mut self, start: Option<Expr<'a>>) -> Result<RangeExpr<'a>> {
-        let second = if !matches!(
-            self.peek(),
-            Some(Token::Colon | Token::RBracket | Token::Comma) | None
-        ) {
-            Some(Box::new(self.parse_expr(0)?))
-        } else {
-            None
-        };
-
-        let (step, end) = if matches!(self.peek(), Some(Token::Colon)) {
-            self.advance();
-            let end = if !matches!(self.peek(), Some(Token::RBracket | Token::Comma) | None) {
-                Some(Box::new(self.parse_expr(0)?))
-            } else {
-                None
-            };
-            (second, end)
+        let second = self.opt_range_bound(&[Token::Colon, Token::RBracket, Token::Comma])?;
+        let (step, end) = if self.eat(Token::Colon).is_some() {
+            (
+                second,
+                self.opt_range_bound(&[Token::RBracket, Token::Comma])?,
+            )
         } else {
             (None, second)
         };
@@ -1556,18 +1225,20 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn parse_set_expression(&mut self) -> Result<(Vec<Expr<'a>>, Span)> {
-        let start = self.expect_lbrace()?;
-        let mut exprs = vec![self.parse_expr(0)?];
-        while matches!(self.peek(), Some(Token::Comma)) {
-            self.advance();
-            if matches!(self.peek(), Some(Token::RBrace)) {
-                break;
-            }
-            exprs.push(self.parse_expr(0)?);
+    /// A range component, absent when one of `terminators` is next.
+    fn opt_range_bound(&mut self, terminators: &[Token<'a>]) -> Result<Option<Box<Expr<'a>>>> {
+        if self.at_any(terminators) {
+            Ok(None)
+        } else {
+            Ok(Some(Box::new(self.expr()?)))
         }
-        let end = self.expect_rbrace()?;
-        Ok((exprs, oqi_lex::span(start.start, end.end)))
+    }
+
+    fn parse_set_expression(&mut self) -> Result<(Vec<Expr<'a>>, Span)> {
+        let start = self.expect(Token::LBrace, "'{'")?;
+        let exprs = self.expr_list(Token::RBrace)?;
+        let end = self.expect(Token::RBrace, "'}'")?;
+        Ok((exprs, start.to(end)))
     }
 
     // ------------------------------------------------------------------
@@ -1575,175 +1246,104 @@ impl<'a> Parser<'a> {
     // ------------------------------------------------------------------
 
     fn parse_scalar_type(&mut self) -> Result<ScalarType<'a>> {
+        type Designated<'a> = fn(Option<Box<Expr<'a>>>, Span) -> ScalarType<'a>;
+        type Plain<'a> = fn(Span) -> ScalarType<'a>;
+
         let start = self.peek_span();
-        let tok = self.peek().cloned();
-        match tok {
-            Some(Token::Bit) => {
-                self.advance();
-                let desig = self.try_parse_designator()?;
-                let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
-                Ok(ScalarType::Bit(
-                    desig.map(Box::new),
-                    oqi_lex::span(start.start, end),
-                ))
-            }
-            Some(Token::Int) => {
-                self.advance();
-                let desig = self.try_parse_designator()?;
-                let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
-                Ok(ScalarType::Int(
-                    desig.map(Box::new),
-                    oqi_lex::span(start.start, end),
-                ))
-            }
-            Some(Token::Uint) => {
-                self.advance();
-                let desig = self.try_parse_designator()?;
-                let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
-                Ok(ScalarType::Uint(
-                    desig.map(Box::new),
-                    oqi_lex::span(start.start, end),
-                ))
-            }
-            Some(Token::Float) => {
-                self.advance();
-                let desig = self.try_parse_designator()?;
-                let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
-                Ok(ScalarType::Float(
-                    desig.map(Box::new),
-                    oqi_lex::span(start.start, end),
-                ))
-            }
-            Some(Token::Angle) => {
-                self.advance();
-                let desig = self.try_parse_designator()?;
-                let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
-                Ok(ScalarType::Angle(
-                    desig.map(Box::new),
-                    oqi_lex::span(start.start, end),
-                ))
-            }
-            Some(Token::Bool) => {
-                self.advance();
-                Ok(ScalarType::Bool(start))
-            }
-            Some(Token::Duration) => {
-                self.advance();
-                Ok(ScalarType::Duration(start))
-            }
-            Some(Token::Stretch) => {
-                self.advance();
-                Ok(ScalarType::Stretch(start))
-            }
+        let designated: Designated<'a> = match self.peek() {
+            Some(Token::Bit) => ScalarType::Bit,
+            Some(Token::Int) => ScalarType::Int,
+            Some(Token::Uint) => ScalarType::Uint,
+            Some(Token::Float) => ScalarType::Float,
+            Some(Token::Angle) => ScalarType::Angle,
             Some(Token::Complex) => {
                 self.advance();
-                if matches!(self.peek(), Some(Token::LBracket)) {
-                    self.advance();
+                let inner = if self.eat(Token::LBracket).is_some() {
                     let inner = self.parse_scalar_type()?;
-                    let end = self.expect_rbracket()?;
-                    Ok(ScalarType::Complex(
-                        Some(Box::new(inner)),
-                        oqi_lex::span(start.start, end.end),
-                    ))
+                    self.expect(Token::RBracket, "']'")?;
+                    Some(Box::new(inner))
                 } else {
-                    Ok(ScalarType::Complex(None, start))
-                }
+                    None
+                };
+                return Ok(ScalarType::Complex(inner, start.to(self.prev_span())));
             }
-            Some(Token::Waveform) => {
+            other => {
+                let plain: Plain<'a> = match other {
+                    Some(Token::Bool) => ScalarType::Bool,
+                    Some(Token::Duration) => ScalarType::Duration,
+                    Some(Token::Stretch) => ScalarType::Stretch,
+                    Some(Token::Waveform) => ScalarType::Waveform,
+                    Some(Token::Port) => ScalarType::Port,
+                    Some(Token::Frame) => ScalarType::Frame,
+                    _ => return Err(self.error("expected scalar type")),
+                };
                 self.advance();
-                Ok(ScalarType::Waveform(start))
+                return Ok(plain(start));
             }
-            Some(Token::Port) => {
-                self.advance();
-                Ok(ScalarType::Port(start))
-            }
-            Some(Token::Frame) => {
-                self.advance();
-                Ok(ScalarType::Frame(start))
-            }
-            _ => Err(self.error("expected scalar type")),
-        }
+        };
+        self.advance();
+        let designator = self.opt_designator()?.map(Box::new);
+        Ok(designated(designator, start.to(self.prev_span())))
     }
 
     fn parse_qubit_type(&mut self) -> Result<QubitType<'a>> {
-        let start = self.peek_span();
-        if !matches!(self.peek(), Some(Token::Qubit)) {
-            return Err(self.error("expected 'qubit'"));
-        }
-        self.advance();
-        let desig = self.try_parse_designator()?;
-        let end = desig.as_ref().map(|d| d.span().end).unwrap_or(start.end);
+        let start = self.expect(Token::Qubit, "'qubit'")?;
+        let designator = self.opt_designator()?.map(Box::new);
         Ok(QubitType {
-            designator: desig.map(Box::new),
-            span: oqi_lex::span(start.start, end),
+            designator,
+            span: start.to(self.prev_span()),
         })
+    }
+
+    /// `ARRAY LBRACKET scalarType COMMA`, the head shared by array types and
+    /// array reference types.
+    fn parse_array_head(&mut self) -> Result<ScalarType<'a>> {
+        self.expect(Token::Array, "'array'")?;
+        self.expect(Token::LBracket, "'['")?;
+        let element_type = self.parse_scalar_type()?;
+        self.expect(Token::Comma, "','")?;
+        Ok(element_type)
     }
 
     fn parse_array_type(&mut self) -> Result<ArrayType<'a>> {
         let start = self.peek_span();
-        if !matches!(self.peek(), Some(Token::Array)) {
-            return Err(self.error("expected 'array'"));
-        }
-        self.advance();
-        self.expect_lbracket()?;
-        let element_type = self.parse_scalar_type()?;
-        if !matches!(self.peek(), Some(Token::Comma)) {
-            return Err(self.error("expected ','"));
-        }
-        self.advance();
-        let dimensions = self.parse_expression_list()?;
-        let end = self.expect_rbracket()?;
+        let element_type = self.parse_array_head()?;
+        let dimensions = self.expr_list(Token::RBracket)?;
+        let end = self.expect(Token::RBracket, "']'")?;
         Ok(ArrayType {
             element_type,
             dimensions,
-            span: oqi_lex::span(start.start, end.end),
+            span: start.to(end),
         })
     }
 
     fn parse_array_ref_type(&mut self) -> Result<ArrayRefType<'a>> {
         let start = self.peek_span();
-        let mutability = if matches!(self.peek(), Some(Token::Readonly)) {
-            self.advance();
+        let mutability = if self.eat(Token::Readonly).is_some() {
             ArrayRefMut::Readonly
-        } else if matches!(self.peek(), Some(Token::Mutable)) {
-            self.advance();
+        } else if self.eat(Token::Mutable).is_some() {
             ArrayRefMut::Mutable
         } else {
             return Err(self.error("expected 'readonly' or 'mutable'"));
         };
-        if !matches!(self.peek(), Some(Token::Array)) {
-            return Err(self.error("expected 'array'"));
-        }
-        self.advance();
-        self.expect_lbracket()?;
-        let element_type = self.parse_scalar_type()?;
-        if !matches!(self.peek(), Some(Token::Comma)) {
-            return Err(self.error("expected ','"));
-        }
-        self.advance();
-
-        let dimensions = if matches!(self.peek(), Some(Token::Dim)) {
-            self.advance();
-            if !matches!(self.peek(), Some(Token::Equals)) {
-                return Err(self.error("expected '='"));
-            }
-            self.advance();
-            ArrayRefDims::Dim(self.parse_expr(0)?)
+        let element_type = self.parse_array_head()?;
+        let dimensions = if self.eat(Token::Dim).is_some() {
+            self.expect(Token::Equals, "'='")?;
+            ArrayRefDims::Dim(self.expr()?)
         } else {
-            ArrayRefDims::ExprList(self.parse_expression_list()?)
+            ArrayRefDims::ExprList(self.expr_list(Token::RBracket)?)
         };
-
-        let end = self.expect_rbracket()?;
+        let end = self.expect(Token::RBracket, "']'")?;
         Ok(ArrayRefType {
             mutability,
             element_type,
             dimensions,
-            span: oqi_lex::span(start.start, end.end),
+            span: start.to(end),
         })
     }
 
     fn parse_type_expr(&mut self) -> Result<TypeExpr<'a>> {
-        if matches!(self.peek(), Some(Token::Array)) {
+        if self.at(Token::Array) {
             Ok(TypeExpr::Array(self.parse_array_type()?))
         } else {
             Ok(TypeExpr::Scalar(self.parse_scalar_type()?))
@@ -1751,14 +1351,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_designator(&mut self) -> Result<Expr<'a>> {
-        self.expect_lbracket()?;
-        let expr = self.parse_expr(0)?;
-        self.expect_rbracket()?;
+        self.expect(Token::LBracket, "'['")?;
+        let expr = self.expr()?;
+        self.expect(Token::RBracket, "']'")?;
         Ok(expr)
     }
 
-    fn try_parse_designator(&mut self) -> Result<Option<Expr<'a>>> {
-        if matches!(self.peek(), Some(Token::LBracket)) {
+    fn opt_designator(&mut self) -> Result<Option<Expr<'a>>> {
+        if self.at(Token::LBracket) {
             Ok(Some(self.parse_designator()?))
         } else {
             Ok(None)
@@ -1766,140 +1366,69 @@ impl<'a> Parser<'a> {
     }
 
     // ------------------------------------------------------------------
-    // List and operand helpers
+    // Operands and argument definitions
     // ------------------------------------------------------------------
-
-    fn parse_expression_list(&mut self) -> Result<Vec<Expr<'a>>> {
-        let mut exprs = vec![self.parse_expr(0)?];
-        while matches!(self.peek(), Some(Token::Comma)) {
-            self.advance();
-            if matches!(
-                self.peek(),
-                Some(Token::RParen | Token::RBracket | Token::RBrace)
-            ) {
-                break; // trailing comma
-            }
-            exprs.push(self.parse_expr(0)?);
-        }
-        Ok(exprs)
-    }
-
-    fn parse_identifier_list(&mut self) -> Result<Vec<Ident<'a>>> {
-        let mut idents = vec![self.expect_ident()?];
-        while matches!(self.peek(), Some(Token::Comma)) {
-            self.advance();
-            if matches!(self.peek(), Some(Token::RParen | Token::RBrace)) {
-                break;
-            }
-            idents.push(self.expect_ident()?);
-        }
-        Ok(idents)
-    }
 
     fn parse_indexed_identifier(&mut self) -> Result<IndexedIdent<'a>> {
         let name = self.expect_ident()?;
-        let start = name.span.start;
         let mut indices = Vec::new();
-        while matches!(self.peek(), Some(Token::LBracket)) {
+        while self.at(Token::LBracket) {
             indices.push(self.parse_index_operator()?);
         }
-        let end = indices.last().map(|i| i.span.end).unwrap_or(name.span.end);
         Ok(IndexedIdent {
+            span: name.span.to(self.prev_span()),
             name,
             indices,
-            span: oqi_lex::span(start, end),
         })
     }
 
     fn parse_gate_operand(&mut self) -> Result<GateOperand<'a>> {
-        if matches!(self.peek(), Some(Token::HardwareQubit(_))) {
-            let (tok, span) = self.advance();
-            let Token::HardwareQubit(s) = tok else {
-                unreachable!()
-            };
-            Ok(GateOperand::HardwareQubit(s, span))
-        } else {
-            Ok(GateOperand::Indexed(self.parse_indexed_identifier()?))
+        match self.peek() {
+            Some(Token::HardwareQubit(name)) => {
+                Ok(GateOperand::HardwareQubit(name, self.advance().1))
+            }
+            _ => Ok(GateOperand::Indexed(self.parse_indexed_identifier()?)),
         }
-    }
-
-    fn parse_gate_operand_list(&mut self) -> Result<Vec<GateOperand<'a>>> {
-        let mut operands = vec![self.parse_gate_operand()?];
-        while matches!(self.peek(), Some(Token::Comma)) {
-            self.advance();
-            operands.push(self.parse_gate_operand()?);
-        }
-        Ok(operands)
     }
 
     fn parse_arg_def(&mut self) -> Result<ArgDef<'a>> {
-        match self.peek().cloned() {
-            Some(Token::Creg) => {
+        match self.peek() {
+            Some(tok @ (Token::Creg | Token::Qreg)) => {
                 self.advance();
                 let name = self.expect_ident()?;
-                let desig = self.try_parse_designator()?;
-                Ok(ArgDef::Creg(name, desig))
-            }
-            Some(Token::Qreg) => {
-                self.advance();
-                let name = self.expect_ident()?;
-                let desig = self.try_parse_designator()?;
-                Ok(ArgDef::Qreg(name, desig))
+                let designator = self.opt_designator()?;
+                Ok(if tok == Token::Creg {
+                    ArgDef::Creg(name, designator)
+                } else {
+                    ArgDef::Qreg(name, designator)
+                })
             }
             Some(Token::Readonly | Token::Mutable) => {
-                let arr_ref = self.parse_array_ref_type()?;
-                let name = self.expect_ident()?;
-                Ok(ArgDef::ArrayRef(arr_ref, name))
+                let ty = self.parse_array_ref_type()?;
+                Ok(ArgDef::ArrayRef(ty, self.expect_ident()?))
             }
             Some(Token::Qubit) => {
                 let ty = self.parse_qubit_type()?;
-                let name = self.expect_ident()?;
-                Ok(ArgDef::Qubit(ty, name))
+                Ok(ArgDef::Qubit(ty, self.expect_ident()?))
             }
             _ => {
                 let ty = self.parse_scalar_type()?;
-                let name = self.expect_ident()?;
-                Ok(ArgDef::Scalar(ty, name))
+                Ok(ArgDef::Scalar(ty, self.expect_ident()?))
             }
         }
-    }
-
-    fn parse_arg_def_list(&mut self) -> Result<Vec<ArgDef<'a>>> {
-        let mut items = vec![self.parse_arg_def()?];
-        while matches!(self.peek(), Some(Token::Comma)) {
-            self.advance();
-            if matches!(self.peek(), Some(Token::RParen)) {
-                break;
-            }
-            items.push(self.parse_arg_def()?);
-        }
-        Ok(items)
     }
 
     fn parse_extern_arg(&mut self) -> Result<ExternArg<'a>> {
-        match self.peek().cloned() {
+        match self.peek() {
             Some(Token::Creg) => {
                 self.advance();
-                let desig = self.try_parse_designator()?;
-                Ok(ExternArg::Creg(desig))
+                Ok(ExternArg::Creg(self.opt_designator()?))
             }
             Some(Token::Readonly | Token::Mutable) => {
                 Ok(ExternArg::ArrayRef(self.parse_array_ref_type()?))
             }
             _ => Ok(ExternArg::Scalar(self.parse_scalar_type()?)),
         }
-    }
-
-    fn parse_extern_arg_list(&mut self) -> Result<Vec<ExternArg<'a>>> {
-        let mut items = vec![self.parse_extern_arg()?];
-        while matches!(self.peek(), Some(Token::Comma)) {
-            self.advance();
-            if matches!(self.peek(), Some(Token::RParen)) {
-                break;
-            }
-            items.push(self.parse_extern_arg()?);
-        }
-        Ok(items)
     }
 
     fn parse_defcal_arg_def(&mut self) -> Result<DefcalArgDef<'a>> {
@@ -1924,46 +1453,16 @@ impl<'a> Parser<'a> {
         ) {
             Ok(DefcalArgDef::ArgDef(self.parse_arg_def()?))
         } else {
-            Ok(DefcalArgDef::Expr(self.parse_expr(0)?))
+            Ok(DefcalArgDef::Expr(self.expr()?))
         }
-    }
-
-    fn parse_defcal_arg_def_list(&mut self) -> Result<Vec<DefcalArgDef<'a>>> {
-        let mut items = vec![self.parse_defcal_arg_def()?];
-        while matches!(self.peek(), Some(Token::Comma)) {
-            self.advance();
-            if matches!(self.peek(), Some(Token::RParen)) {
-                break;
-            }
-            items.push(self.parse_defcal_arg_def()?);
-        }
-        Ok(items)
-    }
-
-    fn parse_defcal_operand_list(&mut self) -> Result<Vec<DefcalOperand<'a>>> {
-        let mut operands = Vec::new();
-        if matches!(
-            self.peek(),
-            Some(Token::Identifier(_) | Token::HardwareQubit(_))
-        ) {
-            operands.push(self.parse_defcal_operand()?);
-            while matches!(self.peek(), Some(Token::Comma)) {
-                self.advance();
-                operands.push(self.parse_defcal_operand()?);
-            }
-        }
-        Ok(operands)
     }
 
     fn parse_defcal_operand(&mut self) -> Result<DefcalOperand<'a>> {
-        if matches!(self.peek(), Some(Token::HardwareQubit(_))) {
-            let (tok, span) = self.advance();
-            let Token::HardwareQubit(s) = tok else {
-                unreachable!()
-            };
-            Ok(DefcalOperand::HardwareQubit(s, span))
-        } else {
-            Ok(DefcalOperand::Ident(self.expect_ident()?))
+        match self.peek() {
+            Some(Token::HardwareQubit(name)) => {
+                Ok(DefcalOperand::HardwareQubit(name, self.advance().1))
+            }
+            _ => Ok(DefcalOperand::Ident(self.expect_ident()?)),
         }
     }
 
@@ -1971,58 +1470,55 @@ impl<'a> Parser<'a> {
     // Conversion helpers
     // ------------------------------------------------------------------
 
-    fn expr_to_indexed_ident(&self, expr: Expr<'a>) -> Result<IndexedIdent<'a>> {
+    fn expr_to_indexed_ident(expr: Expr<'a>) -> Result<IndexedIdent<'a>> {
         match expr {
-            Expr::Ident(id) => {
-                let span = id.span;
-                Ok(IndexedIdent {
-                    name: id,
-                    indices: vec![],
-                    span,
-                })
-            }
-            Expr::Index {
-                expr, index, span, ..
-            } => {
-                let mut indexed = self.expr_to_indexed_ident(*expr)?;
+            Expr::Ident(name) => Ok(IndexedIdent {
+                span: name.span,
+                name,
+                indices: vec![],
+            }),
+            Expr::Index { expr, index, span } => {
+                let mut indexed = Self::expr_to_indexed_ident(*expr)?;
                 indexed.indices.push(index);
                 indexed.span = span;
                 Ok(indexed)
             }
-            _ => Err(Error {
-                span: expr.span(),
-                message: "expected identifier for assignment target".into(),
-            }),
+            _ => Err(Error::new(
+                expr.span(),
+                "expected identifier for assignment target",
+            )),
         }
     }
 
-    fn decompose_gate_head(&self, expr: Expr<'a>) -> Result<DecomposedGateHead<'a>> {
+    /// Split the expression that heads a gate call into the gate's name, its
+    /// arguments and its duration designator.
+    fn decompose_gate_head(expr: Expr<'a>) -> Result<DecomposedGateHead<'a>> {
         match expr {
-            Expr::Ident(id) => Ok((id, None, None)),
+            Expr::Ident(name) => Ok((name, None, None)),
             Expr::Call { name, args, .. } => Ok((name, Some(args), None)),
             Expr::Index { expr, index, .. } => {
-                let (name, args, prev_desig) = self.decompose_gate_head(*expr)?;
-                if prev_desig.is_some() {
-                    return Err(self.error("invalid gate call syntax"));
+                let (name, args, designator) = Self::decompose_gate_head(*expr)?;
+                if designator.is_some() {
+                    return Err(Error::new(index.span, "invalid gate call syntax"));
                 }
-                // Extract single expression from index as designator
-                let desig = match index.kind {
-                    IndexKind::Items(mut items) if items.len() == 1 => match items.remove(0) {
-                        IndexItem::Single(e) => e,
-                        _ => {
-                            return Err(self.error("designator must be a single expression"));
-                        }
-                    },
-                    _ => {
-                        return Err(self.error("designator must be a single expression"));
-                    }
+                // The designator is an index holding a single expression.
+                let IndexKind::Items(mut items) = index.kind else {
+                    return Err(Error::new(
+                        index.span,
+                        "designator must be a single expression",
+                    ));
                 };
-                Ok((name, args, Some(Box::new(desig))))
+                match (items.pop(), items.is_empty()) {
+                    (Some(IndexItem::Single(designator)), true) => {
+                        Ok((name, args, Some(Box::new(designator))))
+                    }
+                    _ => Err(Error::new(
+                        index.span,
+                        "designator must be a single expression",
+                    )),
+                }
             }
-            _ => Err(Error {
-                span: expr.span(),
-                message: "expected identifier for gate call".into(),
-            }),
+            _ => Err(Error::new(expr.span(), "expected identifier for gate call")),
         }
     }
 }
@@ -2617,6 +2113,104 @@ cphase(π / 2) q[0], q[1];
     fn io_declarations() {
         let prog = parse_ok("input int[32] x; output bit y;");
         assert_eq!(prog.body.len(), 2);
+    }
+
+    #[test]
+    fn trailing_commas_are_allowed_in_every_list() {
+        // Every list rule of the reference grammar ends in `COMMA?`.
+        for src in [
+            "barrier q[0], q[1],;",
+            "h q[0], q[1],;",
+            "ctrl @ x q[0], q[1],;",
+            "f q, r, -> c;",
+            "c = f q, r,;",
+            "gate g a, b, { }",
+            "gate g(t, u,) a { }",
+            "defcal x $0, $1, { }",
+            "defcal x(a, b,) $0 { }",
+            "switch (x) { case 0, 1, { } }",
+            "def f(int a, int b,) { }",
+            "extern g(int, float,);",
+            "f(1, 2,);",
+            "array[int, 2, 3,] a = {1, 2,};",
+            "a[0, 1,];",
+            "let b = q[{0, 1,}];",
+            "for int i in {1, 2,} { }",
+        ] {
+            parse_ok(src);
+        }
+    }
+
+    #[test]
+    fn a_list_needs_an_item() {
+        for src in [
+            "gate g { }",
+            "gate g(,) a { }",
+            "switch (x) { case { } }",
+            "h ,;",
+            "f(,);",
+        ] {
+            assert!(parse(src).is_err(), "{src}");
+        }
+    }
+
+    #[test]
+    fn comments_are_returned_in_order_with_openpulse_bodies() {
+        let src = concat!(
+            "// a\n",
+            "defcalgrammar \"openpulse\";\n",
+            "cal { // b\n extern port p; /* c */ }\n",
+            "// d\n",
+        );
+        let (_, comments) = parse_with_comments(src).unwrap();
+        let texts: Vec<_> = comments.iter().map(|c| c.text).collect();
+        assert_eq!(texts, ["// a", "// b", "/* c */", "// d"]);
+        for comment in &comments {
+            assert_eq!(&src[comment.span], comment.text);
+        }
+    }
+
+    #[test]
+    fn openpulse_exclusions_apply_to_the_block_itself() {
+        // The reference OpenPulse grammar restricts `openpulseStatement`, the
+        // statements directly inside a calibration block; nested bodies use
+        // the ordinary statement rule.
+        let grammar = "defcalgrammar \"openpulse\";";
+        for excluded in ["nop $0;", "gate g q { }", "defcalgrammar \"openpulse\";"] {
+            assert!(parse(&format!("{grammar} cal {{ {excluded} }}")).is_err());
+        }
+        parse_ok(&format!("{grammar} cal {{ box {{ nop $0; }} }}"));
+    }
+
+    #[test]
+    fn sized_type_span_includes_the_designator() {
+        let src = "int[32] x; qubit[4] q; complex[float[64]] z;";
+        let prog = parse_ok(src);
+        let spans: Vec<_> = prog
+            .body
+            .iter()
+            .map(|item| match item {
+                StmtOrScope::Stmt(s) => match &s.kind {
+                    StmtKind::ClassicalDecl {
+                        ty: TypeExpr::Scalar(ty),
+                        ..
+                    } => ty.span(),
+                    StmtKind::QuantumDecl { ty, .. } => ty.span,
+                    other => panic!("unexpected {other:?}"),
+                },
+                StmtOrScope::Scope(_) => panic!("unexpected scope"),
+            })
+            .collect();
+        let texts: Vec<_> = spans.into_iter().map(|span| &src[span]).collect();
+        assert_eq!(texts, ["int[32]", "qubit[4]", "complex[float[64]]"]);
+    }
+
+    #[test]
+    fn gate_head_errors_point_at_the_designator() {
+        let src = "g[1:2] q;";
+        let err = parse(src).unwrap_err();
+        assert_eq!(err.message, "designator must be a single expression");
+        assert_eq!(&src[err.span], "[1:2]");
     }
 
     #[test]

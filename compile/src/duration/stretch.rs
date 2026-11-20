@@ -21,7 +21,7 @@ use oqi_lex::Span;
 use crate::classical::{
     Duration, DurationUnit, FloatWidth, Primitive, PrimitiveTy, Value, ValueTy,
 };
-use crate::error::{ErrorKind, Result};
+use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{
     Expr, ExprKind, IndexItem, IndexKind, IndexOp, LValue, MeasureExprKind, Program, QubitOperand,
     RValue, Stmt, StmtKind, SwitchLabels,
@@ -29,7 +29,7 @@ use crate::sir::{
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::{CompileOptions, Type};
 
-use super::{CalibrationBody, Frame, QubitRef, ResolveCtx, Timings, err, resolve_qubit_operands};
+use super::{CalibrationBody, Frame, QubitRef, ResolveCtx, Timings, resolve_qubit_operands};
 
 const EPS_NS: f64 = 1e-9;
 
@@ -65,7 +65,7 @@ pub(super) fn resolve_stretch<T: Timings>(
         return Ok(());
     }
     if stmts_have_subroutine_call(&program.body, &program.subroutines) {
-        return Err(err(
+        return Err(CompileError::at(
             ErrorKind::InvalidContext(
                 "subroutine calls are not supported where stretch is resolved".into(),
             ),
@@ -203,7 +203,7 @@ impl Solver {
             let residual = ns(diff.fixed);
             if residual.abs() > EPS_NS {
                 let involved = names(&lhs.sub(rhs).terms);
-                return Err(err(
+                return Err(CompileError::at(
                     ErrorKind::InvalidContext(format!(
                         "over-constrained stretch system: `{involved}` cannot satisfy {what} \
                          (residual {residual}ns)"
@@ -215,7 +215,7 @@ impl Solver {
         }
         let coeff_sum: f64 = diff.terms.values().sum();
         if coeff_sum.abs() < EPS_NS {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext(format!(
                     "stretch weights cancel in the constraint for `{}` at {what}",
                     names(&diff.terms)
@@ -225,7 +225,7 @@ impl Solver {
         }
         let v = -ns(diff.fixed) / coeff_sum;
         if v < -EPS_NS {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext(format!(
                     "stretch `{}` resolves to a negative duration ({v}ns) at {what} \
                      (durations must be non-negative after stretch resolution)",
@@ -323,7 +323,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                 self.delay_checks.push((dur.clone(), d.duration.span));
                 if d.operands.is_empty() {
                     if !dur.terms.is_empty() {
-                        return Err(err(
+                        return Err(CompileError::at(
                             ErrorKind::InvalidContext(
                                 "a stretchy delay requires explicit qubit operands".into(),
                             ),
@@ -360,7 +360,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                     let sym = self.ctx.symbols.get(*sid);
                     if is_duration_typed(&sym.ty) {
                         if matches!(sym.ty, Type::Stretch) && !self.stretch_assigned.insert(*sid) {
-                            return Err(err(
+                            return Err(CompileError::at(
                                 ErrorKind::InvalidContext(format!(
                                     "stretch `{}` is assigned more than once; stretch values \
                                      are single-assignment",
@@ -384,7 +384,7 @@ impl<T: Timings> StretchResolver<'_, T> {
             | StmtKind::Continue
             | StmtKind::Return(_) => Ok(()),
             StmtKind::For(f) => self.unroll_for(f, clocks, frame, span),
-            StmtKind::If(_) | StmtKind::While(_) | StmtKind::Switch(_) => Err(err(
+            StmtKind::If(_) | StmtKind::While(_) | StmtKind::Switch(_) => Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "stretch resolution requires straight-line code (control flow is \
                      not supported)"
@@ -392,19 +392,19 @@ impl<T: Timings> StretchResolver<'_, T> {
                 ),
                 span,
             )),
-            StmtKind::End => Err(err(
+            StmtKind::End => Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "`end` is not supported where stretch is resolved".into(),
                 ),
                 span,
             )),
-            StmtKind::Cal(_) => Err(err(
+            StmtKind::Cal(_) => Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "calibration blocks cannot be timed where stretch is resolved".into(),
                 ),
                 span,
             )),
-            StmtKind::Alias(_) => Err(err(
+            StmtKind::Alias(_) => Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "qubit aliases are not supported where stretch is resolved".into(),
                 ),
@@ -426,7 +426,7 @@ impl<T: Timings> StretchResolver<'_, T> {
         span: Span,
     ) -> Result<()> {
         if stmts_have_break_or_continue(&f.body) {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "break/continue are not supported where stretch is resolved".into(),
                 ),
@@ -441,7 +441,7 @@ impl<T: Timings> StretchResolver<'_, T> {
             matches!(&e.kind, ExprKind::DurationOf(stmts)
                 if stmts_have_stretch_var(stmts, symbols))
         }) {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "`durationof` over a stretchy scope is not supported inside an \
                      unrolled loop"
@@ -452,7 +452,7 @@ impl<T: Timings> StretchResolver<'_, T> {
         }
         let crate::sir::ForIterable::Range { start, step, end } = &f.iterable else {
             // The CFG lowering has the same restriction.
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "only range for-loops are supported where stretch is resolved".into(),
                 ),
@@ -468,13 +468,13 @@ impl<T: Timings> StretchResolver<'_, T> {
             None => 1,
         };
         if step == 0 {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("for-loop range step must be non-zero".into()),
                 span,
             ));
         }
         let Some(end_e) = end else {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "range for-loops need an explicit end where stretch is resolved".into(),
                 ),
@@ -483,7 +483,7 @@ impl<T: Timings> StretchResolver<'_, T> {
         };
         let end = self.const_i128(end_e, frame)?;
         let var_ty = self.ctx.symbols.get(f.var).ty.value_ty().ok_or_else(|| {
-            err(
+            CompileError::at(
                 ErrorKind::InvalidContext("for-loop variable has no value type".into()),
                 span,
             )
@@ -496,7 +496,7 @@ impl<T: Timings> StretchResolver<'_, T> {
             }
             self.unrolled += 1;
             if self.unrolled > UNROLL_BUDGET {
-                return Err(err(
+                return Err(CompileError::at(
                     ErrorKind::InvalidContext(format!(
                         "loop unrolling budget ({UNROLL_BUDGET} iterations) exceeded \
                          where stretch is resolved"
@@ -507,7 +507,7 @@ impl<T: Timings> StretchResolver<'_, T> {
             let val = Value::int(i, crate::classical::iw(128))
                 .cast(var_ty)
                 .map_err(|_| {
-                    err(
+                    CompileError::at(
                         ErrorKind::InvalidContext(format!(
                             "loop value {i} does not fit the loop variable's type"
                         )),
@@ -590,7 +590,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                 self.delay_checks.push((dur.clone(), d.duration.span));
                 let wires = resolve_qubit_operands(&d.operands, self.ctx.symbols, frame, span)?;
                 if wires.is_empty() {
-                    return Err(err(
+                    return Err(CompileError::at(
                         ErrorKind::InvalidContext(
                             "delay requires at least one qubit operand".into(),
                         ),
@@ -619,7 +619,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                         let d = self.eval_affine_expr(e, frame)?;
                         let sub = d.substituted(&self.solver.solved);
                         if !sub.terms.is_empty() {
-                            return Err(err(
+                            return Err(CompileError::at(
                                 ErrorKind::InvalidContext(
                                     "a box duration inside `durationof` must be resolved \
                                      before the scope is measured"
@@ -637,7 +637,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                 }
                 Ok(())
             }
-            _ => Err(err(
+            _ => Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "statement not supported inside `durationof` when compile-time timings \
                      are supplied (control flow and classical statements cannot be timed \
@@ -711,7 +711,7 @@ impl<T: Timings> StretchResolver<'_, T> {
             }
             return Ok(());
         }
-        Err(err(
+        Err(CompileError::at(
             ErrorKind::InvalidContext(
                 "cannot statically compare stretchy parallel timelines inside `durationof`".into(),
             ),
@@ -722,7 +722,7 @@ impl<T: Timings> StretchResolver<'_, T> {
     /// A constant signed integer bound.
     fn const_i128(&self, expr: &Expr, frame: &Frame) -> Result<i128> {
         let nonconst = || {
-            err(
+            CompileError::at(
                 ErrorKind::InvalidContext(
                     "for-loop bounds must be compile-time constants where stretch is \
                      resolved"
@@ -783,7 +783,7 @@ impl<T: Timings> StretchResolver<'_, T> {
         let d_conc = d.substituted(&self.solver.solved);
         debug_assert!(d_conc.terms.is_empty());
         if ns(d_conc.fixed) < ns(s_min) - EPS_NS {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext(format!(
                     "box contents exceed the box duration ({}ns of content in a {}ns box)",
                     ns(s_min),
@@ -897,7 +897,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                 if matches!(sym.ty, Type::Stretch) {
                     return Ok(AffineDur::var(*sid));
                 }
-                Err(err(
+                Err(CompileError::at(
                     ErrorKind::InvalidContext(format!(
                         "`{}` cannot be statically evaluated in a stretch expression",
                         sym.name
@@ -920,7 +920,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                         } else if let Some(k) = self.const_scalar_f64(&b.right, frame) {
                             Ok(self.eval_affine_expr(&b.left, frame)?.scale(k))
                         } else {
-                            Err(err(
+                            Err(CompileError::at(
                                 ErrorKind::InvalidContext(
                                     "stretch expressions must be linear".into(),
                                 ),
@@ -931,7 +931,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                     BinOp::Div => {
                         if let Some(k) = self.const_scalar_f64(&b.right, frame) {
                             if k == 0.0 {
-                                return Err(err(
+                                return Err(CompileError::at(
                                     ErrorKind::InvalidContext(
                                         "division by zero in a stretch expression".into(),
                                     ),
@@ -940,7 +940,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                             }
                             Ok(self.eval_affine_expr(&b.left, frame)?.scale(1.0 / k))
                         } else {
-                            Err(err(
+                            Err(CompileError::at(
                                 ErrorKind::InvalidContext(
                                     "stretch expressions must be linear".into(),
                                 ),
@@ -948,7 +948,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                             ))
                         }
                     }
-                    _ => Err(err(
+                    _ => Err(CompileError::at(
                         ErrorKind::InvalidContext("stretch expressions must be linear".into()),
                         expr.span,
                     )),
@@ -958,7 +958,7 @@ impl<T: Timings> StretchResolver<'_, T> {
                 use crate::sir::UnOp;
                 match u.op {
                     UnOp::Neg => Ok(self.eval_affine_expr(&u.operand, frame)?.scale(-1.0)),
-                    _ => Err(err(
+                    _ => Err(CompileError::at(
                         ErrorKind::InvalidContext("stretch expressions must be linear".into()),
                         expr.span,
                     )),
@@ -966,7 +966,7 @@ impl<T: Timings> StretchResolver<'_, T> {
             }
             // Decl inits are wrapped in a cast to the declared type.
             ExprKind::Cast(c) => self.eval_affine_expr(&c.operand, frame),
-            _ => Err(err(
+            _ => Err(CompileError::at(
                 ErrorKind::InvalidContext(
                     "expression cannot be statically evaluated for stretch resolution".into(),
                 ),
@@ -1018,7 +1018,7 @@ impl<T: Timings> StretchResolver<'_, T> {
             let v = aff.substituted(&self.solver.solved);
             let sub = v.substituted(&values);
             if ns(sub.fixed) < -EPS_NS {
-                return Err(err(
+                return Err(CompileError::at(
                     ErrorKind::InvalidContext(format!(
                         "duration resolves to a negative value ({}ns) after stretch \
                          resolution (durations must be non-negative)",
@@ -1037,7 +1037,7 @@ impl<T: Timings> StretchResolver<'_, T> {
 fn boundary_scan(program: &Program) -> Result<()> {
     for s in program.symbols.iter() {
         if matches!(s.ty, Type::Stretch) && s.kind != SymbolKind::Variable {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext(format!(
                     "stretch is only supported as a top-level variable (`{}` is declared \
                      as {:?})",
@@ -1049,7 +1049,7 @@ fn boundary_scan(program: &Program) -> Result<()> {
     }
     for sub in &program.subroutines {
         if matches!(sub.return_ty, Some(Type::Stretch)) {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("stretch cannot be a subroutine return type".into()),
                 sub.span,
             ));
@@ -1057,7 +1057,7 @@ fn boundary_scan(program: &Program) -> Result<()> {
     }
     for ext in &program.externs {
         if matches!(ext.return_ty, Some(Type::Stretch)) {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("stretch cannot be an extern return type".into()),
                 ext.span,
             ));
@@ -1065,7 +1065,7 @@ fn boundary_scan(program: &Program) -> Result<()> {
     }
     for g in &program.gates {
         if stmts_have_stretch_var(&g.body, &program.symbols) {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("stretch cannot be used inside gate bodies".into()),
                 g.span,
             ));
@@ -1073,7 +1073,7 @@ fn boundary_scan(program: &Program) -> Result<()> {
     }
     for sub in &program.subroutines {
         if stmts_have_stretch_var(&sub.body, &program.symbols) {
-            return Err(err(
+            return Err(CompileError::at(
                 ErrorKind::InvalidContext("stretch cannot be used inside subroutine bodies".into()),
                 sub.span,
             ));

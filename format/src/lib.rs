@@ -1,71 +1,21 @@
-mod utils;
+//! Source formatter for OpenQASM 3.
+//!
+//! [`format`] parses the source and prints the syntax tree back out with
+//! canonical spacing. Blank lines between statements and (outside compact
+//! mode) comments are carried over from the source.
 
-use core::fmt;
+use oqi_parse::{Error, ast, parse_with_comments};
 
-use oqi_lex::{Lexer, Span, Token};
-use oqi_parse::{Error as ParseError, Parser, ast};
-
-pub struct Display<'a, T> {
-    ast: T,
-    context: Context<'a>,
-    config: Config,
-}
-
-impl<'a, T> Display<'a, T> {
-    pub fn new(ast: T, context: Context<'a>, config: Config) -> Self {
-        Self {
-            ast,
-            context,
-            config,
-        }
-    }
-}
-
-impl<'a> Display<'a, ast::Program<'a>> {
-    pub fn from_source(
-        source: &'a str,
-        config: Config,
-    ) -> Result<Display<'a, ast::Program<'a>>, ParseError> {
-        let lex = Lexer::new(source);
-        let tokens = lex.collect::<Result<Vec<_>, _>>()?;
-        let context = Context::new(
-            tokens
-                .iter()
-                .cloned()
-                .filter_map(Comment::from_lex)
-                .collect(),
-            utils::find_newlines(source),
-        );
-        let ast = Parser::new(tokens).parse_program()?;
-        Ok(Display::new(ast, context, config))
-    }
-}
-
-impl<'a, T> fmt::Display for Display<'a, T>
-where
-    T: Format,
-{
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.ast
-            .format(fmt, &mut self.context.clone(), &self.config)
-    }
-}
-
-pub fn format(source: &str, config: Config) -> Result<String, ParseError> {
-    Ok(Display::from_source(source, config)?.to_string())
-}
-
-pub trait Format {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result;
+/// Format each item into the printer, in order.
+macro_rules! put {
+    ($p:expr, $($item:expr),+ $(,)?) => {{
+        $( Format::format($item, $p); )+
+    }};
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Config {
+    /// Put as much as possible on one line, and drop comments.
     pub compact: bool,
 }
 
@@ -75,1714 +25,872 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommentKind {
-    Line,
-    Block,
+/// Format `source`. Non-empty output ends with exactly one newline.
+pub fn format(source: &str, config: Config) -> Result<String, Error> {
+    let (program, comments) = parse_with_comments(source)?;
+    let mut printer = Printer::new(source, comments, config);
+    program.format(&mut printer);
+    Ok(printer.finish())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Comment<'a> {
-    pub kind: CommentKind,
-    pub text: &'a str,
-    pub span: Span,
-}
+// ---------------------------------------------------------------------------
+// Printer
+// ---------------------------------------------------------------------------
 
-impl<'a> Comment<'a> {
-    pub fn from_lex((tok, span): (Token<'a>, Span)) -> Option<Self> {
-        match tok {
-            Token::LineComment(text) => Some(Comment {
-                kind: CommentKind::Line,
-                text,
-                span,
-            }),
-            Token::BlockComment(text) => Some(Comment {
-                kind: CommentKind::Block,
-                text,
-                span,
-            }),
-            _ => None,
-        }
-    }
-}
+const INDENT: &str = "    ";
 
-#[derive(Debug, Clone)]
-pub struct Context<'a> {
+/// The output being built, and the comments still to be placed in it.
+struct Printer<'a> {
+    out: String,
+    compact: bool,
     indent: usize,
-    line: usize,
-    column: usize,
-    comments: Vec<Comment<'a>>,
-    newlines: Vec<usize>,
-    blank_lines: Vec<usize>,
+    comments: Vec<ast::Comment<'a>>,
     next_comment: usize,
+    /// Byte offsets of every `\n` in the source.
+    newlines: Vec<usize>,
+    /// The offsets among `newlines` that end a blank (whitespace-only) line.
+    blank_lines: Vec<usize>,
 }
 
-impl<'a> Default for Context<'a> {
-    fn default() -> Self {
-        let nl = utils::Newlines {
-            all: Vec::new(),
-            blank: Vec::new(),
-        };
-        Self::new(Vec::new(), nl)
-    }
-}
-
-impl<'a> Context<'a> {
-    pub fn new(comments: Vec<Comment<'a>>, newlines: utils::Newlines) -> Self {
+impl<'a> Printer<'a> {
+    fn new(source: &str, comments: Vec<ast::Comment<'a>>, config: Config) -> Self {
+        let mut newlines = Vec::new();
+        let mut blank_lines = Vec::new();
+        let mut line_is_blank = true;
+        for (i, b) in source.bytes().enumerate() {
+            if b == b'\n' {
+                newlines.push(i);
+                if line_is_blank {
+                    blank_lines.push(i);
+                }
+                line_is_blank = true;
+            } else if !b.is_ascii_whitespace() {
+                line_is_blank = false;
+            }
+        }
         Self {
+            out: String::new(),
+            compact: config.compact,
             indent: 0,
-            line: 1,
-            column: 1,
             comments,
-            newlines: newlines.all,
-            blank_lines: newlines.blank,
             next_comment: 0,
+            newlines,
+            blank_lines,
         }
     }
 
-    pub fn from_source(source: &'a str) -> Result<Self, ParseError> {
-        Ok(Context::new(
-            Lexer::new(source)
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .filter_map(Comment::from_lex)
-                .collect(),
-            utils::find_newlines(source),
-        ))
-    }
-
-    pub fn indent(&self) -> usize {
-        self.indent
-    }
-
-    pub fn line(&self) -> usize {
-        self.line
-    }
-
-    pub fn column(&self) -> usize {
-        self.column
-    }
-
-    pub fn comments(&self) -> &[Comment<'a>] {
-        &self.comments
-    }
-
-    pub fn comments_in(&self, span: Span) -> impl Iterator<Item = &Comment<'a>> {
-        self.comments
-            .iter()
-            .filter(move |comment| span.start <= comment.span.start && comment.span.end <= span.end)
-    }
-
-    pub fn comments_before(&self, pos: usize) -> impl Iterator<Item = &Comment<'a>> {
-        self.comments
-            .iter()
-            .filter(move |comment| comment.span.end <= pos)
-    }
-
-    pub fn comments_after(&self, pos: usize) -> impl Iterator<Item = &Comment<'a>> {
-        self.comments
-            .iter()
-            .filter(move |comment| pos <= comment.span.start)
-    }
-
-    fn has_pending_comments_before(&self, pos: usize) -> bool {
-        self.comments
-            .get(self.next_comment)
-            .is_some_and(|comment| comment.span.start < pos)
-    }
-
-    pub fn finish(&mut self, fmt: &mut fmt::Formatter<'_>, config: &Config) -> fmt::Result {
-        self.emit_comments_before(fmt, usize::MAX, config)?;
-        Ok(())
-    }
-
-    fn emit_comments_before(
-        &mut self,
-        fmt: &mut fmt::Formatter<'_>,
-        pos: usize,
-        config: &Config,
-    ) -> Result<bool, fmt::Error> {
-        let mut emitted = false;
-        let mut prev_end: Option<usize> = None;
-
-        while let Some(comment) = self.comments.get(self.next_comment).cloned() {
-            if pos <= comment.span.start {
-                break;
-            }
-            self.next_comment += 1;
-            if config.compact {
-                continue;
-            }
-            if let Some(end) = prev_end
-                && self.has_blank_line_between(end, comment.span.start)
-            {
-                self.newline(fmt)?;
-            }
-            self.write_comment(fmt, &comment, config)?;
-            prev_end = Some(comment.span.end);
-            emitted = true;
+    fn finish(mut self) -> String {
+        self.out.truncate(self.out.trim_end_matches('\n').len());
+        if !self.out.is_empty() {
+            self.out.push('\n');
         }
-
-        Ok(emitted)
+        self.out
     }
 
-    fn write_comment(
-        &mut self,
-        fmt: &mut fmt::Formatter<'_>,
-        comment: &Comment<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        if self.column > 1 {
-            self.write_str(fmt, " ")?;
-        }
+    // ---- Text ----
 
-        self.write_str(fmt, comment.text)?;
-
-        match comment.kind {
-            CommentKind::Line => self.newline(fmt),
-            CommentKind::Block if config.compact => self.write_str(fmt, " "),
-            CommentKind::Block => self.newline(fmt),
-        }
+    fn at_line_start(&self) -> bool {
+        self.out.is_empty() || self.out.ends_with('\n')
     }
 
-    fn write_str(&mut self, fmt: &mut fmt::Formatter<'_>, text: &str) -> fmt::Result {
-        fmt.write_str(text)?;
-
-        for ch in text.chars() {
-            if ch == '\n' {
-                self.line += 1;
-                self.column = 1;
-            } else {
-                self.column += 1;
+    /// Write `text`, indenting it if it starts a line.
+    fn write(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if self.at_line_start() {
+            for _ in 0..self.indent {
+                self.out.push_str(INDENT);
             }
         }
-
-        Ok(())
+        self.out.push_str(text);
     }
 
-    fn space(&mut self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.write_str(fmt, " ")
+    fn space(&mut self) {
+        self.write(" ");
     }
 
-    fn newline(&mut self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.write_str(fmt, "\n")?;
-        self.write_indent(fmt)
+    fn newline(&mut self) {
+        self.out.push('\n');
     }
 
-    fn write_indent(&mut self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for _ in 0..self.indent {
-            self.write_str(fmt, "    ")?;
+    /// End the current line, unless nothing is on it yet.
+    fn fresh_line(&mut self) {
+        if !self.at_line_start() {
+            self.newline();
         }
-        Ok(())
     }
 
-    fn push_indent(&mut self) {
-        self.indent += 1;
-    }
-
-    fn pop_indent(&mut self) {
-        self.indent = self.indent.saturating_sub(1);
-    }
+    // ---- Source layout ----
 
     fn has_newline_between(&self, start: usize, end: usize) -> bool {
         let i = self.newlines.partition_point(|&pos| pos < start);
         self.newlines.get(i).is_some_and(|&pos| pos < end)
     }
 
-    fn has_blank_line_between(&self, start: usize, end: usize) -> bool {
+    /// Whether the source has a blank line between `start` and `end` that the
+    /// output should keep.
+    fn keeps_blank_line_between(&self, start: usize, end: usize) -> bool {
         let i = self.blank_lines.partition_point(|&pos| pos < start);
-        self.blank_lines.get(i).is_some_and(|&pos| pos < end)
+        !self.compact && self.blank_lines.get(i).is_some_and(|&pos| pos < end)
     }
 
-    fn emit_trailing_comments(
-        &mut self,
-        fmt: &mut fmt::Formatter<'_>,
-        after: usize,
-        config: &Config,
-    ) -> fmt::Result {
-        while let Some(comment) = self.comments.get(self.next_comment) {
-            if self.has_newline_between(after, comment.span.start) {
-                break;
-            }
-            let comment = comment.clone();
+    // ---- Comments ----
+
+    /// The next comment to place, if it starts before `pos`.
+    fn comment_before(&self, pos: usize) -> Option<ast::Comment<'a>> {
+        let comment = *self.comments.get(self.next_comment)?;
+        (comment.span.start < pos && !self.compact).then_some(comment)
+    }
+
+    /// Emit the comments that start before `pos`, ending the line after each.
+    fn comments_before(&mut self, pos: usize) {
+        let mut previous_end = None;
+        while let Some(comment) = self.comment_before(pos) {
             self.next_comment += 1;
-            if config.compact {
-                continue;
-            }
-            self.space(fmt)?;
-            self.write_str(fmt, comment.text)?;
-        }
-        Ok(())
-    }
-
-    fn scope_separator<T: Format + CompactHint>(
-        &mut self,
-        fmt: &mut fmt::Formatter<'_>,
-        previous: Option<&T>,
-        next: &T,
-        config: &Config,
-    ) -> fmt::Result {
-        let Some(previous) = previous else {
-            return Ok(());
-        };
-
-        if !config.compact || previous.requires_trailing_newline() {
-            self.newline(fmt)?;
-            if !config.compact
-                && self.has_blank_line_between(previous.span_end(), next.compact_anchor())
+            if previous_end
+                .is_some_and(|end| self.keeps_blank_line_between(end, comment.span.start))
             {
-                self.newline(fmt)?;
+                self.newline();
             }
-            Ok(())
-        } else {
-            self.space(fmt)
+            if !self.at_line_start() && !self.out.ends_with(' ') {
+                self.space();
+            }
+            self.write(comment.text);
+            self.newline();
+            previous_end = Some(comment.span.end);
         }
     }
-}
 
-trait CompactHint {
-    fn compact_anchor(&self) -> usize;
-    fn span_end(&self) -> usize;
-
-    fn requires_trailing_newline(&self) -> bool {
-        false
-    }
-}
-
-impl<'a> CompactHint for ast::StmtOrScope<'a> {
-    fn compact_anchor(&self) -> usize {
-        span_of_stmt_or_scope(self).start
+    /// Emit the comments that follow `after` on its source line.
+    fn trailing_comments(&mut self, after: usize) {
+        while let Some(comment) = self.comment_before(usize::MAX)
+            && !self.has_newline_between(after, comment.span.start)
+        {
+            self.next_comment += 1;
+            self.space();
+            self.write(comment.text);
+        }
     }
 
-    fn span_end(&self) -> usize {
-        span_of_stmt_or_scope(self).end
+    // ---- Structure ----
+
+    fn list<T: Format>(&mut self, items: &[T], separator: &str) {
+        for (index, item) in items.iter().enumerate() {
+            if index > 0 {
+                self.write(separator);
+            }
+            item.format(self);
+        }
     }
 
-    fn requires_trailing_newline(&self) -> bool {
-        matches!(
-            self,
-            ast::StmtOrScope::Stmt(s) if matches!(s.kind, ast::StmtKind::Pragma(_))
-        )
+    /// `(a, b, c)`
+    fn parens<T: Format>(&mut self, items: &[T]) {
+        self.write("(");
+        self.list(items, ", ");
+        self.write(")");
     }
-}
 
-impl<'a> Format for ast::Program<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
+    /// ` a, b, c`, or nothing for no operands.
+    fn operands<T: Format>(&mut self, operands: &[T]) {
+        if !operands.is_empty() {
+            self.space();
+            self.list(operands, ", ");
+        }
+    }
 
+    /// `[designator]`, if there is one.
+    fn designator(&mut self, designator: Option<&ast::Expr<'_>>) {
+        if let Some(designator) = designator {
+            put!(self, "[", designator, "]");
+        }
+    }
+
+    /// ` -> ty`, if there is one.
+    fn return_ty(&mut self, return_ty: Option<&ast::ScalarType<'_>>) {
+        if let Some(return_ty) = return_ty {
+            put!(self, " -> ", return_ty);
+        }
+    }
+
+    /// A sequence of statements, with the comments that trail each.
+    fn items(&mut self, items: &[ast::StmtOrScope<'_>]) {
         let mut previous: Option<&ast::StmtOrScope<'_>> = None;
+        for item in items {
+            if let Some(previous) = previous {
+                if self.compact && !ends_line(previous) {
+                    self.space();
+                } else {
+                    self.newline();
+                    if self.keeps_blank_line_between(previous.span().end, item.span().start) {
+                        self.newline();
+                    }
+                }
+            }
+            item.format(self);
+            self.trailing_comments(item.span().end);
+            previous = Some(item);
+        }
+    }
 
+    /// `{ items }`, where the closing brace is at `close` in the source.
+    fn block(&mut self, items: &[ast::StmtOrScope<'_>], close: usize) {
+        self.write("{");
+        let has_comments = self.comment_before(close).is_some();
+        if items.is_empty() && !has_comments {
+            return self.write("}");
+        }
+
+        if self.compact {
+            self.space();
+            self.items(items);
+            if items.last().is_some_and(ends_line) {
+                self.newline();
+            } else {
+                self.space();
+            }
+            return self.write("}");
+        }
+
+        self.indent += 1;
+        self.newline();
+        self.items(items);
+        if self.comment_before(close).is_some() {
+            self.fresh_line();
+        }
+        self.comments_before(close);
+        self.indent -= 1;
+        self.fresh_line();
+        self.write("}");
+    }
+}
+
+/// A pragma runs to the end of its line, so nothing may follow it there.
+fn ends_line(item: &ast::StmtOrScope<'_>) -> bool {
+    matches!(item, ast::StmtOrScope::Stmt(stmt) if matches!(stmt.kind, ast::StmtKind::Pragma(_)))
+}
+
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+
+trait Format {
+    fn format(&self, p: &mut Printer<'_>);
+}
+
+impl Format for str {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.write(self);
+    }
+}
+
+impl<T: Format + ?Sized> Format for &T {
+    fn format(&self, p: &mut Printer<'_>) {
+        (**self).format(p);
+    }
+}
+
+impl<T: Format + ?Sized> Format for Box<T> {
+    fn format(&self, p: &mut Printer<'_>) {
+        (**self).format(p);
+    }
+}
+
+impl Format for ast::Program<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        let mut end = 0;
         if let Some(version) = &self.version {
-            version.format(fmt, ctx, config)?;
-            ctx.emit_trailing_comments(fmt, version.span.end, config)?;
-            if !self.body.is_empty() {
-                ctx.newline(fmt)?;
-                if !config.compact
-                    && ctx.has_blank_line_between(
-                        version.span.end,
-                        span_of_stmt_or_scope(&self.body[0]).start,
-                    )
-                {
-                    ctx.newline(fmt)?;
+            p.comments_before(version.span.start);
+            put!(p, "OPENQASM ", version.specifier, ";");
+            p.trailing_comments(version.span.end);
+            end = version.span.end;
+            if let Some(first) = self.body.first() {
+                p.newline();
+                if p.keeps_blank_line_between(end, first.span().start) {
+                    p.newline();
                 }
             }
         }
 
-        for item in &self.body {
-            if previous.is_some() {
-                ctx.scope_separator(fmt, previous, item, config)?;
-            }
-            item.format(fmt, ctx, config)?;
-            ctx.emit_trailing_comments(fmt, span_of_stmt_or_scope(item).end, config)?;
-            previous = Some(item);
+        p.items(&self.body);
+        if let Some(last) = self.body.last() {
+            end = last.span().end;
         }
 
-        Ok(())
+        // Comments after the last statement.
+        if let Some(comment) = p.comment_before(usize::MAX) {
+            p.fresh_line();
+            if p.keeps_blank_line_between(end, comment.span.start) {
+                p.newline();
+            }
+            p.comments_before(usize::MAX);
+        }
     }
 }
 
-impl<'a> Format for ast::Version<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
-        ctx.write_str(fmt, "OPENQASM ")?;
-        ctx.write_str(fmt, self.specifier)?;
-        ctx.write_str(fmt, ";")
-    }
-}
-
-impl<'a> Format for ast::StmtOrScope<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::StmtOrScope<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
-            ast::StmtOrScope::Stmt(stmt) => stmt.format(fmt, ctx, config),
-            ast::StmtOrScope::Scope(scope) => scope.format(fmt, ctx, config),
+            ast::StmtOrScope::Stmt(stmt) => stmt.format(p),
+            ast::StmtOrScope::Scope(scope) => scope.format(p),
         }
     }
 }
 
-impl<'a> Format for ast::Scope<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
-        ctx.write_str(fmt, "{")?;
-
-        let has_body = !self.body.is_empty();
-        let has_comments = !config.compact && ctx.has_pending_comments_before(self.span.end);
-
-        if !has_body && !has_comments {
-            return ctx.write_str(fmt, "}");
-        }
-
-        if config.compact {
-            let mut previous: Option<&ast::StmtOrScope<'_>> = None;
-            for item in &self.body {
-                if previous.is_none() {
-                    ctx.space(fmt)?;
-                }
-                ctx.scope_separator(fmt, previous, item, config)?;
-                item.format(fmt, ctx, config)?;
-                ctx.emit_trailing_comments(fmt, span_of_stmt_or_scope(item).end, config)?;
-                previous = Some(item);
-            }
-            let emitted_comments = ctx.emit_comments_before(fmt, self.span.end, config)?;
-            if !emitted_comments && ctx.column > 2 {
-                ctx.space(fmt)?;
-            }
-            return ctx.write_str(fmt, "}");
-        }
-
-        ctx.push_indent();
-        ctx.newline(fmt)?;
-
-        let mut previous: Option<&ast::StmtOrScope<'_>> = None;
-        for item in &self.body {
-            ctx.scope_separator(fmt, previous, item, config)?;
-            item.format(fmt, ctx, config)?;
-            ctx.emit_trailing_comments(fmt, span_of_stmt_or_scope(item).end, config)?;
-            previous = Some(item);
-        }
-
-        if previous.is_some() && ctx.has_pending_comments_before(self.span.end) {
-            ctx.newline(fmt)?;
-        }
-        ctx.emit_comments_before(fmt, self.span.end, config)?;
-        ctx.pop_indent();
-        if ctx.column > 1 {
-            ctx.newline(fmt)?;
-        }
-        ctx.write_str(fmt, "}")
+impl Format for ast::Scope<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.comments_before(self.span.start);
+        p.block(&self.body, self.span.end);
     }
 }
 
-impl<'a> Format for ast::Annotation<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
-        ctx.write_str(fmt, self.keyword)?;
-        if let Some(content) = self.content {
-            ctx.space(fmt)?;
-            ctx.write_str(fmt, content)?;
-        }
-        Ok(())
-    }
-}
-
-impl<'a> Format for ast::Stmt<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
+impl Format for ast::Stmt<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.comments_before(self.span.start);
 
         for annotation in &self.annotations {
-            annotation.format(fmt, ctx, config)?;
-            ctx.newline(fmt)?;
+            p.comments_before(annotation.span.start);
+            p.write(annotation.keyword);
+            if let Some(content) = annotation.content {
+                put!(p, " ", content);
+            }
+            p.newline();
         }
 
-        self.kind.format(fmt, ctx, config)
-    }
-}
-
-impl<'a> Format for ast::StmtKind<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        match self {
-            ast::StmtKind::Pragma(content) => {
-                ctx.write_str(fmt, "pragma ")?;
-                ctx.write_str(fmt, content)
-            }
-            ast::StmtKind::CalibrationGrammar(path) => {
-                ctx.write_str(fmt, "defcalgrammar ")?;
-                ctx.write_str(fmt, path)?;
-                ctx.write_str(fmt, ";")
-            }
-            ast::StmtKind::Include(path) => {
-                ctx.write_str(fmt, "include ")?;
-                ctx.write_str(fmt, path)?;
-                ctx.write_str(fmt, ";")
-            }
-            ast::StmtKind::Break => ctx.write_str(fmt, "break;"),
-            ast::StmtKind::Continue => ctx.write_str(fmt, "continue;"),
-            ast::StmtKind::End => ctx.write_str(fmt, "end;"),
-            ast::StmtKind::For {
+        use ast::StmtKind::*;
+        match &self.kind {
+            Pragma(content) => put!(p, "pragma ", content),
+            CalibrationGrammar(path) => put!(p, "defcalgrammar ", path, ";"),
+            Include(path) => put!(p, "include ", path, ";"),
+            Break => p.write("break;"),
+            Continue => p.write("continue;"),
+            End => p.write("end;"),
+            For {
                 ty,
                 var,
                 iterable,
                 body,
-            } => {
-                ctx.write_str(fmt, "for ")?;
-                ty.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                var.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, " in ")?;
-                iterable.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                body.format(fmt, ctx, config)
-            }
-            ast::StmtKind::If {
+            } => put!(p, "for ", ty, " ", var, " in ", iterable, " ", body),
+            If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                ctx.write_str(fmt, "if (")?;
-                condition.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ") ")?;
-                then_body.format(fmt, ctx, config)?;
+                put!(p, "if (", condition, ") ", then_body);
                 if let Some(else_body) = else_body {
-                    ctx.write_str(fmt, " else ")?;
-                    else_body.format(fmt, ctx, config)?;
+                    put!(p, " else ", else_body);
                 }
-                Ok(())
             }
-            ast::StmtKind::Return(None) => ctx.write_str(fmt, "return;"),
-            ast::StmtKind::Return(Some(value)) => {
-                ctx.write_str(fmt, "return ")?;
-                value.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ";")
-            }
-            ast::StmtKind::While { condition, body } => {
-                ctx.write_str(fmt, "while (")?;
-                condition.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ") ")?;
-                body.format(fmt, ctx, config)
-            }
-            ast::StmtKind::Switch { target, cases } => {
-                ctx.write_str(fmt, "switch (")?;
-                target.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ") {")?;
-
+            Return(None) => p.write("return;"),
+            Return(Some(value)) => put!(p, "return ", value, ";"),
+            While { condition, body } => put!(p, "while (", condition, ") ", body),
+            Switch { target, cases } => {
+                put!(p, "switch (", target, ") {");
                 if cases.is_empty() {
-                    return ctx.write_str(fmt, "}");
-                }
-
-                if config.compact {
-                    ctx.space(fmt)?;
-                    let mut first = true;
+                    // `{}`
+                } else if p.compact {
+                    p.space();
+                    p.list(cases, " ");
+                    p.space();
+                } else {
+                    p.indent += 1;
                     for case in cases {
-                        if !first {
-                            ctx.space(fmt)?;
-                        }
-                        case.format(fmt, ctx, config)?;
-                        first = false;
+                        p.newline();
+                        case.format(p);
                     }
-                    ctx.space(fmt)?;
-                    return ctx.write_str(fmt, "}");
+                    p.indent -= 1;
+                    p.newline();
                 }
-
-                ctx.push_indent();
-                ctx.newline(fmt)?;
-                for (index, case) in cases.iter().enumerate() {
-                    if index > 0 {
-                        ctx.newline(fmt)?;
-                    }
-                    case.format(fmt, ctx, config)?;
-                }
-                ctx.pop_indent();
-                ctx.newline(fmt)?;
-                ctx.write_str(fmt, "}")
+                p.write("}");
             }
-            ast::StmtKind::Barrier(operands) => {
-                ctx.write_str(fmt, "barrier")?;
-                if !operands.is_empty() {
-                    ctx.space(fmt)?;
-                    format_slice(operands, fmt, ctx, config, ", ")?;
-                }
-                ctx.write_str(fmt, ";")
+            Barrier(operands) => {
+                p.write("barrier");
+                p.operands(operands);
+                p.write(";");
             }
-            ast::StmtKind::Box { designator, body } => {
-                ctx.write_str(fmt, "box")?;
-                if let Some(designator) = designator {
-                    format_designator(designator, fmt, ctx, config)?;
-                }
-                ctx.space(fmt)?;
-                body.format(fmt, ctx, config)
+            Box { designator, body } => {
+                p.write("box");
+                p.designator(designator.as_ref());
+                put!(p, " ", body);
             }
-            ast::StmtKind::Delay {
+            Delay {
                 designator,
                 operands,
             } => {
-                ctx.write_str(fmt, "delay")?;
-                format_designator(designator, fmt, ctx, config)?;
-                if !operands.is_empty() {
-                    ctx.space(fmt)?;
-                    format_slice(operands, fmt, ctx, config, ", ")?;
-                }
-                ctx.write_str(fmt, ";")
+                p.write("delay");
+                p.designator(Some(designator));
+                p.operands(operands);
+                p.write(";");
             }
-            ast::StmtKind::Nop(operands) => {
-                ctx.write_str(fmt, "nop")?;
-                if !operands.is_empty() {
-                    ctx.space(fmt)?;
-                    format_slice(operands, fmt, ctx, config, ", ")?;
-                }
-                ctx.write_str(fmt, ";")
+            Nop(operands) => {
+                p.write("nop");
+                p.operands(operands);
+                p.write(";");
             }
-            ast::StmtKind::GateCall {
+            GateCall {
                 modifiers,
                 name,
                 args,
                 designator,
                 operands,
             } => {
-                for modifier in modifiers {
-                    modifier.format(fmt, ctx, config)?;
-                }
-                name.format(fmt, ctx, config)?;
+                p.list(modifiers, "");
+                name.format(p);
                 if let Some(args) = args {
-                    ctx.write_str(fmt, "(")?;
-                    format_slice(args, fmt, ctx, config, ", ")?;
-                    ctx.write_str(fmt, ")")?;
+                    p.parens(args);
                 }
-                if let Some(designator) = designator {
-                    format_designator(designator, fmt, ctx, config)?;
-                }
-                if !operands.is_empty() {
-                    ctx.space(fmt)?;
-                    format_slice(operands, fmt, ctx, config, ", ")?;
-                }
-                ctx.write_str(fmt, ";")
+                p.designator(designator.as_deref());
+                p.operands(operands);
+                p.write(";");
             }
-            ast::StmtKind::MeasureArrow { measure, target } => {
-                measure.format(fmt, ctx, config)?;
+            MeasureArrow { measure, target } => {
+                measure.format(p);
                 if let Some(target) = target {
-                    ctx.write_str(fmt, " -> ")?;
-                    target.format(fmt, ctx, config)?;
+                    put!(p, " -> ", target);
                 }
-                ctx.write_str(fmt, ";")
+                p.write(";");
             }
-            ast::StmtKind::Reset(operand) => {
-                ctx.write_str(fmt, "reset ")?;
-                operand.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ";")
+            Reset(operand) => put!(p, "reset ", operand, ";"),
+            Alias { name, value } => {
+                put!(p, "let ", name, " = ");
+                p.list(value, " ++ ");
+                p.write(";");
             }
-            ast::StmtKind::Alias { name, value } => {
-                ctx.write_str(fmt, "let ")?;
-                name.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, " = ")?;
-                format_slice(value, fmt, ctx, config, " ++ ")?;
-                ctx.write_str(fmt, ";")
-            }
-            ast::StmtKind::ClassicalDecl { ty, name, init } => {
-                ty.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                name.format(fmt, ctx, config)?;
+            ClassicalDecl { ty, name, init } => {
+                put!(p, ty, " ", name);
                 if let Some(init) = init {
-                    ctx.write_str(fmt, " = ")?;
-                    init.format(fmt, ctx, config)?;
+                    put!(p, " = ", init);
                 }
-                ctx.write_str(fmt, ";")
+                p.write(";");
             }
-            ast::StmtKind::ConstDecl { ty, name, init } => {
-                ctx.write_str(fmt, "const ")?;
-                ty.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                name.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, " = ")?;
-                init.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ";")
-            }
-            ast::StmtKind::IoDecl { dir, ty, name } => {
-                dir.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                ty.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                name.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ";")
-            }
-            ast::StmtKind::OldStyleDecl {
+            ConstDecl { ty, name, init } => put!(p, "const ", ty, " ", name, " = ", init, ";"),
+            IoDecl { dir, ty, name } => put!(p, dir.as_str(), " ", ty, " ", name, ";"),
+            OldStyleDecl {
                 keyword,
                 name,
                 designator,
             } => {
-                keyword.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                name.format(fmt, ctx, config)?;
-                if let Some(designator) = designator {
-                    format_designator(designator, fmt, ctx, config)?;
-                }
-                ctx.write_str(fmt, ";")
+                put!(p, keyword.as_str(), " ", name);
+                p.designator(designator.as_deref());
+                p.write(";");
             }
-            ast::StmtKind::QuantumDecl { ty, name } => {
-                ty.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                name.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ";")
-            }
-            ast::StmtKind::Def {
+            QuantumDecl { ty, name } => put!(p, ty, " ", name, ";"),
+            Def {
                 name,
                 params,
                 return_ty,
                 body,
             } => {
-                ctx.write_str(fmt, "def ")?;
-                name.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, "(")?;
-                format_slice(params, fmt, ctx, config, ", ")?;
-                ctx.write_str(fmt, ")")?;
-                if let Some(return_ty) = return_ty {
-                    ctx.write_str(fmt, " -> ")?;
-                    return_ty.format(fmt, ctx, config)?;
-                }
-                ctx.space(fmt)?;
-                body.format(fmt, ctx, config)
+                put!(p, "def ", name);
+                p.parens(params);
+                p.return_ty(return_ty.as_ref());
+                put!(p, " ", body);
             }
-            ast::StmtKind::Extern {
+            Extern {
                 name,
                 params,
                 return_ty,
             } => {
-                ctx.write_str(fmt, "extern ")?;
-                name.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, "(")?;
-                format_slice(params, fmt, ctx, config, ", ")?;
-                ctx.write_str(fmt, ")")?;
-                if let Some(return_ty) = return_ty {
-                    ctx.write_str(fmt, " -> ")?;
-                    return_ty.format(fmt, ctx, config)?;
-                }
-                ctx.write_str(fmt, ";")
+                put!(p, "extern ", name);
+                p.parens(params);
+                p.return_ty(return_ty.as_ref());
+                p.write(";");
             }
-            ast::StmtKind::ExternFrame { name } => {
-                ctx.write_str(fmt, "extern frame ")?;
-                name.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ";")
-            }
-            ast::StmtKind::ExternPort { name } => {
-                ctx.write_str(fmt, "extern port ")?;
-                name.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ";")
-            }
-            ast::StmtKind::Gate {
+            ExternFrame { name } => put!(p, "extern frame ", name, ";"),
+            ExternPort { name } => put!(p, "extern port ", name, ";"),
+            Gate {
                 name,
                 params,
                 qubits,
                 body,
             } => {
-                ctx.write_str(fmt, "gate ")?;
-                name.format(fmt, ctx, config)?;
+                put!(p, "gate ", name);
                 if !params.is_empty() {
-                    ctx.write_str(fmt, "(")?;
-                    format_slice(params, fmt, ctx, config, ", ")?;
-                    ctx.write_str(fmt, ")")?;
+                    p.parens(params);
                 }
-                ctx.space(fmt)?;
-                format_slice(qubits, fmt, ctx, config, ", ")?;
-                ctx.space(fmt)?;
-                body.format(fmt, ctx, config)
+                p.operands(qubits);
+                put!(p, " ", body);
             }
-            ast::StmtKind::Assignment { target, op, value } => {
-                target.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                op.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                value.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ";")
+            Assignment { target, op, value } => {
+                put!(p, target, " ", op.as_str(), " ", value, ";")
             }
-            ast::StmtKind::Expr(expr) => {
-                expr.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ";")
+            Expr(expr) => put!(p, expr, ";"),
+            Cal(body) => {
+                p.write("cal ");
+                cal_body(body, self.span.end, p);
             }
-            ast::StmtKind::Cal(body) => {
-                ctx.write_str(fmt, "cal {")?;
-                format_cal_body(body, fmt, ctx, config)?;
-                ctx.write_str(fmt, "}")
-            }
-            ast::StmtKind::Defcal {
+            Defcal {
                 target,
                 args,
                 operands,
                 return_ty,
                 body,
             } => {
-                ctx.write_str(fmt, "defcal ")?;
-                target.format(fmt, ctx, config)?;
+                put!(p, "defcal ", target);
                 if !args.is_empty() {
-                    ctx.write_str(fmt, "(")?;
-                    format_slice(args, fmt, ctx, config, ", ")?;
-                    ctx.write_str(fmt, ")")?;
+                    p.parens(args);
                 }
-                if !operands.is_empty() {
-                    ctx.space(fmt)?;
-                    format_slice(operands, fmt, ctx, config, ", ")?;
-                }
-                if let Some(return_ty) = return_ty {
-                    ctx.write_str(fmt, " -> ")?;
-                    return_ty.format(fmt, ctx, config)?;
-                }
-                ctx.write_str(fmt, " {")?;
-                format_cal_body(body, fmt, ctx, config)?;
-                ctx.write_str(fmt, "}")
+                p.operands(operands);
+                p.return_ty(return_ty.as_ref());
+                p.space();
+                cal_body(body, self.span.end, p);
             }
         }
     }
 }
 
-fn format_cal_body<'a>(
-    body: &ast::CalBody<'a>,
-    fmt: &mut fmt::Formatter<'_>,
-    ctx: &mut Context<'_>,
-    config: &Config,
-) -> fmt::Result {
+/// The braced body of a `cal` or `defcal` that ends at `end` in the source.
+fn cal_body(body: &ast::CalBody<'_>, end: usize, p: &mut Printer<'_>) {
     match body {
-        ast::CalBody::Raw(Some(raw)) => ctx.write_str(fmt, raw),
-        ast::CalBody::Raw(None) => Ok(()),
-        ast::CalBody::OpenPulse(stmts) => {
-            if stmts.is_empty() {
-                return Ok(());
-            }
-            if config.compact {
-                let mut previous: Option<&ast::StmtOrScope<'_>> = None;
-                for item in stmts {
-                    if previous.is_none() {
-                        ctx.space(fmt)?;
-                    }
-                    ctx.scope_separator(fmt, previous, item, config)?;
-                    item.format(fmt, ctx, config)?;
-                    ctx.emit_trailing_comments(fmt, span_of_stmt_or_scope(item).end, config)?;
-                    previous = Some(item);
-                }
-                if ctx.column > 2 {
-                    ctx.space(fmt)?;
-                }
-                return Ok(());
-            }
-            ctx.push_indent();
-            ctx.newline(fmt)?;
-            let mut previous: Option<&ast::StmtOrScope<'_>> = None;
-            for item in stmts {
-                ctx.scope_separator(fmt, previous, item, config)?;
-                item.format(fmt, ctx, config)?;
-                ctx.emit_trailing_comments(fmt, span_of_stmt_or_scope(item).end, config)?;
-                previous = Some(item);
-            }
-            ctx.pop_indent();
-            if ctx.column > 1 {
-                ctx.newline(fmt)?;
-            }
-            Ok(())
-        }
+        ast::CalBody::Raw(raw) => put!(p, "{", raw.unwrap_or_default(), "}"),
+        ast::CalBody::OpenPulse(stmts) => p.block(stmts, end),
     }
 }
 
-impl Format for ast::BinOp {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        _config: &Config,
-    ) -> fmt::Result {
-        ctx.write_str(fmt, bin_op_text(*self))
-    }
-}
+impl Format for ast::Expr<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.comments_before(self.span().start);
 
-impl Format for ast::UnOp {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        _config: &Config,
-    ) -> fmt::Result {
-        ctx.write_str(fmt, un_op_text(*self))
-    }
-}
-
-impl<'a> Format for ast::Expr<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        format_expr(self, fmt, ctx, config, None)
-    }
-}
-
-impl<'a> Format for ast::Ident<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
-        ctx.write_str(fmt, self.name)
-    }
-}
-
-impl<'a> Format for ast::IndexOp<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
-        ctx.write_str(fmt, "[")?;
-        self.kind.format(fmt, ctx, config)?;
-        ctx.write_str(fmt, "]")
-    }
-}
-
-impl<'a> Format for ast::IndexKind<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
         match self {
-            ast::IndexKind::Set(exprs) => {
-                ctx.write_str(fmt, "{")?;
-                format_slice(exprs, fmt, ctx, config, ", ")?;
-                ctx.write_str(fmt, "}")
+            ast::Expr::Ident(ident) => ident.format(p),
+            ast::Expr::HardwareQubit(text, _)
+            | ast::Expr::IntLiteral(text, _, _)
+            | ast::Expr::FloatLiteral(text, _)
+            | ast::Expr::ImagLiteral(text, _)
+            | ast::Expr::BitstringLiteral(text, _)
+            | ast::Expr::TimingLiteral(text, _) => p.write(text),
+            ast::Expr::BoolLiteral(value, _) => p.write(if *value { "true" } else { "false" }),
+            ast::Expr::Paren(inner, _) => put!(p, "(", inner, ")"),
+            ast::Expr::BinOp {
+                left, op, right, ..
+            } => {
+                // As in the parser: the operand on the side an operator does
+                // not associate to must bind tighter than the operator.
+                let precedence = op.precedence();
+                let (left_min, right_min) = if op.is_right_associative() {
+                    (precedence + 1, precedence)
+                } else {
+                    (precedence, precedence + 1)
+                };
+                operand(left, left_min, p);
+                put!(p, " ", op.as_str(), " ");
+                operand(right, right_min, p);
             }
-            ast::IndexKind::Items(items) => format_slice(items, fmt, ctx, config, ", "),
+            ast::Expr::UnaryOp { op, operand: e, .. } => {
+                p.write(op.as_str());
+                operand(e, ast::UnOp::PRECEDENCE, p);
+            }
+            ast::Expr::Index { expr, index, .. } => {
+                operand(expr, ast::IndexOp::PRECEDENCE, p);
+                index.format(p);
+            }
+            ast::Expr::Call { name, args, .. } => {
+                name.format(p);
+                p.parens(args);
+            }
+            ast::Expr::Cast { ty, operand, .. } => put!(p, ty, "(", operand, ")"),
+            ast::Expr::DurationOf { scope, .. } => put!(p, "durationof(", scope, ")"),
+            ast::Expr::ArrayLiteral(array) => array.format(p),
         }
     }
 }
 
-impl<'a> Format for ast::IndexItem<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+/// Format an operand, parenthesized if it binds looser than `min_precedence`.
+fn operand(expr: &ast::Expr<'_>, min_precedence: u8, p: &mut Printer<'_>) {
+    if expr.precedence() < min_precedence {
+        p.comments_before(expr.span().start);
+        put!(p, "(", expr, ")");
+    } else {
+        expr.format(p);
+    }
+}
+
+impl Format for ast::Ident<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.comments_before(self.span.start);
+        p.write(self.name);
+    }
+}
+
+impl Format for ast::IndexOp<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.comments_before(self.span.start);
+        p.write("[");
+        match &self.kind {
+            ast::IndexKind::Set(exprs) => braces(exprs, p),
+            ast::IndexKind::Items(items) => p.list(items, ", "),
+        }
+        p.write("]");
+    }
+}
+
+/// `{a, b, c}`
+fn braces(exprs: &[ast::Expr<'_>], p: &mut Printer<'_>) {
+    p.write("{");
+    p.list(exprs, ", ");
+    p.write("}");
+}
+
+impl Format for ast::IndexItem<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
-            ast::IndexItem::Single(expr) => expr.format(fmt, ctx, config),
-            ast::IndexItem::Range(range) => range.format(fmt, ctx, config),
+            ast::IndexItem::Single(expr) => expr.format(p),
+            ast::IndexItem::Range(range) => range.format(p),
         }
     }
 }
 
-impl<'a> Format for ast::RangeExpr<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::RangeExpr<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         if let Some(start) = &self.start {
-            start.format(fmt, ctx, config)?;
+            start.format(p);
         }
-        ctx.write_str(fmt, ":")?;
+        p.write(":");
         if let Some(step) = &self.step {
-            step.format(fmt, ctx, config)?;
-            ctx.write_str(fmt, ":")?;
+            put!(p, step, ":");
         }
         if let Some(end) = &self.end {
-            end.format(fmt, ctx, config)?;
+            end.format(p);
         }
-        Ok(())
     }
 }
 
-impl<'a> Format for ast::IndexedIdent<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
-        self.name.format(fmt, ctx, config)?;
-        for index in &self.indices {
-            index.format(fmt, ctx, config)?;
-        }
-        Ok(())
+impl Format for ast::IndexedIdent<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        self.name.format(p);
+        p.list(&self.indices, "");
     }
 }
 
-impl<'a> Format for ast::ForIterable<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::ForIterable<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
             ast::ForIterable::Set(exprs, span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "{")?;
-                format_slice(exprs, fmt, ctx, config, ", ")?;
-                ctx.write_str(fmt, "}")
+                p.comments_before(span.start);
+                braces(exprs, p);
             }
             ast::ForIterable::Range(range, span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "[")?;
-                range.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, "]")
+                p.comments_before(span.start);
+                put!(p, "[", range, "]");
             }
-            ast::ForIterable::Expr(expr) => expr.format(fmt, ctx, config),
+            ast::ForIterable::Expr(expr) => expr.format(p),
         }
     }
 }
 
-impl<'a> Format for ast::SwitchCase<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::SwitchCase<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
             ast::SwitchCase::Case(exprs, scope) => {
-                ctx.write_str(fmt, "case ")?;
-                format_slice(exprs, fmt, ctx, config, ", ")?;
-                ctx.space(fmt)?;
-                scope.format(fmt, ctx, config)
+                p.write("case ");
+                p.list(exprs, ", ");
+                put!(p, " ", scope);
             }
-            ast::SwitchCase::Default(scope) => {
-                ctx.write_str(fmt, "default ")?;
-                scope.format(fmt, ctx, config)
-            }
+            ast::SwitchCase::Default(scope) => put!(p, "default ", scope),
         }
     }
 }
 
-impl Format for ast::IoDir {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        _config: &Config,
-    ) -> fmt::Result {
-        ctx.write_str(
-            fmt,
-            match self {
-                ast::IoDir::Input => "input",
-                ast::IoDir::Output => "output",
-            },
-        )
-    }
-}
-
-impl Format for ast::OldStyleKind {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        _config: &Config,
-    ) -> fmt::Result {
-        ctx.write_str(
-            fmt,
-            match self {
-                ast::OldStyleKind::Creg => "creg",
-                ast::OldStyleKind::Qreg => "qreg",
-            },
-        )
-    }
-}
-
-impl Format for ast::AssignOp {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        _config: &Config,
-    ) -> fmt::Result {
-        let s = match self {
-            ast::AssignOp::Assign => "=",
-            ast::AssignOp::AddAssign => "+=",
-            ast::AssignOp::SubAssign => "-=",
-            ast::AssignOp::MulAssign => "*=",
-            ast::AssignOp::DivAssign => "/=",
-            ast::AssignOp::BitAndAssign => "&=",
-            ast::AssignOp::BitOrAssign => "|=",
-            ast::AssignOp::BitXorAssign => "^=",
-            ast::AssignOp::LeftShiftAssign => "<<=",
-            ast::AssignOp::RightShiftAssign => ">>=",
-            ast::AssignOp::ModAssign => "%=",
-            ast::AssignOp::PowAssign => "**=",
+impl Format for ast::GateModifier<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        let (keyword, arg, span) = match self {
+            ast::GateModifier::Inv(span) => ("inv", None, span),
+            ast::GateModifier::Pow(exponent, span) => ("pow", Some(exponent), span),
+            ast::GateModifier::Ctrl(count, span) => ("ctrl", count.as_ref(), span),
+            ast::GateModifier::NegCtrl(count, span) => ("negctrl", count.as_ref(), span),
         };
-        ctx.write_str(fmt, s)
-    }
-}
-
-impl<'a> Format for ast::GateModifier<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        match self {
-            ast::GateModifier::Inv(span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "inv @ ")
-            }
-            ast::GateModifier::Pow(expr, span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "pow(")?;
-                expr.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ") @ ")
-            }
-            ast::GateModifier::Ctrl(None, span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "ctrl @ ")
-            }
-            ast::GateModifier::Ctrl(Some(expr), span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "ctrl(")?;
-                expr.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ") @ ")
-            }
-            ast::GateModifier::NegCtrl(None, span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "negctrl @ ")
-            }
-            ast::GateModifier::NegCtrl(Some(expr), span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "negctrl(")?;
-                expr.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, ") @ ")
-            }
+        p.comments_before(span.start);
+        p.write(keyword);
+        if let Some(arg) = arg {
+            put!(p, "(", arg, ")");
         }
+        p.write(" @ ");
     }
 }
 
-impl<'a> Format for ast::GateOperand<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::GateOperand<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
-            ast::GateOperand::Indexed(indexed) => indexed.format(fmt, ctx, config),
+            ast::GateOperand::Indexed(indexed) => indexed.format(p),
             ast::GateOperand::HardwareQubit(name, span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, name)
+                p.comments_before(span.start);
+                p.write(name);
             }
         }
     }
 }
 
-impl<'a> Format for ast::MeasureExpr<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::MeasureExpr<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
             ast::MeasureExpr::Measure { operand, span } => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "measure ")?;
-                operand.format(fmt, ctx, config)
+                p.comments_before(span.start);
+                put!(p, "measure ", operand);
             }
             ast::MeasureExpr::QuantumCall {
                 name,
                 args,
                 operands,
-                span,
+                ..
             } => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                name.format(fmt, ctx, config)?;
+                name.format(p);
                 if !args.is_empty() {
-                    ctx.write_str(fmt, "(")?;
-                    format_slice(args, fmt, ctx, config, ", ")?;
-                    ctx.write_str(fmt, ")")?;
+                    p.parens(args);
                 }
-                ctx.space(fmt)?;
-                format_slice(operands, fmt, ctx, config, ", ")
+                p.operands(operands);
             }
         }
     }
 }
 
-impl<'a> Format for ast::ExprOrMeasure<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::ExprOrMeasure<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
-            ast::ExprOrMeasure::Expr(expr) => expr.format(fmt, ctx, config),
-            ast::ExprOrMeasure::Measure(measure) => measure.format(fmt, ctx, config),
+            ast::ExprOrMeasure::Expr(expr) => expr.format(p),
+            ast::ExprOrMeasure::Measure(measure) => measure.format(p),
         }
     }
 }
 
-impl<'a> Format for ast::DefcalTarget<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::DefcalTarget<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        let (keyword, span) = match self {
+            ast::DefcalTarget::Measure(span) => ("measure", span),
+            ast::DefcalTarget::Reset(span) => ("reset", span),
+            ast::DefcalTarget::Delay(span) => ("delay", span),
+            ast::DefcalTarget::Ident(ident) => return ident.format(p),
+        };
+        p.comments_before(span.start);
+        p.write(keyword);
+    }
+}
+
+impl Format for ast::DefcalArgDef<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
-            ast::DefcalTarget::Measure(span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "measure")
-            }
-            ast::DefcalTarget::Reset(span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "reset")
-            }
-            ast::DefcalTarget::Delay(span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, "delay")
-            }
-            ast::DefcalTarget::Ident(ident) => ident.format(fmt, ctx, config),
+            ast::DefcalArgDef::Expr(expr) => expr.format(p),
+            ast::DefcalArgDef::ArgDef(arg) => arg.format(p),
         }
     }
 }
 
-impl<'a> Format for ast::DefcalArgDef<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        match self {
-            ast::DefcalArgDef::Expr(expr) => expr.format(fmt, ctx, config),
-            ast::DefcalArgDef::ArgDef(arg) => arg.format(fmt, ctx, config),
-        }
-    }
-}
-
-impl<'a> Format for ast::DefcalOperand<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::DefcalOperand<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
             ast::DefcalOperand::HardwareQubit(name, span) => {
-                ctx.emit_comments_before(fmt, span.start, config)?;
-                ctx.write_str(fmt, name)
+                p.comments_before(span.start);
+                p.write(name);
             }
-            ast::DefcalOperand::Ident(ident) => ident.format(fmt, ctx, config),
+            ast::DefcalOperand::Ident(ident) => ident.format(p),
         }
     }
 }
 
-impl<'a> Format for ast::ArgDef<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::ArgDef<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
-            ast::ArgDef::Scalar(ty, name) => {
-                ty.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                name.format(fmt, ctx, config)
-            }
-            ast::ArgDef::Qubit(ty, name) => {
-                ty.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                name.format(fmt, ctx, config)
-            }
+            ast::ArgDef::Scalar(ty, name) => put!(p, ty, " ", name),
+            ast::ArgDef::Qubit(ty, name) => put!(p, ty, " ", name),
+            ast::ArgDef::ArrayRef(ty, name) => put!(p, ty, " ", name),
             ast::ArgDef::Creg(name, designator) => {
-                ctx.write_str(fmt, "creg ")?;
-                name.format(fmt, ctx, config)?;
-                if let Some(designator) = designator {
-                    format_designator(designator, fmt, ctx, config)?;
-                }
-                Ok(())
+                put!(p, "creg ", name);
+                p.designator(designator.as_ref());
             }
             ast::ArgDef::Qreg(name, designator) => {
-                ctx.write_str(fmt, "qreg ")?;
-                name.format(fmt, ctx, config)?;
-                if let Some(designator) = designator {
-                    format_designator(designator, fmt, ctx, config)?;
-                }
-                Ok(())
-            }
-            ast::ArgDef::ArrayRef(ty, name) => {
-                ty.format(fmt, ctx, config)?;
-                ctx.space(fmt)?;
-                name.format(fmt, ctx, config)
+                put!(p, "qreg ", name);
+                p.designator(designator.as_ref());
             }
         }
     }
 }
 
-impl<'a> Format for ast::ExternArg<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
+impl Format for ast::ExternArg<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
-            ast::ExternArg::Scalar(ty) => ty.format(fmt, ctx, config),
-            ast::ExternArg::ArrayRef(ty) => ty.format(fmt, ctx, config),
-            ast::ExternArg::Creg(None) => ctx.write_str(fmt, "creg"),
-            ast::ExternArg::Creg(Some(designator)) => {
-                ctx.write_str(fmt, "creg")?;
-                format_designator(designator, fmt, ctx, config)
+            ast::ExternArg::Scalar(ty) => ty.format(p),
+            ast::ExternArg::ArrayRef(ty) => ty.format(p),
+            ast::ExternArg::Creg(designator) => {
+                p.write("creg");
+                p.designator(designator.as_ref());
             }
         }
     }
 }
 
-impl<'a> Format for ast::ArrayLiteral<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
-        ctx.write_str(fmt, "{")?;
-        format_slice(&self.items, fmt, ctx, config, ", ")?;
-        ctx.write_str(fmt, "}")
+impl Format for ast::ArrayLiteral<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.comments_before(self.span.start);
+        braces(&self.items, p);
     }
 }
 
-impl<'a> Format for ast::ScalarType<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span().start, config)?;
+impl Format for ast::ScalarType<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.comments_before(self.span().start);
 
+        use ast::ScalarType::*;
+        let (keyword, designator) = match self {
+            Bit(designator, _) => ("bit", designator),
+            Int(designator, _) => ("int", designator),
+            Uint(designator, _) => ("uint", designator),
+            Float(designator, _) => ("float", designator),
+            Angle(designator, _) => ("angle", designator),
+            Bool(_) => return p.write("bool"),
+            Duration(_) => return p.write("duration"),
+            Stretch(_) => return p.write("stretch"),
+            Waveform(_) => return p.write("waveform"),
+            Port(_) => return p.write("port"),
+            Frame(_) => return p.write("frame"),
+            Complex(None, _) => return p.write("complex"),
+            Complex(Some(inner), _) => return put!(p, "complex[", inner, "]"),
+        };
+        p.write(keyword);
+        p.designator(designator.as_deref());
+    }
+}
+
+impl Format for ast::QubitType<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.comments_before(self.span.start);
+        p.write("qubit");
+        p.designator(self.designator.as_deref());
+    }
+}
+
+impl Format for ast::ArrayType<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.comments_before(self.span.start);
+        put!(p, "array[", &self.element_type, ", ");
+        p.list(&self.dimensions, ", ");
+        p.write("]");
+    }
+}
+
+impl Format for ast::ArrayRefType<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        p.comments_before(self.span.start);
+        put!(
+            p,
+            self.mutability.as_str(),
+            " array[",
+            &self.element_type,
+            ", "
+        );
+        match &self.dimensions {
+            ast::ArrayRefDims::ExprList(exprs) => p.list(exprs, ", "),
+            ast::ArrayRefDims::Dim(expr) => put!(p, "#dim = ", expr),
+        }
+        p.write("]");
+    }
+}
+
+impl Format for ast::TypeExpr<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
         match self {
-            ast::ScalarType::Bit(designator, _) => {
-                ctx.write_str(fmt, "bit")?;
-                format_optional_designator(designator.as_deref(), fmt, ctx, config)
-            }
-            ast::ScalarType::Int(designator, _) => {
-                ctx.write_str(fmt, "int")?;
-                format_optional_designator(designator.as_deref(), fmt, ctx, config)
-            }
-            ast::ScalarType::Uint(designator, _) => {
-                ctx.write_str(fmt, "uint")?;
-                format_optional_designator(designator.as_deref(), fmt, ctx, config)
-            }
-            ast::ScalarType::Float(designator, _) => {
-                ctx.write_str(fmt, "float")?;
-                format_optional_designator(designator.as_deref(), fmt, ctx, config)
-            }
-            ast::ScalarType::Angle(designator, _) => {
-                ctx.write_str(fmt, "angle")?;
-                format_optional_designator(designator.as_deref(), fmt, ctx, config)
-            }
-            ast::ScalarType::Bool(_) => ctx.write_str(fmt, "bool"),
-            ast::ScalarType::Duration(_) => ctx.write_str(fmt, "duration"),
-            ast::ScalarType::Stretch(_) => ctx.write_str(fmt, "stretch"),
-            ast::ScalarType::Complex(None, _) => ctx.write_str(fmt, "complex"),
-            ast::ScalarType::Complex(Some(inner), _) => {
-                ctx.write_str(fmt, "complex[")?;
-                inner.format(fmt, ctx, config)?;
-                ctx.write_str(fmt, "]")
-            }
-            ast::ScalarType::Waveform(_) => ctx.write_str(fmt, "waveform"),
-            ast::ScalarType::Port(_) => ctx.write_str(fmt, "port"),
-            ast::ScalarType::Frame(_) => ctx.write_str(fmt, "frame"),
+            ast::TypeExpr::Scalar(ty) => ty.format(p),
+            ast::TypeExpr::Array(ty) => ty.format(p),
         }
     }
-}
-
-impl<'a> Format for ast::QubitType<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
-        ctx.write_str(fmt, "qubit")?;
-        format_optional_designator(self.designator.as_deref(), fmt, ctx, config)
-    }
-}
-
-impl<'a> Format for ast::ArrayType<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
-        ctx.write_str(fmt, "array[")?;
-        self.element_type.format(fmt, ctx, config)?;
-        ctx.write_str(fmt, ", ")?;
-        format_slice(&self.dimensions, fmt, ctx, config, ", ")?;
-        ctx.write_str(fmt, "]")
-    }
-}
-
-impl Format for ast::ArrayRefMut {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        _config: &Config,
-    ) -> fmt::Result {
-        ctx.write_str(
-            fmt,
-            match self {
-                ast::ArrayRefMut::Readonly => "readonly",
-                ast::ArrayRefMut::Mutable => "mutable",
-            },
-        )
-    }
-}
-
-impl<'a> Format for ast::ArrayRefType<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        ctx.emit_comments_before(fmt, self.span.start, config)?;
-        self.mutability.format(fmt, ctx, config)?;
-        ctx.write_str(fmt, " array[")?;
-        self.element_type.format(fmt, ctx, config)?;
-        ctx.write_str(fmt, ", ")?;
-        self.dimensions.format(fmt, ctx, config)?;
-        ctx.write_str(fmt, "]")
-    }
-}
-
-impl<'a> Format for ast::ArrayRefDims<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        match self {
-            ast::ArrayRefDims::ExprList(exprs) => format_slice(exprs, fmt, ctx, config, ", "),
-            ast::ArrayRefDims::Dim(expr) => {
-                ctx.write_str(fmt, "#dim = ")?;
-                expr.format(fmt, ctx, config)
-            }
-        }
-    }
-}
-
-impl<'a> Format for ast::TypeExpr<'a> {
-    fn format(
-        &self,
-        fmt: &mut fmt::Formatter<'_>,
-        ctx: &mut Context<'_>,
-        config: &Config,
-    ) -> fmt::Result {
-        match self {
-            ast::TypeExpr::Scalar(ty) => ty.format(fmt, ctx, config),
-            ast::TypeExpr::Array(ty) => ty.format(fmt, ctx, config),
-        }
-    }
-}
-
-fn format_expr(
-    expr: &ast::Expr<'_>,
-    fmt: &mut fmt::Formatter<'_>,
-    ctx: &mut Context<'_>,
-    config: &Config,
-    parent: Option<ExprParent>,
-) -> fmt::Result {
-    ctx.emit_comments_before(fmt, expr.span().start, config)?;
-
-    let needs_parens = parent.is_some_and(|parent| needs_expr_parens(expr, parent));
-    if needs_parens {
-        ctx.write_str(fmt, "(")?;
-    }
-
-    match expr {
-        ast::Expr::Ident(ident) => ident.format(fmt, ctx, config)?,
-        ast::Expr::HardwareQubit(name, _) => ctx.write_str(fmt, name)?,
-        ast::Expr::IntLiteral(value, _, _) => ctx.write_str(fmt, value)?,
-        ast::Expr::FloatLiteral(value, _) => ctx.write_str(fmt, value)?,
-        ast::Expr::ImagLiteral(value, _) => ctx.write_str(fmt, value)?,
-        ast::Expr::BoolLiteral(value, _) => {
-            ctx.write_str(fmt, if *value { "true" } else { "false" })?
-        }
-        ast::Expr::BitstringLiteral(value, _) => ctx.write_str(fmt, value)?,
-        ast::Expr::TimingLiteral(value, _) => ctx.write_str(fmt, value)?,
-        ast::Expr::Paren(inner, _) => {
-            ctx.write_str(fmt, "(")?;
-            format_expr(inner, fmt, ctx, config, None)?;
-            ctx.write_str(fmt, ")")?;
-        }
-        ast::Expr::BinOp {
-            left, op, right, ..
-        } => {
-            let precedence = bin_op_precedence(*op);
-            format_expr(
-                left,
-                fmt,
-                ctx,
-                config,
-                Some(ExprParent::Binary {
-                    precedence,
-                    side: ExprSide::Left,
-                }),
-            )?;
-            ctx.space(fmt)?;
-            op.format(fmt, ctx, config)?;
-            ctx.space(fmt)?;
-            format_expr(
-                right,
-                fmt,
-                ctx,
-                config,
-                Some(ExprParent::Binary {
-                    precedence,
-                    side: ExprSide::Right,
-                }),
-            )?;
-        }
-        ast::Expr::UnaryOp { op, operand, .. } => {
-            op.format(fmt, ctx, config)?;
-            format_expr(
-                operand,
-                fmt,
-                ctx,
-                config,
-                Some(ExprParent::Unary { precedence: 21 }),
-            )?;
-        }
-        ast::Expr::Index { expr, index, .. } => {
-            format_expr(
-                expr,
-                fmt,
-                ctx,
-                config,
-                Some(ExprParent::Postfix { precedence: 26 }),
-            )?;
-            index.format(fmt, ctx, config)?;
-        }
-        ast::Expr::Call { name, args, .. } => {
-            name.format(fmt, ctx, config)?;
-            ctx.write_str(fmt, "(")?;
-            format_slice(args, fmt, ctx, config, ", ")?;
-            ctx.write_str(fmt, ")")?;
-        }
-        ast::Expr::Cast { ty, operand, .. } => {
-            ty.format(fmt, ctx, config)?;
-            ctx.write_str(fmt, "(")?;
-            operand.format(fmt, ctx, config)?;
-            ctx.write_str(fmt, ")")?;
-        }
-        ast::Expr::DurationOf { scope, .. } => {
-            ctx.write_str(fmt, "durationof(")?;
-            scope.format(fmt, ctx, config)?;
-            ctx.write_str(fmt, ")")?;
-        }
-        ast::Expr::ArrayLiteral(array) => array.format(fmt, ctx, config)?,
-    }
-
-    if needs_parens {
-        ctx.write_str(fmt, ")")?;
-    }
-
-    Ok(())
-}
-
-fn format_slice<T: Format>(
-    items: &[T],
-    fmt: &mut fmt::Formatter<'_>,
-    ctx: &mut Context<'_>,
-    config: &Config,
-    separator: &str,
-) -> fmt::Result {
-    for (index, item) in items.iter().enumerate() {
-        if index > 0 {
-            ctx.write_str(fmt, separator)?;
-        }
-        item.format(fmt, ctx, config)?;
-    }
-    Ok(())
-}
-
-fn format_designator(
-    designator: &ast::Expr<'_>,
-    fmt: &mut fmt::Formatter<'_>,
-    ctx: &mut Context<'_>,
-    config: &Config,
-) -> fmt::Result {
-    ctx.write_str(fmt, "[")?;
-    designator.format(fmt, ctx, config)?;
-    ctx.write_str(fmt, "]")
-}
-
-fn format_optional_designator(
-    designator: Option<&ast::Expr<'_>>,
-    fmt: &mut fmt::Formatter<'_>,
-    ctx: &mut Context<'_>,
-    config: &Config,
-) -> fmt::Result {
-    if let Some(designator) = designator {
-        format_designator(designator, fmt, ctx, config)?;
-    }
-    Ok(())
-}
-
-fn span_of_stmt_or_scope(node: &ast::StmtOrScope<'_>) -> Span {
-    match node {
-        ast::StmtOrScope::Stmt(stmt) => stmt.span,
-        ast::StmtOrScope::Scope(scope) => scope.span,
-    }
-}
-
-fn expr_precedence(expr: &ast::Expr<'_>) -> u8 {
-    match expr {
-        ast::Expr::BinOp { op, .. } => bin_op_precedence(*op),
-        ast::Expr::UnaryOp { .. } => 21,
-        ast::Expr::Index { .. } => 26,
-        ast::Expr::Paren(..)
-        | ast::Expr::Call { .. }
-        | ast::Expr::Cast { .. }
-        | ast::Expr::DurationOf { .. }
-        | ast::Expr::Ident(_)
-        | ast::Expr::HardwareQubit(..)
-        | ast::Expr::IntLiteral(..)
-        | ast::Expr::FloatLiteral(..)
-        | ast::Expr::ImagLiteral(..)
-        | ast::Expr::BoolLiteral(..)
-        | ast::Expr::BitstringLiteral(..)
-        | ast::Expr::TimingLiteral(..)
-        | ast::Expr::ArrayLiteral(..) => 27,
-    }
-}
-
-fn needs_expr_parens(expr: &ast::Expr<'_>, parent: ExprParent) -> bool {
-    let child_precedence = expr_precedence(expr);
-
-    match parent {
-        ExprParent::Unary { precedence } | ExprParent::Postfix { precedence } => {
-            child_precedence < precedence
-        }
-        ExprParent::Binary { precedence, side } => {
-            child_precedence < precedence
-                || (child_precedence == precedence
-                    && matches!(
-                        side,
-                        ExprSide::Right if !matches!(expr, ast::Expr::BinOp { op: ast::BinOp::Pow, .. })
-                    ))
-                || (child_precedence == precedence
-                    && matches!(side, ExprSide::Left)
-                    && matches!(
-                        expr,
-                        ast::Expr::BinOp {
-                            op: ast::BinOp::Pow,
-                            ..
-                        }
-                    ))
-        }
-    }
-}
-
-fn bin_op_precedence(op: ast::BinOp) -> u8 {
-    match op {
-        ast::BinOp::LogOr => 2,
-        ast::BinOp::LogAnd => 4,
-        ast::BinOp::BitOr => 6,
-        ast::BinOp::BitXor => 8,
-        ast::BinOp::BitAnd => 10,
-        ast::BinOp::Eq | ast::BinOp::Neq => 12,
-        ast::BinOp::Lt | ast::BinOp::Gt | ast::BinOp::Lte | ast::BinOp::Gte => 14,
-        ast::BinOp::Shl | ast::BinOp::Shr => 16,
-        ast::BinOp::Add | ast::BinOp::Sub => 18,
-        ast::BinOp::Mul | ast::BinOp::Div | ast::BinOp::Mod => 20,
-        ast::BinOp::Pow => 22,
-    }
-}
-
-fn bin_op_text(op: ast::BinOp) -> &'static str {
-    match op {
-        ast::BinOp::Add => "+",
-        ast::BinOp::Sub => "-",
-        ast::BinOp::Mul => "*",
-        ast::BinOp::Div => "/",
-        ast::BinOp::Mod => "%",
-        ast::BinOp::Pow => "**",
-        ast::BinOp::BitAnd => "&",
-        ast::BinOp::BitOr => "|",
-        ast::BinOp::BitXor => "^",
-        ast::BinOp::Shl => "<<",
-        ast::BinOp::Shr => ">>",
-        ast::BinOp::LogAnd => "&&",
-        ast::BinOp::LogOr => "||",
-        ast::BinOp::Eq => "==",
-        ast::BinOp::Neq => "!=",
-        ast::BinOp::Lt => "<",
-        ast::BinOp::Gt => ">",
-        ast::BinOp::Lte => "<=",
-        ast::BinOp::Gte => ">=",
-    }
-}
-
-fn un_op_text(op: ast::UnOp) -> &'static str {
-    match op {
-        ast::UnOp::Neg => "-",
-        ast::UnOp::BitNot => "~",
-        ast::UnOp::LogNot => "!",
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ExprParent {
-    Binary { precedence: u8, side: ExprSide },
-    Unary { precedence: u8 },
-    Postfix { precedence: u8 },
-}
-
-#[derive(Clone, Copy)]
-enum ExprSide {
-    Left,
-    Right,
 }
 
 #[cfg(test)]
@@ -1805,7 +913,7 @@ if (true) { x q[0]; }"#;
                 "qubit[2] q;\n",
                 "if (true) {\n",
                 "    x q[0];\n",
-                "}"
+                "}\n"
             )
         );
     }
@@ -1814,26 +922,84 @@ if (true) { x q[0]; }"#;
     fn compact_inlines_simple_scope() {
         let source = "if (a) { x q; y q; }";
         let formatted = format(source, Config::compact()).unwrap();
-        assert_eq!(formatted, "if (a) { x q; y q; }");
+        assert_eq!(formatted, "if (a) { x q; y q; }\n");
     }
 
     #[test]
-    fn collects_and_queries_comments() {
-        let source = "/* head */\ninclude \"stdgates.inc\"; // tail\n";
-        let context = Context::from_source(source).unwrap();
+    fn output_ends_with_exactly_one_newline() {
+        for source in ["x q;", "x q;\n", "x q;\n\n\n", "x q; // c", "// c\n\n"] {
+            let formatted = format(source, Config::default()).unwrap();
+            assert!(formatted.ends_with('\n'), "{formatted:?}");
+            assert!(!formatted.ends_with("\n\n"), "{formatted:?}");
+        }
+        assert_eq!(format("", Config::default()).unwrap(), "");
+        assert_eq!(format(" \n ", Config::default()).unwrap(), "");
+    }
 
-        assert_eq!(context.comments().len(), 2);
-        assert_eq!(context.comments()[0].kind, CommentKind::Block);
-        assert_eq!(context.comments()[1].kind, CommentKind::Line);
+    #[test]
+    fn keeps_comments_after_the_last_statement() {
+        let source = "x q; // same line\n// own line\n\n/* footer */\n";
+        assert_eq!(format(source, Config::default()).unwrap(), source);
+        assert_eq!(
+            format("// only a comment", Config::default()).unwrap(),
+            "// only a comment\n"
+        );
+    }
 
-        let include_span = oqi_lex::span(11, 35);
-        let comments_in = context.comments_in(include_span).count();
-        let comments_before = context.comments_before(include_span.start).count();
-        let comments_after = context.comments_after(include_span.end).count();
+    #[test]
+    fn keeps_comments_in_openpulse_bodies() {
+        let source = concat!(
+            "defcalgrammar \"openpulse\";\n",
+            "cal {\n",
+            "    // first\n",
+            "    extern port p0; /* same line */\n",
+            "    // last\n",
+            "}\n",
+            "defcal x $0 {\n",
+            "    // only a comment\n",
+            "}\n",
+        );
+        assert_eq!(format(source, Config::default()).unwrap(), source);
+    }
 
-        assert_eq!(comments_in, 0);
-        assert_eq!(comments_before, 1);
-        assert_eq!(comments_after, 1);
+    #[test]
+    fn comments_are_indented_with_the_code() {
+        let source = "if (true) {\n// a\n  x q;\n\n  /* b */\n  y q;\n  // c\n}\n";
+        assert_eq!(
+            format(source, Config::default()).unwrap(),
+            concat!(
+                "if (true) {\n",
+                "    // a\n",
+                "    x q;\n",
+                "\n",
+                "    /* b */\n",
+                "    y q;\n",
+                "    // c\n",
+                "}\n",
+            )
+        );
+    }
+
+    #[test]
+    fn compact_keeps_a_pragma_on_its_own_line() {
+        let source = "{ pragma foo\n }";
+        let formatted = format(source, Config::compact()).unwrap();
+        assert_eq!(formatted, "{ pragma foo\n}\n");
+        assert!(parse(&formatted).is_ok());
+    }
+
+    #[test]
+    fn parenthesizes_only_where_precedence_requires() {
+        for (source, expected) in [
+            ("a = (b + c) * d;", "a = (b + c) * d;\n"),
+            ("a = b - (c - d);", "a = b - (c - d);\n"),
+            ("a = (b ** c) ** d;", "a = (b ** c) ** d;\n"),
+            ("a = b ** -c;", "a = b ** (-c);\n"),
+            ("a = -b ** c;", "a = -b ** c;\n"),
+            ("a = (b + c)[0];", "a = (b + c)[0];\n"),
+        ] {
+            assert_eq!(format(source, Config::default()).unwrap(), expected);
+        }
     }
 
     #[test]

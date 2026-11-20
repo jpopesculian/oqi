@@ -130,6 +130,12 @@ fn syntax_error_carries_span() {
     };
     let (start, end) = (field("start"), field("end"));
     assert!(end > start, "span should be non-empty, got {start}..{end}");
+
+    // It is reported under the syntax code, as a syntax error.
+    let message = error_message(err.into());
+    assert!(message.contains("S0001"), "{message}");
+    assert!(message.contains("expected ';'"), "{message}");
+    assert!(!message.contains("unsupported"), "{message}");
 }
 
 #[wasm_bindgen_test]

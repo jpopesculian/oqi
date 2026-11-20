@@ -54,10 +54,10 @@ impl Lowerer {
             } => self.unroll_gate_for(ty, var, iterable, body, out),
             ast::StmtKind::If { .. }
             | ast::StmtKind::While { .. }
-            | ast::StmtKind::Switch { .. } => Err(CompileError::new(ErrorKind::InvalidGateBody(
-                "branching is not allowed in a gate body".into(),
-            ))
-            .with_span(stmt.span)),
+            | ast::StmtKind::Switch { .. } => Err(CompileError::at(
+                ErrorKind::InvalidGateBody("branching is not allowed in a gate body".into()),
+                stmt.span,
+            )),
             _ => {
                 let lowered = self.lower_stmt(stmt)?;
                 for s in &lowered {
@@ -112,17 +112,19 @@ impl Lowerer {
                 let end = match &range.end {
                     Some(e) => self.gate_const_int(e)?,
                     None => {
-                        return Err(CompileError::new(ErrorKind::InvalidGateBody(
-                            "range for-loop in a gate body requires an explicit end".into(),
-                        ))
-                        .with_span(*span));
+                        return Err(CompileError::at(
+                            ErrorKind::InvalidGateBody(
+                                "range for-loop in a gate body requires an explicit end".into(),
+                            ),
+                            *span,
+                        ));
                     }
                 };
                 if step == 0 {
-                    return Err(CompileError::new(ErrorKind::InvalidGateBody(
-                        "for-loop range step must be non-zero".into(),
-                    ))
-                    .with_span(*span));
+                    return Err(CompileError::at(
+                        ErrorKind::InvalidGateBody("for-loop range step must be non-zero".into()),
+                        *span,
+                    ));
                 }
                 let mut values = Vec::new();
                 let mut i = start;
@@ -142,10 +144,12 @@ impl Lowerer {
             ast::ForIterable::Set(exprs, _) => {
                 exprs.iter().map(|e| self.gate_const_int(e)).collect()
             }
-            ast::ForIterable::Expr(e) => Err(CompileError::new(ErrorKind::InvalidGateBody(
-                "iterating a general expression in a gate body is not supported".into(),
-            ))
-            .with_span(e.span())),
+            ast::ForIterable::Expr(e) => Err(CompileError::at(
+                ErrorKind::InvalidGateBody(
+                    "iterating a general expression in a gate body is not supported".into(),
+                ),
+                e.span(),
+            )),
         }
     }
 
@@ -153,10 +157,12 @@ impl Lowerer {
     /// gate-body loop bound. Errors if `e` is not a constant integer.
     fn gate_const_int(&self, e: &ast::Expr<'_>) -> Result<i128> {
         let err = || {
-            CompileError::new(ErrorKind::InvalidGateBody(
-                "loop bounds in a gate body must be compile-time constant integers".into(),
-            ))
-            .with_span(e.span())
+            CompileError::at(
+                ErrorKind::InvalidGateBody(
+                    "loop bounds in a gate body must be compile-time constant integers".into(),
+                ),
+                e.span(),
+            )
         };
         let Value::Scalar(s) = eval_const_expr(e, self.resolver.symbols(), self.resolver.options())
             .map_err(|_| err())?
@@ -184,9 +190,9 @@ fn gate_loop_value(var_ty: &Type, v: i128) -> Value {
 fn validate_gate_stmt(stmt: &sir::Stmt) -> Result<()> {
     match &stmt.kind {
         sir::StmtKind::GateCall(_) | sir::StmtKind::Barrier(_) => Ok(()),
-        _ => Err(CompileError::new(ErrorKind::InvalidGateBody(
-            "statement not allowed in gate body".into(),
-        ))
-        .with_span(stmt.span)),
+        _ => Err(CompileError::at(
+            ErrorKind::InvalidGateBody("statement not allowed in gate body".into()),
+            stmt.span,
+        )),
     }
 }

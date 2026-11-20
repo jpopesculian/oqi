@@ -1,12 +1,16 @@
 //! The crate's public entry points: `compile`, `compile_source`, and the
 //! option helpers the front doors share.
 
+use std::borrow::Cow;
+use std::path::Path;
+
 use oqi_compile::classical::{DurationUnit, ValueTy, iw};
 use oqi_compile::symbol::SymbolKind;
 use oqi_compile::{
-    CompileOptions, DefaultIncludeResolver, ErrorKind, LibOnlyResolver, SystemWidth, compile,
-    compile_source, parse_dt,
+    CompileOptions, DefaultIncludeResolver, ErrorKind, IncludeResolver, LibOnlyResolver,
+    SystemWidth, compile, compile_source, parse_dt,
 };
+use oqi_diagnostics::Diagnostic;
 
 const TIMED: &str = r#"
     include "stdgates.inc";
@@ -131,4 +135,64 @@ fn plain_types_are_64_bits_wide_on_every_host() {
     )
     .expect("compile");
     assert_eq!(module.input("n").unwrap().1, ValueTy::int(iw(64)));
+}
+
+#[test]
+fn syntax_errors_keep_their_code_and_location() {
+    let source = "int x = ;";
+    let err = compile(
+        source,
+        DefaultIncludeResolver,
+        &CompileOptions::default(),
+        None,
+    )
+    .err()
+    .expect("a compile error");
+    assert!(matches!(err.kind, ErrorKind::Syntax(_)), "{:?}", err.kind);
+    assert_eq!(err.code().to_string(), "S0001");
+    assert_eq!(err.to_string(), "expected expression");
+    assert_eq!(&source[err.span], ";");
+}
+
+/// Serves the same broken source for every file, and another for every
+/// library.
+struct BrokenIncludes;
+
+const BROKEN_FILE: &str = "int x = ;\n";
+
+impl IncludeResolver for BrokenIncludes {
+    fn resolve_path(&self, _: &Path) -> Result<Cow<'_, str>, Box<dyn std::error::Error>> {
+        Ok(Cow::Borrowed(BROKEN_FILE))
+    }
+
+    fn resolve_lib(&self, _: &str) -> Result<Cow<'_, str>, Box<dyn std::error::Error>> {
+        Ok(Cow::Borrowed("gate broken q { x q }\n"))
+    }
+}
+
+#[test]
+fn a_syntax_error_in_an_included_file_points_into_that_file() {
+    let options = CompileOptions {
+        source_name: Some("/project/main.qasm".into()),
+        ..Default::default()
+    };
+    let err = compile(r#"include "./other.qasm";"#, BrokenIncludes, &options, None)
+        .err()
+        .expect("a compile error");
+    assert_eq!(err.code().to_string(), "S0001");
+    assert_eq!(err.to_string(), "expected expression");
+    assert_eq!(err.path.as_deref(), Some(Path::new("/project/other.qasm")));
+    assert_eq!(&BROKEN_FILE[err.span], ";");
+}
+
+#[test]
+fn a_syntax_error_in_a_library_is_reported_at_the_include() {
+    // A library is not a file a diagnostic could point into.
+    let source = r#"qubit q; include "broken.inc";"#;
+    let err = compile(source, BrokenIncludes, &CompileOptions::default(), None)
+        .err()
+        .expect("a compile error");
+    assert_eq!(err.code().to_string(), "S0001");
+    assert_eq!(err.to_string(), "in include 'broken.inc': expected ';'");
+    assert_eq!(&source[err.span], r#"include "broken.inc";"#);
 }

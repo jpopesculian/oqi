@@ -41,6 +41,13 @@ def test_run_bell_deterministic():
     assert again.statevector is None
 
 
+def test_syntax_error_is_reported_under_the_syntax_code():
+    with pytest.raises(oqi.OqiError, match="S0001") as excinfo:
+        oqi.compile("OPENQASM 3.0;\nint x = ;\n")
+    assert "expected expression" in str(excinfo.value)
+    assert "unsupported" not in str(excinfo.value)
+
+
 def test_include_path_rejected():
     with pytest.raises(oqi.OqiError, match="file includes are not supported"):
         oqi.compile('OPENQASM 3.0;\ninclude "./foo.qasm";\n')

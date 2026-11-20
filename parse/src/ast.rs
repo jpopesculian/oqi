@@ -1,5 +1,14 @@
 pub use oqi_lex::Span;
 
+// ---- Comments ----
+
+/// A line (`// …`) or block (`/* … */`) comment, delimiters included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Comment<'a> {
+    pub text: &'a str,
+    pub span: Span,
+}
+
 // ---- Identifiers ----
 
 #[derive(Debug, Clone)]
@@ -27,6 +36,15 @@ pub struct Version<'a> {
 pub enum StmtOrScope<'a> {
     Stmt(Box<Stmt<'a>>),
     Scope(Scope<'a>),
+}
+
+impl StmtOrScope<'_> {
+    pub fn span(&self) -> Span {
+        match self {
+            StmtOrScope::Stmt(stmt) => stmt.span,
+            StmtOrScope::Scope(scope) => scope.span,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -207,11 +225,71 @@ pub enum BinOp {
     Gte,
 }
 
+impl BinOp {
+    /// How tightly the operator binds; a higher precedence binds tighter.
+    pub const fn precedence(self) -> u8 {
+        match self {
+            BinOp::LogOr => 2,
+            BinOp::LogAnd => 4,
+            BinOp::BitOr => 6,
+            BinOp::BitXor => 8,
+            BinOp::BitAnd => 10,
+            BinOp::Eq | BinOp::Neq => 12,
+            BinOp::Lt | BinOp::Gt | BinOp::Lte | BinOp::Gte => 14,
+            BinOp::Shl | BinOp::Shr => 16,
+            BinOp::Add | BinOp::Sub => 18,
+            BinOp::Mul | BinOp::Div | BinOp::Mod => 20,
+            BinOp::Pow => 22,
+        }
+    }
+
+    pub const fn is_right_associative(self) -> bool {
+        matches!(self, BinOp::Pow)
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Mod => "%",
+            BinOp::Pow => "**",
+            BinOp::BitAnd => "&",
+            BinOp::BitOr => "|",
+            BinOp::BitXor => "^",
+            BinOp::Shl => "<<",
+            BinOp::Shr => ">>",
+            BinOp::LogAnd => "&&",
+            BinOp::LogOr => "||",
+            BinOp::Eq => "==",
+            BinOp::Neq => "!=",
+            BinOp::Lt => "<",
+            BinOp::Gt => ">",
+            BinOp::Lte => "<=",
+            BinOp::Gte => ">=",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UnOp {
     Neg,
     BitNot,
     LogNot,
+}
+
+impl UnOp {
+    /// Unary operators bind tighter than `*` and looser than `**`.
+    pub const PRECEDENCE: u8 = 21;
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            UnOp::Neg => "-",
+            UnOp::BitNot => "~",
+            UnOp::LogNot => "!",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -287,6 +365,17 @@ impl<'a> Expr<'a> {
             Expr::ArrayLiteral(al) => al.span,
         }
     }
+
+    /// Precedence of the expression's outermost operator. Anything that is
+    /// not an operator application binds tightest.
+    pub fn precedence(&self) -> u8 {
+        match self {
+            Expr::BinOp { op, .. } => op.precedence(),
+            Expr::UnaryOp { .. } => UnOp::PRECEDENCE,
+            Expr::Index { .. } => IndexOp::PRECEDENCE,
+            _ => u8::MAX,
+        }
+    }
 }
 
 // ---- Index types ----
@@ -295,6 +384,11 @@ impl<'a> Expr<'a> {
 pub struct IndexOp<'a> {
     pub kind: IndexKind<'a>,
     pub span: Span,
+}
+
+impl IndexOp<'_> {
+    /// The postfix index operator binds tighter than every other operator.
+    pub const PRECEDENCE: u8 = 26;
 }
 
 #[derive(Debug)]
@@ -344,13 +438,31 @@ pub enum IoDir {
     Output,
 }
 
+impl IoDir {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            IoDir::Input => "input",
+            IoDir::Output => "output",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum OldStyleKind {
     Creg,
     Qreg,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+impl OldStyleKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            OldStyleKind::Creg => "creg",
+            OldStyleKind::Qreg => "qreg",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssignOp {
     Assign,
     AddAssign,
@@ -364,6 +476,25 @@ pub enum AssignOp {
     RightShiftAssign,
     ModAssign,
     PowAssign,
+}
+
+impl AssignOp {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            AssignOp::Assign => "=",
+            AssignOp::AddAssign => "+=",
+            AssignOp::SubAssign => "-=",
+            AssignOp::MulAssign => "*=",
+            AssignOp::DivAssign => "/=",
+            AssignOp::BitAndAssign => "&=",
+            AssignOp::BitOrAssign => "|=",
+            AssignOp::BitXorAssign => "^=",
+            AssignOp::LeftShiftAssign => "<<=",
+            AssignOp::RightShiftAssign => ">>=",
+            AssignOp::ModAssign => "%=",
+            AssignOp::PowAssign => "**=",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -501,10 +632,19 @@ pub struct ArrayType<'a> {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum ArrayRefMut {
     Readonly,
     Mutable,
+}
+
+impl ArrayRefMut {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ArrayRefMut::Readonly => "readonly",
+            ArrayRefMut::Mutable => "mutable",
+        }
+    }
 }
 
 #[derive(Debug)]

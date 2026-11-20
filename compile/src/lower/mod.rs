@@ -37,16 +37,8 @@ pub fn compile_source(
     options: &CompileOptions,
     timings: Option<&[(&str, &str)]>,
 ) -> Result<sir::Program> {
-    let ast = oqi_parse::parse(source).map_err(|e| {
-        // Carry the parser's span through so the error renders with a location
-        // (and callers can highlight it) instead of the `0..0` fallback.
-        CompileError::new(ErrorKind::Unsupported(format!(
-            "parse error: {}",
-            e.message
-        )))
-        .with_span(e.span)
-        .with_path(options.source_name.clone())
-    })?;
+    let ast = oqi_parse::parse(source)
+        .map_err(|e| CompileError::from(e).with_path(options.source_name.clone()))?;
     let mut lowerer = Lowerer::new(include_resolver, options.clone());
     lowerer.lower_program(&ast)?;
     let mut program = lowerer.finish(&ast);
@@ -181,10 +173,12 @@ impl Lowerer {
                     resolve_type(ty, self.resolver.symbols(), self.resolver.options())?;
                 let e = match init {
                     ast::ExprOrMeasure::Measure(_) => {
-                        return Err(CompileError::new(ErrorKind::InvalidContext(
-                            "const initializer cannot be a measurement".into(),
-                        ))
-                        .with_span(span));
+                        return Err(CompileError::at(
+                            ErrorKind::InvalidContext(
+                                "const initializer cannot be a measurement".into(),
+                            ),
+                            span,
+                        ));
                     }
                     ast::ExprOrMeasure::Expr(e) => e,
                 };
@@ -877,30 +871,25 @@ impl Lowerer {
         match source {
             IncludeSource::Lib(_) => {
                 let content = self.resolver.resolve_source(&source, span)?.into_owned();
-                self.lower_include_source(&content, path, span)
+                // A library is not a file a diagnostic could point into, so a
+                // syntax error in one is reported at the `include`.
+                let ast = oqi_parse::parse(&content).map_err(|e| {
+                    let message = format!("in include '{path}': {}", e.message);
+                    CompileError::at(ErrorKind::Syntax(message), span)
+                })?;
+                self.lower_included(&ast)
             }
             IncludeSource::Path(file_path) => self.with_include(file_path, |this, file_path| {
                 let src = IncludeSource::Path(file_path.to_path_buf());
                 let content = this.resolver.resolve_source(&src, span)?.into_owned();
-                this.lower_include_source(&content, path, span)
+                let ast = oqi_parse::parse(&content)
+                    .map_err(|e| CompileError::from(e).with_path(Some(file_path.to_path_buf())))?;
+                this.lower_included(&ast)
             }),
         }
     }
 
-    fn lower_include_source(
-        &mut self,
-        content: &str,
-        path: &str,
-        span: oqi_lex::Span,
-    ) -> Result<Vec<sir::Stmt>> {
-        let current_path = self.resolver.current_source_path().map(Path::to_path_buf);
-        let ast = oqi_parse::parse(content).map_err(|e| {
-            CompileError::new(ErrorKind::Unsupported(format!(
-                "parse error in include '{path}': {e:?}"
-            )))
-            .with_span(span)
-            .with_path(current_path)
-        })?;
+    fn lower_included(&mut self, ast: &ast::Program<'_>) -> Result<Vec<sir::Stmt>> {
         let mut stmts = Vec::new();
         for item in &ast.body {
             stmts.extend(self.lower_stmt_or_scope(item)?);
@@ -1122,11 +1111,10 @@ impl Lowerer {
                 })
             }
 
-            ast::Expr::ArrayLiteral(_) => Err(CompileError::new(ErrorKind::InvalidContext(
+            ast::Expr::ArrayLiteral(_) => Err(CompileError::at(ErrorKind::InvalidContext(
                 "array literal only valid as the right-hand side of a declaration or assignment"
                     .into(),
-            ))
-            .with_span(span)),
+            ), span)),
         }
     }
 
@@ -1186,7 +1174,7 @@ impl Lowerer {
         for idx in &id.indices {
             let sir_idx = self.lower_index_op(idx)?;
             let ty = index_result_type(&expr.ty, &sir_idx);
-            let span = oqi_lex::span(id.name.span.start, idx.span.end);
+            let span = id.name.span.to(idx.span);
             expr = sir::Expr {
                 kind: sir::ExprKind::Index(sir::Index {
                     base: Box::new(expr),
@@ -1410,10 +1398,10 @@ impl Lowerer {
 
     fn lower_array_literal_expr(&mut self, al: &ast::ArrayLiteral<'_>) -> Result<sir::Expr> {
         if al.items.is_empty() {
-            return Err(CompileError::new(ErrorKind::InvalidLiteral(
-                "array literal must have at least one element".into(),
-            ))
-            .with_span(al.span));
+            return Err(CompileError::at(
+                ErrorKind::InvalidLiteral("array literal must have at least one element".into()),
+                al.span,
+            ));
         }
         let items = al
             .items
@@ -1630,10 +1618,10 @@ fn parse_hardware_qubit(s: &str, span: oqi_lex::Span) -> Result<usize> {
     s.strip_prefix('$')
         .and_then(|n| n.parse().ok())
         .ok_or_else(|| {
-            CompileError::new(ErrorKind::InvalidLiteral(format!(
-                "invalid hardware qubit `{s}`"
-            )))
-            .with_span(span)
+            CompileError::at(
+                ErrorKind::InvalidLiteral(format!("invalid hardware qubit `{s}`")),
+                span,
+            )
         })
 }
 
@@ -1747,14 +1735,6 @@ fn compound_to_bin_op(op: &ast::AssignOp) -> Option<sir::BinOp> {
 
 // ── Type inference ──────────────────────────────────────────────────────
 
-fn type_mismatch(expected: &Type, got: &Type, span: oqi_lex::Span) -> CompileError {
-    CompileError::new(ErrorKind::TypeMismatch {
-        expected: Box::new(expected.clone()),
-        got: Box::new(got.clone()),
-    })
-    .with_span(span)
-}
-
 fn single_item_indices(index: &sir::IndexOp<sir::Expr>) -> Option<Vec<ClassicalIndex>> {
     match &index.kind {
         sir::IndexKind::Items(items) => items
@@ -1774,12 +1754,14 @@ fn binary_result_type(
     right: &Type,
     span: oqi_lex::Span,
 ) -> Result<Type> {
+    let invalid = |message: String| CompileError::at(ErrorKind::InvalidOperands(message), span);
     let (Some(lhs), Some(rhs)) = (left.value_ty(), right.value_ty()) else {
-        return Err(type_mismatch(left, right, span));
+        let operation = format!("{left} {} {right}", op.name());
+        return Err(invalid(format!("`{operation}` is not defined")));
     };
     op.return_ty(lhs, rhs)
         .map(Type::from)
-        .map_err(|_| type_mismatch(left, right, span))
+        .map_err(|e| invalid(e.to_string()))
 }
 
 fn unary_result_type(op: &sir::UnOp, operand: &Type) -> Type {
@@ -1882,11 +1864,13 @@ fn coerce_assign(expr: sir::Expr, target: &Type, span: oqi_lex::Span) -> Result<
         return Ok(expr);
     }
     let mismatch = |got: &Type| {
-        CompileError::new(ErrorKind::TypeMismatch {
-            expected: Box::new(target.clone()),
-            got: Box::new(got.clone()),
-        })
-        .with_span(span)
+        CompileError::at(
+            ErrorKind::TypeMismatch {
+                expected: Box::new(target.clone()),
+                got: Box::new(got.clone()),
+            },
+            span,
+        )
     };
     let (Some(from), Some(to)) = (expr.ty.scalar_ty(), target.scalar_ty()) else {
         // Non-scalar assignment (arrays/refs): aliasing and reference
@@ -2068,17 +2052,21 @@ fn validate_cast(from: &Type, to: &Type, span: oqi_lex::Span) -> Result<()> {
     }
     match (from.value_ty(), to.value_ty()) {
         (Some(from_ty), Some(to_ty)) => from_ty.cast(to_ty).map(|_| ()).map_err(|_| {
-            CompileError::new(ErrorKind::TypeMismatch {
+            CompileError::at(
+                ErrorKind::TypeMismatch {
+                    expected: Box::new(to.clone()),
+                    got: Box::new(from.clone()),
+                },
+                span,
+            )
+        }),
+        _ => Err(CompileError::at(
+            ErrorKind::TypeMismatch {
                 expected: Box::new(to.clone()),
                 got: Box::new(from.clone()),
-            })
-            .with_span(span)
-        }),
-        _ => Err(CompileError::new(ErrorKind::TypeMismatch {
-            expected: Box::new(to.clone()),
-            got: Box::new(from.clone()),
-        })
-        .with_span(span)),
+            },
+            span,
+        )),
     }
 }
 
@@ -2133,7 +2121,7 @@ mod tests {
         sir::Expr {
             kind: sir::ExprKind::Literal(Primitive::bit(false)),
             ty,
-            span: oqi_lex::span(0, 0),
+            span: oqi_lex::Span::default(),
         }
     }
 
@@ -2144,7 +2132,7 @@ mod tests {
         let lit = sir::Expr {
             kind: sir::ExprKind::Literal(Primitive::int(5)),
             ty: Type::Unsized(UnsizedType::Int),
-            span: oqi_lex::span(0, 0),
+            span: oqi_lex::Span::default(),
         };
         let to_u8 = collapse_to(lit.clone(), &Type::from(PrimitiveTy::Uint(iw(8))));
         assert_eq!(to_u8.ty, Type::from(PrimitiveTy::Uint(iw(8))));
@@ -2609,7 +2597,7 @@ mod tests {
             &sir::BinOp::Add,
             &Type::Classical(ValueTy::int(iw(32))),
             &Type::Classical(ValueTy::uint(iw(32))),
-            oqi_lex::span(0, 0),
+            oqi_lex::Span::default(),
         )
         .unwrap();
         assert_eq!(result, Type::Classical(ValueTy::uint(iw(32))));
@@ -2621,7 +2609,7 @@ mod tests {
             &sir::BinOp::Add,
             &Type::Classical(ValueTy::float(FloatWidth::F64)),
             &Type::Classical(ValueTy::complex(FloatWidth::F32)),
-            oqi_lex::span(0, 0),
+            oqi_lex::Span::default(),
         )
         .unwrap();
         assert_eq!(result, Type::Classical(ValueTy::complex(FloatWidth::F64)));
@@ -2633,9 +2621,29 @@ mod tests {
             &sir::BinOp::Add,
             &Type::Classical(ValueTy::bool()),
             &Type::Classical(ValueTy::int(iw(32))),
-            oqi_lex::span(0, 0),
+            oqi_lex::Span::default(),
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn rejected_binary_operator_names_the_operation() {
+        // Both operands have the same type, so "expected X, got X" would
+        // say nothing.
+        let source = "complex a; bool b = a < a;";
+        let err = compile_inline(source)
+            .err()
+            .expect("complex numbers are not ordered");
+        assert_eq!(
+            err.to_string(),
+            "`complex[float[64]] < complex[float[64]]` is not defined"
+        );
+        assert_eq!(&source[err.span], "a < a");
+
+        let err = compile_inline("qubit q; q + q;")
+            .err()
+            .expect("qubits are not numbers");
+        assert_eq!(err.to_string(), "`qubit + qubit` is not defined");
     }
 
     #[test]
@@ -2735,7 +2743,7 @@ mod tests {
                 sir::Expr {
                     kind: sir::ExprKind::Literal(Primitive::int(3)),
                     ty: Type::Classical(ValueTy::int(iw(64))),
-                    span: oqi_lex::span(0, 0),
+                    span: oqi_lex::Span::default(),
                 },
             ],
             Default::default(),
@@ -2774,9 +2782,9 @@ mod tests {
             kind: sir::IndexKind::Items(vec![sir::IndexItem::Single(Box::new(sir::Expr {
                 kind: sir::ExprKind::Literal(Primitive::int(0)),
                 ty: Type::Classical(ValueTy::int(iw(64))),
-                span: oqi_lex::span(0, 0),
+                span: oqi_lex::Span::default(),
             }))]),
-            span: oqi_lex::span(0, 0),
+            span: oqi_lex::Span::default(),
         };
         let result = index_result_type(
             &Type::Classical(ValueTy::array(

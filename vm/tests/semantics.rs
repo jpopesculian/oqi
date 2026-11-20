@@ -433,6 +433,50 @@ fn definitions_are_only_valid_in_the_global_scope() {
     assert!(compile("qubit[2] q; if (true) { let a = q[0]; reset a; }").is_ok());
 }
 
+/// "Globally scoped variables without the `const` modifier are not visible
+/// inside the definition", and neither are the program's qubits.
+#[test]
+fn definitions_see_only_the_constants_of_the_global_scope() {
+    for (src, name) in [
+        ("int g = 5; def f() -> int { return g; }", "g"),
+        ("input float t; def f() -> float { return t; }", "t"),
+        ("qubit[2] q; def f() { reset q[0]; }", "q"),
+        ("qubit[2] q; let a = q[0:1]; def f() { reset a; }", "a"),
+        ("float w = 0.5; gate g a { U(w, 0, 0) a; }", "w"),
+        ("qubit q; gate g a { U(0, 0, 0) q; }", "q"),
+        ("int n = 2; def f() { bit[n] b; }", "n"),
+        (
+            r#"defcalgrammar "openpulse"; int n = 2; defcal g $0 { int m = n; }"#,
+            "n",
+        ),
+    ] {
+        let err = compile_error(src);
+        let message = format!("`{name}` is not visible");
+        assert!(err.to_string().contains(&message), "{src}: {err}");
+        assert_ne!(err.span, Default::default(), "{src}");
+    }
+
+    // Constants, gates and subroutines of the global scope are visible, a
+    // parameter or local may shadow a variable, and the variable is itself
+    // again after the definition.
+    let src = r#"
+        const int c = 3;
+        int a = 10;
+        def twice(int x) -> int { return 2 * x; }
+        def f(int a) -> int { int b = c; return twice(a) + b; }
+        int r = f(4) + a;
+    "#;
+    assert_eq!(output(src, "r"), "21");
+    let src = r#"
+        const float half = pi / 2;
+        gate g a { U(2 * half, 0, pi) a; }
+        qubit q;
+        g q;
+        bit r = measure q;
+    "#;
+    assert_eq!(output(src, "r"), "1");
+}
+
 // ── Box (docs/scope.rst: a local block scope) ───────────────────────────
 
 #[test]

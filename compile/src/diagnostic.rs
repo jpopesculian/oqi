@@ -31,6 +31,7 @@ impl ErrorKind {
             ErrorKind::InvalidLiteral(_) => (14, "invalid literal"),
             ErrorKind::QubitIndexOutOfRange { .. } => (15, "index out of range"),
             ErrorKind::NotGlobalScope(_) => (16, "not in the global scope"),
+            ErrorKind::NotVisible { .. } => (17, "not visible in this definition"),
         };
         (Code::compile(num), label)
     }
@@ -67,6 +68,9 @@ impl fmt::Display for ErrorKind {
             ErrorKind::NotGlobalScope(what) => {
                 write!(f, "{what} are only allowed in the global scope")
             }
+            ErrorKind::NotVisible { name, .. } => {
+                write!(f, "`{name}` is not visible inside a definition")
+            }
             ErrorKind::InvalidGateBody(msg) => write!(f, "invalid gate body: {msg}"),
             ErrorKind::InvalidLiteral(msg) => write!(f, "invalid literal: {msg}"),
             ErrorKind::Unsupported(msg) => write!(f, "unsupported: {msg}"),
@@ -99,8 +103,14 @@ impl Diagnostic for CompileError {
 
     fn labels(&self) -> Vec<DiagLabel> {
         let mut labels = vec![DiagLabel::primary(self.span, self.kind.code_and_label().1)];
-        if let ErrorKind::DuplicateDefinition { prior, .. } = &self.kind {
-            labels.push(DiagLabel::secondary(*prior, "first defined here"));
+        match &self.kind {
+            ErrorKind::DuplicateDefinition { prior, .. } => {
+                labels.push(DiagLabel::secondary(*prior, "first defined here"));
+            }
+            ErrorKind::NotVisible { declared, .. } => {
+                labels.push(DiagLabel::secondary(*declared, "declared here"));
+            }
+            _ => {}
         }
         labels
     }
@@ -113,6 +123,11 @@ impl Diagnostic for CompileError {
             ErrorKind::IncludeCycle(chain) => {
                 vec![format!("cycle: {}", chain.join(" -> "))]
             }
+            ErrorKind::NotVisible { .. } => vec![
+                "a gate, subroutine or defcal sees only the constants, gates and \
+                 subroutines of the global scope; pass the value as a parameter"
+                    .into(),
+            ],
             _ => Vec::new(),
         }
     }

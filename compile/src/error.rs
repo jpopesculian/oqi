@@ -32,6 +32,12 @@ pub enum ErrorKind {
     /// A declaration (named by the payload) that the spec only allows in
     /// the global scope, made in a local one.
     NotGlobalScope(&'static str),
+    /// A variable, qubit or alias of the global scope named inside a gate,
+    /// subroutine or defcal, which sees only the global scope's constants.
+    NotVisible {
+        name: String,
+        declared: Span,
+    },
     InvalidGateBody(String),
     Unsupported(String),
     InvalidLiteral(String),

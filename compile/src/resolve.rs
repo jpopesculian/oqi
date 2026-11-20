@@ -78,6 +78,9 @@ pub struct Resolver {
     /// `lookup_stack` where it starts. The scopes from there on are its
     /// own, and see the cal scope before the scopes around it.
     cal_start: Option<usize>,
+    /// While resolving a gate, subroutine or defcal (docs/scope.rst): the
+    /// variables, qubits and aliases of the global scope are not visible.
+    in_definition: bool,
     include_stack: Vec<PathBuf>,
     options: CompileOptions,
     include_resolver: Box<dyn IncludeResolver>,
@@ -151,6 +154,7 @@ impl Resolver {
             scope_stack: Vec::new(),
             cal_names: HashMap::new(),
             cal_start: None,
+            in_definition: false,
             include_stack: Vec::new(),
             options,
             include_resolver: Box::new(include_resolver),
@@ -182,6 +186,12 @@ impl Resolver {
 
     pub fn leave_cal(&mut self, outer: Option<usize>) {
         self.cal_start = outer;
+    }
+
+    /// Start (`true`) or finish resolving the parameters and body of a gate,
+    /// subroutine or defcal. Definitions are global, so they do not nest.
+    pub fn set_in_definition(&mut self, inside: bool) {
+        self.in_definition = inside;
     }
 
     /// `Some(id)` for non-global scopes, `None` at global scope. Use this
@@ -243,10 +253,30 @@ impl Resolver {
             self.cal_start
                 .and_then(|_| self.cal_names.get(name).copied())
         };
-        innermost(own)
+        let id = innermost(own)
             .or_else(cal)
             .or_else(|| innermost(around))
-            .ok_or_else(|| CompileError::at(ErrorKind::UndefinedName(name.to_string()), span))
+            .ok_or_else(|| CompileError::at(ErrorKind::UndefinedName(name.to_string()), span))?;
+
+        // "Globally scoped variables without the `const` modifier are not
+        // visible inside the definition", nor are the program's qubits.
+        let symbol = self.symbols.get(id);
+        let run_time = matches!(
+            symbol.kind,
+            SymbolKind::Variable
+                | SymbolKind::Input
+                | SymbolKind::Output
+                | SymbolKind::Qubit
+                | SymbolKind::Alias
+        );
+        if self.in_definition && symbol.scope.is_none() && run_time {
+            let kind = ErrorKind::NotVisible {
+                name: name.to_string(),
+                declared: symbol.span,
+            };
+            return Err(CompileError::at(kind, span));
+        }
+        Ok(id)
     }
 
     pub fn resolve_call(&self, name: &str, span: Span) -> Result<CallTarget> {

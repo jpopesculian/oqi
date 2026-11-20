@@ -2221,8 +2221,8 @@ mod tests {
     fn defcal_stretch_names_stretch() {
         let src = format!(
             "{CAL_PRELUDE}
-            stretch sd;
             defcal x q {{
+                stretch sd;
                 play(drive0, gaussian(0.1, sd, 25us));
             }}
             duration d = durationof({{ x $0; }});"
@@ -2243,7 +2243,7 @@ mod tests {
     fn defcal_nonconst_duration_errors() {
         let src = format!(
             "{CAL_PRELUDE}
-            input duration len;
+            cal {{ duration len = 100us; }}
             defcal x q {{
                 play(drive0, gaussian(0.1, len, 25us));
             }}

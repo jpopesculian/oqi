@@ -105,6 +105,16 @@ impl Lowerer {
         result
     }
 
+    /// Lower the parameters and body of a gate, subroutine or defcal
+    /// (docs/scope.rst, "Subroutine and gate scope"): a scope of its own,
+    /// which of the global scope sees only the constants and definitions.
+    fn with_definition<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        self.resolver.set_in_definition(true);
+        let result = self.with_scope(f);
+        self.resolver.set_in_definition(false);
+        result
+    }
+
     /// Lower a `cal` block or a `defcal` (docs/pulses.rst, "Inline
     /// calibration blocks"): it sees the values `cal` blocks declare, which
     /// the rest of the program does not.
@@ -272,7 +282,7 @@ impl Lowerer {
                 let symbol =
                     self.resolver
                         .declare(name.name, SymbolKind::Gate, Type::Void, name.span)?;
-                let (params, qubits, body) = self.with_scope(|this| {
+                let (params, qubits, body) = self.with_definition(|this| {
                     let angle =
                         Type::Classical(ValueTy::angle(this.resolver.options().system_width.iw()));
                     let params: Vec<_> = params
@@ -314,7 +324,7 @@ impl Lowerer {
                     Type::Void,
                     name.span,
                 )?;
-                let (params, return_ty, body) = self.with_scope(|this| {
+                let (params, return_ty, body) = self.with_definition(|this| {
                     let params = params
                         .iter()
                         .map(|p| this.lower_arg_def(p))
@@ -412,7 +422,7 @@ impl Lowerer {
                     Ok((args, operands, return_ty, this.lower_cal_body(body)?))
                 };
                 let (args, operands, return_ty, body) =
-                    self.with_cal_scope(|this| this.with_scope(lower))?;
+                    self.with_cal_scope(|this| this.with_definition(lower))?;
                 self.calibrations.push(sir::CalibrationDecl {
                     target,
                     args,

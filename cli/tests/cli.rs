@@ -211,3 +211,18 @@ fn timings_file_is_combined_with_flags() {
     assert!(!success);
     assert!(stderr.contains("--dt"), "{stderr}");
 }
+
+#[test]
+fn runtime_errors_point_at_the_flag_that_fixes_them() {
+    let src = file(
+        "needs_input.qasm",
+        "OPENQASM 3.0;\ninput int n;\nint m = n;\n",
+    );
+    let (success, _, stderr) = oqi(&["run", src.to_str().unwrap()]);
+    assert!(!success);
+    assert!(
+        stderr.contains("no value supplied for input `n`"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--input NAME=VALUE"), "{stderr}");
+}

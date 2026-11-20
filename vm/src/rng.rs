@@ -2,6 +2,7 @@
 
 /// A small, seedable xorshift64* PRNG. Avoids a `rand` dependency and
 /// keeps runs reproducible. Shared by every backend and by shot sampling.
+#[derive(Clone)]
 pub(crate) struct Rng {
     state: u64,
 }

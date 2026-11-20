@@ -13,7 +13,6 @@ crate-type = ["cdylib", "rlib"]
 gpu = ["oqi-vm/gpu"]
 
 [dependencies]
-async-trait = "0.1"
 js-sys = "0.3"
 oqi-compile = { path = "../compile" }
 oqi-diagnostics = { path = "../diagnostics" }

@@ -24,9 +24,7 @@ use num_complex::Complex;
 
 use crate::backend::GateModifiers;
 use crate::ch::{ChForm, Projection};
-use crate::clifford::{
-    CliffordSink, M2, apply_clifford_gphase, apply_clifford_u, effective_matrix,
-};
+use crate::clifford::{CliffordSink, M2, apply_clifford_u, effective_matrix};
 use crate::rng::Rng;
 
 const TOL: f64 = 1e-6;
@@ -364,43 +362,6 @@ impl SumState {
         Ok(())
     }
 
-    /// Apply a `gphase` call (`λ = e^{iγ·power}`); controlled, it is
-    /// `I + (λ−1)·Π_C` over the controls.
-    pub(crate) fn apply_gphase(
-        &mut self,
-        gamma: f64,
-        m: &GateModifiers,
-        max_rank: usize,
-    ) -> Result<(), usize> {
-        if !m.neg_controls.is_empty() {
-            let mut pos = m.clone();
-            let negs = std::mem::take(&mut pos.neg_controls);
-            pos.controls.extend(negs);
-            for &c in &m.neg_controls {
-                self.each(|t| t.left_x(c as usize));
-            }
-            let r = self.apply_gphase(gamma, &pos, max_rank);
-            for &c in &m.neg_controls {
-                self.each(|t| t.left_x(c as usize));
-            }
-            return r;
-        }
-        if apply_clifford_gphase(self, gamma * m.power, m) {
-            return Ok(());
-        }
-        let lambda = Complex::from_polar(1.0, gamma * m.power);
-        if (lambda - 1.0).norm() < TOL {
-            return Ok(());
-        }
-        let needed = self.rank().saturating_mul(2);
-        if needed > max_rank {
-            return Err(needed);
-        }
-        let mut clones = self.projected_clones(&m.controls, None, lambda - 1.0);
-        self.terms.append(&mut clones);
-        Ok(())
-    }
-
     /// `‖Σ terms‖²` via the Hermitian Gram sum (diagonal is just |ω|²).
     fn norm_sqr(terms: &[ChForm]) -> f64 {
         let mut total = 0.0;
@@ -517,7 +478,8 @@ impl CliffordSink for SumState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::QuantumBackend;
+    use crate::backend::{BuiltinGate, QuantumBackend};
+    use crate::error::KindResult;
     use crate::sim::StateVectorSim;
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
@@ -541,41 +503,61 @@ mod tests {
         }
     }
 
-    fn none() -> GateModifiers {
-        GateModifiers::none()
-    }
-
-    fn ctrl(cs: &[u32]) -> GateModifiers {
-        GateModifiers {
-            controls: cs.to_vec(),
-            neg_controls: vec![],
-            power: 1.0,
+    fn u(target: u32, theta: f64, phi: f64, lambda: f64, mods: GateModifiers) -> BuiltinGate {
+        BuiltinGate::U {
+            target,
+            theta,
+            phi,
+            lambda,
+            mods,
         }
     }
 
-    /// One lowered backend call, applied identically to both simulators.
-    #[derive(Clone, Debug)]
-    enum Call {
-        U(u32, f64, f64, f64, GateModifiers),
-        Gphase(f64, GateModifiers),
+    fn gphase(gamma: f64, mods: GateModifiers) -> BuiltinGate {
+        BuiltinGate::Gphase { gamma, mods }
     }
 
-    async fn run_both(n: u32, calls: &[Call]) -> (SumState, StateVectorSim<f64>) {
-        let mut sum = SumState::zero(n as usize);
+    /// A [`SumState`] with an unlimited budget as a gate-only backend, so
+    /// calls reach it exactly as they would through the auto-router.
+    struct Unbounded(SumState);
+
+    #[async_trait::async_trait(?Send)]
+    impl QuantumBackend for Unbounded {
+        fn u(
+            &mut self,
+            target: u32,
+            theta: f64,
+            phi: f64,
+            lambda: f64,
+            m: &GateModifiers,
+        ) -> KindResult<()> {
+            self.0.apply_u(target, theta, phi, lambda, m, BIG).unwrap();
+            Ok(())
+        }
+        fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+            self.0.phase(Complex::from_polar(1.0, gamma));
+            Ok(())
+        }
+        async fn measure(&mut self, _qubit: u32) -> bool {
+            unimplemented!()
+        }
+        async fn reset(&mut self, _qubit: u32) {
+            unimplemented!()
+        }
+        fn reset_state(&mut self) -> KindResult<()> {
+            unimplemented!()
+        }
+    }
+
+    /// Apply the same calls to a sum state and the dense simulator.
+    fn run_both(n: u32, calls: &[BuiltinGate]) -> (SumState, StateVectorSim<f64>) {
+        let mut sum = Unbounded(SumState::zero(n as usize));
         let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
-        for c in calls {
-            match c {
-                Call::U(t, th, ph, la, m) => {
-                    sum.apply_u(*t, *th, *ph, *la, m, BIG).unwrap();
-                    sv.u(*t, *th, *ph, *la, m).await;
-                }
-                Call::Gphase(g, m) => {
-                    sum.apply_gphase(*g, m, BIG).unwrap();
-                    sv.gphase(*g, m).await;
-                }
-            }
+        for call in calls {
+            call.apply(&mut sum).unwrap();
+            call.apply(&mut sv).unwrap();
         }
-        (sum, sv)
+        (sum.0, sv)
     }
 
     async fn assert_matches_dense(sum: &SumState, sv: &StateVectorSim<f64>, what: &str) {
@@ -590,14 +572,14 @@ mod tests {
         }
     }
 
-    fn h(q: u32) -> Call {
-        Call::U(q, FRAC_PI_2, 0.0, PI, none())
+    fn h(q: u32) -> BuiltinGate {
+        u(q, FRAC_PI_2, 0.0, PI, GateModifiers::none())
     }
-    fn t(q: u32) -> Call {
-        Call::U(q, 0.0, 0.0, FRAC_PI_4, none())
+    fn t(q: u32) -> BuiltinGate {
+        u(q, 0.0, 0.0, FRAC_PI_4, GateModifiers::none())
     }
-    fn tdg(q: u32) -> Call {
-        Call::U(q, 0.0, 0.0, -FRAC_PI_4, none())
+    fn tdg(q: u32) -> BuiltinGate {
+        u(q, 0.0, 0.0, -FRAC_PI_4, GateModifiers::none())
     }
 
     /// `H T⁴ H = H Z H = X`: sixteen branches must interfere back down to
@@ -606,7 +588,7 @@ mod tests {
     fn t_gates_interfere_exactly() {
         pollster::block_on(async {
             let calls = vec![h(0), t(0), t(0), t(0), t(0), h(0)];
-            let (sum, sv) = run_both(1, &calls).await;
+            let (sum, sv) = run_both(1, &calls);
             assert!(sum.rank() <= 16);
             assert_matches_dense(&sum, &sv, "HT⁴H").await;
             let amps = sum.amplitudes().unwrap();
@@ -620,7 +602,7 @@ mod tests {
     fn t_tdg_cancels() {
         pollster::block_on(async {
             let calls = vec![h(0), t(0), tdg(0)];
-            let (sum, sv) = run_both(1, &calls).await;
+            let (sum, sv) = run_both(1, &calls);
             assert_matches_dense(&sum, &sv, "T·T†").await;
         })
     }
@@ -631,12 +613,11 @@ mod tests {
     fn powered_u_matches_dense() {
         pollster::block_on(async {
             let quarter = GateModifiers {
-                controls: vec![],
-                neg_controls: vec![],
                 power: 0.25,
+                ..GateModifiers::none()
             };
-            let calls = vec![h(0), Call::U(0, 0.0, 0.0, PI, quarter)];
-            let (sum, sv) = run_both(1, &calls).await;
+            let calls = vec![h(0), u(0, 0.0, 0.0, PI, quarter)];
+            let (sum, sv) = run_both(1, &calls);
             assert_matches_dense(&sum, &sv, "pow(0.25)@Z").await;
         })
     }
@@ -655,14 +636,14 @@ mod tests {
                     let q = r.below(n);
                     match r.below(8) {
                         0 => calls.push(h(q)),
-                        1 => calls.push(Call::U(q, 0.0, 0.0, FRAC_PI_2, none())),
+                        1 => calls.push(u(q, 0.0, 0.0, FRAC_PI_2, GateModifiers::none())),
                         2 | 3 => {
                             let c = (q + 1 + r.below(n - 1)) % n;
                             let g = if r.below(2) == 0 { PI } else { 0.0 };
                             // cx (θ=π) or cz (θ=0 ⇒ z), lowered like stdgates.
-                            calls.push(Call::U(q, g, 0.0, PI, ctrl(&[c])));
+                            calls.push(u(q, g, 0.0, PI, GateModifiers::ctrl(&[c])));
                             if g == PI {
-                                calls.push(Call::Gphase(-FRAC_PI_2, ctrl(&[c])));
+                                calls.push(gphase(-FRAC_PI_2, GateModifiers::ctrl(&[c])));
                             }
                         }
                         4 if noncliff < 4 => {
@@ -673,22 +654,28 @@ mod tests {
                             // rz(θ) as lowered: gphase(−θ/2); U(0,0,θ).
                             noncliff += 1;
                             let th = r.angle();
-                            calls.push(Call::Gphase(-th / 2.0, none()));
-                            calls.push(Call::U(q, 0.0, 0.0, th, none()));
+                            calls.push(gphase(-th / 2.0, GateModifiers::none()));
+                            calls.push(u(q, 0.0, 0.0, th, GateModifiers::none()));
                         }
                         6 if noncliff < 4 => {
                             // ry(θ) = U(θ, 0, 0) up to the built-in phase.
                             noncliff += 1;
-                            calls.push(Call::U(q, r.angle(), 0.0, 0.0, none()));
+                            calls.push(u(q, r.angle(), 0.0, 0.0, GateModifiers::none()));
                         }
                         7 if noncliff < 4 => {
                             noncliff += 1;
-                            calls.push(Call::U(q, r.angle(), r.angle(), r.angle(), none()));
+                            calls.push(u(
+                                q,
+                                r.angle(),
+                                r.angle(),
+                                r.angle(),
+                                GateModifiers::none(),
+                            ));
                         }
                         _ => calls.push(h(q)),
                     }
                 }
-                let (sum, sv) = run_both(n, &calls).await;
+                let (sum, sv) = run_both(n, &calls);
                 assert_matches_dense(&sum, &sv, &format!("seed {seed}")).await;
             }
         })
@@ -701,43 +688,42 @@ mod tests {
         pollster::block_on(async {
             let n = 3u32;
             // cp(0.7) on (0,1) after spreading amplitude.
-            let calls = vec![h(0), h(1), h(2), Call::Gphase(0.7, ctrl(&[0, 1]))];
-            let (sum, sv) = run_both(n, &calls).await;
+            let calls = vec![h(0), h(1), h(2), gphase(0.7, GateModifiers::ctrl(&[0, 1]))];
+            let (sum, sv) = run_both(n, &calls);
             assert_matches_dense(&sum, &sv, "cp").await;
 
             // crz(1.1) on (0,1): gphase(−0.55) ctrl [0]; U(0,0,1.1) ctrl [0].
             let calls = vec![
                 h(0),
                 h(1),
-                Call::Gphase(-0.55, ctrl(&[0])),
-                Call::U(1, 0.0, 0.0, 1.1, ctrl(&[0])),
+                gphase(-0.55, GateModifiers::ctrl(&[0])),
+                u(1, 0.0, 0.0, 1.1, GateModifiers::ctrl(&[0])),
             ];
-            let (sum, sv) = run_both(n, &calls).await;
+            let (sum, sv) = run_both(n, &calls);
             assert_matches_dense(&sum, &sv, "crz").await;
 
             // ccx on (0,1 → 2): U(π,0,π) + gphase(−π/2), both under [0,1].
             let calls = vec![
                 h(0),
                 h(1),
-                Call::U(2, PI, 0.0, PI, ctrl(&[0, 1])),
-                Call::Gphase(-FRAC_PI_2, ctrl(&[0, 1])),
+                u(2, PI, 0.0, PI, GateModifiers::ctrl(&[0, 1])),
+                gphase(-FRAC_PI_2, GateModifiers::ctrl(&[0, 1])),
             ];
-            let (sum, sv) = run_both(n, &calls).await;
+            let (sum, sv) = run_both(n, &calls);
             assert_matches_dense(&sum, &sv, "ccx").await;
 
             // A controlled generic rotation (ZYZ path) and a negative control.
             let neg = GateModifiers {
-                controls: vec![0],
                 neg_controls: vec![1],
-                power: 1.0,
+                ..GateModifiers::ctrl(&[0])
             };
             let calls = vec![
                 h(0),
                 h(1),
-                Call::U(2, 0.9, 0.4, 1.7, ctrl(&[0])),
-                Call::U(2, 0.3, 0.0, 0.0, neg),
+                u(2, 0.9, 0.4, 1.7, GateModifiers::ctrl(&[0])),
+                u(2, 0.3, 0.0, 0.0, neg),
             ];
-            let (sum, sv) = run_both(n, &calls).await;
+            let (sum, sv) = run_both(n, &calls);
             assert_matches_dense(&sum, &sv, "ctrl-generic + negctrl").await;
         })
     }
@@ -748,25 +734,27 @@ mod tests {
     fn budget_overflow_is_clean() {
         pollster::block_on(async {
             let mut sum = SumState::zero(1);
-            sum.apply_u(0, FRAC_PI_2, 0.0, PI, &none(), BIG).unwrap();
+            sum.apply_u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none(), BIG)
+                .unwrap();
             let before = sum.amplitudes().unwrap();
-            let e = sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &none(), 1);
+            let e = sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &GateModifiers::none(), 1);
             assert_eq!(e, Err(2));
             let after = sum.amplitudes().unwrap();
             for (x, y) in before.iter().zip(&after) {
                 assert!((x - y).norm() < 1e-12, "state changed on Err");
             }
-            sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &none(), 2).unwrap();
+            sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &GateModifiers::none(), 2)
+                .unwrap();
             assert_eq!(sum.rank(), 2);
 
             // Negative-control wrap must also restore the state on Err.
             let neg = GateModifiers {
-                controls: vec![],
                 neg_controls: vec![1],
-                power: 1.0,
+                ..GateModifiers::none()
             };
             let mut sum = SumState::zero(2);
-            sum.apply_u(0, FRAC_PI_2, 0.0, PI, &none(), BIG).unwrap();
+            sum.apply_u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none(), BIG)
+                .unwrap();
             let before = sum.amplitudes().unwrap();
             let e = sum.apply_u(0, 0.0, 0.0, FRAC_PI_4, &neg, 1);
             assert!(e.is_err());
@@ -785,35 +773,37 @@ mod tests {
             let n = 3u32;
             for seed in 0..10u64 {
                 let mut r = Lcg(seed * 77 + 5);
-                let mut sum = SumState::zero(n as usize);
+                let mut sum = Unbounded(SumState::zero(n as usize));
                 let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
                 let mut rng = Rng::new(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
+                let both =
+                    |sum: &mut Unbounded, sv: &mut StateVectorSim<f64>, call: BuiltinGate| {
+                        call.apply(sum).unwrap();
+                        call.apply(sv).unwrap();
+                    };
                 for step in 0..20 {
                     let q = r.below(n);
                     match r.below(6) {
-                        0 | 1 => {
-                            let Call::U(t2, th, ph, la, m) = h(q) else {
-                                unreachable!()
-                            };
-                            sum.apply_u(t2, th, ph, la, &m, BIG).unwrap();
-                            sv.u(t2, th, ph, la, &m).await;
-                        }
+                        0 | 1 => both(&mut sum, &mut sv, h(q)),
                         2 => {
                             let c = (q + 1 + r.below(n - 1)) % n;
-                            sum.apply_u(q, PI, 0.0, PI, &ctrl(&[c]), BIG).unwrap();
-                            sv.u(q, PI, 0.0, PI, &ctrl(&[c])).await;
-                            sum.apply_gphase(-FRAC_PI_2, &ctrl(&[c]), BIG).unwrap();
-                            sv.gphase(-FRAC_PI_2, &ctrl(&[c])).await;
+                            both(
+                                &mut sum,
+                                &mut sv,
+                                u(q, PI, 0.0, PI, GateModifiers::ctrl(&[c])),
+                            );
+                            both(
+                                &mut sum,
+                                &mut sv,
+                                gphase(-FRAC_PI_2, GateModifiers::ctrl(&[c])),
+                            );
                         }
-                        3 if step % 3 == 0 => {
-                            sum.apply_u(q, 0.0, 0.0, FRAC_PI_4, &none(), BIG).unwrap();
-                            sv.u(q, 0.0, 0.0, FRAC_PI_4, &none()).await;
-                        }
+                        3 if step % 3 == 0 => both(&mut sum, &mut sv, t(q)),
                         _ => {
                             // Measure on the sum side; force the dense sim to
                             // the same outcome.
                             let pre = sv.amplitudes().await.unwrap();
-                            let outcome = sum.measure(q as usize, &mut rng);
+                            let outcome = sum.0.measure(q as usize, &mut rng);
                             let bit = 1usize << q;
                             let p: f64 = pre
                                 .iter()
@@ -826,11 +816,11 @@ mod tests {
                         }
                     }
                 }
-                assert_matches_dense(&sum, &sv, &format!("seed {seed}")).await;
+                assert_matches_dense(&sum.0, &sv, &format!("seed {seed}")).await;
 
                 // Reset drives the qubit back to |0⟩ with unit norm.
-                sum.reset(0, &mut rng);
-                let amps = sum.amplitudes().unwrap();
+                sum.0.reset(0, &mut rng);
+                let amps = sum.0.amplitudes().unwrap();
                 let ones: f64 = amps
                     .iter()
                     .enumerate()

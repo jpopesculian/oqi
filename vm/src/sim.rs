@@ -6,15 +6,14 @@ use num_traits::Float;
 use oqi_quantum::{Gate, StateVector, Unitary};
 
 use crate::backend::{GateModifiers, QuantumBackend};
-use crate::error::{VmError, VmErrorKind, VmResult};
+use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
+use crate::measure;
 use crate::rng::Rng;
 
 /// State-vector simulator over `Complex<F>` amplitudes (`F` = `f64` by
 /// default; instantiate `StateVectorSim<f32>` for single precision).
 ///
-/// Gate angles always arrive as `f64` and are cast to `F` internally;
-/// measurement probabilities are accumulated in `f64` regardless of `F`
-/// for numerical stability.
+/// Gate angles always arrive as `f64` and are cast to `F` internally.
 pub struct StateVectorSim<F = f64> {
     state: StateVector<F>,
     rng: Rng,
@@ -41,15 +40,19 @@ impl<F: Float + Send + Sync> StateVectorSim<F> {
         })
     }
 
-    /// Enable (or disable) the rayon-parallel gate kernel.
+    /// Enable (or disable) the rayon-parallel gate kernel. Without the
+    /// `parallel` build feature there is no such kernel and gates run
+    /// serially either way; [`BackendSpec`](crate::BackendSpec) reports that
+    /// as an unavailable backend instead.
     pub fn with_parallel(mut self, parallel: bool) -> Self {
         self.parallel = parallel;
         self
     }
 
-    /// The current amplitudes (global phase unresolved).
-    pub fn state(&self) -> &[Complex<F>] {
-        self.state.state()
+    /// Continue an existing measurement RNG stream instead of the seed's.
+    pub(crate) fn with_rng(mut self, rng: Rng) -> Self {
+        self.rng = rng;
+        self
     }
 
     /// Apply a gate, dispatching to the parallel kernel when enabled.
@@ -69,9 +72,30 @@ impl<F: Float + Send + Sync> StateVectorSim<F> {
         F::from(x).expect("gate angle representable in amplitude precision")
     }
 
-    /// Build a [`Gate`] from a unitary plus the controls/power in `m`.
-    fn gate(&self, u: Unitary<F>, m: &GateModifiers) -> Gate<F> {
-        let mut g = Gate::new(u);
+    /// Collapse `qubit` onto a *forced* `outcome` and renormalize — a
+    /// measurement with no RNG. Used to replay a recorded measurement
+    /// deterministically (e.g. when the auto-routing backend converts a
+    /// stabilizer state to a state vector).
+    pub fn project(&mut self, qubit: u32, outcome: bool) {
+        measure::project(self.state.state_mut(), qubit, outcome);
+    }
+}
+
+#[async_trait(?Send)]
+impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
+    fn u(
+        &mut self,
+        target: u32,
+        theta: f64,
+        phi: f64,
+        lambda: f64,
+        m: &GateModifiers,
+    ) -> KindResult<()> {
+        let mut g = Gate::new(Unitary::new(
+            Self::cast(theta),
+            Self::cast(phi),
+            Self::cast(lambda),
+        ));
         for &c in &m.controls {
             g = g.ctrl(c as usize);
         }
@@ -81,139 +105,35 @@ impl<F: Float + Send + Sync> StateVectorSim<F> {
         if m.power != 1.0 {
             g = g.pow(Self::cast(m.power));
         }
-        g
-    }
-
-    fn apply_x(&mut self, target: u32) {
-        // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
-        let x = Unitary::new(
-            Self::cast(std::f64::consts::PI),
-            F::zero(),
-            Self::cast(std::f64::consts::PI),
-        );
-        self.apply_gate(&Gate::new(x), target as usize);
-    }
-
-    /// Collapse `qubit` onto a *forced* `outcome` and renormalize — the
-    /// projection half of [`measure`](Self::measure) with no RNG. Used to
-    /// replay a recorded measurement deterministically (e.g. when the
-    /// auto-routing backend converts a stabilizer state to a state vector).
-    pub fn project(&mut self, qubit: u32, outcome: bool) {
-        let bit = 1usize << qubit;
-        let norm: f64 = self
-            .state
-            .state()
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| (i & bit != 0) == outcome)
-            .map(|(_, a)| a.norm_sqr().to_f64().unwrap())
-            .sum();
-        let scale = if norm > 0.0 {
-            Self::cast(1.0 / norm.sqrt())
-        } else {
-            F::zero()
-        };
-        let zero = Complex::new(F::zero(), F::zero());
-        for (i, a) in self.state.state_mut().iter_mut().enumerate() {
-            if (i & bit != 0) == outcome {
-                *a = *a * scale;
-            } else {
-                *a = zero;
-            }
-        }
-    }
-}
-
-#[async_trait(?Send)]
-impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
-    async fn u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
-        let u = Unitary::new(Self::cast(theta), Self::cast(phi), Self::cast(lambda));
-        let g = self.gate(u, m);
         self.apply_gate(&g, target as usize);
+        Ok(())
     }
 
-    async fn gphase(&mut self, gamma: f64, m: &GateModifiers) {
-        // gphase scales linearly with power: gphase(γ)^k = gphase(kγ).
-        let g = Self::cast(gamma * m.power);
-
-        if m.controls.is_empty() && m.neg_controls.is_empty() {
-            self.state.gphase(g);
-            return;
-        }
-
-        // A controlled global phase is a relative phase. Since `gphase`
-        // has no qubit of its own, the innermost control plays the role
-        // of a phase gate's target: ctrlⁿ @ gphase(g) == ctrlⁿ⁻¹ @
-        // U(0, 0, g) on that qubit (diag(1, e^{ig})). A negctrl target
-        // wants the phase on |0⟩, so it is wrapped in X gates.
-        let mut controls = m.controls.clone();
-        let mut neg_controls = m.neg_controls.clone();
-        let (target, neg_target) = match controls.pop() {
-            Some(c) => (c, false),
-            None => (neg_controls.pop().expect("at least one control"), true),
-        };
-
-        let mut gate = Gate::new(Unitary::new(F::zero(), F::zero(), g));
-        for c in controls {
-            gate = gate.ctrl(c as usize);
-        }
-        for c in neg_controls {
-            gate = gate.neg_ctrl(c as usize);
-        }
-
-        if neg_target {
-            self.apply_x(target);
-            self.apply_gate(&gate, target as usize);
-            self.apply_x(target);
-        } else {
-            self.apply_gate(&gate, target as usize);
-        }
+    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+        self.state.gphase(Self::cast(gamma));
+        Ok(())
     }
 
     async fn measure(&mut self, qubit: u32) -> bool {
-        let bit = 1usize << qubit;
-        let amps = self.state.state();
-
-        // P(outcome = 1) = Σ |amp_i|² over states with this bit set.
-        // Accumulated in f64 even for f32 amplitudes, for stability.
-        let p_one: f64 = amps
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| i & bit != 0)
-            .map(|(_, a)| a.norm_sqr().to_f64().unwrap())
-            .sum();
-
-        let outcome = self.rng.next_f64() < p_one;
-
-        // Collapse: zero the non-matching half and renormalize.
-        let norm = if outcome { p_one } else { 1.0 - p_one };
-        let scale = if norm > 0.0 {
-            Self::cast(1.0 / norm.sqrt())
-        } else {
-            // Degenerate (numerically zero) outcome: leave as-is.
-            F::zero()
-        };
-        let zero = Complex::new(F::zero(), F::zero());
-        for (i, a) in self.state.state_mut().iter_mut().enumerate() {
-            if (i & bit != 0) == outcome {
-                *a = *a * scale;
-            } else {
-                *a = zero;
-            }
-        }
-        outcome
+        measure::measure(self.state.state_mut(), qubit, &mut self.rng)
     }
 
     async fn reset(&mut self, qubit: u32) {
         if self.measure(qubit).await {
-            self.apply_x(qubit);
+            // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
+            let x = Unitary::new(
+                Self::cast(std::f64::consts::PI),
+                F::zero(),
+                Self::cast(std::f64::consts::PI),
+            );
+            self.apply_gate(&Gate::new(x), qubit as usize);
         }
     }
 
-    async fn reset_state(&mut self, _num_qubits: u32) {
-        // Direct re-zero on the existing buffer; leaves the RNG stream intact
-        // so shots stay independent and reproducible from the initial seed.
+    fn reset_state(&mut self) -> KindResult<()> {
+        // Direct re-zero on the existing buffer.
         self.state.zero_in_place();
+        Ok(())
     }
 
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
@@ -233,6 +153,7 @@ impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f64::consts::{FRAC_PI_2, PI};
 
     /// `reset_state` returns the register to |0…0⟩ so a reused sim can start a
     /// fresh shot (the shots feature depends on this).
@@ -242,11 +163,10 @@ mod tests {
             let none = GateModifiers::none();
             let mut sim = StateVectorSim::<f64>::try_zeroed(2, 7).unwrap();
             // X on qubit 0 (U(π,0,π)) → |01>; q0 measures 1 deterministically.
-            sim.u(0, std::f64::consts::PI, 0.0, std::f64::consts::PI, &none)
-                .await;
+            sim.u(0, PI, 0.0, PI, &none).unwrap();
             assert!(sim.measure(0).await, "X|0⟩ measures 1");
             // A fresh shot: re-zero, then both qubits measure 0.
-            sim.reset_state(2).await;
+            sim.reset_state().unwrap();
             assert!(!sim.measure(0).await, "reset_state returns q0 to |0⟩");
             assert!(!sim.measure(1).await, "reset_state returns q1 to |0⟩");
         })
@@ -256,12 +176,11 @@ mod tests {
     #[test]
     fn measure_all_reads_register() {
         pollster::block_on(async {
-            use std::f64::consts::PI;
             let none = GateModifiers::none();
             let mut sim = StateVectorSim::<f64>::try_zeroed(3, 1).unwrap();
             // X on q0 and q2 → |q2 q1 q0> = |101>.
-            sim.u(0, PI, 0.0, PI, &none).await;
-            sim.u(2, PI, 0.0, PI, &none).await;
+            sim.u(0, PI, 0.0, PI, &none).unwrap();
+            sim.u(2, PI, 0.0, PI, &none).unwrap();
             assert_eq!(sim.measure_all(&[0, 1, 2]).await, vec![true, false, true]);
         })
     }
@@ -271,17 +190,11 @@ mod tests {
     #[test]
     fn measure_all_bell_is_correlated() {
         pollster::block_on(async {
-            use std::f64::consts::{FRAC_PI_2, PI};
-            let none = GateModifiers::none();
-            let ctrl0 = GateModifiers {
-                controls: vec![0],
-                neg_controls: vec![],
-                power: 1.0,
-            };
             for seed in 0..8u64 {
                 let mut sim = StateVectorSim::<f64>::try_zeroed(2, seed).unwrap();
-                sim.u(0, FRAC_PI_2, 0.0, PI, &none).await; // H q0
-                sim.u(1, PI, 0.0, PI, &ctrl0).await; // CX 0->1
+                sim.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
+                    .unwrap(); // H q0
+                sim.u(1, PI, 0.0, PI, &GateModifiers::ctrl(&[0])).unwrap(); // CX 0->1
                 let out = sim.measure_all(&[0, 1]).await;
                 assert_eq!(out[0], out[1], "Bell measurement must agree (seed {seed})");
             }

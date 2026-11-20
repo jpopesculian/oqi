@@ -12,8 +12,7 @@
 //! count, so a 150-qubit circuit with a few T gates stays exact and cheap.
 //! When the rank would exceed [`SumPolicy::max_rank`], the log is replayed
 //! onto a dense [`StateVectorSim`] if its 2ⁿ amplitudes are allocatable;
-//! otherwise a [`VmErrorKind::RankOverflow`] is parked and surfaced by the
-//! VM's `take_error` poll.
+//! otherwise the gate fails with a [`VmErrorKind::RankOverflow`].
 //!
 //! Gates arrive as `U(θ,φ,λ)`/`gphase` (the compiler lowers `h`/`s`/`cx`
 //! before the backend), so Clifford-ness is detected from the gate's matrix
@@ -24,12 +23,14 @@
 //! state), but a run that escalates is not distribution-identical to a
 //! pure-dense run with the same seed.
 
+use std::f64::consts::PI;
+
 use async_trait::async_trait;
 use num_complex::Complex;
 
-use crate::backend::{GateModifiers, QuantumBackend};
-use crate::clifford::{CliffordSink, apply_clifford_gphase, apply_clifford_u};
-use crate::error::VmErrorKind;
+use crate::backend::{BuiltinGate, GateModifiers, QuantumBackend};
+use crate::clifford::{CliffordSink, apply_clifford_u};
+use crate::error::{KindResult, VmErrorKind};
 use crate::rng::Rng;
 use crate::sim::StateVectorSim;
 use crate::stabilizer::Tableau;
@@ -44,7 +45,7 @@ pub struct SumPolicy {
     /// non-Clifford gate multiplies the term count by 2–3).
     pub max_rank: usize,
     /// Whether exceeding the budget may fall back to a dense state vector
-    /// (when 2ⁿ amplitudes are allocatable). `false` parks an error
+    /// (when 2ⁿ amplitudes are allocatable). `false` fails the gate
     /// instead — useful to pin the sum tier for benchmarking.
     pub dense_escape: bool,
 }
@@ -58,23 +59,11 @@ impl Default for SumPolicy {
     }
 }
 
-/// A recorded operation, replayed onto a state vector on fallback.
+/// A recorded operation, replayed onto the next tier on a handoff.
 enum Op {
-    U {
-        target: u32,
-        theta: f64,
-        phi: f64,
-        lambda: f64,
-        controls: Vec<u32>,
-        neg_controls: Vec<u32>,
-        power: f64,
-    },
-    Gphase {
-        gamma: f64,
-        controls: Vec<u32>,
-        neg_controls: Vec<u32>,
-        power: f64,
-    },
+    /// A gate. A `gphase` is only ever logged uncontrolled (see
+    /// [`QuantumBackend::gphase`]).
+    Gate(BuiltinGate),
     Measure {
         qubit: u32,
         outcome: bool,
@@ -106,7 +95,6 @@ pub struct AutoSim {
     n: u32,
     mode: Mode,
     policy: SumPolicy,
-    pending_error: Option<VmErrorKind>,
 }
 
 impl AutoSim {
@@ -132,57 +120,21 @@ impl AutoSim {
                 rng: Rng::new(seed),
             },
             policy,
-            pending_error: None,
         }
     }
 
-    /// Replay a recorded Clifford prefix onto a fresh state vector.
-    async fn replay(n: u32, log: &[Op]) -> Option<StateVectorSim<f64>> {
+    /// Replay a recorded log onto a fresh state vector, or `None` if its 2ⁿ
+    /// amplitudes can't be allocated (its gates themselves never fail).
+    fn replay(n: u32, log: &[Op]) -> Option<StateVectorSim<f64>> {
         let mut sv = StateVectorSim::<f64>::try_zeroed(n, DEFAULT_SEED).ok()?;
-        let none = GateModifiers::none();
         for op in log {
             match op {
-                Op::U {
-                    target,
-                    theta,
-                    phi,
-                    lambda,
-                    controls,
-                    neg_controls,
-                    power,
-                } => {
-                    let m = GateModifiers {
-                        controls: controls.clone(),
-                        neg_controls: neg_controls.clone(),
-                        power: *power,
-                    };
-                    sv.u(*target, *theta, *phi, *lambda, &m).await;
-                }
-                Op::Gphase {
-                    gamma,
-                    controls,
-                    neg_controls,
-                    power,
-                } => {
-                    let m = GateModifiers {
-                        controls: controls.clone(),
-                        neg_controls: neg_controls.clone(),
-                        power: *power,
-                    };
-                    sv.gphase(*gamma, &m).await;
-                }
+                Op::Gate(gate) => gate.apply(&mut sv).ok()?,
                 Op::Measure { qubit, outcome } => sv.project(*qubit, *outcome),
                 Op::Reset { qubit, outcome } => {
                     sv.project(*qubit, *outcome);
                     if *outcome {
-                        sv.u(
-                            *qubit,
-                            std::f64::consts::PI,
-                            0.0,
-                            std::f64::consts::PI,
-                            &none,
-                        )
-                        .await;
+                        sv.u(*qubit, PI, 0.0, PI, &GateModifiers::none()).ok()?;
                     }
                 }
             }
@@ -195,36 +147,18 @@ impl AutoSim {
         let mut sum = SumState::zero(n as usize);
         for op in log {
             match op {
-                Op::U {
+                Op::Gate(BuiltinGate::U {
                     target,
                     theta,
                     phi,
                     lambda,
-                    controls,
-                    neg_controls,
-                    power,
-                } => {
-                    let m = GateModifiers {
-                        controls: controls.clone(),
-                        neg_controls: neg_controls.clone(),
-                        power: *power,
-                    };
-                    let r = sum.apply_u(*target, *theta, *phi, *lambda, &m, usize::MAX);
+                    mods,
+                }) => {
+                    let r = sum.apply_u(*target, *theta, *phi, *lambda, mods, usize::MAX);
                     debug_assert!(r.is_ok());
                 }
-                Op::Gphase {
-                    gamma,
-                    controls,
-                    neg_controls,
-                    power,
-                } => {
-                    let m = GateModifiers {
-                        controls: controls.clone(),
-                        neg_controls: neg_controls.clone(),
-                        power: *power,
-                    };
-                    let r = sum.apply_gphase(*gamma, &m, usize::MAX);
-                    debug_assert!(r.is_ok());
+                Op::Gate(BuiltinGate::Gphase { gamma, .. }) => {
+                    sum.phase(Complex::from_polar(1.0, *gamma))
                 }
                 Op::Measure { qubit, outcome } => sum.project(*qubit as usize, *outcome),
                 Op::Reset { qubit, outcome } => {
@@ -244,40 +178,39 @@ impl AutoSim {
 
     /// Tableau → sum handoff: the tableau can't take the pending op.
     fn enter_sum(&mut self) {
-        let (log, rng) = match &mut self.mode {
-            Mode::Stabilizer { log, rng, .. } => {
-                (std::mem::take(log), std::mem::replace(rng, Rng::new(0)))
-            }
-            _ => return,
+        let Mode::Stabilizer { log, rng, .. } = &mut self.mode else {
+            return;
         };
+        let (log, rng) = (std::mem::take(log), rng.clone());
         let sum = Self::replay_sum(self.n, &log);
         self.mode = Mode::Sum { sum, log, rng };
     }
 
-    /// Sum → dense escalation after a rank-budget overflow. Returns `true`
-    /// if execution can continue on a dense state vector; otherwise parks
-    /// a [`VmErrorKind::RankOverflow`] and returns `false`.
-    async fn escalate(&mut self, needed: usize) -> bool {
-        if self.policy.dense_escape {
-            let log = match &mut self.mode {
-                Mode::Sum { log, .. } => std::mem::take(log),
-                _ => return true,
-            };
-            if let Some(sv) = Self::replay(self.n, &log).await {
-                self.mode = Mode::StateVector(sv);
-                return true;
+    /// Sum → dense escalation after a gate would have grown the sum to
+    /// `needed` terms, past the budget. Fails with a
+    /// [`VmErrorKind::RankOverflow`], leaving the sum state as it was, if
+    /// the policy forbids the dense tier or its 2ⁿ amplitudes can't be
+    /// allocated.
+    fn escalate(&mut self, needed: usize) -> KindResult<()> {
+        let Mode::Sum { log, rng, .. } = &self.mode else {
+            return Ok(());
+        };
+        let dense = self
+            .policy
+            .dense_escape
+            .then(|| Self::replay(self.n, log))
+            .flatten();
+        match dense {
+            Some(sv) => {
+                self.mode = Mode::StateVector(sv.with_rng(rng.clone()));
+                Ok(())
             }
-            // 2ⁿ amplitudes don't fit: restore the log and fail below.
-            if let Mode::Sum { log: l, .. } = &mut self.mode {
-                *l = log;
-            }
+            None => Err(VmErrorKind::RankOverflow {
+                rank: needed,
+                max_rank: self.policy.max_rank,
+                qubits: self.n,
+            }),
         }
-        self.pending_error = Some(VmErrorKind::RankOverflow {
-            rank: needed,
-            max_rank: self.policy.max_rank,
-            qubits: self.n,
-        });
-        false
     }
 
     #[cfg(test)]
@@ -292,103 +225,65 @@ impl AutoSim {
 
 #[async_trait(?Send)]
 impl QuantumBackend for AutoSim {
-    async fn u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
-        if self.pending_error.is_some() {
-            return;
-        }
-        if let Mode::Stabilizer { tab, log, .. } = &mut self.mode {
-            if apply_clifford_u(tab, target, theta, phi, lambda, m) {
-                log.push(Op::U {
-                    target,
-                    theta,
-                    phi,
-                    lambda,
-                    controls: m.controls.clone(),
-                    neg_controls: m.neg_controls.clone(),
-                    power: m.power,
-                });
-                return;
-            }
+    fn u(
+        &mut self,
+        target: u32,
+        theta: f64,
+        phi: f64,
+        lambda: f64,
+        m: &GateModifiers,
+    ) -> KindResult<()> {
+        if let Mode::Stabilizer { tab, .. } = &mut self.mode
+            && !apply_clifford_u(tab, target, theta, phi, lambda, m)
+        {
             // Non-Clifford: convert the prefix into a sum state.
             self.enter_sum();
         }
-        let mut overflow = None;
-        if let Mode::Sum { sum, log, .. } = &mut self.mode {
-            match sum.apply_u(target, theta, phi, lambda, m, self.policy.max_rank) {
-                Ok(()) => {
-                    log.push(Op::U {
-                        target,
-                        theta,
-                        phi,
-                        lambda,
-                        controls: m.controls.clone(),
-                        neg_controls: m.neg_controls.clone(),
-                        power: m.power,
-                    });
-                    return;
+        let gate = || {
+            Op::Gate(BuiltinGate::U {
+                target,
+                theta,
+                phi,
+                lambda,
+                mods: m.clone(),
+            })
+        };
+        match &mut self.mode {
+            // Applied to the tableau above.
+            Mode::Stabilizer { log, .. } => log.push(gate()),
+            Mode::Sum { sum, log, .. } => {
+                match sum.apply_u(target, theta, phi, lambda, m, self.policy.max_rank) {
+                    Ok(()) => log.push(gate()),
+                    Err(needed) => {
+                        self.escalate(needed)?;
+                        return self.u(target, theta, phi, lambda, m);
+                    }
                 }
-                Err(needed) => overflow = Some(needed),
             }
+            Mode::StateVector(sv) => return sv.u(target, theta, phi, lambda, m),
         }
-        if let Some(needed) = overflow
-            && !self.escalate(needed).await
-        {
-            return;
-        }
-        if let Mode::StateVector(sv) = &mut self.mode {
-            sv.u(target, theta, phi, lambda, m).await;
-        }
+        Ok(())
     }
 
-    async fn gphase(&mut self, gamma: f64, m: &GateModifiers) {
-        if self.pending_error.is_some() {
-            return;
-        }
-        if let Mode::Stabilizer { tab, log, .. } = &mut self.mode {
-            // Uncontrolled phase: no tableau effect but logged for a faithful
-            // state-vector readout. A single-control phase is a Clifford phase
-            // on the control when it's a multiple of π/2 (e.g. the `gphase`
-            // correction trailing `cx` in stdgates).
-            if apply_clifford_gphase(tab, gamma * m.power, m) {
-                log.push(Op::Gphase {
-                    gamma,
-                    controls: m.controls.clone(),
-                    neg_controls: m.neg_controls.clone(),
-                    power: m.power,
-                });
-                return;
+    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+        let gate = BuiltinGate::Gphase {
+            gamma,
+            mods: GateModifiers::none(),
+        };
+        match &mut self.mode {
+            // No effect on the tableau, but logged for a faithful
+            // state-vector readout.
+            Mode::Stabilizer { log, .. } => log.push(Op::Gate(gate)),
+            Mode::Sum { sum, log, .. } => {
+                sum.phase(Complex::from_polar(1.0, gamma));
+                log.push(Op::Gate(gate));
             }
-            self.enter_sum();
+            Mode::StateVector(sv) => return sv.gphase(gamma),
         }
-        let mut overflow = None;
-        if let Mode::Sum { sum, log, .. } = &mut self.mode {
-            match sum.apply_gphase(gamma, m, self.policy.max_rank) {
-                Ok(()) => {
-                    log.push(Op::Gphase {
-                        gamma,
-                        controls: m.controls.clone(),
-                        neg_controls: m.neg_controls.clone(),
-                        power: m.power,
-                    });
-                    return;
-                }
-                Err(needed) => overflow = Some(needed),
-            }
-        }
-        if let Some(needed) = overflow
-            && !self.escalate(needed).await
-        {
-            return;
-        }
-        if let Mode::StateVector(sv) = &mut self.mode {
-            sv.gphase(gamma, m).await;
-        }
+        Ok(())
     }
 
     async fn measure(&mut self, qubit: u32) -> bool {
-        if self.pending_error.is_some() {
-            return false;
-        }
         match &mut self.mode {
             Mode::Stabilizer { tab, log, rng } => {
                 let outcome = tab.measure(qubit as usize, rng);
@@ -405,9 +300,6 @@ impl QuantumBackend for AutoSim {
     }
 
     async fn reset(&mut self, qubit: u32) {
-        if self.pending_error.is_some() {
-            return;
-        }
         match &mut self.mode {
             Mode::Stabilizer { tab, log, rng } => {
                 let outcome = tab.measure(qubit as usize, rng);
@@ -424,21 +316,21 @@ impl QuantumBackend for AutoSim {
         }
     }
 
-    async fn reset_state(&mut self, num_qubits: u32) {
+    fn reset_state(&mut self) -> KindResult<()> {
         match &mut self.mode {
             // A circuit that outgrew the exact tiers once will again: stay
             // dense rather than replay the escalation every shot.
-            Mode::StateVector(sv) => sv.reset_state(num_qubits).await,
+            Mode::StateVector(sv) => sv.reset_state(),
             // Back to an empty tableau and log, so shots neither compound
             // each other's stabilizer terms nor grow the replay log. The
             // RNG stream carries on, keeping shots independent.
             Mode::Stabilizer { rng, .. } | Mode::Sum { rng, .. } => {
-                let rng = std::mem::replace(rng, Rng::new(0));
                 self.mode = Mode::Stabilizer {
                     tab: Tableau::zero(self.n as usize),
                     log: Vec::new(),
-                    rng,
+                    rng: rng.clone(),
                 };
+                Ok(())
             }
         }
     }
@@ -451,8 +343,7 @@ impl QuantumBackend for AutoSim {
             Mode::Stabilizer { log, .. } => {
                 // Materialize the stabilizer state as a vector (only sensible
                 // for modest n — e.g. `--state` / tests).
-                let sv = Self::replay(self.n, log).await?;
-                sv.amplitudes().await
+                Self::replay(self.n, log)?.amplitudes().await
             }
         }
     }
@@ -460,17 +351,13 @@ impl QuantumBackend for AutoSim {
     fn has_dense_state(&self) -> bool {
         matches!(self.mode, Mode::StateVector(_))
     }
-
-    fn take_error(&mut self) -> Option<VmErrorKind> {
-        self.pending_error.take()
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sim::StateVectorSim;
-    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
+    use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 
     /// A Clifford gate, expressed exactly as the `U`/controlled-`U` calls the
     /// compiler would lower it to (so the detection path is exercised too).
@@ -486,26 +373,19 @@ mod tests {
         Cz(u32, u32),
     }
 
-    fn ctrl(c: u32) -> GateModifiers {
-        GateModifiers {
-            controls: vec![c],
-            neg_controls: vec![],
-            power: 1.0,
-        }
-    }
-
-    async fn apply(b: &mut dyn QuantumBackend, g: G) {
+    fn apply(b: &mut dyn QuantumBackend, g: G) {
         let n = GateModifiers::none();
         match g {
-            G::H(q) => b.u(q, FRAC_PI_2, 0.0, PI, &n).await,
-            G::S(q) => b.u(q, 0.0, 0.0, FRAC_PI_2, &n).await,
-            G::Sdg(q) => b.u(q, 0.0, 0.0, -FRAC_PI_2, &n).await,
-            G::X(q) => b.u(q, PI, 0.0, PI, &n).await,
-            G::Y(q) => b.u(q, PI, FRAC_PI_2, FRAC_PI_2, &n).await,
-            G::Z(q) => b.u(q, 0.0, 0.0, PI, &n).await,
-            G::Cx(c, t) => b.u(t, PI, 0.0, PI, &ctrl(c)).await,
-            G::Cz(c, t) => b.u(t, 0.0, 0.0, PI, &ctrl(c)).await,
+            G::H(q) => b.u(q, FRAC_PI_2, 0.0, PI, &n),
+            G::S(q) => b.u(q, 0.0, 0.0, FRAC_PI_2, &n),
+            G::Sdg(q) => b.u(q, 0.0, 0.0, -FRAC_PI_2, &n),
+            G::X(q) => b.u(q, PI, 0.0, PI, &n),
+            G::Y(q) => b.u(q, PI, FRAC_PI_2, FRAC_PI_2, &n),
+            G::Z(q) => b.u(q, 0.0, 0.0, PI, &n),
+            G::Cx(c, t) => b.u(t, PI, 0.0, PI, &GateModifiers::ctrl(&[c])),
+            G::Cz(c, t) => b.u(t, 0.0, 0.0, PI, &GateModifiers::ctrl(&[c])),
         }
+        .unwrap()
     }
 
     /// Tiny LCG for reproducible random circuits.
@@ -562,14 +442,14 @@ mod tests {
 
                 let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
                 for &g in &circ {
-                    apply(&mut sv, g).await;
+                    apply(&mut sv, g);
                 }
                 let amps = sv.amplitudes().await.unwrap();
 
                 for shot in 0..16u64 {
                     let mut auto = AutoSim::with_seed(n, seed * 1000 + shot + 1);
                     for &g in &circ {
-                        apply(&mut auto, g).await;
+                        apply(&mut auto, g);
                     }
                     let mut idx = 0usize;
                     for q in 0..n {
@@ -597,8 +477,8 @@ mod tests {
                 // across tiny sequential seeds).
                 let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
                 let mut a = AutoSim::with_seed(2, s);
-                apply(&mut a, G::H(0)).await;
-                apply(&mut a, G::Cx(0, 1)).await;
+                apply(&mut a, G::H(0));
+                apply(&mut a, G::Cx(0, 1));
                 let m0 = a.measure(0).await;
                 let m1 = a.measure(1).await;
                 assert_eq!(m0, m1, "bell pair uncorrelated");
@@ -615,9 +495,9 @@ mod tests {
         pollster::block_on(async {
             for seed in 0..8u64 {
                 let mut a = AutoSim::with_seed(1, seed + 1);
-                apply(&mut a, G::H(0)).await;
-                apply(&mut a, G::Z(0)).await;
-                apply(&mut a, G::H(0)).await;
+                apply(&mut a, G::H(0));
+                apply(&mut a, G::Z(0));
+                apply(&mut a, G::H(0));
                 assert!(a.measure(0).await, "HZH|0> should always measure 1");
             }
         })
@@ -627,17 +507,17 @@ mod tests {
     /// `AutoSim` (tableau → replay → state vector) must match the pure
     /// state-vector sim exactly.
     /// A Clifford prefix, a non-Clifford `T`, then more (incl. non-Clifford).
-    async fn mixed_circuit(b: &mut dyn QuantumBackend) {
+    fn mixed_circuit(b: &mut dyn QuantumBackend) {
         let none = GateModifiers::none();
-        apply(b, G::H(0)).await;
-        apply(b, G::Cx(0, 1)).await;
-        apply(b, G::S(2)).await;
-        apply(b, G::Cz(1, 3)).await;
+        apply(b, G::H(0));
+        apply(b, G::Cx(0, 1));
+        apply(b, G::S(2));
+        apply(b, G::Cz(1, 3));
         // Non-Clifford T on qubit 0 → triggers fallback for AutoSim.
-        b.u(0, 0.0, 0.0, FRAC_PI_4, &none).await;
-        apply(b, G::H(2)).await;
-        apply(b, G::Cx(2, 0)).await;
-        b.u(3, 0.37, 0.11, 0.59, &none).await; // arbitrary non-Clifford
+        b.u(0, 0.0, 0.0, FRAC_PI_4, &none).unwrap();
+        apply(b, G::H(2));
+        apply(b, G::Cx(2, 0));
+        b.u(3, 0.37, 0.11, 0.59, &none).unwrap(); // arbitrary non-Clifford
     }
 
     /// Fallback: `AutoSim` (tableau → replay → state vector) must match the
@@ -647,12 +527,12 @@ mod tests {
         pollster::block_on(async {
             let n = 4u32;
             let mut auto = AutoSim::new(n);
-            mixed_circuit(&mut auto).await;
+            mixed_circuit(&mut auto);
             // A few non-Clifford gates fit comfortably in the default budget:
             // the run must stay exact in the sum tier, not go dense.
             assert_eq!(auto.mode_name(), "sum");
             let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
-            mixed_circuit(&mut sv).await;
+            mixed_circuit(&mut sv);
 
             let a = auto.amplitudes().await.unwrap();
             let b = sv.amplitudes().await.unwrap();
@@ -674,11 +554,10 @@ mod tests {
                 dense_escape: true,
             };
             let mut auto = AutoSim::with_policy(n, DEFAULT_SEED, policy);
-            mixed_circuit(&mut auto).await;
+            mixed_circuit(&mut auto);
             assert_eq!(auto.mode_name(), "dense");
-            assert!(auto.take_error().is_none());
             let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
-            mixed_circuit(&mut sv).await;
+            mixed_circuit(&mut sv);
 
             let a = auto.amplitudes().await.unwrap();
             let b = sv.amplitudes().await.unwrap();
@@ -698,26 +577,26 @@ mod tests {
                 let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
                 let mut auto = AutoSim::with_seed(3, s);
                 // Random outcome (Bell pair), then a deterministic one (X|0⟩).
-                apply(&mut auto, G::H(0)).await;
-                apply(&mut auto, G::Cx(0, 1)).await;
+                apply(&mut auto, G::H(0));
+                apply(&mut auto, G::Cx(0, 1));
                 let o0 = auto.measure(0).await;
-                apply(&mut auto, G::X(2)).await;
+                apply(&mut auto, G::X(2));
                 auto.reset(2).await; // deterministic 1, recorded reset
                 assert_eq!(auto.mode_name(), "stabilizer");
                 // First non-Clifford triggers the handoff replay.
-                auto.u(1, 0.0, 0.0, FRAC_PI_4, &none).await;
-                apply(&mut auto, G::H(1)).await;
+                auto.u(1, 0.0, 0.0, FRAC_PI_4, &none).unwrap();
+                apply(&mut auto, G::H(1));
                 assert_eq!(auto.mode_name(), "sum");
 
                 let mut sv = StateVectorSim::<f64>::try_zeroed(3, 0).unwrap();
-                apply(&mut sv, G::H(0)).await;
-                apply(&mut sv, G::Cx(0, 1)).await;
+                apply(&mut sv, G::H(0));
+                apply(&mut sv, G::Cx(0, 1));
                 sv.project(0, o0);
-                apply(&mut sv, G::X(2)).await;
+                apply(&mut sv, G::X(2));
                 sv.project(2, true);
-                apply(&mut sv, G::X(2)).await;
-                sv.u(1, 0.0, 0.0, FRAC_PI_4, &none).await;
-                apply(&mut sv, G::H(1)).await;
+                apply(&mut sv, G::X(2));
+                sv.u(1, 0.0, 0.0, FRAC_PI_4, &none).unwrap();
+                apply(&mut sv, G::H(1));
 
                 let a = auto.amplitudes().await.unwrap();
                 let b = sv.amplitudes().await.unwrap();
@@ -728,10 +607,36 @@ mod tests {
         })
     }
 
-    /// When the budget overflows and the dense state can't be allocated,
-    /// the backend parks a `RankOverflow` and no-ops instead of panicking.
+    /// Escalating to the dense tier keeps the caller's seed: the RNG moves
+    /// with the state, so different seeds still sample differently.
     #[test]
-    fn rank_overflow_is_parked_not_panicked() {
+    fn dense_escalation_keeps_the_seed() {
+        pollster::block_on(async {
+            async fn outcomes(seed: u64) -> Vec<bool> {
+                let policy = SumPolicy {
+                    max_rank: 2,
+                    dense_escape: true,
+                };
+                let none = GateModifiers::none();
+                let mut auto = AutoSim::with_policy(16, seed, policy);
+                for q in 0..16 {
+                    apply(&mut auto, G::H(q));
+                }
+                for q in 0..3 {
+                    auto.u(q, 0.0, 0.0, FRAC_PI_4, &none).unwrap(); // T
+                }
+                assert_eq!(auto.mode_name(), "dense");
+                auto.measure_all(&(0..16).collect::<Vec<_>>()).await
+            }
+            assert_eq!(outcomes(7).await, outcomes(7).await);
+            assert_ne!(outcomes(7).await, outcomes(0x9E3779B97F4A7C15).await);
+        })
+    }
+
+    /// When the budget overflows and the dense state can't be allocated,
+    /// the gate fails with a `RankOverflow` and leaves the state usable.
+    #[test]
+    fn rank_overflow_fails_the_gate() {
         pollster::block_on(async {
             let n = 60u32; // 2^60 amplitudes can never be allocated
             let policy = SumPolicy {
@@ -740,24 +645,23 @@ mod tests {
             };
             let mut auto = AutoSim::with_policy(n, DEFAULT_SEED, policy);
             let none = GateModifiers::none();
-            apply(&mut auto, G::H(0)).await;
-            for _ in 0..6 {
-                auto.u(0, 0.0, 0.0, FRAC_PI_4, &none).await; // T
+            apply(&mut auto, G::X(1));
+            let t = |auto: &mut AutoSim| auto.u(0, 0.0, 0.0, FRAC_PI_4, &none);
+            for _ in 0..3 {
+                t(&mut auto).unwrap(); // rank 2, 4, 8
             }
-            assert!(!auto.measure(0).await, "errored backend must no-op");
-            match auto.take_error() {
-                Some(crate::error::VmErrorKind::RankOverflow {
+            match t(&mut auto) {
+                Err(VmErrorKind::RankOverflow {
                     rank,
                     max_rank,
                     qubits,
                 }) => {
-                    assert!(rank > max_rank);
-                    assert_eq!(max_rank, 8);
-                    assert_eq!(qubits, n);
+                    assert_eq!((rank, max_rank, qubits), (16, 8, n));
                 }
                 other => panic!("expected RankOverflow, got {other:?}"),
             }
-            assert!(auto.take_error().is_none(), "error must be taken once");
+            assert_eq!(auto.mode_name(), "sum");
+            assert!(auto.measure(1).await, "the state before the gate survives");
         })
     }
 }

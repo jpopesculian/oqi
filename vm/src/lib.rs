@@ -26,6 +26,7 @@ mod extern_fns;
 #[cfg(feature = "gpu")]
 mod gpu;
 mod host;
+mod measure;
 mod rng;
 mod sim;
 mod sim_simd;

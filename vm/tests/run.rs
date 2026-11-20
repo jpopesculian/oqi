@@ -7,8 +7,8 @@ use oqi_compile::bytecode::{BcModule, is_sample_safe};
 use oqi_compile::symbol::SymbolId;
 use oqi_compile::{CompileOptions, DefaultIncludeResolver};
 use oqi_vm::{
-    AutoSim, BackendSpec, FnRegistry, Histogram, HostValue, NoExterns, StateVectorSim, SumPolicy,
-    Vm, VmError, VmErrorKind, histograms,
+    AutoSim, BackendSpec, FnRegistry, Histogram, HostValue, NoExterns, QuantumBackend,
+    StateVectorSim, SumPolicy, Vm, VmError, VmErrorKind, histograms,
 };
 
 /// Drive an async VM call to completion (the VM is async; tests are sync).
@@ -250,7 +250,7 @@ fn bell_state_amplitudes() {
     let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     block_on(vm.run()).expect("run");
-    let amps = vm.backend().state();
+    let amps = block_on(vm.backend().amplitudes()).unwrap();
     let inv_sqrt2 = std::f64::consts::FRAC_1_SQRT_2;
     assert!(
         (amps[0].norm() - inv_sqrt2).abs() < TOL,
@@ -587,13 +587,21 @@ fn mismatched_register_broadcast_is_rejected() {
 }
 
 /// Final state-vector amplitudes as `(re, im)` pairs (no measurement, so
-/// the run is deterministic). Amplitudes ignore global phase.
+/// the run is deterministic), global phase included.
 fn final_state(src: &str) -> Vec<(f64, f64)> {
+    amplitudes_on(src, "scalar").unwrap()
+}
+
+/// Final amplitudes of `src` on the named backend (global phase resolved),
+/// or `None` when that backend isn't available here (no GPU adapter).
+fn amplitudes_on(src: &str, backend: &str) -> Option<Vec<(f64, f64)>> {
     let module = build(src);
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let spec: BackendSpec = backend.parse().unwrap();
+    let (sim, _) = block_on(spec.build(module.qubits.num_qubits)).ok()?;
     let mut vm = Vm::new(&module, sim, NoExterns);
     block_on(vm.run()).expect("run");
-    vm.backend().state().iter().map(|c| (c.re, c.im)).collect()
+    let amps = block_on(vm.backend().amplitudes()).expect("addressable state");
+    Some(amps.iter().map(|c| (c.re, c.im)).collect())
 }
 
 fn assert_states_eq(a: &[(f64, f64)], b: &[(f64, f64)]) {
@@ -1494,4 +1502,128 @@ fn sampling_on_the_sum_tier_starts_each_shot_from_a_fresh_state() {
     for histogram in &h {
         assert_eq!(histogram.counts.iter().map(|(_, n)| n).sum::<u32>(), 200);
     }
+}
+
+#[test]
+fn controlled_gphase_is_phase_exact_on_every_backend() {
+    // A controlled global phase is a relative phase, so every backend must
+    // produce the same amplitudes — including the sign, which a
+    // phase-inexact X-wrap of a negative control used to flip.
+    for body in [
+        "negctrl @ gphase(0.3) q[0];",
+        "ctrl @ gphase(0.3) q[0];",
+        "negctrl(2) @ gphase(0.7) q[0], q[1];",
+        "ctrl @ negctrl @ gphase(1.1) q[1], q[0];",
+        "negctrl @ ctrl @ pow(0.5) @ gphase(0.9) q[2], q[1];",
+        "inv @ negctrl @ gphase(0.4) q[2];",
+    ] {
+        let src = format!(
+            r#"include "stdgates.inc";
+               qubit[3] q;
+               h q[0]; ry(0.4) q[1]; h q[2]; t q[1];
+               {body}"#
+        );
+        let expect = amplitudes_on(&src, "sum").unwrap();
+        for backend in ["scalar", "simd", "auto", "gpu"] {
+            let Some(got) = amplitudes_on(&src, backend) else {
+                assert_eq!(backend, "gpu", "only the GPU may be unavailable");
+                continue;
+            };
+            let tol = if backend == "gpu" { 1e-5 } else { TOL };
+            for (i, (x, y)) in got.iter().zip(&expect).enumerate() {
+                assert!(
+                    (x.0 - y.0).abs() < tol && (x.1 - y.1).abs() < tol,
+                    "`{body}` on {backend}: amp {i}: {x:?} vs {y:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn negctrl_gphase_phases_the_zero_branch() {
+    // `negctrl @ gphase(γ) q` multiplies the |0⟩ amplitude by e^{iγ} and
+    // leaves |1⟩ alone (docs/gates.rst).
+    let amps = amplitudes_on(
+        r#"include "stdgates.inc";
+           qubit q;
+           h q;
+           negctrl @ gphase(0.3) q;"#,
+        "scalar",
+    )
+    .unwrap();
+    let r = std::f64::consts::FRAC_1_SQRT_2;
+    assert_states_eq(&amps, &[(r * 0.3f64.cos(), r * 0.3f64.sin()), (r, 0.0)]);
+}
+
+#[test]
+fn measures_a_register_wider_than_128_qubits() {
+    let module = build(
+        r#"include "stdgates.inc";
+           qubit[130] q;
+           bit[130] c;
+           x q[129];
+           x q[3];
+           c = measure q;"#,
+    );
+    let mut vm = Vm::new(&module, AutoSim::new(module.qubits.num_qubits), NoExterns);
+    let result = block_on(vm.run()).expect("run");
+    assert_eq!(result.measurements.len(), 130);
+    let c = &result.outputs[0].1;
+    let expect: String = (0..130)
+        .rev()
+        .map(|i| if i == 129 || i == 3 { '1' } else { '0' })
+        .collect();
+    assert_eq!(c.to_string().trim_matches('"'), expect);
+}
+
+#[test]
+fn failed_run_leaves_no_measurements_behind() {
+    // The first run measures, then fails; its measurement must not show up
+    // in the next run's result.
+    let module = build(
+        r#"input int n;
+           qubit q;
+           bit c = measure q;
+           int x = 1 / n;"#,
+    );
+    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let mut vm = Vm::new(&module, sim, NoExterns);
+    let n = |v: i128| vec![("n".to_string(), HostValue::Int(v))];
+    block_on(vm.run_with_named_inputs(&n(0))).expect_err("division by zero");
+    let ok = block_on(vm.run_with_named_inputs(&n(1))).expect("run");
+    assert_eq!(ok.measurements, vec![(0, false)]);
+}
+
+#[test]
+fn mutable_array_parameter_writes_reach_the_caller() {
+    // Array parameters are passed by reference (docs/subroutines.rst).
+    let outs = run_outputs(
+        r#"
+            def bump(mutable array[int[32], #dim = 1] a) {
+                a[0] = a[0] + 5;
+                a[1] = 7;
+            }
+            def outer(mutable array[int[32], 3] a) {
+                bump(a);
+                a[2] = a[2] * 2;
+            }
+            def total(readonly array[int[32], #dim = 1] a) -> int[32] {
+                return a[0] + a[1] + a[2];
+            }
+            array[int[32], 3] xs = {1, 2, 3};
+            array[int[32], 3] ys = xs;
+            outer(xs);
+            for int i in [0:1] { bump(xs); }
+            int[32] s = total(xs);
+        "#,
+    );
+    assert_eq!(
+        outs,
+        vec![
+            ("s".to_string(), "29".to_string()),
+            ("xs".to_string(), "{16, 7, 6}".to_string()),
+            ("ys".to_string(), "{1, 2, 3}".to_string()),
+        ]
+    );
 }

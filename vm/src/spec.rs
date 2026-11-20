@@ -231,6 +231,16 @@ async fn gpu(_num_qubits: u32, _seed: u64) -> VmResult<Box<dyn QuantumBackend>> 
     ))
 }
 
+/// Tests that create a GPU device take turns doing so: llvmpipe, Mesa's
+/// software Vulkan (the adapter on a machine without a GPU), crashes when two
+/// threads create devices at once, and the test harness runs tests on several.
+#[cfg(test)]
+pub(crate) fn gpu_turn() -> std::sync::MutexGuard<'static, ()> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TURN.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,7 +258,9 @@ mod tests {
     fn build_reports_what_ran() {
         pollster::block_on(async {
             let spec: BackendSpec = "prefer-gpu".parse().unwrap();
-            let (_, built) = spec.build(1).await.unwrap();
+            let turn = gpu_turn();
+            let (_, built) = pollster::block_on(spec.build(1)).unwrap();
+            drop(turn);
             // Whichever was available, the request is resolved.
             assert_ne!(built.kind, BackendKind::PreferGpu);
             if built.kind == BackendKind::Gpu {

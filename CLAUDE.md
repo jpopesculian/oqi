@@ -71,7 +71,10 @@ source → parse → resolve (includes) → lower → cfg → ssa → bytecode �
   `QuantumBackend` (the `StateVectorSim`, or future GPU/hardware) and
   `ExternProvider` (host implementations of `extern` functions). Backends supply
   their own `stdgates.inc` decomposing the standard library down to the built-in
-  `U`/`gphase`/measure/reset primitives. It also holds what the front doors
+  `U`/`gphase`/measure/reset primitives. On a backend, applying a gate is
+  synchronous and fallible (`u`, and an uncontrolled `gphase` — the VM lowers a
+  controlled one to `U` calls in `vm/src/backend.rs`); only measurement, reset
+  and amplitude readback are `async`. It also holds what the front doors
   share: `BackendSpec` (backend selection by name), `HostValue` + `coerce`
   (host values ↔ typed values, `vm/src/host.rs`) and `Vm::sample` (shots).
 - **`cli/`**, **`js/`** (wasm-bindgen), **`py/`** (PyO3) — the three front

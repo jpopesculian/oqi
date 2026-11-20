@@ -526,7 +526,7 @@ impl CliffordSink for ChForm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::{GateModifiers, QuantumBackend};
+    use crate::backend::{GateModifiers, QuantumBackend, apply_gphase};
     use crate::sim::StateVectorSim;
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
@@ -609,33 +609,29 @@ mod tests {
     /// Apply the *textbook* gate to the dense sim: the built-in `U` carries
     /// an `e^{iθ/2}` phase, cancelled exactly by a trailing `gphase` where
     /// needed (mirroring stdgates.inc).
-    async fn apply_sv(sv: &mut StateVectorSim<f64>, g: G) {
+    fn apply_sv(sv: &mut StateVectorSim<f64>, g: G) {
         let none = GateModifiers::none();
-        let ctrl = |c: usize| GateModifiers {
-            controls: vec![c as u32],
-            neg_controls: vec![],
-            power: 1.0,
-        };
+        let ctrl = |c: usize| GateModifiers::ctrl(&[c as u32]);
         match g {
             G::H(q) => {
-                sv.u(q as u32, FRAC_PI_2, 0.0, PI, &none).await;
-                sv.gphase(-FRAC_PI_4, &none).await;
+                sv.u(q as u32, FRAC_PI_2, 0.0, PI, &none).unwrap();
+                sv.gphase(-FRAC_PI_4).unwrap();
             }
-            G::S(q) => sv.u(q as u32, 0.0, 0.0, FRAC_PI_2, &none).await,
-            G::Sdg(q) => sv.u(q as u32, 0.0, 0.0, -FRAC_PI_2, &none).await,
+            G::S(q) => sv.u(q as u32, 0.0, 0.0, FRAC_PI_2, &none).unwrap(),
+            G::Sdg(q) => sv.u(q as u32, 0.0, 0.0, -FRAC_PI_2, &none).unwrap(),
             G::X(q) => {
-                sv.u(q as u32, PI, 0.0, PI, &none).await;
-                sv.gphase(-FRAC_PI_2, &none).await;
+                sv.u(q as u32, PI, 0.0, PI, &none).unwrap();
+                sv.gphase(-FRAC_PI_2).unwrap();
             }
-            G::Z(q) => sv.u(q as u32, 0.0, 0.0, PI, &none).await,
+            G::Z(q) => sv.u(q as u32, 0.0, 0.0, PI, &none).unwrap(),
             G::Cx(c, t) => {
-                sv.u(t as u32, PI, 0.0, PI, &ctrl(c)).await;
-                sv.gphase(-FRAC_PI_2, &ctrl(c)).await;
+                sv.u(t as u32, PI, 0.0, PI, &ctrl(c)).unwrap();
+                apply_gphase(sv, -FRAC_PI_2, &ctrl(c)).unwrap();
             }
-            G::Cz(c, t) => sv.u(t as u32, 0.0, 0.0, PI, &ctrl(c)).await,
+            G::Cz(c, t) => sv.u(t as u32, 0.0, 0.0, PI, &ctrl(c)).unwrap(),
             G::Cy(c, t) => {
-                sv.u(t as u32, PI, FRAC_PI_2, FRAC_PI_2, &ctrl(c)).await;
-                sv.gphase(-FRAC_PI_2, &ctrl(c)).await;
+                sv.u(t as u32, PI, FRAC_PI_2, FRAC_PI_2, &ctrl(c)).unwrap();
+                apply_gphase(sv, -FRAC_PI_2, &ctrl(c)).unwrap();
             }
         }
     }
@@ -710,7 +706,7 @@ mod tests {
                 let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
                 for &g in &word {
                     apply_ch(&mut ch, g);
-                    apply_sv(&mut sv, g).await;
+                    apply_sv(&mut sv, g);
                 }
                 let a = ch_amplitudes(&ch, n);
                 let b = sv.amplitudes().await.unwrap();
@@ -725,18 +721,14 @@ mod tests {
     #[test]
     fn lowered_u_calls_match_dense_exactly() {
         pollster::block_on(async {
-            use crate::clifford::{apply_clifford_gphase, apply_clifford_u};
+            use crate::clifford::apply_clifford_u;
             let n = 4usize;
             for seed in 100..115u64 {
                 let word = random_word(n, 30, seed);
                 let mut ch = ChForm::zero(n);
                 let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
                 let none = GateModifiers::none();
-                let ctrl = |c: usize| GateModifiers {
-                    controls: vec![c as u32],
-                    neg_controls: vec![],
-                    power: 1.0,
-                };
+                let ctrl = |c: usize| GateModifiers::ctrl(&[c as u32]);
                 for &g in &word {
                     // Route the same lowered (θ,φ,λ)/gphase calls to both.
                     let calls: Vec<(usize, f64, f64, f64, GateModifiers)> = match g {
@@ -751,13 +743,13 @@ mod tests {
                     };
                     for (t, th, ph, la, m) in calls {
                         assert!(apply_clifford_u(&mut ch, t as u32, th, ph, la, &m));
-                        sv.u(t as u32, th, ph, la, &m).await;
+                        sv.u(t as u32, th, ph, la, &m).unwrap();
                     }
                     // An occasional uncontrolled gphase to exercise ω.
                     if let G::S(q) = g {
                         let alpha = 0.25 + q as f64;
-                        assert!(apply_clifford_gphase(&mut ch, alpha, &none));
-                        sv.gphase(alpha, &none).await;
+                        ch.phase(Complex::from_polar(1.0, alpha));
+                        sv.gphase(alpha).unwrap();
                     }
                 }
                 let a = ch_amplitudes(&ch, n);
@@ -780,11 +772,11 @@ mod tests {
                 let mut sv2 = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
                 for &g in &w1 {
                     apply_ch(&mut ch1, g);
-                    apply_sv(&mut sv1, g).await;
+                    apply_sv(&mut sv1, g);
                 }
                 for &g in &w2 {
                     apply_ch(&mut ch2, g);
-                    apply_sv(&mut sv2, g).await;
+                    apply_sv(&mut sv2, g);
                 }
                 let dense: Complex<f64> = sv1
                     .amplitudes()
@@ -823,7 +815,7 @@ mod tests {
                         let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
                         for &g in &word {
                             apply_ch(&mut ch, g);
-                            apply_sv(&mut sv, g).await;
+                            apply_sv(&mut sv, g);
                         }
                         let pre = sv.amplitudes().await.unwrap();
                         let bit = 1usize << q;

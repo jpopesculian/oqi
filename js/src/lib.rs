@@ -11,7 +11,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use async_trait::async_trait;
 use oqi_compile::classical::{Value, ValueTy};
 use oqi_compile::{BcModule, CompileOptions, LibOnlyResolver};
 use oqi_vm::{
@@ -445,7 +444,6 @@ impl JsExterns {
     }
 }
 
-#[async_trait(?Send)]
 impl ExternProvider for JsExterns {
     async fn call(&mut self, name: &str, args: &[Value]) -> KindResult<Option<Value>> {
         // Not provided, or not a declared classical extern (ports/frames land

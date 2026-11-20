@@ -4,17 +4,22 @@
 //! done with it, expressed in terms of the two built-in primitives
 //! `U(θ, φ, λ)` and `gphase(γ)` (backends ship their own `stdgates.inc`
 //! that decomposes the standard library to these, or maps gates onto
-//! `extern` calls). A backend therefore only needs to implement those
-//! two primitives plus measurement, reset, and — optionally — timing.
+//! `extern` calls). A backend therefore only needs to implement a
+//! (possibly controlled) `U`, an uncontrolled `gphase`, measurement and
+//! reset, and — optionally — timing.
 //!
-//! Implementations: [`crate::sim::StateVectorSim`] (CPU simulator). A
-//! GPU simulator or hardware provider would implement the same trait.
+//! Implementations: [`StateVectorSim`](crate::StateVectorSim),
+//! [`SimdSim`](crate::SimdSim), [`AutoSim`](crate::AutoSim) and, with the
+//! `gpu` feature, `GpuSim`. A hardware provider would implement the same
+//! trait.
+
+use std::f64::consts::PI;
 
 use async_trait::async_trait;
 use num_complex::Complex;
 use oqi_classical::Duration;
 
-use crate::error::VmErrorKind;
+use crate::error::KindResult;
 
 /// Modifiers on a single backend primitive call: the controls in scope
 /// plus a `power` to raise this one primitive to. Control indices are
@@ -37,11 +42,30 @@ pub struct GateModifiers {
 impl GateModifiers {
     /// No modifiers: the identity context (`power = 1`).
     pub fn none() -> Self {
+        GateModifiers::ctrl(&[])
+    }
+
+    /// Positive controls on `controls`, nothing else.
+    pub fn ctrl(controls: &[u32]) -> Self {
         GateModifiers {
-            controls: Vec::new(),
+            controls: controls.to_vec(),
             neg_controls: Vec::new(),
             power: 1.0,
         }
+    }
+
+    /// These modifiers nested inside `outer`: the control lists are
+    /// concatenated and the power is scaled by `factor`.
+    pub(crate) fn within(&self, outer: &GateModifiers, factor: f64) -> Self {
+        GateModifiers {
+            controls: [&self.controls[..], &outer.controls].concat(),
+            neg_controls: [&self.neg_controls[..], &outer.neg_controls].concat(),
+            power: self.power * factor,
+        }
+    }
+
+    fn is_controlled(&self) -> bool {
+        !self.controls.is_empty() || !self.neg_controls.is_empty()
     }
 }
 
@@ -51,31 +75,136 @@ impl Default for GateModifiers {
     }
 }
 
+/// One built-in gate call with its modifiers — what the VM records while
+/// flattening a gate body, and what the auto-router logs for replay.
+#[derive(Debug, Clone)]
+pub(crate) enum BuiltinGate {
+    U {
+        target: u32,
+        theta: f64,
+        phi: f64,
+        lambda: f64,
+        mods: GateModifiers,
+    },
+    Gphase {
+        gamma: f64,
+        mods: GateModifiers,
+    },
+}
+
+impl BuiltinGate {
+    /// Apply this call to `backend`.
+    pub(crate) fn apply<B: QuantumBackend + ?Sized>(&self, backend: &mut B) -> KindResult<()> {
+        match self {
+            BuiltinGate::U {
+                target,
+                theta,
+                phi,
+                lambda,
+                mods,
+            } => backend.u(*target, *theta, *phi, *lambda, mods),
+            BuiltinGate::Gphase { gamma, mods } => apply_gphase(backend, *gamma, mods),
+        }
+    }
+
+    /// Whether this acts non-trivially on a qubit: a `U`, or a *controlled*
+    /// global phase (a relative phase). An uncontrolled `gphase` is a global
+    /// scalar.
+    pub(crate) fn acts_on_a_qubit(&self) -> bool {
+        match self {
+            BuiltinGate::U { .. } => true,
+            BuiltinGate::Gphase { mods, .. } => mods.is_controlled(),
+        }
+    }
+
+    /// This call nested inside `outer` (see [`GateModifiers::within`]).
+    pub(crate) fn within(&self, outer: &GateModifiers, factor: f64) -> Self {
+        match *self {
+            BuiltinGate::U {
+                target,
+                theta,
+                phi,
+                lambda,
+                ref mods,
+            } => BuiltinGate::U {
+                target,
+                theta,
+                phi,
+                lambda,
+                mods: mods.within(outer, factor),
+            },
+            BuiltinGate::Gphase { gamma, ref mods } => BuiltinGate::Gphase {
+                gamma,
+                mods: mods.within(outer, factor),
+            },
+        }
+    }
+}
+
+/// Apply `gphase(γ)` under `mods`, which backends only implement
+/// uncontrolled. A controlled global phase is a relative phase — `e^{iγ}`
+/// on the states where every control is 1 and every negative control is 0 —
+/// so it is lowered here, phase-exactly, to `U`:
+///
+/// - with a positive control `c`, the phase gate `U(0, 0, γ) = diag(1,
+///   e^{iγ})` on `c` under the remaining controls;
+/// - with only negative controls, the same on one of them, `n`, conjugated
+///   by X so the phase lands on its |0⟩. The flips are `U(π, 0, π) = i·X`
+///   and its exact inverse `U(π, π, 0) = −i·X`, so no stray phase is left.
+pub(crate) fn apply_gphase<B: QuantumBackend + ?Sized>(
+    backend: &mut B,
+    gamma: f64,
+    mods: &GateModifiers,
+) -> KindResult<()> {
+    // `gphase` scales linearly with power: gphase(γ)^k = gphase(kγ).
+    let gamma = gamma * mods.power;
+    if !mods.is_controlled() {
+        return backend.gphase(gamma);
+    }
+    let mut rest = GateModifiers {
+        power: 1.0,
+        ..mods.clone()
+    };
+    if let Some(c) = rest.controls.pop() {
+        return backend.u(c, 0.0, 0.0, gamma, &rest);
+    }
+    let n = rest.neg_controls.pop().expect("a controlled gphase");
+    let none = GateModifiers::none();
+    backend.u(n, PI, 0.0, PI, &none)?;
+    backend.u(n, 0.0, 0.0, gamma, &rest)?;
+    backend.u(n, PI, PI, 0.0, &none)
+}
+
 /// A quantum execution backend. The VM resolves all gates down to these
 /// calls against global qubit indices.
 ///
-/// Methods are `async` so a GPU/remote backend can `.await` its device
-/// without blocking — essential in the browser, where the main thread can't
-/// block. CPU backends implement them as ready futures. `?Send` keeps the
-/// trait object-safe (via `async_trait`'s boxed futures) and works with
-/// `!Send` web GPU types: `block_on` drives the future on the calling
-/// thread, so the trait's futures need not be `Send` (native callers use
-/// `pollster`; wasm uses the browser event loop).
+/// Applying a gate is synchronous: every backend can queue or apply one
+/// without waiting, and it is the VM's hot path. The operations that read
+/// the quantum state back — measurement, reset and
+/// [`amplitudes`](Self::amplitudes) — are `async` so a GPU/remote backend
+/// can `.await` its device without blocking, which is essential in the
+/// browser, where the main thread can't block. CPU backends implement them
+/// as ready futures. `?Send` keeps the trait object-safe (via
+/// `async_trait`'s boxed futures) and works with `!Send` web GPU types:
+/// `block_on` drives the future on the calling thread, so the trait's
+/// futures need not be `Send` (native callers use `pollster`; wasm uses the
+/// browser event loop).
 #[async_trait(?Send)]
 pub trait QuantumBackend {
     /// Apply `U(θ, φ, λ)` to `target` under the given modifiers.
-    async fn u(
+    fn u(
         &mut self,
         target: u32,
         theta: f64,
         phi: f64,
         lambda: f64,
         modifiers: &GateModifiers,
-    );
+    ) -> KindResult<()>;
 
-    /// Apply the global phase `γ` under the given modifiers. A
-    /// controlled global phase is a relative phase (the `p`/phase gate).
-    async fn gphase(&mut self, gamma: f64, modifiers: &GateModifiers);
+    /// Multiply the state by the global phase `e^{iγ}`. Only ever
+    /// uncontrolled: a controlled global phase reaches the backend as
+    /// [`u`](Self::u) calls.
+    fn gphase(&mut self, gamma: f64) -> KindResult<()>;
 
     /// Measure `qubit` in the Z basis, collapsing the state, and return
     /// the outcome.
@@ -99,24 +228,19 @@ pub trait QuantumBackend {
     async fn reset(&mut self, qubit: u32);
 
     /// Reset the whole register to |0…0⟩ so a fresh shot can run on the same
-    /// backend. The default resets each qubit in turn (correct for any
-    /// backend, but consumes the measurement RNG); backends with an
-    /// addressable state override this with a cheaper direct re-zero that
-    /// leaves the RNG stream untouched.
-    async fn reset_state(&mut self, num_qubits: u32) {
-        for q in 0..num_qubits {
-            self.reset(q).await;
-        }
-    }
+    /// backend, leaving the measurement RNG stream untouched so shots stay
+    /// independent and reproducible from the initial seed.
+    fn reset_state(&mut self) -> KindResult<()>;
 
     /// A scheduling barrier across `qubits`. No effect on state.
-    async fn barrier(&mut self, _qubits: &[u32]) {}
+    fn barrier(&mut self, _qubits: &[u32]) {}
 
-    /// An idle delay on `qubits`. No effect on state in the MVP.
-    async fn delay(&mut self, _qubits: &[u32], _duration: Duration) {}
+    /// An idle delay on `qubits`. No effect on state in the bundled
+    /// simulators.
+    fn delay(&mut self, _qubits: &[u32], _duration: Duration) {}
 
     /// Snapshot the full amplitude vector as `f64` (global phase
-    /// unresolved), or `None` for backends without an addressable state
+    /// resolved), or `None` for backends without an addressable state
     /// vector (e.g. hardware). Used for `--state` printing and tests.
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
         None
@@ -131,34 +255,25 @@ pub trait QuantumBackend {
     fn has_dense_state(&self) -> bool {
         true
     }
-
-    /// Take a deferred error raised by an earlier primitive. The methods
-    /// above are infallible; a backend that can fail mid-run (e.g. the
-    /// auto-router when its sum-over-Cliffords budget is exhausted and no
-    /// dense fallback fits) parks the error here and no-ops until the VM
-    /// polls it after each quantum instruction.
-    fn take_error(&mut self) -> Option<VmErrorKind> {
-        None
-    }
 }
 
 /// Forward a boxed backend so the VM can be driven by a runtime-selected
 /// backend (`Box<dyn QuantumBackend>`) without monomorphizing per choice.
 #[async_trait(?Send)]
 impl QuantumBackend for Box<dyn QuantumBackend> {
-    async fn u(
+    fn u(
         &mut self,
         target: u32,
         theta: f64,
         phi: f64,
         lambda: f64,
         modifiers: &GateModifiers,
-    ) {
-        (**self).u(target, theta, phi, lambda, modifiers).await;
+    ) -> KindResult<()> {
+        (**self).u(target, theta, phi, lambda, modifiers)
     }
 
-    async fn gphase(&mut self, gamma: f64, modifiers: &GateModifiers) {
-        (**self).gphase(gamma, modifiers).await;
+    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+        (**self).gphase(gamma)
     }
 
     async fn measure(&mut self, qubit: u32) -> bool {
@@ -173,16 +288,16 @@ impl QuantumBackend for Box<dyn QuantumBackend> {
         (**self).reset(qubit).await;
     }
 
-    async fn reset_state(&mut self, num_qubits: u32) {
-        (**self).reset_state(num_qubits).await;
+    fn reset_state(&mut self) -> KindResult<()> {
+        (**self).reset_state()
     }
 
-    async fn barrier(&mut self, qubits: &[u32]) {
-        (**self).barrier(qubits).await;
+    fn barrier(&mut self, qubits: &[u32]) {
+        (**self).barrier(qubits);
     }
 
-    async fn delay(&mut self, qubits: &[u32], duration: Duration) {
-        (**self).delay(qubits, duration).await;
+    fn delay(&mut self, qubits: &[u32], duration: Duration) {
+        (**self).delay(qubits, duration);
     }
 
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
@@ -191,9 +306,5 @@ impl QuantumBackend for Box<dyn QuantumBackend> {
 
     fn has_dense_state(&self) -> bool {
         (**self).has_dense_state()
-    }
-
-    fn take_error(&mut self) -> Option<VmErrorKind> {
-        (**self).take_error()
     }
 }

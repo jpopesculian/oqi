@@ -16,26 +16,19 @@ use oqi_vm::{DEFAULT_SEED as SEED, GateModifiers, QuantumBackend, SimdSim, State
 
 /// A representative workload: a Hadamard layer, several rotation layers
 /// (uncontrolled — the vectorized path), then a CX ladder (controlled — the
-/// scalar fallback path). Async since the backend trait is async; the bench
-/// `block_on`s it once per iteration (CPU backends are ready futures, so the
-/// per-gate await overhead is negligible).
-async fn workload(b: &mut dyn QuantumBackend, n: u32, layers: usize) {
+/// scalar fallback path).
+fn workload(b: &mut dyn QuantumBackend, n: u32, layers: usize) {
     let none = GateModifiers::none();
     for q in 0..n {
-        b.u(q, FRAC_PI_2, 0.0, PI, &none).await; // H
+        b.u(q, FRAC_PI_2, 0.0, PI, &none).unwrap(); // H
     }
     for _ in 0..layers {
         for q in 0..n {
-            b.u(q, 0.1, 0.0, 0.0, &none).await; // small rotation
+            b.u(q, 0.1, 0.0, 0.0, &none).unwrap(); // small rotation
         }
     }
     for q in 0..n - 1 {
-        let c = GateModifiers {
-            controls: vec![q],
-            neg_controls: vec![],
-            power: 1.0,
-        };
-        b.u(q + 1, PI, 0.0, PI, &c).await; // CX(q -> q+1)
+        b.u(q + 1, PI, 0.0, PI, &GateModifiers::ctrl(&[q])).unwrap(); // CX(q -> q+1)
     }
 }
 
@@ -112,7 +105,7 @@ fn bench_backends(c: &mut Criterion) {
         group.bench_function(name, |b| {
             b.iter_batched_ref(
                 &make,
-                |sim| pollster::block_on(workload(&mut **sim, n, layers)),
+                |sim| workload(&mut **sim, n, layers),
                 BatchSize::SmallInput,
             );
         });
@@ -130,7 +123,7 @@ fn bench_backends(c: &mut Criterion) {
         Ok(mut sim) => {
             group.bench_function("gpu-f32", |b| {
                 b.iter(|| {
-                    pollster::block_on(workload(&mut sim, n, layers));
+                    workload(&mut sim, n, layers);
                     let _ = pollster::block_on(sim.amplitudes());
                 });
             });

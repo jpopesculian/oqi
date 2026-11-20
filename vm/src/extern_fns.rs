@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 
-use async_trait::async_trait;
 use oqi_classical::Value;
 
 use crate::error::{KindResult, VmErrorKind};
@@ -15,9 +14,9 @@ use crate::error::{KindResult, VmErrorKind};
 ///
 /// `call` is `async` so a provider can await host I/O (e.g. a JS callback
 /// returning a `Promise` in the wasm bindings); synchronous providers
-/// return ready futures. `?Send` for the same reason as
-/// [`QuantumBackend`](crate::QuantumBackend).
-#[async_trait(?Send)]
+/// return ready futures. Like [`QuantumBackend`](crate::QuantumBackend)'s,
+/// the future need not be `Send`: the VM is driven on the calling thread.
+#[allow(async_fn_in_trait)]
 pub trait ExternProvider {
     /// Call `name` with `args`; return its result (or `None` for a
     /// void extern).
@@ -28,7 +27,6 @@ pub trait ExternProvider {
 /// declares no externs (or you want extern calls to be a hard error).
 pub struct NoExterns;
 
-#[async_trait(?Send)]
 impl ExternProvider for NoExterns {
     async fn call(&mut self, name: &str, _args: &[Value]) -> KindResult<Option<Value>> {
         Err(VmErrorKind::UnknownExtern(name.to_string()))
@@ -59,7 +57,6 @@ impl FnRegistry {
     }
 }
 
-#[async_trait(?Send)]
 impl ExternProvider for FnRegistry {
     async fn call(&mut self, name: &str, args: &[Value]) -> KindResult<Option<Value>> {
         match self.fns.get_mut(name) {

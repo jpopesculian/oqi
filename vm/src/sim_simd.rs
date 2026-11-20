@@ -17,7 +17,8 @@ use oqi_quantum::{Gate, Unitary};
 use wide::{f32x8, f64x4};
 
 use crate::backend::{GateModifiers, QuantumBackend};
-use crate::error::{VmError, VmErrorKind, VmResult};
+use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
+use crate::measure::renorm;
 use crate::rng::Rng;
 
 /// Copy the first `N` elements of `s` into a fixed-size array.
@@ -161,7 +162,10 @@ impl<F: SimdLane> SimdSim<F> {
         })
     }
 
-    /// Enable (or disable) running the SIMD kernel across blocks in parallel.
+    /// Enable (or disable) running the SIMD kernel across blocks in
+    /// parallel. Without the `parallel` build feature the kernel runs
+    /// serially either way; [`BackendSpec`](crate::BackendSpec) reports that
+    /// as an unavailable backend instead.
     pub fn with_parallel(mut self, parallel: bool) -> Self {
         self.parallel = parallel;
         self
@@ -229,22 +233,18 @@ impl<F: SimdLane> SimdSim<F> {
             self.im[j] = nbi;
         }
     }
-
-    fn apply_x(&mut self, target: usize) {
-        // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
-        let x = Unitary::new(
-            Self::cast(std::f64::consts::PI),
-            F::zero(),
-            Self::cast(std::f64::consts::PI),
-        )
-        .matrix();
-        self.apply_mat(&x, target, &[], &[]);
-    }
 }
 
 #[async_trait(?Send)]
 impl<F: SimdLane> QuantumBackend for SimdSim<F> {
-    async fn u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
+    fn u(
+        &mut self,
+        target: u32,
+        theta: f64,
+        phi: f64,
+        lambda: f64,
+        m: &GateModifiers,
+    ) -> KindResult<()> {
         let unitary = Unitary::new(Self::cast(theta), Self::cast(phi), Self::cast(lambda));
         let mut g = Gate::new(unitary);
         if m.power != 1.0 {
@@ -254,35 +254,12 @@ impl<F: SimdLane> QuantumBackend for SimdSim<F> {
         // subspace mask by `apply_mat`, not folded into the matrix.
         let mat = g.matrix();
         self.apply_mat(&mat, target as usize, &m.controls, &m.neg_controls);
+        Ok(())
     }
 
-    async fn gphase(&mut self, gamma: f64, m: &GateModifiers) {
-        let g = gamma * m.power;
-
-        if m.controls.is_empty() && m.neg_controls.is_empty() {
-            self.global_phase += g;
-            return;
-        }
-
-        // A controlled global phase is a relative phase on the innermost
-        // control: ctrlⁿ @ gphase(g) == ctrlⁿ⁻¹ @ U(0,0,g) = diag(1, e^{ig}).
-        // A negctrl target wants the phase on |0⟩, so it is wrapped in X.
-        let mut controls = m.controls.clone();
-        let mut neg_controls = m.neg_controls.clone();
-        let (target, neg_target) = match controls.pop() {
-            Some(c) => (c, false),
-            None => (neg_controls.pop().expect("at least one control"), true),
-        };
-
-        let mat = Unitary::new(F::zero(), F::zero(), Self::cast(g)).matrix();
-        let target = target as usize;
-        if neg_target {
-            self.apply_x(target);
-            self.apply_mat(&mat, target, &controls, &neg_controls);
-            self.apply_x(target);
-        } else {
-            self.apply_mat(&mat, target, &controls, &neg_controls);
-        }
+    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+        self.global_phase += gamma;
+        Ok(())
     }
 
     async fn measure(&mut self, qubit: u32) -> bool {
@@ -299,13 +276,7 @@ impl<F: SimdLane> QuantumBackend for SimdSim<F> {
             .sum();
 
         let outcome = self.rng.next_f64() < p_one;
-
-        let norm = if outcome { p_one } else { 1.0 - p_one };
-        let scale = if norm > 0.0 {
-            Self::cast(1.0 / norm.sqrt())
-        } else {
-            F::zero()
-        };
+        let scale = Self::cast(renorm(p_one, outcome));
         for i in 0..self.re.len() {
             if (i & bit != 0) == outcome {
                 self.re[i] = self.re[i] * scale;
@@ -320,8 +291,19 @@ impl<F: SimdLane> QuantumBackend for SimdSim<F> {
 
     async fn reset(&mut self, qubit: u32) {
         if self.measure(qubit).await {
-            self.apply_x(qubit as usize);
+            // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
+            let pi = Self::cast(std::f64::consts::PI);
+            let x = Unitary::new(pi, F::zero(), pi).matrix();
+            self.apply_mat(&x, qubit as usize, &[], &[]);
         }
+    }
+
+    fn reset_state(&mut self) -> KindResult<()> {
+        self.re.fill(F::zero());
+        self.im.fill(F::zero());
+        self.re[0] = F::one();
+        self.global_phase = 0.0;
+        Ok(())
     }
 
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
@@ -339,7 +321,9 @@ impl<F: SimdLane> QuantumBackend for SimdSim<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::apply_gphase;
     use crate::sim::StateVectorSim;
+    use std::f64::consts::{FRAC_PI_2, PI};
 
     const TOL: f64 = 1e-9;
 
@@ -351,55 +335,31 @@ mod tests {
         }
     }
 
-    /// H on every qubit, then a rotation layer — exercises every target bit,
-    /// including those below the SIMD lane width.
-    async fn single_qubit_gates(b: &mut dyn QuantumBackend) {
-        let h = GateModifiers::none();
-        for q in 0..5 {
-            b.u(
-                q,
-                std::f64::consts::FRAC_PI_2,
-                0.0,
-                std::f64::consts::PI,
-                &h,
-            )
-            .await;
+    /// H on each of `n` qubits, then a rotation layer — exercises every
+    /// target bit, including those below the SIMD lane width.
+    fn single_qubit_gates(b: &mut dyn QuantumBackend, n: u32, rotation: (f64, f64, f64)) {
+        let none = GateModifiers::none();
+        for q in 0..n {
+            b.u(q, FRAC_PI_2, 0.0, PI, &none).unwrap();
         }
-        for q in 0..5 {
-            b.u(q, 0.37, 0.11, 0.59, &h).await;
+        let (theta, phi, lambda) = rotation;
+        for q in 0..n {
+            b.u(q, theta, phi, lambda, &none).unwrap();
         }
     }
 
-    async fn controlled_gates(b: &mut dyn QuantumBackend) {
+    fn controlled_gates(b: &mut dyn QuantumBackend) {
         let plain = GateModifiers::none();
         for q in 0..4 {
-            b.u(
-                q,
-                std::f64::consts::FRAC_PI_2,
-                0.0,
-                std::f64::consts::PI,
-                &plain,
-            )
-            .await;
+            b.u(q, FRAC_PI_2, 0.0, PI, &plain).unwrap();
         }
         // CX(0->3), CX(2->1)
-        let c0 = GateModifiers {
-            controls: vec![0],
-            neg_controls: vec![],
-            power: 1.0,
-        };
-        b.u(3, std::f64::consts::PI, 0.0, std::f64::consts::PI, &c0)
-            .await;
-        let c2 = GateModifiers {
-            controls: vec![2],
-            neg_controls: vec![],
-            power: 1.0,
-        };
-        b.u(1, std::f64::consts::PI, 0.0, std::f64::consts::PI, &c2)
-            .await;
+        let c0 = GateModifiers::ctrl(&[0]);
+        b.u(3, PI, 0.0, PI, &c0).unwrap();
+        b.u(1, PI, 0.0, PI, &GateModifiers::ctrl(&[2])).unwrap();
         // controlled gphase (relative phase) and a global phase
-        b.gphase(0.7, &c0).await;
-        b.gphase(0.3, &plain).await;
+        apply_gphase(b, 0.7, &c0).unwrap();
+        b.gphase(0.3).unwrap();
     }
 
     #[test]
@@ -407,8 +367,8 @@ mod tests {
         pollster::block_on(async {
             let mut scalar = StateVectorSim::<f64>::try_zeroed(5, 0xABCD).unwrap();
             let mut simd = SimdSim::<f64>::try_zeroed(5, 0xABCD).unwrap();
-            single_qubit_gates(&mut scalar).await;
-            single_qubit_gates(&mut simd).await;
+            single_qubit_gates(&mut scalar, 5, (0.37, 0.11, 0.59));
+            single_qubit_gates(&mut simd, 5, (0.37, 0.11, 0.59));
             assert_close(
                 &scalar.amplitudes().await.unwrap(),
                 &simd.amplitudes().await.unwrap(),
@@ -421,12 +381,27 @@ mod tests {
         pollster::block_on(async {
             let mut scalar = StateVectorSim::<f64>::try_zeroed(4, 0xABCD).unwrap();
             let mut simd = SimdSim::<f64>::try_zeroed(4, 0xABCD).unwrap();
-            controlled_gates(&mut scalar).await;
-            controlled_gates(&mut simd).await;
+            controlled_gates(&mut scalar);
+            controlled_gates(&mut simd);
             assert_close(
                 &scalar.amplitudes().await.unwrap(),
                 &simd.amplitudes().await.unwrap(),
             );
+        })
+    }
+
+    /// `reset_state` returns to exactly |0…0⟩, tracked global phase included.
+    #[test]
+    fn reset_state_clears_the_global_phase() {
+        pollster::block_on(async {
+            let mut simd = SimdSim::<f64>::try_zeroed(2, 1).unwrap();
+            single_qubit_gates(&mut simd, 2, (0.37, 0.11, 0.59));
+            simd.gphase(0.3).unwrap();
+            simd.reset_state().unwrap();
+            let amps = simd.amplitudes().await.unwrap();
+            let mut zero = vec![Complex::new(0.0, 0.0); 4];
+            zero[0] = Complex::new(1.0, 0.0);
+            assert_close(&amps, &zero);
         })
     }
 
@@ -436,28 +411,12 @@ mod tests {
     #[test]
     fn parallel_matches_serial() {
         pollster::block_on(async {
-            async fn gates(b: &mut dyn QuantumBackend) {
-                let h = GateModifiers::none();
-                for q in 0..8 {
-                    b.u(
-                        q,
-                        std::f64::consts::FRAC_PI_2,
-                        0.0,
-                        std::f64::consts::PI,
-                        &h,
-                    )
-                    .await;
-                }
-                for q in 0..8 {
-                    b.u(q, 0.21, 0.13, 0.42, &h).await;
-                }
-            }
             let mut serial = SimdSim::<f64>::try_zeroed(8, 0xABCD).unwrap();
             let mut parallel = SimdSim::<f64>::try_zeroed(8, 0xABCD)
                 .unwrap()
                 .with_parallel(true);
-            gates(&mut serial).await;
-            gates(&mut parallel).await;
+            single_qubit_gates(&mut serial, 8, (0.21, 0.13, 0.42));
+            single_qubit_gates(&mut parallel, 8, (0.21, 0.13, 0.42));
             for (x, y) in serial
                 .amplitudes()
                 .await

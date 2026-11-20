@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use async_trait::async_trait;
 use num_complex::Complex;
 use oqi_compile::classical::{Value, ValueTy};
 use oqi_compile::{BcModule, CompileOptions, LibOnlyResolver};
@@ -271,8 +270,8 @@ fn run(
     let module = &session.module;
     let mut vm = Vm::new(module, session.backend, session.externs);
 
-    // The VM futures resolve immediately (async-trait over a synchronous
-    // simulator), so blocking here never parks the thread. Runs hold the GIL:
+    // The VM futures resolve immediately (the CPU simulators and Python
+    // externs never suspend), so blocking here never parks the thread. Runs hold the GIL:
     // `oqi_vm::RunResult` is not `Send`, which rules out `Python::detach`.
     let result = pollster::block_on(vm.run_with_named_inputs(&session.inputs))
         .map_err(|e| diag_err(&e, source))?;
@@ -437,7 +436,6 @@ impl PyExterns {
     }
 }
 
-#[async_trait(?Send)]
 impl ExternProvider for PyExterns {
     async fn call(&mut self, name: &str, args: &[Value]) -> KindResult<Option<Value>> {
         // Not provided, or not a declared classical extern (ports/frames land

@@ -58,7 +58,7 @@ impl Diagnostic for VmError {
     fn notes(&self) -> Vec<String> {
         match &self.kind {
             VmErrorKind::MissingInput(_) => {
-                vec!["supply it with `--input NAME=VALUE`".into()]
+                vec!["every declared `input` needs a value when the program is run".into()]
             }
             VmErrorKind::UnknownExtern(name) => {
                 vec![format!(
@@ -68,7 +68,7 @@ impl Diagnostic for VmError {
             VmErrorKind::RankOverflow { max_rank, .. } => {
                 vec![format!(
                     "each non-Clifford gate multiplies the stabilizer term \
-                     count; the budget is {max_rank} (see `--max-rank`)"
+                     count; the budget is {max_rank}"
                 )]
             }
             _ => Vec::new(),

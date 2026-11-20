@@ -9,8 +9,8 @@ use std::collections::HashMap;
 
 use num_complex::Complex64;
 use oqi_classical::{
-    Array, ArrayTy, Duration, DurationUnit, FloatWidth, Index, Primitive, PrimitiveTy, Scalar,
-    Value, ValueTy, iw,
+    Array, ArrayRef, ArrayTy, BitReg, Duration, DurationUnit, FloatWidth, Index, Primitive,
+    PrimitiveTy, RefAccess, Scalar, Value, ValueTy, iw,
 };
 use oqi_compile::bytecode::{
     BcAliasSegment, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCallTarget, BcGateModifier,
@@ -20,7 +20,7 @@ use oqi_compile::bytecode::{
 use oqi_compile::symbol::{SymbolId, SymbolKind};
 use oqi_lex::Span;
 
-use crate::backend::{GateModifiers, QuantumBackend};
+use crate::backend::{BuiltinGate, GateModifiers, QuantumBackend};
 use crate::cal::{FrameHandle, OpaqueCalHandler, OpenPulseHandler, PortHandle, WaveformHandle};
 use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
 use crate::extern_fns::ExternProvider;
@@ -52,46 +52,6 @@ struct Frame {
     /// Modifier context (controls / power) inherited by gate calls in
     /// this body.
     mods: GateModifiers,
-}
-
-/// A leaf primitive recorded while flattening a gate body. Used to apply
-/// `inv`/`pow` modifiers correctly to composite gates (see
-/// [`Vm::exec_gate_call`]): the body is executed once with recording on,
-/// producing a straight-line trace of these, which is then reversed and
-/// inverted (for `inv`) or repeated (for integer `pow`) before emission.
-enum Leaf {
-    U {
-        target: u32,
-        theta: f64,
-        phi: f64,
-        lambda: f64,
-        controls: Vec<u32>,
-        neg_controls: Vec<u32>,
-        power: f64,
-    },
-    Gphase {
-        gamma: f64,
-        controls: Vec<u32>,
-        neg_controls: Vec<u32>,
-        power: f64,
-    },
-}
-
-impl Leaf {
-    /// Whether this leaf acts non-trivially on a qubit (a `U`, or a
-    /// *controlled* global phase, which is a relative phase). Uncontrolled
-    /// `gphase` is a global scalar and so is not "real" here. Used to
-    /// decide whether a fractional power can be folded per-leaf exactly.
-    fn is_real(&self) -> bool {
-        match self {
-            Leaf::U { .. } => true,
-            Leaf::Gphase {
-                controls,
-                neg_controls,
-                ..
-            } => !controls.is_empty() || !neg_controls.is_empty(),
-        }
-    }
 }
 
 /// State of an active `durationof` timing pass: quantum side effects
@@ -175,9 +135,12 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     /// absent), built once in [`Vm::new`] to avoid a linear scan per jump.
     block_pos: Vec<Vec<u32>>,
     measurements: Vec<(u32, bool)>,
-    /// When `Some`, leaf `U`/`gphase` calls are appended here instead of
-    /// being applied to the backend (gate-body flattening for modifiers).
-    recording: Option<Vec<Leaf>>,
+    /// When `Some`, built-in gate calls are appended here instead of being
+    /// applied to the backend. Used to apply `inv`/`pow` to composite gates
+    /// (see [`Vm::exec_gate_call`]): the body runs once with recording on,
+    /// producing a straight-line trace that is then reversed and inverted
+    /// (for `inv`) or repeated (for integer `pow`) before emission.
+    recording: Option<Vec<BuiltinGate>>,
     /// When `Some`, a `durationof` timing pass is active: quantum side
     /// effects are suppressed and elapsed time accumulates here.
     timing: Option<TimingState>,
@@ -377,7 +340,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         }
         for _ in 0..shots {
             if !fresh {
-                self.backend.reset_state(n).await;
+                self.backend.reset_state()?;
             }
             fresh = false;
             results.push(self.run_with_inputs(inputs.clone()).await?);
@@ -421,8 +384,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// [`run_with_inputs`](Self::run_with_inputs).
     async fn run_inner(&mut self, mut inputs: HashMap<SymbolId, Value>) -> KindResult<RunResult> {
         self.pulse_globals.clear();
+        self.measurements.clear();
         let entry = self.module.entry;
-        let mut regs = self.fresh_regs(entry);
+        let mut frame = self.fresh_frame(entry);
 
         // Seed declared inputs; reject missing ones and type mismatches.
         let reg_types = &self.module.procedures[entry.0 as usize].register_types;
@@ -431,7 +395,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 .remove(sym)
                 .ok_or_else(|| VmErrorKind::MissingInput(self.module.symbol(*sym).name.clone()))?;
             let want = reg_types[reg.0 as usize];
-            regs[reg.0 as usize] = Some(value.cast(want)?);
+            frame.regs[reg.0 as usize] = Some(value.cast(want)?);
         }
         // Any leftover entries name symbols that aren't declared inputs
         // (report the first declared, so the error is deterministic).
@@ -441,12 +405,6 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             ));
         }
 
-        let mut frame = Frame {
-            proc: entry,
-            regs,
-            slots: self.fresh_slots(entry),
-            mods: GateModifiers::none(),
-        };
         self.exec_proc(&mut frame).await?;
         let outputs = self
             .module
@@ -640,11 +598,6 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 // instruction the user wrote, keeping it in range of the
                 // rendered source.
                 self.current_span = call_span;
-                // Backend primitives are infallible; surface any deferred
-                // error (e.g. a sum-over-Cliffords budget overflow) here.
-                if let Some(kind) = self.backend.take_error() {
-                    return Err(kind);
-                }
                 r
             }
             BcOp::Measure { dest, qubit } => {
@@ -678,64 +631,26 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 // branch durations, so the value must not matter).
                 if self.timing.is_some() {
                     if let Some(d) = dest {
-                        let v = if qs.len() == 1 {
-                            Value::bit(false)
-                        } else {
-                            Value::bitreg_u128(0, qs.len() as u32)
-                        };
-                        self.set(frame, *d, v);
+                        self.set(frame, *d, measured_value(&vec![false; qs.len()]));
                     }
                     return Ok(());
                 }
-                // Inject (shot replay): return the pre-sampled outcomes for
-                // this register's qubits; the backend is untouched.
-                if let Some(basis) = self.inject.as_ref() {
-                    // Read the injected bits first (borrows `basis` ⊂ self),
-                    // then record/store (needs `&mut self`).
-                    let outcomes: Vec<bool> = qs
-                        .iter()
-                        .map(|&q| basis.get(q as usize).copied().unwrap_or(false))
-                        .collect();
-                    let mut bits: u128 = 0;
-                    for (i, (&q, &b)) in qs.iter().zip(&outcomes).enumerate() {
-                        self.measurements.push((q, b));
-                        if b {
-                            bits |= 1u128 << i;
-                        }
+                let outcomes: Vec<bool> = if let Some(basis) = &self.inject {
+                    // Inject (shot replay): the pre-sampled outcomes for
+                    // these qubits; the backend is untouched.
+                    qs.iter().map(|&q| basis[q as usize]).collect()
+                } else {
+                    // Capture (fast-path snapshot): stash the amplitudes at
+                    // the first measurement, before it collapses.
+                    if self.capture && self.captured_state.is_none() {
+                        self.captured_state = self.backend.amplitudes().await;
                     }
-                    if let Some(d) = dest {
-                        let v = if qs.len() == 1 {
-                            Value::bit(bits & 1 != 0)
-                        } else {
-                            Value::bitreg_u128(bits, qs.len() as u32)
-                        };
-                        self.set(frame, *d, v);
-                    }
-                    return Ok(());
-                }
-                // Capture (fast-path snapshot): stash the amplitudes at the
-                // first measurement, before it collapses.
-                if self.capture && self.captured_state.is_none() {
-                    self.captured_state = self.backend.amplitudes().await;
-                }
-                let outcomes = self.backend.measure_all(&qs).await;
-                let mut bits: u128 = 0;
-                for (i, (&q, &b)) in qs.iter().zip(&outcomes).enumerate() {
-                    self.measurements.push((q, b));
-                    if b {
-                        bits |= 1 << i;
-                    }
-                }
-                if let Some(kind) = self.backend.take_error() {
-                    return Err(kind);
-                }
+                    self.backend.measure_all(&qs).await
+                };
+                self.measurements
+                    .extend(qs.iter().copied().zip(outcomes.iter().copied()));
                 if let Some(d) = dest {
-                    let v = if qs.len() == 1 {
-                        Value::bit(bits & 1 != 0)
-                    } else {
-                        Value::bitreg_u128(bits, qs.len() as u32)
-                    };
-                    self.set(frame, *d, v);
+                    self.set(frame, *d, measured_value(&outcomes));
                 }
                 Ok(())
             }
@@ -759,9 +674,6 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 for q in self.qubits(frame, qubit)? {
                     self.backend.reset(q).await;
                 }
-                if let Some(kind) = self.backend.take_error() {
-                    return Err(kind);
-                }
                 Ok(())
             }
             BcOp::Barrier { qubits } => {
@@ -775,7 +687,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     return Ok(());
                 }
                 let qs = self.qubit_list(frame, qubits)?;
-                self.backend.barrier(&qs).await;
+                self.backend.barrier(&qs);
                 Ok(())
             }
             BcOp::Delay { duration, qubits } => {
@@ -795,7 +707,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     return Ok(());
                 }
                 let qs = self.qubit_list(frame, qubits)?;
-                self.backend.delay(&qs, dur).await;
+                self.backend.delay(&qs, dur);
                 Ok(())
             }
             BcOp::Nop { .. } => Ok(()),
@@ -814,12 +726,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     }
                     return Ok(());
                 }
-                let mut child = Frame {
-                    proc: *body,
-                    regs: self.fresh_regs(*body),
-                    slots: self.fresh_slots(*body),
-                    mods: GateModifiers::none(),
-                };
+                let mut child = self.fresh_frame(*body);
                 Box::pin(self.exec_proc(&mut child)).await?;
                 Ok(())
             }
@@ -865,12 +772,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 // Inline cal blocks execute only when a pulse handler is
                 // installed; otherwise calibrations stay dormant.
                 if self.pulse.is_some() {
-                    let mut child = Frame {
-                        proc: *body,
-                        regs: self.fresh_regs(*body),
-                        slots: self.fresh_slots(*body),
-                        mods: GateModifiers::none(),
-                    };
+                    let mut child = self.fresh_frame(*body);
                     Box::pin(self.exec_proc(&mut child)).await?;
                 }
                 Ok(())
@@ -890,12 +792,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 // are suppressed and elapsed time accumulates in a
                 // fresh [`TimingState`]. Save/restore nests correctly.
                 let saved = self.timing.replace(TimingState::new());
-                let mut child = Frame {
-                    proc: *body,
-                    regs: self.fresh_regs(*body),
-                    slots: self.fresh_slots(*body),
-                    mods: GateModifiers::none(),
-                };
+                let mut child = self.fresh_frame(*body);
                 let res = Box::pin(self.exec_proc(&mut child)).await;
                 let elapsed = self.timing.take().map(|t| t.elapsed());
                 self.timing = saved;
@@ -916,108 +813,100 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         callee: &BcCallTarget,
         args: &[BcOperand],
     ) -> KindResult<()> {
-        match callee {
+        let module = self.module;
+        let (name, ret) = match callee {
             BcCallTarget::Intrinsic(i) => {
-                let vals: Vec<Value> = args
-                    .iter()
-                    .map(|a| self.eval(frame, a))
-                    .collect::<KindResult<_>>()?;
+                let vals = self.eval_all(frame, args)?;
                 let v = i.apply(vals).ok_or_else(|| {
                     VmErrorKind::Type(format!("wrong number of arguments for `{i}`"))
                 })??;
-                if let Some(d) = dest {
-                    self.set(frame, d, v);
-                }
-                Ok(())
+                (i.name(), Some(v))
             }
             BcCallTarget::Symbol(s) => {
-                let sym = self.module.symbol(*s);
-                if matches!(
+                let sym = module.symbol(*s);
+                let name = sym.name.as_str();
+                let ret = if matches!(
                     sym.kind,
                     SymbolKind::Extern | SymbolKind::ExternPort | SymbolKind::ExternFrame
                 ) {
-                    let name = sym.name.clone();
-                    let vals: Vec<Value> = args
-                        .iter()
-                        .map(|a| self.eval(frame, a))
-                        .collect::<KindResult<_>>()?;
+                    let vals = self.eval_all(frame, args)?;
                     // OpenPulse intrinsics called from cal/defcal bodies
                     // route to the typed pulse handler rather than the
                     // extern provider.
-                    if self.pulse.is_some() && is_pulse_intrinsic(&name) && self.in_cal_proc(frame)
-                    {
-                        let ret = self.call_pulse_intrinsic(&name, &vals)?;
-                        if let Some(d) = dest {
-                            let v = ret.ok_or_else(|| {
-                                VmErrorKind::Type(format!("intrinsic `{name}` returned no value"))
-                            })?;
-                            self.set(frame, d, v);
-                        }
-                        return Ok(());
+                    if self.pulse.is_some() && is_pulse_intrinsic(name) && self.in_cal_proc(frame) {
+                        self.call_pulse_intrinsic(name, &vals)?
+                    } else {
+                        self.externs.call(name, &vals).await?
                     }
-                    let ret = self.externs.call(&name, &vals).await?;
-                    if let Some(d) = dest {
-                        let v = ret.ok_or_else(|| {
-                            VmErrorKind::Type(format!("extern `{name}` returned no value"))
-                        })?;
-                        self.set(frame, d, v);
-                    }
-                    Ok(())
                 } else {
                     let proc_id = *self.sub_procs.get(s).ok_or_else(|| {
                         VmErrorKind::Unsupported(format!("call to non-subroutine symbol s{}", s.0))
                     })?;
-                    let mut child = self.bind_subroutine(frame, proc_id, args)?;
+                    let (mut child, by_ref) = self.bind_subroutine(frame, proc_id, args)?;
                     let ret = Box::pin(self.exec_proc(&mut child)).await?;
-                    if let Some(d) = dest {
-                        let v = ret.ok_or_else(|| {
-                            VmErrorKind::Type(
-                                "subroutine returned no value for a value call".into(),
-                            )
-                        })?;
-                        self.set(frame, d, v);
+                    // Hand each array lent to a `mutable` parameter back to
+                    // the register it came from.
+                    for (reg, array) in by_ref {
+                        self.set(frame, reg, Value::Array(array.to_owned()?));
                     }
-                    Ok(())
-                }
+                    ret
+                };
+                (name, ret)
             }
+        };
+        if let Some(d) = dest {
+            let v = ret.ok_or_else(|| VmErrorKind::Type(format!("`{name}` returned no value")))?;
+            self.set(frame, d, v);
         }
+        Ok(())
     }
 
     /// Build a callee frame for a subroutine, binding positional args.
     /// Classical args go to the procedure's parameter registers (in
     /// declaration order); qubit args bind to their positional slot.
+    ///
+    /// Array parameters are references (docs/subroutines.rst). A `readonly`
+    /// one can't be told from a copy, so it is bound as one. An array passed
+    /// to a `mutable` parameter is shared between the caller's register and
+    /// the callee for the duration of the call; those registers are
+    /// returned with their shared arrays, for the caller to take back
+    /// ownership once the callee is done.
     fn bind_subroutine(
         &self,
-        frame: &Frame,
+        frame: &mut Frame,
         proc_id: ProcId,
         args: &[BcOperand],
-    ) -> KindResult<Frame> {
+    ) -> KindResult<(Frame, Vec<(Reg, ArrayRef)>)> {
         let proc = &self.module.procedures[proc_id.0 as usize];
-        let mut regs = self.fresh_regs(proc_id);
-        let mut slots = self.fresh_slots(proc_id);
+        let mut child = self.fresh_frame(proc_id);
+        let mut by_ref = Vec::new();
         // Qubit args fill dense qubit slots `[0, n)`; classical args go to
         // the procedure's parameter registers, both in declaration order.
         let mut qslot = 0usize;
-        let mut classical = 0usize;
+        let mut params = proc.params.iter();
         for arg in args {
             if is_qubit_operand(arg) {
-                slots[qslot] = self.qubits(frame, arg)?;
+                child.slots[qslot] = self.qubits(frame, arg)?;
                 qslot += 1;
-            } else {
-                let v = self.eval(frame, arg)?;
-                let reg = proc.params.get(classical).ok_or_else(|| {
-                    VmErrorKind::Unsupported("more classical args than parameters".into())
-                })?;
-                regs[reg.0 as usize] = Some(v);
-                classical += 1;
+                continue;
             }
+            let param = *params.next().ok_or_else(|| {
+                VmErrorKind::Unsupported("more classical args than parameters".into())
+            })?;
+            if let BcOperand::Reg(reg) = arg
+                && let ValueTy::ArrayRef(ty) = proc.register_types[param.0 as usize]
+                && ty.access() == RefAccess::Mutable
+            {
+                let held = &mut frame.regs[reg.0 as usize];
+                if let Some(Value::Array(array)) = held.take_if(|v| matches!(v, Value::Array(_))) {
+                    let shared = array.into_ref_mut();
+                    *held = Some(Value::ArrayRef(shared.clone()));
+                    by_ref.push((*reg, shared));
+                }
+            }
+            child.regs[param.0 as usize] = Some(self.eval(frame, arg)?);
         }
-        Ok(Frame {
-            proc: proc_id,
-            regs,
-            slots,
-            mods: GateModifiers::none(),
-        })
+        Ok((child, by_ref))
     }
 
     // ── Calibrations ──────────────────────────────────────────────────
@@ -1105,24 +994,17 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             ));
         };
         let proc = &self.module.procedures[proc_id.0 as usize];
-        let mut regs = self.fresh_regs(proc_id);
-        let mut slots = self.fresh_slots(proc_id);
+        let mut child = self.fresh_frame(proc_id);
         for (i, arg) in args.iter().enumerate() {
             let v = self.eval(frame, arg)?;
             let reg = proc.params.get(i).ok_or_else(|| {
                 VmErrorKind::Unsupported("more classical args than defcal parameters".into())
             })?;
-            regs[reg.0 as usize] = Some(v);
+            child.regs[reg.0 as usize] = Some(v);
         }
         for (slot, q) in hw.iter().enumerate() {
-            slots[slot] = vec![*q];
+            child.slots[slot] = vec![*q];
         }
-        let mut child = Frame {
-            proc: proc_id,
-            regs,
-            slots,
-            mods: GateModifiers::none(),
-        };
         Box::pin(self.exec_proc(&mut child)).await
     }
 
@@ -1284,61 +1166,44 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         if let Some(&proc_id) = self.gate_procs.get(&gate) {
             // User/std gate: bind params + qubits, recurse, broadcasting
             // over register operands.
-            let arg_vals: Vec<Value> = args
-                .iter()
-                .map(|a| self.eval(frame, a))
-                .collect::<KindResult<_>>()?;
+            let arg_vals = self.eval_all(frame, args)?;
             let resolved: Vec<Vec<u32>> = arg_ops
                 .iter()
                 .map(|o| self.qubits(frame, o))
                 .collect::<KindResult<_>>()?;
             let bcast = broadcast_len(&resolved)?;
             for j in 0..bcast {
-                let mut regs = self.fresh_regs(proc_id);
+                let mut child = self.fresh_frame(proc_id);
                 let proc = &self.module.procedures[proc_id.0 as usize];
                 for (k, v) in arg_vals.iter().enumerate() {
                     let reg = proc.params.get(k).ok_or_else(|| {
                         VmErrorKind::Unsupported("gate has fewer params than arguments".into())
                     })?;
-                    regs[reg.0 as usize] = Some(v.clone());
+                    child.regs[reg.0 as usize] = Some(v.clone());
                 }
                 // Bind the gate's qubit params into slots `[0, n)`.
                 // Singletons repeat; registers (validated equal to `bcast`)
                 // are indexed by the broadcast position.
-                let mut slots = self.fresh_slots(proc_id);
                 for (s, qs) in resolved.iter().enumerate() {
                     let idx = if qs.len() == 1 { 0 } else { j };
-                    slots[s] = vec![qs[idx]];
+                    child.slots[s] = vec![qs[idx]];
                 }
                 if eff.power == 1.0 {
                     // No `inv`/`pow`: recurse, propagating controls. `ctrl`
                     // distributes over a sequence, so this is exact.
-                    let mut child = Frame {
-                        proc: proc_id,
-                        regs,
-                        slots,
-                        mods: eff.clone(),
-                    };
+                    child.mods = eff.clone();
                     Box::pin(self.exec_proc(&mut child)).await?;
                 } else {
                     // `inv`/`pow` on a (possibly composite) body: flatten
-                    // the body to a leaf trace, then reverse+invert or
-                    // repeat it before emitting. Recording runs with a
-                    // clean context; the outer controls are merged back in
-                    // at emit time.
-                    let mut child = Frame {
-                        proc: proc_id,
-                        regs,
-                        slots,
-                        mods: GateModifiers::none(),
-                    };
-                    let prev = self.recording.take();
-                    self.recording = Some(Vec::new());
+                    // the body to a trace of built-in calls, then
+                    // reverse+invert or repeat it before emitting.
+                    // Recording runs with a clean context; the outer
+                    // controls are merged back in at emit time.
+                    let prev = self.recording.replace(Vec::new());
                     let res = Box::pin(self.exec_proc(&mut child)).await;
-                    let trace = self.recording.take().unwrap_or_default();
-                    self.recording = prev;
+                    let trace = std::mem::replace(&mut self.recording, prev).unwrap_or_default();
                     res?;
-                    self.apply_transformed(trace, eff.power, &eff).await?;
+                    self.apply_transformed(&trace, eff.power, &eff)?;
                 }
             }
             Ok(())
@@ -1350,143 +1215,83 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     let phi = value_f64(&self.eval(frame, &args[1])?)?;
                     let lambda = value_f64(&self.eval(frame, &args[2])?)?;
                     for op in arg_ops {
-                        for q in self.qubits(frame, op)? {
-                            self.emit_u(q, theta, phi, lambda, &eff).await;
+                        for target in self.qubits(frame, op)? {
+                            self.emit(BuiltinGate::U {
+                                target,
+                                theta,
+                                phi,
+                                lambda,
+                                mods: eff.clone(),
+                            })?;
                         }
                     }
                     Ok(())
                 }
                 "gphase" => {
                     let gamma = value_f64(&self.eval(frame, &args[0])?)?;
-                    self.emit_gphase(gamma, &eff).await;
-                    Ok(())
+                    self.emit(BuiltinGate::Gphase { gamma, mods: eff })
                 }
                 other => Err(VmErrorKind::UndefinedGate(other.to_string())),
             }
         }
     }
 
-    /// Apply (or, when recording, record) a leaf `U`.
-    async fn emit_u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
-        // A durationof timing pass applies no gates (uncalibrated
-        // gates are zero-duration).
+    /// Apply a built-in gate call to the backend — or, while a gate body is
+    /// being flattened, record it instead.
+    fn emit(&mut self, call: BuiltinGate) -> KindResult<()> {
+        // A durationof timing pass applies no gates (uncalibrated gates
+        // are zero-duration).
         if self.timing.is_some() {
-            return;
+            return Ok(());
         }
-        if let Some(buf) = self.recording.as_mut() {
-            buf.push(Leaf::U {
-                target,
-                theta,
-                phi,
-                lambda,
-                controls: m.controls.clone(),
-                neg_controls: m.neg_controls.clone(),
-                power: m.power,
-            });
-        } else {
-            self.backend.u(target, theta, phi, lambda, m).await;
-        }
-    }
-
-    /// Apply (or, when recording, record) a leaf `gphase`.
-    async fn emit_gphase(&mut self, gamma: f64, m: &GateModifiers) {
-        // See `emit_u`: timing passes apply no gates.
-        if self.timing.is_some() {
-            return;
-        }
-        if let Some(buf) = self.recording.as_mut() {
-            buf.push(Leaf::Gphase {
-                gamma,
-                controls: m.controls.clone(),
-                neg_controls: m.neg_controls.clone(),
-                power: m.power,
-            });
-        } else {
-            self.backend.gphase(gamma, m).await;
-        }
-    }
-
-    /// Emit one recorded leaf, scaling its power by `factor` (1 for a
-    /// forward repeat, -1 to invert, or the exponent for a fractional
-    /// power) and merging the outer controls `eff` onto it.
-    async fn emit_leaf(&mut self, leaf: &Leaf, factor: f64, eff: &GateModifiers) {
-        match leaf {
-            Leaf::U {
-                target,
-                theta,
-                phi,
-                lambda,
-                controls,
-                neg_controls,
-                power,
-            } => {
-                let m = GateModifiers {
-                    controls: merge(controls, &eff.controls),
-                    neg_controls: merge(neg_controls, &eff.neg_controls),
-                    power: power * factor,
-                };
-                self.emit_u(*target, *theta, *phi, *lambda, &m).await;
+        match self.recording.as_mut() {
+            Some(trace) => {
+                trace.push(call);
+                Ok(())
             }
-            Leaf::Gphase {
-                gamma,
-                controls,
-                neg_controls,
-                power,
-            } => {
-                let m = GateModifiers {
-                    controls: merge(controls, &eff.controls),
-                    neg_controls: merge(neg_controls, &eff.neg_controls),
-                    power: power * factor,
-                };
-                self.emit_gphase(*gamma, &m).await;
-            }
+            None => call.apply(&mut self.backend),
         }
     }
 
-    /// Emit a flattened gate-body `trace` raised to the power `p`, merging
-    /// the outer controls `eff` onto every leaf.
+    /// Emit a flattened gate-body `trace` raised to the power `p`, nesting
+    /// every call inside the outer controls `eff`.
     ///
     /// - integer `p`: repeat the trace `|p|` times (reversed + inverted
-    ///   when `p < 0`). Exact, since each leaf is exactly invertible.
-    /// - fractional `p`: only exact when at most one leaf acts on a qubit
+    ///   when `p < 0`). Exact, since each call is exactly invertible.
+    /// - fractional `p`: only exact when at most one call acts on a qubit
     ///   (a single `U`, or a relative phase, plus commuting global
-    ///   phases), where the power folds per-leaf. A fractional power of a
-    ///   genuinely composite body would need a dense matrix power and is
-    ///   rejected.
-    async fn apply_transformed(
+    ///   phases), where the power folds into each call. A fractional power
+    ///   of a genuinely composite body would need a dense matrix power and
+    ///   is rejected.
+    fn apply_transformed(
         &mut self,
-        trace: Vec<Leaf>,
+        trace: &[BuiltinGate],
         p: f64,
         eff: &GateModifiers,
     ) -> KindResult<()> {
         let rounded = p.round();
         if (rounded - p).abs() < 1e-9 {
-            let k = rounded as i64;
-            let reps = k.unsigned_abs();
-            if k >= 0 {
-                for _ in 0..reps {
-                    for leaf in &trace {
-                        self.emit_leaf(leaf, 1.0, eff).await;
+            for _ in 0..(rounded as i64).unsigned_abs() {
+                if rounded >= 0.0 {
+                    for call in trace {
+                        self.emit(call.within(eff, 1.0))?;
                     }
-                }
-            } else {
-                for _ in 0..reps {
-                    for leaf in trace.iter().rev() {
-                        self.emit_leaf(leaf, -1.0, eff).await;
+                } else {
+                    for call in trace.iter().rev() {
+                        self.emit(call.within(eff, -1.0))?;
                     }
                 }
             }
             Ok(())
         } else {
-            if trace.iter().filter(|l| l.is_real()).count() > 1 {
+            if trace.iter().filter(|c| c.acts_on_a_qubit()).count() > 1 {
                 return Err(VmErrorKind::Unsupported(
                     "fractional power of a multi-qubit composite gate".into(),
                 ));
             }
-            for leaf in &trace {
-                self.emit_leaf(leaf, p, eff).await;
-            }
-            Ok(())
+            trace
+                .iter()
+                .try_for_each(|call| self.emit(call.within(eff, p)))
         }
     }
 
@@ -1494,6 +1299,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 
     fn set(&self, frame: &mut Frame, reg: Reg, value: Value) {
         frame.regs[reg.0 as usize] = Some(value);
+    }
+
+    /// Resolve a list of classical operands to values.
+    fn eval_all(&self, frame: &Frame, ops: &[BcOperand]) -> KindResult<Vec<Value>> {
+        ops.iter().map(|op| self.eval(frame, op)).collect()
     }
 
     /// Evaluate per-dimension index operands into `Index::Item`s for an
@@ -1641,6 +1451,18 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         Ok(out)
     }
 
+    /// A fresh activation of `proc` with no modifier context: zeroed
+    /// registers (callers then bind parameter registers) and empty qubit
+    /// slots (callers fill the parameter slots).
+    fn fresh_frame(&self, proc: ProcId) -> Frame {
+        Frame {
+            proc,
+            regs: self.fresh_regs(proc),
+            slots: self.fresh_slots(proc),
+            mods: GateModifiers::none(),
+        }
+    }
+
     /// A fresh register file for `proc`, with every register set to its
     /// type's zero. OpenQASM default-initializes classical variables to
     /// zero, and this is also the SSA "entry value" of any variable;
@@ -1714,12 +1536,16 @@ fn broadcast_len(operands: &[Vec<u32>]) -> KindResult<usize> {
     Ok(n)
 }
 
-/// Concatenate two control lists (a leaf's own controls and the outer
-/// modifier context's).
-fn merge(a: &[u32], b: &[u32]) -> Vec<u32> {
-    let mut v = a.to_vec();
-    v.extend_from_slice(b);
-    v
+/// Pack measurement outcomes into the measured value: a `bit` for one
+/// qubit, otherwise a `bit[n]` register holding outcome `i` at bit `i`.
+fn measured_value(outcomes: &[bool]) -> Value {
+    if let [bit] = outcomes {
+        return Value::bit(*bit);
+    }
+    let width = outcomes.len() as u32;
+    let mut reg = BitReg::zeros(width);
+    reg.set_bits(outcomes.iter().copied().enumerate());
+    Value::bitreg(reg, width)
 }
 
 fn is_qubit_operand(op: &BcOperand) -> bool {

@@ -11,6 +11,7 @@ use oqi_compile::{BcModule, CompileOptions, DefaultIncludeResolver};
 use oqi_format::Config;
 use oqi_vm::{
     BackendSpec, DEFAULT_SEED, HostValue, NoExterns, Precision, QuantumBackend, SumPolicy, Vm,
+    VmError, VmErrorKind,
 };
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
@@ -287,6 +288,18 @@ async fn run(args: &RunArgs) -> ExitCode {
         oqi_diagnostics::emit(e, path, &source);
         ExitCode::FAILURE
     };
+    // A runtime error, plus how to act on it from this command line.
+    let fail_run = |e: &VmError| {
+        let code = fail(e);
+        match e.kind {
+            VmErrorKind::MissingInput(_) => eprintln!("hint: supply it with `--input NAME=VALUE`"),
+            VmErrorKind::RankOverflow { .. } => {
+                eprintln!("hint: raise the term budget with `--max-rank`")
+            }
+            _ => {}
+        }
+        code
+    };
 
     let module = match oqi_compile::compile(
         &source,
@@ -345,7 +358,7 @@ async fn run(args: &RunArgs) -> ExitCode {
                 }
                 ExitCode::SUCCESS
             }
-            Err(e) => fail(&e),
+            Err(e) => fail_run(&e),
         };
     }
 
@@ -369,7 +382,7 @@ async fn run(args: &RunArgs) -> ExitCode {
             }
             ExitCode::SUCCESS
         }
-        Err(e) => fail(&e),
+        Err(e) => fail_run(&e),
     }
 }
 

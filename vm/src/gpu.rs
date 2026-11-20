@@ -30,10 +30,13 @@ use oqi_quantum::{Gate, Unitary};
 use wgpu::util::DeviceExt;
 
 use crate::backend::{GateModifiers, QuantumBackend};
-use crate::error::{VmError, VmErrorKind, VmResult};
+use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
+use crate::measure;
 use crate::rng::Rng;
 
 const WORKGROUP_SIZE: u32 = 64;
+/// Bytes per amplitude in the state buffer: a `vec2<f32>`.
+const STATE_ELEMENT_BYTES: u64 = 8;
 /// `dispatch_workgroups` is capped at 65535 per dimension; tile across the
 /// y dimension when the pair count needs more groups than that in x.
 const MAX_DIM: u32 = 65535;
@@ -114,16 +117,17 @@ impl GpuSim {
     /// A fresh simulator with `num_qubits` qubits in |0…0⟩ and an explicit
     /// measurement-RNG seed. Errors with
     /// [`VmErrorKind::BackendUnavailable`] if no adapter/device is
-    /// available, or [`VmErrorKind::TooManyQubits`] if the state vector's
-    /// length overflows. Async: `.await` it (native callers can block on it,
-    /// e.g. with `pollster`; the browser awaits it directly).
+    /// available, or [`VmErrorKind::TooManyQubits`] if the state vector
+    /// doesn't fit in one of the device's buffers. Async: `.await` it
+    /// (native callers can block on it, e.g. with `pollster`; the browser
+    /// awaits it directly).
     pub async fn try_zeroed(num_qubits: u32, seed: u64) -> VmResult<Self> {
         let unavailable = |why: String| VmError::new(VmErrorKind::BackendUnavailable(why));
-        let len = 1usize.checked_shl(num_qubits).ok_or_else(|| {
+        let too_many = || {
             VmError::new(VmErrorKind::TooManyQubits {
                 requested: num_qubits,
             })
-        })?;
+        };
 
         let instance = wgpu::Instance::default();
         let adapter = instance
@@ -139,8 +143,24 @@ impl GpuSim {
             .await
             .map_err(|e| unavailable(format!("failed to create GPU device: {e}")))?;
 
+        // The shader indexes amplitudes with `u32`, the whole state lives in
+        // one storage buffer (`vec2<f32>` per amplitude), and the host
+        // mirrors that buffer for uploads and readback.
+        let limits = device.limits();
+        let len = (num_qubits <= u32::BITS)
+            .then(|| 1u64 << num_qubits)
+            .filter(|len| {
+                let bytes = len * STATE_ELEMENT_BYTES;
+                bytes <= limits.max_buffer_size
+                    && bytes <= limits.max_storage_buffer_binding_size
+                    && usize::try_from(bytes).is_ok()
+            })
+            .ok_or_else(too_many)? as usize;
+
         // Initialise |0…0⟩ on the host and upload.
-        let mut init = vec![0f32; len * 2];
+        let mut init: Vec<f32> = Vec::new();
+        init.try_reserve_exact(len * 2).map_err(|_| too_many())?;
+        init.resize(len * 2, 0.0);
         init[0] = 1.0;
         let state = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("state"),
@@ -272,12 +292,6 @@ impl GpuSim {
         self.queue.submit(Some(encoder.finish()));
     }
 
-    fn apply_x(&mut self, target: u32) {
-        // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
-        let x = Unitary::<f32>::new(std::f32::consts::PI, 0.0, std::f32::consts::PI).matrix();
-        self.run_gate(&x, target, &[], &[]);
-    }
-
     /// Read the full state back to the host as raw amplitudes (the tracked
     /// global phase is not applied).
     ///
@@ -286,7 +300,7 @@ impl GpuSim {
     /// await; in the browser `poll` is a no-op and the event loop fulfils the
     /// map, so the `.await` suspends until then.
     async fn read_state(&self) -> Vec<Complex<f64>> {
-        let bytes = (self.len * 2 * std::mem::size_of::<f32>()) as u64;
+        let bytes = self.len as u64 * STATE_ELEMENT_BYTES;
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("staging"),
             size: bytes,
@@ -338,7 +352,14 @@ impl GpuSim {
 
 #[async_trait(?Send)]
 impl QuantumBackend for GpuSim {
-    async fn u(&mut self, target: u32, theta: f64, phi: f64, lambda: f64, m: &GateModifiers) {
+    fn u(
+        &mut self,
+        target: u32,
+        theta: f64,
+        phi: f64,
+        lambda: f64,
+        m: &GateModifiers,
+    ) -> KindResult<()> {
         let unitary = Unitary::<f32>::new(theta as f32, phi as f32, lambda as f32);
         let mut g = Gate::new(unitary);
         if m.power != 1.0 {
@@ -346,59 +367,16 @@ impl QuantumBackend for GpuSim {
         }
         let mat = g.matrix();
         self.run_gate(&mat, target, &m.controls, &m.neg_controls);
+        Ok(())
     }
 
-    async fn gphase(&mut self, gamma: f64, m: &GateModifiers) {
-        let g = gamma * m.power;
-
-        if m.controls.is_empty() && m.neg_controls.is_empty() {
-            self.global_phase += g;
-            return;
-        }
-
-        // Controlled global phase is a relative phase on the innermost
-        // control: diag(1, e^{ig}); a negctrl target is wrapped in X.
-        let mut controls = m.controls.clone();
-        let mut neg_controls = m.neg_controls.clone();
-        let (target, neg_target) = match controls.pop() {
-            Some(c) => (c, false),
-            None => (neg_controls.pop().expect("at least one control"), true),
-        };
-
-        let mat = Unitary::<f32>::new(0.0, 0.0, g as f32).matrix();
-        if neg_target {
-            self.apply_x(target);
-            self.run_gate(&mat, target, &controls, &neg_controls);
-            self.apply_x(target);
-        } else {
-            self.run_gate(&mat, target, &controls, &neg_controls);
-        }
+    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+        self.global_phase += gamma;
+        Ok(())
     }
 
     async fn measure(&mut self, qubit: u32) -> bool {
-        let bit = 1usize << qubit;
-        let mut amps = self.read_state().await;
-
-        let p_one: f64 = amps
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| i & bit != 0)
-            .map(|(_, a)| a.norm_sqr())
-            .sum();
-
-        let outcome = self.rng.next_f64() < p_one;
-
-        let norm = if outcome { p_one } else { 1.0 - p_one };
-        let scale = if norm > 0.0 { 1.0 / norm.sqrt() } else { 0.0 };
-        for (i, a) in amps.iter_mut().enumerate() {
-            if (i & bit != 0) == outcome {
-                *a *= scale;
-            } else {
-                *a = Complex::new(0.0, 0.0);
-            }
-        }
-        self.write_state(&amps);
-        outcome
+        self.measure_all(&[qubit]).await[0]
     }
 
     async fn measure_all(&mut self, qubits: &[u32]) -> Vec<bool> {
@@ -406,47 +384,32 @@ impl QuantumBackend for GpuSim {
         // on the host copy in turn (equivalent to sequential `measure`), then
         // one upload. Turns a per-qubit GPU round-trip into a single pair.
         let mut amps = self.read_state().await;
-        let mut outcomes = Vec::with_capacity(qubits.len());
-        for &qubit in qubits {
-            let bit = 1usize << qubit;
-            let p_one: f64 = amps
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| i & bit != 0)
-                .map(|(_, a)| a.norm_sqr())
-                .sum();
-            let outcome = self.rng.next_f64() < p_one;
-            let norm = if outcome { p_one } else { 1.0 - p_one };
-            let scale = if norm > 0.0 { 1.0 / norm.sqrt() } else { 0.0 };
-            for (i, a) in amps.iter_mut().enumerate() {
-                if (i & bit != 0) == outcome {
-                    *a *= scale;
-                } else {
-                    *a = Complex::new(0.0, 0.0);
-                }
-            }
-            outcomes.push(outcome);
-        }
+        let outcomes = qubits
+            .iter()
+            .map(|&q| measure::measure(&mut amps, q, &mut self.rng))
+            .collect();
         self.write_state(&amps);
         outcomes
     }
 
     async fn reset(&mut self, qubit: u32) {
         if self.measure(qubit).await {
-            self.apply_x(qubit);
+            // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
+            let x = Unitary::<f32>::new(std::f32::consts::PI, 0.0, std::f32::consts::PI).matrix();
+            self.run_gate(&x, qubit, &[], &[]);
         }
     }
 
-    async fn reset_state(&mut self, _num_qubits: u32) {
+    fn reset_state(&mut self) -> KindResult<()> {
         // Re-upload |0…0⟩ to the resident buffer, reusing the device/pipeline
-        // (no new adapter). Leaves the RNG stream intact so shots stay
-        // independent and reproducible.
+        // (no new adapter).
         let mut init = vec![0f32; self.len * 2];
         init[0] = 1.0;
         self.queue
             .write_buffer(&self.state, 0, bytemuck::cast_slice(&init));
         self.queue.submit(std::iter::empty());
         self.global_phase = 0.0;
+        Ok(())
     }
 
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
@@ -458,66 +421,79 @@ impl QuantumBackend for GpuSim {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::apply_gphase;
     use crate::sim::StateVectorSim;
+    use std::f64::consts::{FRAC_PI_2, PI};
 
-    async fn gates(b: &mut dyn QuantumBackend) {
+    fn gates(b: &mut dyn QuantumBackend) {
         let plain = GateModifiers::none();
         for q in 0..5 {
-            b.u(
-                q,
-                std::f64::consts::FRAC_PI_2,
-                0.0,
-                std::f64::consts::PI,
-                &plain,
-            )
-            .await; // H
+            b.u(q, FRAC_PI_2, 0.0, PI, &plain).unwrap(); // H
         }
         for q in 0..5 {
-            b.u(q, 0.37, 0.11, 0.59, &plain).await; // arbitrary rotation
+            b.u(q, 0.37, 0.11, 0.59, &plain).unwrap(); // arbitrary rotation
         }
         // CX(0->4) and a negctrl gate to exercise both masks.
-        let c0 = GateModifiers {
-            controls: vec![0],
-            neg_controls: vec![],
-            power: 1.0,
-        };
-        b.u(4, std::f64::consts::PI, 0.0, std::f64::consts::PI, &c0)
-            .await;
+        let c0 = GateModifiers::ctrl(&[0]);
+        b.u(4, PI, 0.0, PI, &c0).unwrap();
         let nc = GateModifiers {
-            controls: vec![],
             neg_controls: vec![2],
-            power: 1.0,
+            ..GateModifiers::none()
         };
-        b.u(3, std::f64::consts::PI, 0.0, std::f64::consts::PI, &nc)
-            .await;
+        b.u(3, PI, 0.0, PI, &nc).unwrap();
         // controlled + global phase
-        b.gphase(0.7, &c0).await;
-        b.gphase(0.3, &plain).await;
+        apply_gphase(b, 0.7, &c0).unwrap();
+        b.gphase(0.3).unwrap();
+    }
+
+    /// A simulator, or `None` (with a note) when no GPU adapter is available
+    /// (e.g. headless CI), so tests skip gracefully instead of failing.
+    fn gpu(num_qubits: u32) -> Option<VmResult<GpuSim>> {
+        let _turn = crate::spec::gpu_turn();
+        match pollster::block_on(GpuSim::try_zeroed(num_qubits, 0)) {
+            Err(VmError {
+                kind: VmErrorKind::BackendUnavailable(why),
+                ..
+            }) => {
+                eprintln!("skipping gpu test: {why}");
+                None
+            }
+            sim => Some(sim),
+        }
     }
 
     /// The GPU backend must agree with the reference scalar simulator to
-    /// within single-precision tolerance. Skips gracefully when no GPU
-    /// adapter is available (e.g. headless CI) rather than failing.
+    /// within single-precision tolerance.
     #[test]
     fn matches_scalar_within_f32_tolerance() {
         pollster::block_on(async {
-            let mut gpu = match GpuSim::try_zeroed(5, 0).await {
-                Ok(g) => g,
-                Err(e) => {
-                    eprintln!("skipping gpu test: {e}");
-                    return;
-                }
-            };
+            let Some(gpu) = gpu(5) else { return };
+            let mut gpu = gpu.unwrap();
             let mut cpu = StateVectorSim::<f64>::try_zeroed(5, 0).unwrap();
 
-            gates(&mut gpu).await;
-            gates(&mut cpu).await;
+            gates(&mut gpu);
+            gates(&mut cpu);
 
             let a = gpu.amplitudes().await.unwrap();
             let b = cpu.amplitudes().await.unwrap();
             assert_eq!(a.len(), b.len());
             for (x, y) in a.iter().zip(&b) {
                 assert!((x - y).norm() < 1e-4, "gpu {x} vs scalar {y}");
+            }
+        })
+    }
+
+    /// A state vector that can't fit in a device buffer is a clean error,
+    /// not a host allocation failure or a device validation panic.
+    #[test]
+    fn oversized_state_is_too_many_qubits() {
+        pollster::block_on(async {
+            for n in [40, 64, 200] {
+                let Some(gpu) = gpu(n) else { return };
+                assert!(matches!(
+                    gpu.err().map(|e| e.kind),
+                    Some(VmErrorKind::TooManyQubits { requested }) if requested == n
+                ));
             }
         })
     }

@@ -8,7 +8,6 @@ name = "oqi_py"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-async-trait = "0.1"
 oqi-compile = { path = "../compile" }
 oqi-diagnostics = { path = "../diagnostics" }
 oqi-vm = { path = "../vm" }

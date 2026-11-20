@@ -360,22 +360,3 @@ pub(crate) fn apply_clifford_u(
         _ => false, // 2+ controls (e.g. Toffoli): non-Clifford
     }
 }
-
-/// Try to apply a `gphase` to the sink as a Clifford. An uncontrolled global
-/// phase only scales the global scalar (no effect on a phase-blind sink); a
-/// single-control global phase is a phase `g` on that control (Clifford iff
-/// `g` is a multiple of π/2).
-pub(crate) fn apply_clifford_gphase(
-    sink: &mut impl CliffordSink,
-    g: f64,
-    m: &GateModifiers,
-) -> bool {
-    if m.controls.is_empty() && m.neg_controls.is_empty() {
-        sink.phase(Complex::from_polar(1.0, g));
-        return true;
-    }
-    if m.neg_controls.is_empty() && m.controls.len() == 1 {
-        return apply_single_qubit(sink, m.controls[0] as usize, &phase_matrix(g));
-    }
-    false
-}

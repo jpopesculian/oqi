@@ -10,8 +10,8 @@ use oqi_compile::classical::ValueTy;
 use oqi_compile::{BcModule, CompileOptions, DefaultIncludeResolver};
 use oqi_format::Config;
 use oqi_vm::{
-    BackendSpec, DEFAULT_SEED, HostValue, NoExterns, Precision, QuantumBackend, SumPolicy, Vm,
-    VmError, VmErrorKind,
+    BackendSpec, DEFAULT_SEED, HostValue, MpsSim, NoExterns, Precision, QuantumBackend, SumPolicy,
+    Vm, VmError, VmErrorKind,
 };
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
@@ -169,7 +169,8 @@ struct RunArgs {
     /// `prefer-gpu` falls back to `scalar` without one; `auto` routes
     /// through a stabilizer tableau, then an exact sum over Cliffords,
     /// then a dense state vector; `sum` is `auto` without the dense
-    /// fallback
+    /// fallback; `mps` is a matrix-product-state simulator, approximate once
+    /// entanglement exceeds --max-bond
     #[arg(
         long,
         default_value = "scalar",
@@ -191,6 +192,11 @@ struct RunArgs {
     /// term count by 2-3)
     #[arg(long, default_value_t = SumPolicy::default().max_rank)]
     max_rank: usize,
+
+    /// Maximum bond dimension of the mps backend: past it, the state is
+    /// truncated to its largest singular values and renormalized
+    #[arg(long, default_value_t = MpsSim::DEFAULT_MAX_BOND)]
+    max_bond: usize,
 
     /// Simulator RNG seed; a given seed reproduces a run
     #[arg(long)]
@@ -326,6 +332,7 @@ async fn run(args: &RunArgs) -> ExitCode {
             max_rank: args.max_rank,
             ..args.backend.sum_policy
         },
+        max_bond: args.max_bond,
         ..args.backend
     };
     let (sim, built) = match spec.build(module.qubits.num_qubits).await {

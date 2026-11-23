@@ -186,6 +186,7 @@ fn session(
     backend: &str,
     precision: &str,
     max_rank: Option<usize>,
+    max_bond: Option<usize>,
 ) -> PyResult<Session> {
     let module = build_module(source, timings, dt)?;
     let externs = PyExterns::new(&module, externs)?;
@@ -213,6 +214,9 @@ fn session(
             max_rank,
             ..spec.sum_policy
         };
+    }
+    if let Some(max_bond) = max_bond {
+        spec.max_bond = max_bond;
     }
     // Backend construction resolves immediately for the CPU simulators and
     // polls the device itself for the GPU one, so blocking never parks.
@@ -245,11 +249,12 @@ fn session(
 ///
 /// `backend` selects the simulator by the same names as the CLI's
 /// `--backend` (`"scalar"`, `"rayon"`, `"simd"`, `"rayon-simd"`, `"gpu"`,
-/// `"prefer-gpu"`, `"auto"`, `"sum"`); `precision` (`"f64"` or `"f32"`) is
-/// the amplitude precision of the CPU state-vector simulators and `max_rank`
-/// the stabilizer-term budget of `"auto"`/`"sum"`.
+/// `"prefer-gpu"`, `"auto"`, `"sum"`, `"mps"`); `precision` (`"f64"` or
+/// `"f32"`) is the amplitude precision of the CPU state-vector simulators,
+/// `max_rank` the stabilizer-term budget of `"auto"`/`"sum"` and `max_bond`
+/// the bond-dimension cap of `"mps"`, past which its state is truncated.
 #[pyfunction]
-#[pyo3(signature = (source, *, inputs=None, seed=None, statevector=false, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None))]
+#[pyo3(signature = (source, *, inputs=None, seed=None, statevector=false, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None, max_bond=None))]
 #[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
@@ -263,9 +268,10 @@ fn run(
     backend: &str,
     precision: &str,
     max_rank: Option<usize>,
+    max_bond: Option<usize>,
 ) -> PyResult<RunResult> {
     let session = session(
-        source, inputs, seed, externs, timings, dt, backend, precision, max_rank,
+        source, inputs, seed, externs, timings, dt, backend, precision, max_rank, max_bond,
     )?;
     let module = &session.module;
     let mut vm = Vm::new(module, session.backend, session.externs);
@@ -301,7 +307,7 @@ fn run(
 /// histogram of observed values per named output variable. Takes the same
 /// options as [`run`]; a given `seed` reproduces the whole histogram.
 #[pyfunction]
-#[pyo3(signature = (source, *, shots=1024, inputs=None, seed=None, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None))]
+#[pyo3(signature = (source, *, shots=1024, inputs=None, seed=None, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None, max_bond=None))]
 #[allow(clippy::too_many_arguments)]
 fn sample(
     py: Python<'_>,
@@ -315,12 +321,13 @@ fn sample(
     backend: &str,
     precision: &str,
     max_rank: Option<usize>,
+    max_bond: Option<usize>,
 ) -> PyResult<SampleResult> {
     if shots == 0 {
         return Err(OqiError::new_err("`shots` must be at least 1"));
     }
     let session = session(
-        source, inputs, seed, externs, timings, dt, backend, precision, max_rank,
+        source, inputs, seed, externs, timings, dt, backend, precision, max_rank, max_bond,
     )?;
     let module = &session.module;
     let mut vm = Vm::new(module, session.backend, session.externs);

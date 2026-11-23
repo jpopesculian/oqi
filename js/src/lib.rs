@@ -161,7 +161,8 @@ struct RunOptions {
     dt: Option<String>,
     /// Which simulator to run on, by the same names as the CLI's
     /// `--backend`: `"scalar"` (default), `"simd"`, `"gpu"`, `"prefer-gpu"`
-    /// (WebGPU when available, else `"scalar"`), `"auto"` or `"sum"`.
+    /// (WebGPU when available, else `"scalar"`), `"auto"`, `"sum"` or
+    /// `"mps"`.
     #[serde(default)]
     backend: Option<String>,
     /// Amplitude precision of the CPU state-vector simulators: `"f64"`
@@ -172,6 +173,10 @@ struct RunOptions {
     /// sum-over-Cliffords tier.
     #[serde(default)]
     max_rank: Option<usize>,
+    /// Maximum bond dimension of the `"mps"` backend, past which its state is
+    /// truncated.
+    #[serde(default)]
+    max_bond: Option<usize>,
     /// Number of shots for [`sample`] (ignored by [`run`]). Clamped to
     /// `1..=100_000`.
     #[serde(default = "default_shots")]
@@ -288,6 +293,9 @@ impl Session {
                 ..spec.sum_policy
             };
         }
+        if let Some(max_bond) = opts.max_bond {
+            spec.max_bond = max_bond;
+        }
         spec.seed = seed;
         let (backend, built) = spec
             .build(module.qubits.num_qubits)
@@ -319,7 +327,7 @@ fn to_js(value: &impl Serialize) -> Result<JsValue, JsValue> {
 /// Compile and run an OpenQASM 3 program on a simulator.
 ///
 /// `options` is an optional object:
-/// `{ inputs?, seed?, statevector?, externs?, timings?, dt?, backend?, precision?, maxRank? }`.
+/// `{ inputs?, seed?, statevector?, externs?, timings?, dt?, backend?, precision?, maxRank?, maxBond? }`.
 /// `externs` maps each `extern` function's name to a JS implementation, which
 /// may return its result directly or as a `Promise` (awaited). Return values
 /// are coerced to the declared return type (radians for `angle[n]`, MSB-first

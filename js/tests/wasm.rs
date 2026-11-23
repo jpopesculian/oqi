@@ -450,7 +450,12 @@ async fn sample_defaults_to_1024_shots() {
 #[wasm_bindgen_test]
 async fn backends_share_the_cli_names() {
     // Every CLI backend name is accepted; the result names what ran.
-    for (name, precision) in [("simd", "f64"), ("auto", "f64"), ("sum", "f64")] {
+    for (name, precision) in [
+        ("simd", "f64"),
+        ("auto", "f64"),
+        ("sum", "f64"),
+        ("mps", "f64"),
+    ] {
         let opts = format!(r#"{{ "shots": 50, "backend": "{name}" }}"#);
         let out = sample(BELL, options(&opts)).await.unwrap();
         assert_eq!(
@@ -467,6 +472,18 @@ async fn backends_share_the_cli_names() {
             );
         }
     }
+
+    // The MPS simulator's bond cap is an option of its own: capped at 1, a
+    // Bell pair truncates to a single basis state.
+    let out = sample(
+        BELL,
+        options(r#"{ "backend": "mps", "maxBond": 1, "shots": 10 }"#),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out.backend, "mps");
+    let c = out.histograms.iter().find(|h| h.name == "c").unwrap();
+    assert_eq!(c.bars.len(), 1, "a product state");
 
     // Without WebGPU (node), `prefer-gpu` falls back to the scalar simulator
     // and `gpu` itself is an error.

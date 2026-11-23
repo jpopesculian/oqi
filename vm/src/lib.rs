@@ -27,6 +27,7 @@ mod extern_fns;
 mod gpu;
 mod host;
 mod measure;
+mod mps;
 mod rng;
 mod sim;
 mod sim_simd;
@@ -43,6 +44,7 @@ pub use extern_fns::{ExternProvider, FnRegistry, NoExterns};
 #[cfg(feature = "gpu")]
 pub use gpu::GpuSim;
 pub use host::{Histogram, HostValue, coerce, coerce_inputs, histograms};
+pub use mps::MpsSim;
 pub use sim::StateVectorSim;
 pub use sim_simd::{SimdLane, SimdSim};
 pub use spec::{BackendKind, BackendSpec, DEFAULT_SEED, Precision};

@@ -25,7 +25,6 @@ use crate::cal::{FrameHandle, OpaqueCalHandler, OpenPulseHandler, PortHandle, Wa
 use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
 use crate::extern_fns::ExternProvider;
 use crate::host::{HostValue, coerce_inputs};
-use crate::rng::Rng;
 
 /// The outcome of a run.
 #[derive(Debug)]
@@ -160,11 +159,11 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     /// Span of the instruction (or block) currently executing, used to
     /// locate a runtime error in the source. Defaults to the empty sentinel.
     current_span: Span,
-    /// Shot-sampling "capture" mode: snapshot the amplitudes at the first
-    /// measurement (into `captured_state`) before it collapses. Set by
-    /// `run_capture`.
-    capture: bool,
-    captured_state: Option<Vec<Complex64>>,
+    /// Shot-sampling "capture" mode: at the first measurement, before it
+    /// collapses, draw this many shots with this seed from the backend's
+    /// state (into `captured_shots`). Set by `run_capture`.
+    capture: Option<(u32, u64)>,
+    captured_shots: Option<Vec<Vec<bool>>>,
     /// Shot-sampling "inject" mode: replay the program with pre-sampled
     /// measurement outcomes. Quantum ops (gate/reset/barrier/delay) become
     /// no-ops and `measure` returns the injected bit per qubit, so the
@@ -237,8 +236,8 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             opaque_cal: None,
             cal_values: HashMap::new(),
             current_span: Span::default(),
-            capture: false,
-            captured_state: None,
+            capture: None,
+            captured_shots: None,
             inject: None,
         }
     }
@@ -302,10 +301,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// shot's result, in order.
     ///
     /// When no quantum operation depends on a measurement outcome
-    /// ([`is_sample_safe`]) and the backend holds a dense state, the circuit
-    /// runs once: its pre-measurement state is snapshotted and each shot is
-    /// drawn from that state's Born-rule distribution with an RNG seeded by
-    /// `seed`, replaying only the classical program. Otherwise the whole
+    /// ([`is_sample_safe`]) and the backend
+    /// [can sample its state](QuantumBackend::can_sample_shots), the circuit
+    /// runs once: every shot is drawn from the pre-measurement state's
+    /// Born-rule distribution with an RNG seeded by `seed`, and only the
+    /// classical program is replayed per shot. Otherwise the whole
     /// circuit is re-run per shot, re-zeroing the backend in between while
     /// the backend's own RNG stream advances — there the backend's seed, not
     /// `seed`, decides the outcomes (front doors give both the same seed).
@@ -315,25 +315,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         shots: u32,
         seed: u64,
     ) -> VmResult<Vec<RunResult>> {
-        let n = self.module.qubits.num_qubits;
         let mut results = Vec::with_capacity(shots as usize);
         let mut fresh = true;
-        if self.backend.has_dense_state() && is_sample_safe(self.module) {
+        if self.backend.can_sample_shots() && is_sample_safe(self.module) {
             fresh = false;
-            if let Some(psi) = self.run_capture(inputs.clone()).await? {
-                // Cumulative |ψ|² table over basis states.
-                let mut cumulative = Vec::with_capacity(psi.len());
-                let mut total = 0.0f64;
-                for amplitude in &psi {
-                    total += amplitude.norm_sqr();
-                    cumulative.push(total);
-                }
-                let total = total.max(f64::MIN_POSITIVE);
-                let mut rng = Rng::new(seed);
-                for _ in 0..shots {
-                    let u = rng.next_f64() * total;
-                    let idx = cumulative.partition_point(|&c| c < u).min(psi.len() - 1);
-                    let basis = (0..n).map(|q| (idx >> q) & 1 == 1).collect();
+            if let Some(drawn) = self.run_capture(inputs.clone(), shots, seed).await? {
+                for basis in drawn {
                     results.push(self.run_inject(inputs.clone(), basis).await?);
                 }
                 return Ok(results);
@@ -349,19 +336,22 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         Ok(results)
     }
 
-    /// Run once to snapshot the pre-measurement state: the amplitudes at the
-    /// first measurement (before it collapses), or `None` if the program never
-    /// measures or the backend has no addressable state vector. Only sound
-    /// when the program is sample-safe (no quantum op after a measurement).
+    /// Run once, drawing `shots` samples of the whole register (seeded by
+    /// `seed`) from the state at the first measurement, before it collapses;
+    /// `None` if the program never measures or the backend can't sample its
+    /// state. Only sound when the program is sample-safe (no quantum op after
+    /// a measurement).
     async fn run_capture(
         &mut self,
         inputs: HashMap<SymbolId, Value>,
-    ) -> VmResult<Option<Vec<Complex64>>> {
-        self.capture = true;
-        self.captured_state = None;
+        shots: u32,
+        seed: u64,
+    ) -> VmResult<Option<Vec<Vec<bool>>>> {
+        self.capture = Some((shots, seed));
+        self.captured_shots = None;
         let r = self.run_with_inputs(inputs).await;
-        self.capture = false;
-        r.map(|_| self.captured_state.take())
+        self.capture = None;
+        r.map(|_| self.captured_shots.take())
     }
 
     /// Replay the program classically with pre-sampled measurement outcomes
@@ -673,10 +663,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     // these qubits; the backend is untouched.
                     qs.iter().map(|&q| basis[q as usize]).collect()
                 } else {
-                    // Capture (fast-path snapshot): stash the amplitudes at
-                    // the first measurement, before it collapses.
-                    if self.capture && self.captured_state.is_none() {
-                        self.captured_state = self.backend.amplitudes().await;
+                    // Capture (fast-path sampling): draw every shot from the
+                    // state at the first measurement, before it collapses.
+                    if let Some((shots, seed)) = self.capture
+                        && self.captured_shots.is_none()
+                    {
+                        self.captured_shots = self.backend.sample_shots(shots, seed).await;
                     }
                     self.backend.measure_all(&qs).await
                 };

@@ -228,7 +228,7 @@ def test_angle_and_bitreg_inputs():
 
 
 @pytest.mark.parametrize(
-    "backend", ["scalar", "rayon", "simd", "rayon-simd", "auto", "sum"]
+    "backend", ["scalar", "rayon", "simd", "rayon-simd", "auto", "sum", "mps"]
 )
 def test_backends_share_the_cli_names(backend):
     out = oqi.run(BELL, seed=7, backend=backend)
@@ -243,6 +243,7 @@ def test_backend_options():
     # The auto-router is exact (f64) whatever was asked for.
     assert oqi.run(BELL, backend="auto", precision="f32").precision == "f64"
     oqi.run(BELL, backend="sum", max_rank=4)
+    assert oqi.run(BELL, backend="mps", precision="f32", max_bond=4).precision == "f64"
 
     with pytest.raises(oqi.OqiError, match="unknown backend `cpu`"):
         oqi.run(BELL, backend="cpu")

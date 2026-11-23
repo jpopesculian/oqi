@@ -12,7 +12,9 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
 use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
-use oqi_vm::{DEFAULT_SEED as SEED, GateModifiers, QuantumBackend, SimdSim, StateVectorSim};
+use oqi_vm::{
+    DEFAULT_SEED as SEED, GateModifiers, MpsSim, QuantumBackend, SimdSim, StateVectorSim,
+};
 
 /// A representative workload: a Hadamard layer, several rotation layers
 /// (uncontrolled — the vectorized path), then a CX ladder (controlled — the
@@ -63,6 +65,10 @@ fn variants(n: u32) -> Vec<(&'static str, Maker)> {
                         .with_parallel(true),
                 )
             }),
+        ),
+        (
+            "mps-f64",
+            Box::new(move || Box::new(MpsSim::new(n, SEED, MpsSim::DEFAULT_MAX_BOND))),
         ),
         (
             "scalar-f32",

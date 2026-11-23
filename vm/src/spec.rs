@@ -9,6 +9,7 @@ use std::str::FromStr;
 use crate::auto::{AutoSim, SumPolicy};
 use crate::backend::QuantumBackend;
 use crate::error::{VmError, VmErrorKind, VmResult};
+use crate::mps::MpsSim;
 use crate::sim::StateVectorSim;
 use crate::sim_simd::SimdSim;
 
@@ -32,6 +33,9 @@ pub enum BackendKind {
     /// Auto-routing: stabilizer tableau, then an exact sum over Cliffords,
     /// then (if [`SumPolicy::dense_escape`]) a dense state vector.
     Auto,
+    /// Matrix-product-state simulator, truncating each bond to at most
+    /// [`BackendSpec::max_bond`] singular values.
+    Mps,
 }
 
 /// Amplitude precision of the dense simulators.
@@ -76,7 +80,7 @@ impl fmt::Display for Precision {
 pub struct BackendSpec {
     pub kind: BackendKind,
     /// Amplitude precision of the scalar/SIMD simulators. The GPU simulator
-    /// is always `f32` and the auto-router always `f64`.
+    /// is always `f32` and the auto-router and MPS simulator always `f64`.
     pub precision: Precision,
     /// Measurement RNG seed.
     pub seed: u64,
@@ -85,6 +89,8 @@ pub struct BackendSpec {
     pub parallel: bool,
     /// Budget of the auto-router's sum-over-Cliffords tier.
     pub sum_policy: SumPolicy,
+    /// Bond-dimension cap of the MPS simulator.
+    pub max_bond: usize,
 }
 
 impl Default for BackendSpec {
@@ -95,13 +101,14 @@ impl Default for BackendSpec {
             seed: DEFAULT_SEED,
             parallel: false,
             sum_policy: SumPolicy::default(),
+            max_bond: MpsSim::DEFAULT_MAX_BOND,
         }
     }
 }
 
 impl BackendSpec {
     /// The backend names every front door accepts.
-    pub const NAMES: [&'static str; 8] = [
+    pub const NAMES: [&'static str; 9] = [
         "scalar",
         "rayon",
         "simd",
@@ -110,6 +117,7 @@ impl BackendSpec {
         "prefer-gpu",
         "auto",
         "sum",
+        "mps",
     ];
 
     /// The name this spec parses from.
@@ -123,6 +131,7 @@ impl BackendSpec {
             (BackendKind::PreferGpu, _) => "prefer-gpu",
             (BackendKind::Auto, _) if self.sum_policy.dense_escape => "auto",
             (BackendKind::Auto, _) => "sum",
+            (BackendKind::Mps, _) => "mps",
         }
     }
 
@@ -173,6 +182,10 @@ impl BackendSpec {
                 self.precision = Precision::F64;
                 Box::new(AutoSim::with_policy(num_qubits, self.seed, self.sum_policy))
             }
+            (BackendKind::Mps, _) => {
+                self.precision = Precision::F64;
+                Box::new(MpsSim::new(num_qubits, self.seed, self.max_bond))
+            }
             (BackendKind::PreferGpu, _) => unreachable!("resolved above"),
         };
         Ok((backend, self))
@@ -194,6 +207,7 @@ impl FromStr for BackendSpec {
             "prefer-gpu" => (BackendKind::PreferGpu, false, true),
             "auto" => (BackendKind::Auto, false, true),
             "sum" => (BackendKind::Auto, false, false),
+            "mps" => (BackendKind::Mps, false, true),
             _ => {
                 return Err(format!(
                     "unknown backend `{s}` (expected one of: {})",
@@ -271,6 +285,18 @@ mod tests {
             spec.precision = Precision::F32;
             let (_, built) = spec.build(1).await.unwrap();
             assert_eq!((built.name(), built.precision), ("sum", Precision::F64));
+        })
+    }
+
+    #[test]
+    fn mps_is_f64_and_samples_shots() {
+        pollster::block_on(async {
+            let mut spec: BackendSpec = "mps".parse().unwrap();
+            spec.precision = Precision::F32;
+            // Far past any state vector, but a product state for an MPS.
+            let (backend, built) = spec.build(300).await.unwrap();
+            assert_eq!((built.name(), built.precision), ("mps", Precision::F64));
+            assert!(backend.can_sample_shots());
         })
     }
 

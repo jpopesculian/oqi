@@ -7,7 +7,7 @@ use oqi_compile::bytecode::{BcModule, is_sample_safe};
 use oqi_compile::symbol::SymbolId;
 use oqi_compile::{CompileOptions, DefaultIncludeResolver};
 use oqi_vm::{
-    AutoSim, BackendSpec, FnRegistry, Histogram, HostValue, NoExterns, QuantumBackend,
+    AutoSim, BackendSpec, FnRegistry, Histogram, HostValue, MpsSim, NoExterns, QuantumBackend,
     StateVectorSim, SumPolicy, Vm, VmError, VmErrorKind, histograms,
 };
 
@@ -221,6 +221,81 @@ fn auto_backend_matches_scalar_on_fixtures() {
         let got = block_on(vm.run()).expect("auto run").measurements;
         assert_eq!(got, expect);
     }
+}
+
+#[test]
+fn mps_backend_matches_scalar_on_fixtures() {
+    // Deterministic fixtures must produce identical measurement logs on the
+    // MPS and scalar simulators; the adder's Toffolis span distant qubits.
+    for src in [
+        include_str!("../../fixtures/qasm/adder.qasm"),
+        include_str!("../../fixtures/qasm/cphase.qasm"),
+    ] {
+        let module = build(src);
+        let n = module.qubits.num_qubits;
+        let scalar = StateVectorSim::<f64>::try_zeroed(n, 0xABCD).unwrap();
+        let mut vm = Vm::new(&module, scalar, NoExterns);
+        let expect = block_on(vm.run()).expect("scalar run").measurements;
+
+        let mps = MpsSim::new(n, 0xABCD, MpsSim::DEFAULT_MAX_BOND);
+        let mut vm = Vm::new(&module, mps, NoExterns);
+        let got = block_on(vm.run()).expect("mps run").measurements;
+        assert_eq!(got, expect);
+    }
+}
+
+#[test]
+fn mps_samples_from_one_run() {
+    // Shots drawn from one run's state come from the sampling seed alone;
+    // re-running the circuit per shot would draw them from each backend's
+    // own measurement RNG instead.
+    let module = build(
+        r#"include "stdgates.inc";
+           qubit[3] q;
+           h q[0]; h q[1]; h q[2]; cx q[0], q[1];
+           bit[3] c = measure q;"#,
+    );
+    let histogram = |backend_seed| {
+        let n = module.qubits.num_qubits;
+        let sim = MpsSim::new(n, backend_seed, MpsSim::DEFAULT_MAX_BOND);
+        let mut vm = Vm::new(&module, sim, NoExterns);
+        let results = block_on(vm.sample(HashMap::new(), 300, 9)).expect("sample");
+        histograms(&module, &results)
+    };
+    assert_eq!(histogram(1), histogram(2));
+}
+
+#[test]
+fn mps_backend_scales_to_200_qubits() {
+    // Rotate and entangle 200 qubits with non-Clifford gates — beyond both a
+    // state vector and the sum-over-Cliffords budget — then undo it all: every
+    // qubit must come back to 0. A GHZ chain must measure all-equal bits.
+    let n = 200u32;
+    let mut src = format!("include \"stdgates.inc\";\nqubit[{n}] q;\n");
+    for i in 0..n {
+        src.push_str(&format!("ry({}) q[{i}];\n", 0.1 + 0.01 * i as f64));
+    }
+    for i in 0..n - 1 {
+        src.push_str(&format!("cx q[{i}], q[{}];\n", i + 1));
+    }
+    for i in (0..n - 1).rev() {
+        src.push_str(&format!("cx q[{i}], q[{}];\n", i + 1));
+    }
+    for i in 0..n {
+        src.push_str(&format!("ry({}) q[{i}];\n", -(0.1 + 0.01 * i as f64)));
+    }
+    src.push_str("bit[200] c = measure q;\n");
+    let h = sample_counts(&src, "mps", 4, 1);
+    assert_eq!(h[0].counts, [("0".repeat(200), 4)]);
+
+    let mut src = format!("include \"stdgates.inc\";\nqubit[{n}] q;\nh q[0];\n");
+    for i in 0..n - 1 {
+        src.push_str(&format!("cx q[{i}], q[{}];\n", i + 1));
+    }
+    src.push_str("bit[200] c = measure q;\n");
+    let h = sample_counts(&src, "mps", 2000, 1);
+    let labels: Vec<&str> = h[0].counts.iter().map(|(l, _)| l.as_str()).collect();
+    assert_eq!(labels, ["0".repeat(200), "1".repeat(200)]);
 }
 
 #[test]
@@ -1418,9 +1493,10 @@ fn sample_counts(src: &str, backend: &str, shots: u32, seed: u64) -> Vec<Histogr
 
 #[test]
 fn sampling_a_bell_state_yields_only_correlated_outcomes() {
-    // Dense backends snapshot the state once; the auto-router (no dense
-    // state) re-runs the circuit per shot. Both see only 00 and 11.
-    for backend in ["scalar", "simd", "auto"] {
+    // Dense backends and the MPS chain draw every shot from one run's state;
+    // the auto-router (no dense state) re-runs the circuit per shot. All see
+    // only 00 and 11.
+    for backend in ["scalar", "simd", "auto", "mps"] {
         let h = sample_counts(BELL_SRC, backend, 400, 11);
         assert_eq!(h.len(), 1, "{backend}");
         assert_eq!(h[0].name, "c");
@@ -1441,7 +1517,7 @@ fn sampling_is_reproducible_per_seed() {
 
 #[test]
 fn sampling_with_feedback_reruns_the_circuit_each_shot() {
-    for backend in ["scalar", "simd", "auto"] {
+    for backend in ["scalar", "simd", "auto", "mps"] {
         let h = sample_counts(FEEDBACK_SRC, backend, 200, 5);
         let counts = |name: &str| &h.iter().find(|h| h.name == name).unwrap().counts;
         assert_eq!(counts("a").len(), 2, "{backend}: H yields both outcomes");
@@ -1524,7 +1600,7 @@ fn controlled_gphase_is_phase_exact_on_every_backend() {
                {body}"#
         );
         let expect = amplitudes_on(&src, "sum").unwrap();
-        for backend in ["scalar", "simd", "auto", "gpu"] {
+        for backend in ["scalar", "simd", "auto", "mps", "gpu"] {
             let Some(got) = amplitudes_on(&src, backend) else {
                 assert_eq!(backend, "gpu", "only the GPU may be unavailable");
                 continue;

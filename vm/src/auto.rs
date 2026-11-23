@@ -348,7 +348,7 @@ impl QuantumBackend for AutoSim {
         }
     }
 
-    fn has_dense_state(&self) -> bool {
+    fn can_sample_shots(&self) -> bool {
         matches!(self.mode, Mode::StateVector(_))
     }
 }

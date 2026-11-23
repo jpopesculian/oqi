@@ -9,9 +9,9 @@
 //! reset, and — optionally — timing.
 //!
 //! Implementations: [`StateVectorSim`](crate::StateVectorSim),
-//! [`SimdSim`](crate::SimdSim), [`AutoSim`](crate::AutoSim) and, with the
-//! `gpu` feature, `GpuSim`. A hardware provider would implement the same
-//! trait.
+//! [`SimdSim`](crate::SimdSim), [`AutoSim`](crate::AutoSim),
+//! [`MpsSim`](crate::MpsSim) and, with the `gpu` feature, `GpuSim`. A
+//! hardware provider would implement the same trait.
 
 use std::f64::consts::PI;
 
@@ -20,6 +20,7 @@ use num_complex::Complex;
 use oqi_classical::Duration;
 
 use crate::error::KindResult;
+use crate::rng::Rng;
 
 /// Modifiers on a single backend primitive call: the controls in scope
 /// plus a `power` to raise this one primitive to. Control indices are
@@ -246,14 +247,45 @@ pub trait QuantumBackend {
         None
     }
 
-    /// Whether [`amplitudes`](Self::amplitudes) is a cheap copy of a state
-    /// vector the backend already holds. `false` for backends whose native
-    /// representation is something smaller (a stabilizer tableau, a sum
-    /// over Cliffords), where materializing 2ⁿ amplitudes can cost far more
-    /// than running the circuit — shot sampling then re-runs the circuit
-    /// per shot instead of snapshotting the state.
-    fn has_dense_state(&self) -> bool {
+    /// Whether [`sample_shots`](Self::sample_shots) can draw shots from the
+    /// current state without re-running the circuit. The default holds for
+    /// backends whose [`amplitudes`](Self::amplitudes) is a cheap copy of a
+    /// state vector they already hold; it is `false` where materializing 2ⁿ
+    /// amplitudes can cost far more than running the circuit (a stabilizer
+    /// tableau, a sum over Cliffords) — shot sampling then re-runs the
+    /// circuit per shot.
+    fn can_sample_shots(&self) -> bool {
         true
+    }
+
+    /// Draw `shots` Z-basis samples of the whole register from the current
+    /// state without collapsing it (`out[i][q]` is qubit `q` in shot `i`),
+    /// with an RNG seeded by `seed`; `None` if the backend
+    /// [can't](Self::can_sample_shots) or has no readable state. The
+    /// default samples the [`amplitudes`](Self::amplitudes) snapshot through
+    /// a cumulative |ψ|² table.
+    async fn sample_shots(&mut self, shots: u32, seed: u64) -> Option<Vec<Vec<bool>>> {
+        if !self.can_sample_shots() {
+            return None;
+        }
+        let psi = self.amplitudes().await?;
+        let mut cumulative = Vec::with_capacity(psi.len());
+        let mut total = 0.0f64;
+        for amplitude in &psi {
+            total += amplitude.norm_sqr();
+            cumulative.push(total);
+        }
+        let total = total.max(f64::MIN_POSITIVE);
+        let n = psi.len().trailing_zeros();
+        let mut rng = Rng::new(seed);
+        let shots = (0..shots)
+            .map(|_| {
+                let u = rng.next_f64() * total;
+                let idx = cumulative.partition_point(|&c| c < u).min(psi.len() - 1);
+                (0..n).map(|q| (idx >> q) & 1 == 1).collect()
+            })
+            .collect();
+        Some(shots)
     }
 }
 
@@ -304,7 +336,11 @@ impl QuantumBackend for Box<dyn QuantumBackend> {
         (**self).amplitudes().await
     }
 
-    fn has_dense_state(&self) -> bool {
-        (**self).has_dense_state()
+    fn can_sample_shots(&self) -> bool {
+        (**self).can_sample_shots()
+    }
+
+    async fn sample_shots(&mut self, shots: u32, seed: u64) -> Option<Vec<Vec<bool>>> {
+        (**self).sample_shots(shots, seed).await
     }
 }

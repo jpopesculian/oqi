@@ -12,6 +12,7 @@ oqi-diagnostics = { path = "../diagnostics" }
 num-complex = "0.4"
 num-traits = "0.2"
 async-trait = "0.1"
+faer = { version = "0.24", default-features = false, features = ["std"] }
 wide = "1"
 rayon = { version = "1", optional = true }
 wgpu = { version = "30", optional = true }

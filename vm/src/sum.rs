@@ -479,7 +479,7 @@ impl CliffordSink for SumState {
 mod tests {
     use super::*;
     use crate::backend::{BuiltinGate, QuantumBackend};
-    use crate::error::KindResult;
+    use crate::error::{ErrorKind, Result};
     use crate::sim::StateVectorSim;
     use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
@@ -533,21 +533,21 @@ mod tests {
             phi: f64,
             lambda: f64,
             m: &GateModifiers,
-        ) -> KindResult<()> {
+        ) -> Result<(), ErrorKind> {
             self.0.apply_u(target, theta, phi, lambda, m, BIG).unwrap();
             Ok(())
         }
-        fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+        fn gphase(&mut self, gamma: f64) -> Result<(), ErrorKind> {
             self.0.phase(Complex::from_polar(1.0, gamma));
             Ok(())
         }
-        async fn measure(&mut self, _qubit: u32) -> bool {
+        async fn measure(&mut self, _qubit: u32) -> Result<bool, ErrorKind> {
             unimplemented!()
         }
-        async fn reset(&mut self, _qubit: u32) {
+        async fn reset(&mut self, _qubit: u32) -> Result<(), ErrorKind> {
             unimplemented!()
         }
-        fn reset_state(&mut self) -> KindResult<()> {
+        fn reset_state(&mut self) -> Result<(), ErrorKind> {
             unimplemented!()
         }
     }
@@ -555,7 +555,9 @@ mod tests {
     /// Apply the same calls to a sum state and the dense simulator.
     fn run_both(n: u32, calls: &[BuiltinGate]) -> (SumState, StateVectorSim<f64>) {
         let mut sum = Unbounded(SumState::zero(n as usize));
-        let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
+        let mut sv = StateVectorSim::<f64>::new(n)
+            .map(|s| s.with_seed(0))
+            .unwrap();
         for call in calls {
             call.apply(&mut sum).unwrap();
             call.apply(&mut sv).unwrap();
@@ -777,7 +779,9 @@ mod tests {
             for seed in 0..10u64 {
                 let mut r = Lcg(seed * 77 + 5);
                 let mut sum = Unbounded(SumState::zero(n as usize));
-                let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
+                let mut sv = StateVectorSim::<f64>::new(n)
+                    .map(|s| s.with_seed(0))
+                    .unwrap();
                 let mut rng = Rng::new(seed.wrapping_mul(0x9E3779B97F4A7C15) | 1);
                 let both =
                     |sum: &mut Unbounded, sv: &mut StateVectorSim<f64>, call: BuiltinGate| {

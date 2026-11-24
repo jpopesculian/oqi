@@ -1,32 +1,32 @@
-//! [`Diagnostic`] implementation for [`VmError`], mapping each
-//! [`VmErrorKind`] to a stable `R####` code, a short primary label at the
+//! [`Diagnostic`] implementation for [`Error`], mapping each
+//! [`ErrorKind`] to a stable `R####` code, a short primary label at the
 //! failing instruction's span, and — where useful — a help note.
 
 use oqi_diagnostics::{Code, DiagLabel, Diagnostic};
 
-use crate::error::{VmError, VmErrorKind};
+use crate::error::{Error, ErrorKind};
 
-impl Diagnostic for VmError {
+impl Diagnostic for Error {
     fn code(&self) -> Code {
         let num = match self.kind {
-            VmErrorKind::UnsetRegister(_) => 1,
-            VmErrorKind::MissingInput(_) => 2,
-            VmErrorKind::UnknownInput(_) => 3,
-            VmErrorKind::UnknownExtern(_) => 4,
-            VmErrorKind::UndefinedGate(_) => 5,
-            VmErrorKind::Unsupported(_) => 6,
-            VmErrorKind::Type(_) => 7,
-            VmErrorKind::BroadcastMismatch(_) => 8,
-            VmErrorKind::Classical(_) => 9,
-            VmErrorKind::QubitOutOfRange { .. } => 10,
-            VmErrorKind::Unreachable => 11,
-            VmErrorKind::TooManyQubits { .. } => 12,
-            VmErrorKind::Pulse(_) => 13,
-            VmErrorKind::Extern { .. } => 14,
-            VmErrorKind::RankOverflow { .. } => 15,
-            VmErrorKind::BackendUnavailable(_) => 16,
-            VmErrorKind::Backend(_) => 17,
-            VmErrorKind::CallDepth { .. } => 18,
+            ErrorKind::UnsetRegister(_) => 1,
+            ErrorKind::MissingInput(_) => 2,
+            ErrorKind::UnknownInput(_) => 3,
+            ErrorKind::UnknownExtern(_) => 4,
+            ErrorKind::UndefinedGate(_) => 5,
+            ErrorKind::Unsupported(_) => 6,
+            ErrorKind::Type(_) => 7,
+            ErrorKind::BroadcastMismatch(_) => 8,
+            ErrorKind::Classical(_) => 9,
+            ErrorKind::QubitOutOfRange { .. } => 10,
+            ErrorKind::Unreachable => 11,
+            ErrorKind::TooManyQubits { .. } => 12,
+            ErrorKind::Pulse(_) => 13,
+            ErrorKind::Extern { .. } => 14,
+            ErrorKind::RankOverflow { .. } => 15,
+            ErrorKind::BackendUnavailable(_) => 16,
+            ErrorKind::Backend(_) => 17,
+            ErrorKind::CallDepth { .. } => 18,
         };
         Code::runtime(num)
     }
@@ -37,39 +37,39 @@ impl Diagnostic for VmError {
 
     fn labels(&self) -> Vec<DiagLabel> {
         let pointer = match &self.kind {
-            VmErrorKind::UnsetRegister(_) => "read before assignment",
-            VmErrorKind::MissingInput(_) => "missing input",
-            VmErrorKind::UnknownInput(_) => "not a declared input",
-            VmErrorKind::UnknownExtern(_) => "extern not provided",
-            VmErrorKind::UndefinedGate(_) => "no executable definition",
-            VmErrorKind::Unsupported(_) => "unsupported here",
-            VmErrorKind::Type(_) => "type error",
-            VmErrorKind::BroadcastMismatch(_) => "length mismatch",
-            VmErrorKind::Classical(_) => "classical error",
-            VmErrorKind::QubitOutOfRange { .. } => "qubit out of range",
-            VmErrorKind::Unreachable => "unreachable",
-            VmErrorKind::TooManyQubits { .. } => "too many qubits",
-            VmErrorKind::Pulse(_) => "pulse error",
-            VmErrorKind::Extern { .. } => "extern call failed",
-            VmErrorKind::RankOverflow { .. } => "sum-over-Cliffords budget exhausted",
-            VmErrorKind::BackendUnavailable(_) => "backend unavailable",
-            VmErrorKind::Backend(_) => "backend error",
-            VmErrorKind::CallDepth { .. } => "nested too deeply",
+            ErrorKind::UnsetRegister(_) => "read before assignment",
+            ErrorKind::MissingInput(_) => "missing input",
+            ErrorKind::UnknownInput(_) => "not a declared input",
+            ErrorKind::UnknownExtern(_) => "extern not provided",
+            ErrorKind::UndefinedGate(_) => "no executable definition",
+            ErrorKind::Unsupported(_) => "unsupported here",
+            ErrorKind::Type(_) => "type error",
+            ErrorKind::BroadcastMismatch(_) => "length mismatch",
+            ErrorKind::Classical(_) => "classical error",
+            ErrorKind::QubitOutOfRange { .. } => "qubit out of range",
+            ErrorKind::Unreachable => "unreachable",
+            ErrorKind::TooManyQubits { .. } => "too many qubits",
+            ErrorKind::Pulse(_) => "pulse error",
+            ErrorKind::Extern { .. } => "extern call failed",
+            ErrorKind::RankOverflow { .. } => "sum-over-Cliffords budget exhausted",
+            ErrorKind::BackendUnavailable(_) => "backend unavailable",
+            ErrorKind::Backend(_) => "backend error",
+            ErrorKind::CallDepth { .. } => "nested too deeply",
         };
         vec![DiagLabel::primary(self.span.unwrap_or_default(), pointer)]
     }
 
     fn notes(&self) -> Vec<String> {
         match &self.kind {
-            VmErrorKind::MissingInput(_) => {
+            ErrorKind::MissingInput(_) => {
                 vec!["every declared `input` needs a value when the program is run".into()]
             }
-            VmErrorKind::UnknownExtern(name) => {
+            ErrorKind::UnknownExtern(name) => {
                 vec![format!(
                     "no implementation is registered for extern `{name}`"
                 )]
             }
-            VmErrorKind::RankOverflow { max_rank, .. } => {
+            ErrorKind::RankOverflow { max_rank, .. } => {
                 vec![format!(
                     "each non-Clifford gate multiplies the stabilizer term \
                      count; the budget is {max_rank}"

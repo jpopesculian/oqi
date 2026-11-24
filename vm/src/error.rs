@@ -2,11 +2,18 @@ use std::fmt;
 
 use oqi_lex::Span;
 
-/// The kind of error raised while executing a bytecode module, independent
-/// of where in the source it occurred. Wrapped in [`VmError`], which adds the
-/// source span, when surfaced by [`Vm::run`](crate::Vm::run).
+/// What went wrong while running a program, independent of where in the
+/// source it happened.
+///
+/// The extension points ([`QuantumBackend`](crate::QuantumBackend),
+/// [`ExternProvider`](crate::ExternProvider),
+/// [`OpenPulseHandler`](crate::OpenPulseHandler),
+/// [`OpaqueCalHandler`](crate::OpaqueCalHandler)) report failures as an
+/// `ErrorKind`; the VM wraps it in an [`Error`] carrying the source span of
+/// the instruction in flight.
 #[derive(Debug)]
-pub enum VmErrorKind {
+#[non_exhaustive]
+pub enum ErrorKind {
     /// A register was read before being assigned a value.
     UnsetRegister(u32),
     /// A declared `input` (named here) was not given a value before running.
@@ -22,7 +29,7 @@ pub enum VmErrorKind {
     /// A `GateCall` referenced a gate with no executable definition
     /// (not a built-in and no lifted gate body).
     UndefinedGate(String),
-    /// A construct the MVP doesn't execute yet.
+    /// A construct the VM does not execute.
     Unsupported(String),
     /// A value had the wrong shape/type for the operation.
     Type(String),
@@ -33,9 +40,9 @@ pub enum VmErrorKind {
     Classical(oqi_classical::Error),
     /// A resolved qubit index fell outside the backend's register.
     QubitOutOfRange { qubit: usize, num_qubits: usize },
-    /// The program's state vector can't be allocated (e.g. the CPU
-    /// state-vector simulator's exponential memory cost outran available
-    /// memory or the addressable limit).
+    /// A backend can't hold this many qubits: the state it needs (a state
+    /// vector, a tableau, a matrix-product state, a GPU buffer) is larger
+    /// than the memory it may use.
     TooManyQubits { requested: u32 },
     /// A calibration/pulse operation failed (raised by the installed
     /// [`OpenPulseHandler`](crate::OpenPulseHandler) /
@@ -53,7 +60,8 @@ pub enum VmErrorKind {
     /// support for it was not compiled into this build).
     BackendUnavailable(String),
     /// The backend can't run this program: it rejected its configuration,
-    /// is smaller than the program, or failed while applying an operation.
+    /// is smaller than the program, or failed while applying an operation
+    /// or measuring.
     Backend(String),
     /// Calls nested more than `limit` deep (unbounded recursion).
     CallDepth { limit: u32 },
@@ -61,51 +69,51 @@ pub enum VmErrorKind {
     Unreachable,
 }
 
-impl VmErrorKind {
-    /// An [`Extern`](VmErrorKind::Extern) failure of the extern `name`.
+impl ErrorKind {
+    /// An [`Extern`](ErrorKind::Extern) failure of the extern `name`.
     pub fn extern_failed(name: &str, message: impl Into<String>) -> Self {
-        VmErrorKind::Extern {
+        ErrorKind::Extern {
             name: name.to_string(),
             message: message.into(),
         }
     }
 }
 
-impl fmt::Display for VmErrorKind {
+impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VmErrorKind::UnsetRegister(r) => write!(f, "register r{r} read before assignment"),
-            VmErrorKind::MissingInput(name) => {
+            ErrorKind::UnsetRegister(r) => write!(f, "register r{r} read before assignment"),
+            ErrorKind::MissingInput(name) => {
                 write!(f, "no value supplied for input `{name}`")
             }
-            VmErrorKind::UnknownInput(name) => write!(f, "no input named `{name}`"),
-            VmErrorKind::UnknownExtern(name) => {
+            ErrorKind::UnknownInput(name) => write!(f, "no input named `{name}`"),
+            ErrorKind::UnknownExtern(name) => {
                 write!(f, "extern function `{name}` is not provided")
             }
-            VmErrorKind::Extern { name, message } => {
+            ErrorKind::Extern { name, message } => {
                 write!(f, "extern function `{name}` failed: {message}")
             }
-            VmErrorKind::UndefinedGate(name) => {
+            ErrorKind::UndefinedGate(name) => {
                 write!(f, "gate `{name}` has no executable definition")
             }
-            VmErrorKind::Unsupported(what) => write!(f, "unsupported: {what}"),
-            VmErrorKind::Type(msg) => write!(f, "type error: {msg}"),
-            VmErrorKind::BroadcastMismatch(lengths) => write!(
+            ErrorKind::Unsupported(what) => write!(f, "unsupported: {what}"),
+            ErrorKind::Type(msg) => write!(f, "type error: {msg}"),
+            ErrorKind::BroadcastMismatch(lengths) => write!(
                 f,
                 "gate broadcast over registers of differing lengths: {lengths:?}"
             ),
-            VmErrorKind::Classical(e) => write!(f, "classical error: {e}"),
-            VmErrorKind::QubitOutOfRange { qubit, num_qubits } => write!(
+            ErrorKind::Classical(e) => write!(f, "classical error: {e}"),
+            ErrorKind::QubitOutOfRange { qubit, num_qubits } => write!(
                 f,
                 "qubit index {qubit} is out of range (the program allocates {num_qubits} qubit(s))"
             ),
-            VmErrorKind::TooManyQubits { requested } => write!(
+            ErrorKind::TooManyQubits { requested } => write!(
                 f,
                 "program requires {requested} qubits; its state vector \
                  (2^{requested} complex amplitudes) cannot be allocated"
             ),
-            VmErrorKind::Pulse(msg) => write!(f, "pulse error: {msg}"),
-            VmErrorKind::RankOverflow {
+            ErrorKind::Pulse(msg) => write!(f, "pulse error: {msg}"),
+            ErrorKind::RankOverflow {
                 rank,
                 max_rank,
                 qubits,
@@ -115,27 +123,39 @@ impl fmt::Display for VmErrorKind {
                  stabilizer terms) and its 2^{qubits}-amplitude dense state cannot \
                  be allocated; raise the term budget or reduce non-Clifford gates"
             ),
-            VmErrorKind::BackendUnavailable(why) => write!(f, "backend unavailable: {why}"),
-            VmErrorKind::Backend(why) => write!(f, "backend error: {why}"),
-            VmErrorKind::CallDepth { limit } => {
+            ErrorKind::BackendUnavailable(why) => write!(f, "backend unavailable: {why}"),
+            ErrorKind::Backend(why) => write!(f, "backend error: {why}"),
+            ErrorKind::CallDepth { limit } => {
                 write!(f, "calls nest more than {limit} deep")
             }
-            VmErrorKind::Unreachable => write!(f, "reached an unreachable block"),
+            ErrorKind::Unreachable => write!(f, "reached an unreachable block"),
         }
     }
 }
 
-/// A runtime error paired with the source span of the instruction that raised
-/// it, when known.
+impl std::error::Error for ErrorKind {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ErrorKind::Classical(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// A runtime error: what went wrong, and the source span of the instruction
+/// that raised it, when known.
 #[derive(Debug)]
-pub struct VmError {
-    pub kind: VmErrorKind,
+pub struct Error {
+    /// What went wrong.
+    pub kind: ErrorKind,
+    /// Where in the program's source, when known. Programs loaded from
+    /// bytecode keep their source spans but not the text.
     pub span: Option<Span>,
 }
 
-impl VmError {
-    /// A spanless error.
-    pub fn new(kind: VmErrorKind) -> Self {
+impl Error {
+    /// An error with no location.
+    pub fn new(kind: ErrorKind) -> Self {
         Self { kind, span: None }
     }
 
@@ -149,33 +169,41 @@ impl VmError {
     }
 }
 
-impl fmt::Display for VmError {
+impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.kind)
     }
 }
 
-impl std::error::Error for VmError {}
-
-impl From<VmErrorKind> for VmError {
-    fn from(kind: VmErrorKind) -> Self {
-        VmError::new(kind)
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.kind)
     }
 }
 
-impl From<oqi_classical::Error> for VmErrorKind {
+impl From<ErrorKind> for Error {
+    fn from(kind: ErrorKind) -> Self {
+        Error::new(kind)
+    }
+}
+
+impl From<oqi_classical::Error> for ErrorKind {
     fn from(e: oqi_classical::Error) -> Self {
-        VmErrorKind::Classical(e)
+        ErrorKind::Classical(e)
     }
 }
 
-/// Result of a public VM entry point: the error carries the source span of
-/// the instruction that raised it.
-pub type VmResult<T> = std::result::Result<T, VmError>;
+impl From<oqi_classical::Error> for Error {
+    fn from(e: oqi_classical::Error) -> Self {
+        Error::new(ErrorKind::Classical(e))
+    }
+}
 
-/// Result of an interpreter step or an extension-point call
-/// ([`ExternProvider`](crate::ExternProvider),
-/// [`OpenPulseHandler`](crate::OpenPulseHandler), …). Errors are spanless
-/// [`VmErrorKind`]s; the VM attaches the span of the instruction in flight
-/// when it surfaces them as a [`VmError`].
-pub type KindResult<T> = std::result::Result<T, VmErrorKind>;
+/// The result of running a program: an [`Error`] carries the source span of
+/// the instruction that raised it.
+pub type Result<T, E = Error> = std::result::Result<T, E>;
+
+/// The result of an interpreter step or an extension-point call: a spanless
+/// [`ErrorKind`], to which the VM attaches the span of the instruction in
+/// flight.
+pub(crate) type KindResult<T> = std::result::Result<T, ErrorKind>;

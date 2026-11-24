@@ -4,11 +4,14 @@
 //! names.
 
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::str::FromStr;
+
+use oqi_compile::Program;
 
 use crate::auto::{AutoSim, SumPolicy};
 use crate::backend::QuantumBackend;
-use crate::error::{VmError, VmErrorKind, VmResult};
+use crate::error::{Error, ErrorKind, Result};
 use crate::sim::StateVectorSim;
 use crate::sim_simd::SimdSim;
 
@@ -20,11 +23,12 @@ pub const DEFAULT_SEED: u64 = 0x2545F4914F6CDD1D;
 pub(crate) const DEFAULT_MAX_BOND: usize = 256;
 
 /// Which simulator to run on.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum BackendKind {
-    /// Scalar CPU state-vector simulator.
+    /// Scalar CPU state-vector simulator ([`StateVectorSim`]).
     Scalar,
-    /// SIMD-vectorized CPU state-vector simulator.
+    /// SIMD-vectorized CPU state-vector simulator ([`SimdSim`]).
     Simd,
     /// WebGPU (`wgpu`) state-vector simulator; single precision only. Needs
     /// the `gpu` build feature and a working adapter.
@@ -32,8 +36,9 @@ pub enum BackendKind {
     /// [`Gpu`](BackendKind::Gpu) when it's available, else
     /// [`Scalar`](BackendKind::Scalar).
     PreferGpu,
-    /// Auto-routing: stabilizer tableau, then an exact sum over Cliffords,
-    /// then (if [`SumPolicy::dense_escape`]) a dense state vector.
+    /// Auto-routing ([`AutoSim`]): stabilizer tableau, then an exact sum
+    /// over Cliffords, then (if [`SumPolicy::dense_escape`]) a dense state
+    /// vector.
     Auto,
     /// Matrix-product-state simulator, truncating each bond to at most
     /// [`BackendSpec::max_bond`] singular values. Needs the `mps` build
@@ -41,15 +46,63 @@ pub enum BackendKind {
     Mps,
 }
 
+impl BackendKind {
+    /// Every kind, in the order of [`BackendKind::name`]'s names.
+    const ALL: [BackendKind; 6] = [
+        BackendKind::Scalar,
+        BackendKind::Simd,
+        BackendKind::Gpu,
+        BackendKind::PreferGpu,
+        BackendKind::Auto,
+        BackendKind::Mps,
+    ];
+
+    /// The kind's name: `scalar`, `simd`, `gpu`, `prefer-gpu`, `auto` or
+    /// `mps`.
+    pub fn name(self) -> &'static str {
+        match self {
+            BackendKind::Scalar => "scalar",
+            BackendKind::Simd => "simd",
+            BackendKind::Gpu => "gpu",
+            BackendKind::PreferGpu => "prefer-gpu",
+            BackendKind::Auto => "auto",
+            BackendKind::Mps => "mps",
+        }
+    }
+}
+
+impl fmt::Display for BackendKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl FromStr for BackendKind {
+    type Err = ParseNameError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, ParseNameError> {
+        BackendKind::ALL
+            .into_iter()
+            .find(|kind| kind.name() == s)
+            .ok_or_else(|| {
+                ParseNameError::new("backend kind", s, &BackendKind::ALL.map(BackendKind::name))
+            })
+    }
+}
+
 /// Amplitude precision of the dense simulators.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Precision {
+    /// 64-bit floating-point amplitudes.
     #[default]
     F64,
+    /// 32-bit floating-point amplitudes.
     F32,
 }
 
 impl Precision {
+    /// `"f64"` or `"f32"`.
     pub fn as_str(self) -> &'static str {
         match self {
             Precision::F64 => "f64",
@@ -59,13 +112,13 @@ impl Precision {
 }
 
 impl FromStr for Precision {
-    type Err = String;
+    type Err = ParseNameError;
 
-    fn from_str(s: &str) -> Result<Self, String> {
+    fn from_str(s: &str) -> std::result::Result<Self, ParseNameError> {
         match s {
             "f64" => Ok(Precision::F64),
             "f32" => Ok(Precision::F32),
-            _ => Err(format!("unknown precision `{s}` (expected f64 or f32)")),
+            _ => Err(ParseNameError::new("precision", s, &["f64", "f32"])),
         }
     }
 }
@@ -76,32 +129,75 @@ impl fmt::Display for Precision {
     }
 }
 
+/// A name that isn't one of the accepted backend, backend-kind or precision
+/// names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseNameError {
+    what: &'static str,
+    found: String,
+    expected: Vec<&'static str>,
+}
+
+impl ParseNameError {
+    fn new(what: &'static str, found: &str, expected: &[&'static str]) -> Self {
+        ParseNameError {
+            what,
+            found: found.to_string(),
+            expected: expected.to_vec(),
+        }
+    }
+}
+
+impl fmt::Display for ParseNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "unknown {} `{}` (expected one of: {})",
+            self.what,
+            self.found,
+            self.expected.join(", ")
+        )
+    }
+}
+
+impl std::error::Error for ParseNameError {}
+
 /// A simulator configuration. Parse one from a backend name (see
 /// [`BackendSpec::NAMES`]), adjust the remaining fields, then
-/// [`build`](BackendSpec::build) it.
-#[derive(Clone, Copy, Debug)]
+/// [`build`](BackendSpec::build) it — or hand it to a
+/// [`Runner`](crate::Runner), which does.
+///
+/// ```
+/// use oqi_vm::{BackendKind, BackendSpec};
+///
+/// let mut spec: BackendSpec = "mps".parse()?;
+/// spec.max_bond = 64;
+/// assert_eq!(spec.kind, BackendKind::Mps);
+/// # Ok::<(), oqi_vm::ParseNameError>(())
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BackendSpec {
+    /// Which simulator.
     pub kind: BackendKind,
     /// Amplitude precision of the scalar/SIMD simulators. The GPU simulator
     /// is always `f32` and the auto-router and MPS simulator always `f64`.
     pub precision: Precision,
-    /// Measurement RNG seed.
-    pub seed: u64,
     /// Use the multi-threaded (rayon) gate kernel of the scalar/SIMD
     /// simulators. Needs the `parallel` build feature.
     pub parallel: bool,
     /// Budget of the auto-router's sum-over-Cliffords tier.
     pub sum_policy: SumPolicy,
-    /// Bond-dimension cap of the MPS simulator.
+    /// Bond-dimension cap of the MPS simulator; at least 1.
     pub max_bond: usize,
 }
 
 impl Default for BackendSpec {
+    /// The scalar `f64` state-vector simulator.
     fn default() -> Self {
         BackendSpec {
             kind: BackendKind::Scalar,
             precision: Precision::default(),
-            seed: DEFAULT_SEED,
             parallel: false,
             sum_policy: SumPolicy::default(),
             max_bond: DEFAULT_MAX_BOND,
@@ -126,28 +222,31 @@ impl BackendSpec {
     /// The name this spec parses from.
     pub fn name(&self) -> &'static str {
         match (self.kind, self.parallel) {
-            (BackendKind::Scalar, false) => "scalar",
             (BackendKind::Scalar, true) => "rayon",
-            (BackendKind::Simd, false) => "simd",
             (BackendKind::Simd, true) => "rayon-simd",
-            (BackendKind::Gpu, _) => "gpu",
-            (BackendKind::PreferGpu, _) => "prefer-gpu",
-            (BackendKind::Auto, _) if self.sum_policy.dense_escape => "auto",
-            (BackendKind::Auto, _) => "sum",
-            (BackendKind::Mps, _) => "mps",
+            (BackendKind::Auto, _) if !self.sum_policy.dense_escape => "sum",
+            (kind, _) => kind.name(),
         }
     }
 
-    /// Construct the backend for a `num_qubits`-qubit program. Also returns
-    /// the spec that was actually built: `kind` is resolved for
-    /// [`BackendKind::PreferGpu`] and `precision` is the real amplitude
-    /// type.
+    /// Construct the backend for a `num_qubits`-qubit program, measuring with
+    /// an RNG seeded by `seed`. Also returns the spec that was actually
+    /// built: `kind` is resolved for [`BackendKind::PreferGpu`] and
+    /// `precision` is the real amplitude type.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::BackendUnavailable`] if this build or machine can't run
+    /// the backend, [`ErrorKind::TooManyQubits`] if it can't hold
+    /// `num_qubits` qubits, and [`ErrorKind::Backend`] for an invalid
+    /// configuration (a `max_bond` of 0).
     pub async fn build(
         mut self,
         num_qubits: u32,
-    ) -> VmResult<(Box<dyn QuantumBackend>, BackendSpec)> {
+        seed: u64,
+    ) -> Result<(Box<dyn QuantumBackend>, BackendSpec)> {
         if self.kind == BackendKind::PreferGpu {
-            self.kind = match gpu(num_qubits, self.seed).await {
+            self.kind = match gpu(num_qubits, seed).await {
                 Ok(backend) => {
                     self.kind = BackendKind::Gpu;
                     self.precision = Precision::F32;
@@ -156,71 +255,74 @@ impl BackendSpec {
                 Err(_) => BackendKind::Scalar,
             };
         }
-        if self.parallel && !cfg!(feature = "parallel") {
-            return Err(unavailable(
-                "this build has no multi-threading support (the `parallel` feature is off)",
-            ));
-        }
         let backend: Box<dyn QuantumBackend> = match (self.kind, self.precision) {
             (BackendKind::Scalar, Precision::F64) => Box::new(
-                StateVectorSim::<f64>::try_zeroed(num_qubits, self.seed)?
-                    .with_parallel(self.parallel),
+                parallel(StateVectorSim::<f64>::new(num_qubits)?, self.parallel)?.with_seed(seed),
             ),
             (BackendKind::Scalar, Precision::F32) => Box::new(
-                StateVectorSim::<f32>::try_zeroed(num_qubits, self.seed)?
-                    .with_parallel(self.parallel),
+                parallel(StateVectorSim::<f32>::new(num_qubits)?, self.parallel)?.with_seed(seed),
             ),
-            (BackendKind::Simd, Precision::F64) => Box::new(
-                SimdSim::<f64>::try_zeroed(num_qubits, self.seed)?.with_parallel(self.parallel),
-            ),
-            (BackendKind::Simd, Precision::F32) => Box::new(
-                SimdSim::<f32>::try_zeroed(num_qubits, self.seed)?.with_parallel(self.parallel),
-            ),
+            (BackendKind::Simd, Precision::F64) => {
+                Box::new(parallel(SimdSim::<f64>::new(num_qubits)?, self.parallel)?.with_seed(seed))
+            }
+            (BackendKind::Simd, Precision::F32) => {
+                Box::new(parallel(SimdSim::<f32>::new(num_qubits)?, self.parallel)?.with_seed(seed))
+            }
             (BackendKind::Gpu, _) => {
                 self.precision = Precision::F32;
-                gpu(num_qubits, self.seed).await?
+                gpu(num_qubits, seed).await?
             }
             (BackendKind::Auto, _) => {
                 // Exact until it escalates to dense, which is `f64`.
                 self.precision = Precision::F64;
-                Box::new(AutoSim::with_policy(
-                    num_qubits,
-                    self.seed,
-                    self.sum_policy,
-                )?)
+                Box::new(
+                    AutoSim::new(num_qubits)?
+                        .with_seed(seed)
+                        .with_policy(self.sum_policy),
+                )
             }
             (BackendKind::Mps, _) => {
                 self.precision = Precision::F64;
-                mps(num_qubits, self.seed, self.max_bond)?
+                let max_bond = NonZeroUsize::new(self.max_bond).ok_or_else(|| {
+                    Error::new(ErrorKind::Backend(
+                        "the MPS bond cap must be at least 1".into(),
+                    ))
+                })?;
+                mps(num_qubits, seed, max_bond)?
             }
             (BackendKind::PreferGpu, _) => unreachable!("resolved above"),
         };
         Ok((backend, self))
     }
+
+    /// [`build`](Self::build) the backend for `program`'s qubits.
+    ///
+    /// # Errors
+    ///
+    /// As for [`build`](Self::build).
+    pub async fn build_for(
+        self,
+        program: &Program,
+        seed: u64,
+    ) -> Result<(Box<dyn QuantumBackend>, BackendSpec)> {
+        self.build(program.num_qubits(), seed).await
+    }
 }
 
 impl FromStr for BackendSpec {
-    type Err = String;
+    type Err = ParseNameError;
 
-    /// Parse a backend name into a spec with default precision, seed and
-    /// term budget.
-    fn from_str(s: &str) -> Result<Self, String> {
+    /// Parse a backend name (one of [`BackendSpec::NAMES`]) into a spec with
+    /// default precision, term budget and bond cap.
+    fn from_str(s: &str) -> std::result::Result<Self, ParseNameError> {
         let (kind, parallel, dense_escape) = match s {
-            "scalar" => (BackendKind::Scalar, false, true),
             "rayon" => (BackendKind::Scalar, true, true),
-            "simd" => (BackendKind::Simd, false, true),
             "rayon-simd" => (BackendKind::Simd, true, true),
-            "gpu" => (BackendKind::Gpu, false, true),
-            "prefer-gpu" => (BackendKind::PreferGpu, false, true),
-            "auto" => (BackendKind::Auto, false, true),
             "sum" => (BackendKind::Auto, false, false),
-            "mps" => (BackendKind::Mps, false, true),
-            _ => {
-                return Err(format!(
-                    "unknown backend `{s}` (expected one of: {})",
-                    Self::NAMES.join(", ")
-                ));
-            }
+            _ => match s.parse::<BackendKind>() {
+                Ok(kind) => (kind, false, true),
+                Err(_) => return Err(ParseNameError::new("backend", s, &Self::NAMES)),
+            },
         };
         Ok(BackendSpec {
             kind,
@@ -234,33 +336,79 @@ impl FromStr for BackendSpec {
     }
 }
 
-fn unavailable(why: &str) -> VmError {
-    VmError::new(VmErrorKind::BackendUnavailable(why.to_string()))
+impl fmt::Display for BackendSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+#[cfg(not(all(feature = "parallel", feature = "mps", feature = "gpu")))]
+fn unavailable(why: &str) -> Error {
+    Error::new(ErrorKind::BackendUnavailable(why.to_string()))
+}
+
+/// `sim` with its multi-threaded kernel if `parallel`, which needs the
+/// `parallel` build feature.
+#[cfg(feature = "parallel")]
+fn parallel<S: Parallel>(sim: S, parallel: bool) -> Result<S> {
+    Ok(sim.parallel(parallel))
+}
+
+#[cfg(not(feature = "parallel"))]
+fn parallel<S>(sim: S, parallel: bool) -> Result<S> {
+    if parallel {
+        return Err(unavailable(
+            "this build has no multi-threading support (the `parallel` feature is off)",
+        ));
+    }
+    Ok(sim)
+}
+
+/// The simulators with a multi-threaded kernel.
+#[cfg(feature = "parallel")]
+trait Parallel {
+    fn parallel(self, parallel: bool) -> Self;
+}
+
+#[cfg(feature = "parallel")]
+impl<F: crate::Amplitude> Parallel for StateVectorSim<F> {
+    fn parallel(self, parallel: bool) -> Self {
+        self.with_parallel(parallel)
+    }
+}
+
+#[cfg(feature = "parallel")]
+impl<F: crate::Amplitude> Parallel for SimdSim<F> {
+    fn parallel(self, parallel: bool) -> Self {
+        self.with_parallel(parallel)
+    }
 }
 
 #[cfg(feature = "mps")]
-fn mps(num_qubits: u32, seed: u64, max_bond: usize) -> VmResult<Box<dyn QuantumBackend>> {
-    Ok(Box::new(crate::mps::MpsSim::new(
-        num_qubits, seed, max_bond,
-    )?))
+fn mps(num_qubits: u32, seed: u64, max_bond: NonZeroUsize) -> Result<Box<dyn QuantumBackend>> {
+    Ok(Box::new(
+        crate::mps::MpsSim::new(num_qubits)?
+            .with_seed(seed)
+            .with_max_bond(max_bond),
+    ))
 }
 
 #[cfg(not(feature = "mps"))]
-fn mps(_num_qubits: u32, _seed: u64, _max_bond: usize) -> VmResult<Box<dyn QuantumBackend>> {
+fn mps(_num_qubits: u32, _seed: u64, _max_bond: NonZeroUsize) -> Result<Box<dyn QuantumBackend>> {
     Err(unavailable(
         "this build has no MPS support (the `mps` feature is off)",
     ))
 }
 
 #[cfg(feature = "gpu")]
-async fn gpu(num_qubits: u32, seed: u64) -> VmResult<Box<dyn QuantumBackend>> {
+async fn gpu(num_qubits: u32, seed: u64) -> Result<Box<dyn QuantumBackend>> {
     Ok(Box::new(
-        crate::gpu::GpuSim::try_zeroed(num_qubits, seed).await?,
+        crate::gpu::GpuSim::new(num_qubits).await?.with_seed(seed),
     ))
 }
 
 #[cfg(not(feature = "gpu"))]
-async fn gpu(_num_qubits: u32, _seed: u64) -> VmResult<Box<dyn QuantumBackend>> {
+async fn gpu(_num_qubits: u32, _seed: u64) -> Result<Box<dyn QuantumBackend>> {
     Err(unavailable(
         "this build has no GPU support (the `gpu` feature is off)",
     ))
@@ -294,7 +442,7 @@ mod tests {
         pollster::block_on(async {
             let spec: BackendSpec = "prefer-gpu".parse().unwrap();
             let turn = gpu_turn();
-            let (_, built) = pollster::block_on(spec.build(1)).unwrap();
+            let (_, built) = pollster::block_on(spec.build(1, DEFAULT_SEED)).unwrap();
             drop(turn);
             // Whichever was available, the request is resolved.
             assert_ne!(built.kind, BackendKind::PreferGpu);
@@ -304,7 +452,7 @@ mod tests {
 
             let mut spec: BackendSpec = "sum".parse().unwrap();
             spec.precision = Precision::F32;
-            let (_, built) = spec.build(1).await.unwrap();
+            let (_, built) = spec.build(1, DEFAULT_SEED).await.unwrap();
             assert_eq!((built.name(), built.precision), ("sum", Precision::F64));
         })
     }
@@ -316,7 +464,7 @@ mod tests {
             let mut spec: BackendSpec = "mps".parse().unwrap();
             spec.precision = Precision::F32;
             // Far past any state vector, but a product state for an MPS.
-            let (backend, built) = spec.build(300).await.unwrap();
+            let (backend, built) = spec.build(300, DEFAULT_SEED).await.unwrap();
             assert_eq!((built.name(), built.precision), ("mps", Precision::F64));
             assert!(backend.can_sample_shots());
         })
@@ -326,10 +474,14 @@ mod tests {
     fn oversized_state_vector_is_an_error() {
         pollster::block_on(async {
             let spec: BackendSpec = "simd".parse().unwrap();
-            let err = spec.build(200).await.err().expect("2^200 amplitudes");
+            let err = spec
+                .build(200, DEFAULT_SEED)
+                .await
+                .err()
+                .expect("2^200 amplitudes");
             assert!(matches!(
                 err.kind,
-                VmErrorKind::TooManyQubits { requested: 200 }
+                ErrorKind::TooManyQubits { requested: 200 }
             ));
         })
     }

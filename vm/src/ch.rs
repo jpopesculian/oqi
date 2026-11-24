@@ -703,7 +703,9 @@ mod tests {
             for seed in 0..25u64 {
                 let word = random_word(n, 40, seed);
                 let mut ch = ChForm::zero(n);
-                let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
+                let mut sv = StateVectorSim::<f64>::new(n as u32)
+                    .map(|s| s.with_seed(0))
+                    .unwrap();
                 for &g in &word {
                     apply_ch(&mut ch, g);
                     apply_sv(&mut sv, g);
@@ -726,7 +728,9 @@ mod tests {
             for seed in 100..115u64 {
                 let word = random_word(n, 30, seed);
                 let mut ch = ChForm::zero(n);
-                let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
+                let mut sv = StateVectorSim::<f64>::new(n as u32)
+                    .map(|s| s.with_seed(0))
+                    .unwrap();
                 let none = GateModifiers::none();
                 let ctrl = |c: usize| GateModifiers::ctrl(&[c as u32]);
                 for &g in &word {
@@ -768,8 +772,12 @@ mod tests {
                 let (w1, w2) = (random_word(n, 30, seed), random_word(n, 30, seed + 500));
                 let mut ch1 = ChForm::zero(n);
                 let mut ch2 = ChForm::zero(n);
-                let mut sv1 = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
-                let mut sv2 = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
+                let mut sv1 = StateVectorSim::<f64>::new(n as u32)
+                    .map(|s| s.with_seed(0))
+                    .unwrap();
+                let mut sv2 = StateVectorSim::<f64>::new(n as u32)
+                    .map(|s| s.with_seed(0))
+                    .unwrap();
                 for &g in &w1 {
                     apply_ch(&mut ch1, g);
                     apply_sv(&mut sv1, g);
@@ -812,7 +820,9 @@ mod tests {
                 for q in 0..n {
                     for b in [false, true] {
                         let mut ch = ChForm::zero(n);
-                        let mut sv = StateVectorSim::<f64>::try_zeroed(n as u32, 0).unwrap();
+                        let mut sv = StateVectorSim::<f64>::new(n as u32)
+                            .map(|s| s.with_seed(0))
+                            .unwrap();
                         for &g in &word {
                             apply_ch(&mut ch, g);
                             apply_sv(&mut sv, g);

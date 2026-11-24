@@ -26,6 +26,7 @@
 //! probability given the bits already drawn, at O(n·χ²) per shot.
 
 use std::f64::consts::PI;
+use std::num::NonZeroUsize;
 
 use async_trait::async_trait;
 use faer::{Mat, MatRef};
@@ -33,7 +34,7 @@ use num_complex::Complex;
 
 use crate::backend::{GateModifiers, MAX_STATE_BYTES, QuantumBackend};
 use crate::clifford::{M2, effective_matrix, identity};
-use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
+use crate::error::{Error, ErrorKind, Result};
 use crate::measure::renorm;
 use crate::rng::Rng;
 
@@ -118,7 +119,7 @@ impl Site {
 /// `max_bond` singular values per bond.
 ///
 /// Like the dense simulators it keeps its state under 16 GiB: a gate that
-/// would grow the tensors past that fails with [`VmErrorKind::Backend`]
+/// would grow the tensors past that fails with [`ErrorKind::Backend`]
 /// (lower the bond cap to trade accuracy for memory), and
 /// [`amplitudes`](QuantumBackend::amplitudes) returns `None` for more than
 /// 30 qubits.
@@ -141,21 +142,18 @@ impl MpsSim {
     /// The default cap on the bond dimension.
     pub const DEFAULT_MAX_BOND: usize = crate::spec::DEFAULT_MAX_BOND;
 
-    /// A fresh simulator with `num_qubits` qubits in |0…0⟩, an RNG seed for
-    /// measurement sampling, and a cap on the bond dimension.
+    /// A simulator of `num_qubits` qubits in |0…0⟩, with the
+    /// [default bond cap](Self::DEFAULT_MAX_BOND) and measuring with the
+    /// [`DEFAULT_SEED`](crate::DEFAULT_SEED).
     ///
-    /// Fails with [`VmErrorKind::Backend`] if `max_bond` is 0, and with
-    /// [`VmErrorKind::TooManyQubits`] if even the unentangled chain would
-    /// not fit in memory.
-    pub fn new(num_qubits: u32, seed: u64, max_bond: usize) -> VmResult<Self> {
-        if max_bond == 0 {
-            return Err(VmError::new(VmErrorKind::Backend(
-                "the MPS bond cap must be at least 1".into(),
-            )));
-        }
+    /// # Errors
+    ///
+    /// [`ErrorKind::TooManyQubits`] if even the unentangled chain would not
+    /// fit in 16 GiB.
+    pub fn new(num_qubits: u32) -> Result<Self> {
         let per_site = (std::mem::size_of::<Site>() + 2 * std::mem::size_of::<C64>()) as u64;
         if u64::from(num_qubits).saturating_mul(per_site) > MAX_STATE_BYTES {
-            return Err(VmError::new(VmErrorKind::TooManyQubits {
+            return Err(Error::new(ErrorKind::TooManyQubits {
                 requested: num_qubits,
             }));
         }
@@ -164,10 +162,31 @@ impl MpsSim {
             elements: 2 * num_qubits as usize,
             center: 0,
             phase: Complex::new(1.0, 0.0),
-            max_bond,
+            max_bond: Self::DEFAULT_MAX_BOND,
             discarded: 0.0,
-            rng: Rng::new(seed),
+            rng: Rng::new(crate::DEFAULT_SEED),
         })
+    }
+
+    /// Seed the measurement RNG: a given seed reproduces a run.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.rng = Rng::new(seed);
+        self
+    }
+
+    /// Keep at most `max_bond` singular values on each bond: past it, a
+    /// two-qubit gate truncates the state to its largest singular values
+    /// and renormalizes, so results become approximate (see
+    /// [`truncation_error`](Self::truncation_error)).
+    pub fn with_max_bond(mut self, max_bond: NonZeroUsize) -> Self {
+        self.max_bond = max_bond.get();
+        self
+    }
+
+    /// The share of the state's weight dropped by truncation since the last
+    /// reset: 0 while the simulation is exact.
+    pub fn truncation_error(&self) -> f64 {
+        self.discarded
     }
 
     /// Replace site `k`, keeping the entry count current.
@@ -178,10 +197,10 @@ impl MpsSim {
 
     /// Fail if `extra` more tensor entries would take the state past the
     /// memory ceiling.
-    fn reserve(&self, extra: usize) -> KindResult<()> {
+    fn reserve(&self, extra: usize) -> Result<(), ErrorKind> {
         let entries = self.elements.saturating_add(extra) as u64;
         if entries.saturating_mul(std::mem::size_of::<C64>() as u64) > MAX_STATE_BYTES {
-            return Err(VmErrorKind::Backend(format!(
+            return Err(ErrorKind::Backend(format!(
                 "the matrix-product state would need more than {} GiB at this \
                  entanglement; lower the bond cap (now {})",
                 MAX_STATE_BYTES >> 30,
@@ -219,12 +238,12 @@ impl MpsSim {
     /// orthonormalize left to right, then truncate right to left by SVD.
     /// The centre ends at `a`. Fails if a singular value decomposition does
     /// not converge, as it may on non-finite amplitudes (a NaN angle).
-    fn compress(&mut self, a: usize, b: usize) -> KindResult<()> {
+    fn compress(&mut self, a: usize, b: usize) -> Result<(), ErrorKind> {
         self.center = a;
         self.move_center(b);
         for c in (a + 1..=b).rev() {
             let svd = self.sites[c].right().thin_svd().map_err(|_| {
-                VmErrorKind::Backend(
+                ErrorKind::Backend(
                     "a singular value decomposition did not converge \
                      (non-finite amplitudes?)"
                         .into(),
@@ -309,7 +328,7 @@ impl MpsSim {
     /// Apply `I + ⊗ₖ Oₖ` over sites `a..=b`, where `ops` gives `Oₖ` for the
     /// sites it names and every other site in the span takes `I`. Channel 0
     /// of the doubled bonds carries `I`, channel 1 carries `Oₖ`.
-    fn apply_sum(&mut self, ops: &[(usize, M2)]) -> KindResult<()> {
+    fn apply_sum(&mut self, ops: &[(usize, M2)]) -> Result<(), ErrorKind> {
         let a = ops.iter().map(|&(k, _)| k).min().expect("an operator");
         let b = ops.iter().map(|&(k, _)| k).max().expect("an operator");
         self.move_center(a);
@@ -359,6 +378,16 @@ impl MpsSim {
     }
 }
 
+impl std::fmt::Debug for MpsSim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MpsSim")
+            .field("num_qubits", &self.sites.len())
+            .field("max_bond", &self.max_bond)
+            .field("truncation_error", &self.discarded)
+            .finish_non_exhaustive()
+    }
+}
+
 #[async_trait(?Send)]
 impl QuantumBackend for MpsSim {
     fn num_qubits(&self) -> u32 {
@@ -372,7 +401,7 @@ impl QuantumBackend for MpsSim {
         phi: f64,
         lambda: f64,
         m: &GateModifiers,
-    ) -> KindResult<()> {
+    ) -> Result<(), ErrorKind> {
         let mut mat = effective_matrix(theta, phi, lambda, m.power);
         let target = target as usize;
         if m.controls.is_empty() && m.neg_controls.is_empty() {
@@ -398,12 +427,12 @@ impl QuantumBackend for MpsSim {
         self.apply_sum(&ops)
     }
 
-    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+    fn gphase(&mut self, gamma: f64) -> Result<(), ErrorKind> {
         self.phase *= Complex::from_polar(1.0, gamma);
         Ok(())
     }
 
-    async fn measure(&mut self, qubit: u32) -> bool {
+    async fn measure(&mut self, qubit: u32) -> Result<bool, ErrorKind> {
         let q = qubit as usize;
         self.move_center(q);
         let site = &mut self.sites[q];
@@ -419,17 +448,18 @@ impl QuantumBackend for MpsSim {
                 Complex::new(0.0, 0.0)
             };
         }
-        outcome
+        Ok(outcome)
     }
 
-    async fn reset(&mut self, qubit: u32) {
-        if self.measure(qubit).await {
+    async fn reset(&mut self, qubit: u32) -> Result<(), ErrorKind> {
+        if self.measure(qubit).await? {
             // U(π, 0, π) is i·X, as in the state-vector simulator.
             self.sites[qubit as usize].apply(&effective_matrix(PI, 0.0, PI, 1.0));
         }
+        Ok(())
     }
 
-    fn reset_state(&mut self) -> KindResult<()> {
+    fn reset_state(&mut self) -> Result<(), ErrorKind> {
         self.sites.fill(Site::zero());
         self.elements = 2 * self.sites.len();
         self.center = 0;
@@ -477,16 +507,26 @@ impl QuantumBackend for MpsSim {
         true
     }
 
-    async fn sample_shots(&mut self, shots: u32, seed: u64) -> Option<Vec<Vec<bool>>> {
+    async fn sample_shots(
+        &mut self,
+        shots: u32,
+        seed: u64,
+    ) -> Result<Option<Vec<Vec<bool>>>, ErrorKind> {
         self.move_center(0);
         let mut rng = Rng::new(seed);
-        Some((0..shots).map(|_| self.sample_one(&mut rng)).collect())
+        Ok(Some(
+            (0..shots).map(|_| self.sample_one(&mut rng)).collect(),
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bond(max_bond: usize) -> NonZeroUsize {
+        NonZeroUsize::new(max_bond).unwrap()
+    }
     use crate::sim::StateVectorSim;
     use std::f64::consts::{FRAC_PI_2, PI};
 
@@ -578,8 +618,12 @@ mod tests {
         pollster::block_on(async {
             let n = 6u32;
             for seed in 0..24u64 {
-                let mut mps = MpsSim::new(n, seed + 1, usize::MAX).unwrap();
-                let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
+                let mut mps = MpsSim::new(n)
+                    .map(|m| m.with_seed(seed + 1).with_max_bond(bond(usize::MAX)))
+                    .unwrap();
+                let mut sv = StateVectorSim::<f64>::new(n)
+                    .map(|s| s.with_seed(0))
+                    .unwrap();
                 for op in random_circuit(n, 60, seed) {
                     match op {
                         Op::U {
@@ -597,7 +641,7 @@ mod tests {
                             sv.gphase(g).unwrap();
                         }
                         Op::Measure(q) => {
-                            let outcome = mps.measure(q).await;
+                            let outcome = mps.measure(q).await.unwrap();
                             sv.project(q, outcome);
                         }
                     }
@@ -618,12 +662,16 @@ mod tests {
         pollster::block_on(async {
             let (mut saw_zero, mut saw_one) = (false, false);
             for seed in 0..40u64 {
-                let mut mps =
-                    MpsSim::new(2, (seed + 1).wrapping_mul(0x9E3779B97F4A7C15), 8).unwrap();
+                let mut mps = MpsSim::new(2)
+                    .map(|m| {
+                        m.with_seed((seed + 1).wrapping_mul(0x9E3779B97F4A7C15))
+                            .with_max_bond(bond(8))
+                    })
+                    .unwrap();
                 mps.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
                     .unwrap(); // H
                 mps.u(1, PI, 0.0, PI, &GateModifiers::ctrl(&[0])).unwrap(); // CX
-                let out = mps.measure_all(&[0, 1]).await;
+                let out = mps.measure_all(&[0, 1]).await.unwrap();
                 assert_eq!(out[0], out[1], "Bell measurement must agree (seed {seed})");
                 saw_zero |= !out[0];
                 saw_one |= out[0];
@@ -638,13 +686,17 @@ mod tests {
     fn reset_matches_statevector() {
         pollster::block_on(async {
             let none = GateModifiers::none();
-            let mut mps = MpsSim::new(3, 5, 8).unwrap();
-            let mut sv = StateVectorSim::<f64>::try_zeroed(3, 5).unwrap();
+            let mut mps = MpsSim::new(3)
+                .map(|m| m.with_seed(5).with_max_bond(bond(8)))
+                .unwrap();
+            let mut sv = StateVectorSim::<f64>::new(3)
+                .map(|s| s.with_seed(5))
+                .unwrap();
             for b in [&mut mps as &mut dyn QuantumBackend, &mut sv] {
                 b.u(0, FRAC_PI_2, 0.0, PI, &none).unwrap(); // H q0
                 b.u(2, PI, 0.0, PI, &GateModifiers::ctrl(&[0])).unwrap(); // CX q0 → q2
                 b.u(1, PI, 0.0, PI, &none).unwrap(); // X q1: a deterministic 1
-                b.reset(1).await;
+                b.reset(1).await.unwrap();
             }
             assert_same_state(&mps, &sv, "after reset").await;
         })
@@ -654,7 +706,9 @@ mod tests {
     #[test]
     fn reset_state_rezeros() {
         pollster::block_on(async {
-            let mut mps = MpsSim::new(3, 7, 8).unwrap();
+            let mut mps = MpsSim::new(3)
+                .map(|m| m.with_seed(7).with_max_bond(bond(8)))
+                .unwrap();
             mps.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
                 .unwrap();
             mps.u(2, PI, 0.0, PI, &GateModifiers::ctrl(&[0])).unwrap();
@@ -671,7 +725,9 @@ mod tests {
     #[test]
     fn truncation_renormalizes() {
         pollster::block_on(async {
-            let mut mps = MpsSim::new(2, 1, 1).unwrap();
+            let mut mps = MpsSim::new(2)
+                .map(|m| m.with_seed(1).with_max_bond(bond(1)))
+                .unwrap();
             mps.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
                 .unwrap();
             mps.u(1, PI, 0.0, PI, &GateModifiers::ctrl(&[0])).unwrap();
@@ -708,14 +764,18 @@ mod tests {
         pollster::block_on(async {
             let n = 5u32;
             let circuit = random_circuit(n, 40, 3);
-            let mut mps = MpsSim::new(n, 1, usize::MAX).unwrap();
+            let mut mps = MpsSim::new(n)
+                .map(|m| m.with_seed(1).with_max_bond(bond(usize::MAX)))
+                .unwrap();
             apply_unitaries(&mut mps, &circuit);
-            let mut sv = StateVectorSim::<f64>::try_zeroed(n, 1).unwrap();
+            let mut sv = StateVectorSim::<f64>::new(n)
+                .map(|s| s.with_seed(1))
+                .unwrap();
             apply_unitaries(&mut sv, &circuit);
 
             let shots = 50_000;
             let mut counts = vec![0u32; 1 << n];
-            for shot in mps.sample_shots(shots, 11).await.unwrap() {
+            for shot in mps.sample_shots(shots, 11).await.unwrap().unwrap() {
                 assert_eq!(shot.len(), n as usize);
                 let idx = (0..n as usize).fold(0, |acc, q| acc | (shot[q] as usize) << q);
                 counts[idx] += 1;
@@ -736,9 +796,11 @@ mod tests {
     #[test]
     fn sampling_leaves_the_state_untouched() {
         pollster::block_on(async {
-            let mut mps = MpsSim::new(4, 2, usize::MAX).unwrap();
+            let mut mps = MpsSim::new(4)
+                .map(|m| m.with_seed(2).with_max_bond(bond(usize::MAX)))
+                .unwrap();
             apply_unitaries(&mut mps, &random_circuit(4, 30, 5));
-            mps.measure(3).await; // centre on the last site
+            mps.measure(3).await.unwrap(); // centre on the last site
             let before = mps.amplitudes().await.unwrap();
             mps.sample_shots(100, 1).await.unwrap();
             let after = mps.amplitudes().await.unwrap();
@@ -754,14 +816,16 @@ mod tests {
     fn sampling_needs_no_amplitudes() {
         pollster::block_on(async {
             let n = 100u32;
-            let mut mps = MpsSim::new(n, 1, 8).unwrap();
+            let mut mps = MpsSim::new(n)
+                .map(|m| m.with_seed(1).with_max_bond(bond(8)))
+                .unwrap();
             mps.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
                 .unwrap();
             for q in 0..n - 1 {
                 mps.u(q + 1, PI, 0.0, PI, &GateModifiers::ctrl(&[q]))
                     .unwrap();
             }
-            let drawn = mps.sample_shots(200, 4).await.expect("sampled");
+            let drawn = mps.sample_shots(200, 4).await.unwrap().expect("sampled");
             assert!(drawn.iter().all(|s| s.iter().all(|&b| b == s[0])));
             let ones = drawn.iter().filter(|s| s[0]).count();
             assert!((50..150).contains(&ones), "{ones} of 200 all-1 shots");
@@ -772,7 +836,9 @@ mod tests {
     #[test]
     fn zero_qubits_hold_the_global_phase() {
         pollster::block_on(async {
-            let mut mps = MpsSim::new(0, 1, 8).unwrap();
+            let mut mps = MpsSim::new(0)
+                .map(|m| m.with_seed(1).with_max_bond(bond(8)))
+                .unwrap();
             mps.gphase(0.3).unwrap();
             let amps = mps.amplitudes().await.unwrap();
             assert_eq!(amps.len(), 1);
@@ -784,19 +850,20 @@ mod tests {
     #[test]
     fn memory_is_bounded() {
         assert!(matches!(
-            MpsSim::new(u32::MAX, 1, 8).err().map(|e| e.kind),
-            Some(VmErrorKind::TooManyQubits { .. })
-        ));
-        assert!(matches!(
-            MpsSim::new(2, 1, 0).err().map(|e| e.kind),
-            Some(VmErrorKind::Backend(_))
+            MpsSim::new(u32::MAX)
+                .map(|m| m.with_seed(1).with_max_bond(bond(8)))
+                .err()
+                .map(|e| e.kind),
+            Some(ErrorKind::TooManyQubits { .. })
         ));
         // A state already at the ceiling cannot grow a bond.
-        let mut mps = MpsSim::new(2, 1, 8).unwrap();
+        let mut mps = MpsSim::new(2)
+            .map(|m| m.with_seed(1).with_max_bond(bond(8)))
+            .unwrap();
         mps.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
             .unwrap();
         mps.elements = (MAX_STATE_BYTES / std::mem::size_of::<C64>() as u64) as usize;
         let err = mps.u(1, PI, 0.0, PI, &GateModifiers::ctrl(&[0]));
-        assert!(matches!(err, Err(VmErrorKind::Backend(_))), "{err:?}");
+        assert!(matches!(err, Err(ErrorKind::Backend(_))), "{err:?}");
     }
 }

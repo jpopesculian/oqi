@@ -16,30 +16,67 @@ use oqi_classical::{
 use oqi_compile::Program;
 use oqi_compile::SymbolId;
 
-use crate::error::{VmError, VmErrorKind, VmResult};
-use crate::vm::RunResult;
+use crate::error::{Error, ErrorKind, Result};
 
 /// Largest integer an `f64` represents exactly (2^53 − 1).
 const MAX_SAFE_INTEGER: f64 = ((1u64 << 53) - 1) as f64;
 
 /// A value as a host language sees it, before (inputs, extern results) or
 /// after (outputs, extern arguments) it is typed.
+///
+/// [`coerce_to`](HostValue::coerce_to) types one; `From<&Value>` and
+/// [`extern_arg`](HostValue::extern_arg) present a typed value to a host.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum HostValue {
+    /// A boolean (also a `bit`).
     Bool(bool),
+    /// A signed integer.
     Int(i128),
+    /// An unsigned integer.
     Uint(u128),
+    /// A float (also an angle in radians).
     Float(f64),
+    /// A complex number.
     Complex(Complex64),
+    /// Text: a decimal number, a complex number like `1.5-2im`, a duration
+    /// like `100ns`, or a bit string like `"0101"` (MSB first).
     Text(String),
+    /// A list, for an array (possibly nested, filled row-major).
     List(Vec<HostValue>),
+}
+
+macro_rules! host_value_from {
+    ($($from:ty => $variant:ident),* $(,)?) => {
+        $(impl From<$from> for HostValue {
+            fn from(value: $from) -> Self {
+                HostValue::$variant(value.into())
+            }
+        })*
+    };
+}
+
+host_value_from! {
+    bool => Bool,
+    i8 => Int, i16 => Int, i32 => Int, i64 => Int, i128 => Int,
+    u8 => Uint, u16 => Uint, u32 => Uint, u64 => Uint, u128 => Uint,
+    f32 => Float, f64 => Float,
+    Complex64 => Complex,
+    String => Text,
+    &str => Text,
+}
+
+impl<T: Into<HostValue>> From<Vec<T>> for HostValue {
+    fn from(items: Vec<T>) -> Self {
+        HostValue::List(items.into_iter().map(Into::into).collect())
+    }
 }
 
 impl HostValue {
     /// How a host receives an extern-call argument. Like the output form
     /// ([`From<&Value>`]) except `angle` is a float in radians and `bit[n]`
     /// an MSB-first "0101" string, so values round-trip with what
-    /// [`coerce`] accepts for an extern's return value.
+    /// [`coerce_to`](Self::coerce_to) accepts for an extern's return value.
     pub fn extern_arg(value: &Value) -> HostValue {
         if let Value::Scalar(s) = value {
             match s.value() {
@@ -57,6 +94,29 @@ impl HostValue {
             }
         }
         HostValue::from(value)
+    }
+
+    /// This value as a value of type `ty`. Integers and floats also accept
+    /// decimal text; angles are radians (wrapped mod 2π and quantized to the
+    /// declared width); complex numbers take a host complex, a real, or text
+    /// like `1.5-2im`; durations take SI timing text like `100ns`; bit
+    /// registers are MSB-first `"0101"` text of the declared width; arrays
+    /// take a (possibly nested) list whose leaves coerce to the element type.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::Type`] if the value doesn't fit `ty`.
+    ///
+    /// ```
+    /// use oqi_vm::{HostValue, ValueTy};
+    /// use oqi_vm::classical::iw;
+    ///
+    /// let n = HostValue::from("42").coerce_to(ValueTy::int(iw(8)))?;
+    /// assert_eq!(n.to_string(), "42");
+    /// # Ok::<(), oqi_vm::ErrorKind>(())
+    /// ```
+    pub fn coerce_to(&self, ty: ValueTy) -> Result<Value, ErrorKind> {
+        coerce("value", self, ty).map_err(ErrorKind::Type)
     }
 
     fn to_i128(&self, what: &str) -> Result<i128, String> {
@@ -222,7 +282,7 @@ impl From<&Value> for HostValue {
 /// take SI timing text like `100ns`; bit registers are MSB-first "0101"
 /// strings of the declared width; arrays take a (possibly nested) list
 /// whose leaves coerce to the element type.
-pub fn coerce(what: &str, raw: &HostValue, ty: ValueTy) -> Result<Value, String> {
+pub(crate) fn coerce(what: &str, raw: &HostValue, ty: ValueTy) -> Result<Value, String> {
     Ok(match ty {
         ValueTy::Scalar(PrimitiveTy::Int(w)) => Value::int(raw.to_i128(what)?, w),
         ValueTy::Scalar(PrimitiveTy::Uint(w)) => Value::uint(raw.to_u128(what)?, w),
@@ -273,80 +333,20 @@ pub fn coerce(what: &str, raw: &HostValue, ty: ValueTy) -> Result<Value, String>
 /// Resolve named host values against `module`'s declared `input`s, coercing
 /// each to its declared type. Fails on the first (in the given order) name
 /// that isn't a declared input or value that doesn't fit its type.
-pub fn coerce_inputs(
+pub(crate) fn coerce_inputs(
     module: &Program,
     named: &[(String, HostValue)],
-) -> VmResult<HashMap<SymbolId, Value>> {
+) -> Result<HashMap<SymbolId, Value>> {
     let mut inputs = HashMap::new();
     for (name, raw) in named {
         let (sym, ty) = module
             .input(name)
-            .ok_or_else(|| VmError::new(VmErrorKind::UnknownInput(name.clone())))?;
+            .ok_or_else(|| Error::new(ErrorKind::UnknownInput(name.clone())))?;
         let value = coerce(&format!("input `{name}`"), raw, ty)
-            .map_err(|message| VmError::new(VmErrorKind::Type(message)))?;
+            .map_err(|message| Error::new(ErrorKind::Type(message)))?;
         inputs.insert(sym, value);
     }
     Ok(inputs)
-}
-
-/// A value's histogram bucket key (see [`Histogram::counts`]).
-fn label(value: &Value) -> String {
-    if let Value::Scalar(s) = value
-        && let Primitive::Bit(b) = s.value()
-    {
-        return (if *b { "1" } else { "0" }).to_string();
-    }
-    value.to_string().trim_matches('"').to_string()
-}
-
-/// How often each distinct value of one output variable was observed across
-/// a set of shots.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Histogram {
-    /// The output variable's name.
-    pub name: String,
-    /// `(label, count)` per distinct value. A label is the value's canonical
-    /// text: `bit`/`bool` as `0`/`1`, `bit[n]` as an unquoted MSB-first bit
-    /// string, everything else its OpenQASM text form. Sorted by value:
-    /// numerically when every label is a plain decimal integer, else
-    /// lexicographically — so fixed-width bit strings keep their binary
-    /// order.
-    pub counts: Vec<(String, u32)>,
-}
-
-/// Tally the outputs of `shots` (e.g. from [`Vm::sample`](crate::Vm::sample))
-/// into one [`Histogram`] per output variable, in program order.
-pub fn histograms(module: &Program, shots: &[RunResult]) -> Vec<Histogram> {
-    let mut tallies: HashMap<SymbolId, HashMap<String, u32>> = HashMap::new();
-    for shot in shots {
-        for (sym, value) in &shot.outputs {
-            *tallies
-                .entry(*sym)
-                .or_default()
-                .entry(label(value))
-                .or_insert(0) += 1;
-        }
-    }
-    module
-        .outputs
-        .iter()
-        .filter_map(|(sym, _)| {
-            let mut counts: Vec<(String, u32)> = tallies.remove(sym)?.into_iter().collect();
-            let numeric = counts.iter().all(|(label, _)| {
-                let digits = label.strip_prefix('-').unwrap_or(label);
-                digits.parse::<i128>().is_ok() && (digits.len() == 1 || !digits.starts_with('0'))
-            });
-            if numeric {
-                counts.sort_by_key(|(label, _)| label.parse::<i128>().unwrap());
-            } else {
-                counts.sort();
-            }
-            Some(Histogram {
-                name: module.symbol(*sym).name.clone(),
-                counts,
-            })
-        })
-        .collect()
 }
 
 /// Unquoted MSB-first bit string of `reg`'s low `width` bits.
@@ -400,7 +400,6 @@ mod tests {
     fn bit_registers_and_angles_round_trip_through_extern_args() {
         let reg = coerce("r", &HostValue::Text("0110".into()), ValueTy::bitreg(4)).unwrap();
         assert_eq!(HostValue::extern_arg(&reg), HostValue::Text("0110".into()));
-        assert_eq!(label(&reg), "0110");
         assert!(coerce("r", &HostValue::Text("011".into()), ValueTy::bitreg(4)).is_err());
 
         let angle = coerce("a", &HostValue::Float(1.0), ValueTy::angle(iw(32))).unwrap();

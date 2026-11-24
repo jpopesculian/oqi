@@ -42,15 +42,11 @@
 //!   unitary path.
 //! - Expression-specialized defcals (`defcal rx(pi/2) $0`) and `delay`
 //!   defcals never dispatch.
-//! - Classical (non-pulse) values declared in `cal` blocks are not
-//!   shared across cal/defcal bodies; reading one from another body
-//!   errors with `UnsetRegister`. Likewise a `durationof` body cannot
-//!   read classical variables from its enclosing scope.
 
 use num_complex::Complex64;
 use oqi_classical::Duration;
 
-use crate::error::{KindResult, VmErrorKind};
+use crate::error::{ErrorKind, Result};
 
 /// Opaque handle to a handler-owned port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -68,12 +64,12 @@ pub struct WaveformHandle(pub u64);
 /// radians; durations keep their source unit (e.g. `dt`).
 pub trait OpenPulseHandler {
     /// Resolve an `extern port` declaration by name.
-    fn port(&mut self, name: &str) -> KindResult<PortHandle>;
+    fn port(&mut self, name: &str) -> Result<PortHandle, ErrorKind>;
 
     /// Resolve an `extern frame` declaration by name. Defaults to an
     /// error, for handlers that don't pre-provision frames.
-    fn extern_frame(&mut self, name: &str) -> KindResult<FrameHandle> {
-        Err(VmErrorKind::Pulse(format!(
+    fn extern_frame(&mut self, name: &str) -> Result<FrameHandle, ErrorKind> {
+        Err(ErrorKind::Pulse(format!(
             "extern frame `{name}` is not provided"
         )))
     }
@@ -84,7 +80,7 @@ pub trait OpenPulseHandler {
         port: PortHandle,
         frequency: f64,
         phase: f64,
-    ) -> KindResult<FrameHandle>;
+    ) -> Result<FrameHandle, ErrorKind>;
 
     /// `gaussian(amp, duration, sigma)`.
     fn gaussian(
@@ -92,36 +88,40 @@ pub trait OpenPulseHandler {
         amp: f64,
         duration: Duration,
         sigma: Duration,
-    ) -> KindResult<WaveformHandle>;
+    ) -> Result<WaveformHandle, ErrorKind>;
 
     /// `play(frame, waveform)`.
-    fn play(&mut self, frame: FrameHandle, waveform: WaveformHandle) -> KindResult<()>;
+    fn play(&mut self, frame: FrameHandle, waveform: WaveformHandle) -> Result<(), ErrorKind>;
 
     /// `capture(frame, samples)`: acquire a raw IQ value.
-    fn capture(&mut self, frame: FrameHandle, samples: u64) -> KindResult<Complex64>;
+    fn capture(&mut self, frame: FrameHandle, samples: u64) -> Result<Complex64, ErrorKind>;
 
     /// `shift_phase(frame, phase)`.
-    fn shift_phase(&mut self, frame: FrameHandle, phase: f64) -> KindResult<()>;
+    fn shift_phase(&mut self, frame: FrameHandle, phase: f64) -> Result<(), ErrorKind>;
 
     /// `threshold(iq, discriminator)`: classify an IQ value into a bit.
-    fn threshold(&mut self, iq: Complex64, discriminator: u64) -> KindResult<bool>;
+    fn threshold(&mut self, iq: Complex64, discriminator: u64) -> Result<bool, ErrorKind>;
 
     /// Duration of a waveform, queried during `durationof` timing
     /// passes (a `play` advances its frame's clock by this much
     /// instead of emitting the pulse). Defaults to an error —
     /// implement it to let `durationof` resolve calibrated gates.
-    fn waveform_duration(&mut self, waveform: WaveformHandle) -> KindResult<Duration> {
+    fn waveform_duration(&mut self, waveform: WaveformHandle) -> Result<Duration, ErrorKind> {
         let _ = waveform;
-        Err(VmErrorKind::Pulse(
+        Err(ErrorKind::Pulse(
             "handler does not report waveform durations".into(),
         ))
     }
 
     /// Duration of a `capture`, queried during `durationof` timing
     /// passes. Defaults to an error.
-    fn capture_duration(&mut self, frame: FrameHandle, samples: u64) -> KindResult<Duration> {
+    fn capture_duration(
+        &mut self,
+        frame: FrameHandle,
+        samples: u64,
+    ) -> Result<Duration, ErrorKind> {
         let _ = (frame, samples);
-        Err(VmErrorKind::Pulse(
+        Err(ErrorKind::Pulse(
             "handler does not report capture durations".into(),
         ))
     }
@@ -131,5 +131,5 @@ pub trait OpenPulseHandler {
 pub trait OpaqueCalHandler {
     /// Handle the raw text of an inline `cal { ... }` block. `grammar`
     /// is the program's `defcalgrammar` (quotes stripped), if declared.
-    fn cal(&mut self, grammar: Option<&str>, text: &str) -> KindResult<()>;
+    fn cal(&mut self, grammar: Option<&str>, text: &str) -> Result<(), ErrorKind>;
 }

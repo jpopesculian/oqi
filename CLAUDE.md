@@ -88,16 +88,25 @@ source → parse → resolve (includes) → lower → cfg → bytecode → vm
   promotions (e.g. `angle + float`) are separate and not casts. Used by both
   compile and vm. Its `serde` feature (and `oqi-lex`'s, for `Span`) exists for
   the bytecode format; compile turns both on.
-- **`vm/`** (`oqi-vm`) — interprets bytecode. Two pluggable extension points:
-  `QuantumBackend` (the `StateVectorSim`, or future GPU/hardware) and
-  `ExternProvider` (host implementations of `extern` functions). Backends supply
-  their own `stdgates.inc` decomposing the standard library down to the built-in
-  `U`/`gphase`/measure/reset primitives. On a backend, applying a gate is
-  synchronous and fallible (`u`, and an uncontrolled `gphase` — the VM lowers a
-  controlled one to `U` calls in `vm/src/backend.rs`); only measurement, reset
-  and amplitude readback are `async`. It also holds what the front doors
-  share: `BackendSpec` (backend selection by name), `HostValue` + `coerce`
-  (host values ↔ typed values, `vm/src/host.rs`) and `Vm::sample` (shots).
+- **`vm/`** (`oqi-vm`) — interprets bytecode. `Runner` (`vm/src/runner.rs`) is
+  the usual entry point: `Runner::new(&program).backend(spec).seed(s)
+  .input(name, value).run()` / `.sample(shots)`; one seed drives both the
+  backend and shot sampling, and results carry output names. `Vm` is the
+  interpreter underneath, for custom backend instances and calibration
+  handlers. Extension points: `QuantumBackend` (the simulators `StateVectorSim`,
+  `SimdSim`, `AutoSim`, `MpsSim`, `GpuSim`, or a hardware provider) and
+  `ExternProvider` (host implementations of `extern` functions; the VM casts
+  their results to the declared return type). The compiler lowers every gate to
+  the built-in `U`/`gphase`, so a backend implements only those plus
+  measure/reset. On a backend, applying a gate is synchronous and fallible
+  (`u`, and an uncontrolled `gphase` — the VM lowers a controlled one to `U`
+  calls in `vm/src/backend.rs`); measurement, reset, shot sampling and
+  amplitude readback are `async` and fallible. Every backend is built as
+  `X::new(num_qubits)?.with_seed(..)` plus its own `with_*` options. Errors are
+  `oqi_vm::{Error, ErrorKind, Result}`: extension points return
+  `Result<T, ErrorKind>`, the VM adds the span. What the front doors share:
+  `BackendSpec` (backend selection by name), `HostValue::coerce_to` (host
+  values ↔ typed values, `vm/src/host.rs`) and `Runner`.
   Procedure bodies nest at most `MAX_CALL_DEPTH` deep; interpreting one
   level takes ~5 KiB of native stack in release and ~50 KiB in debug, so
   every 16th level runs on a fresh stack segment (`stacker`) instead.

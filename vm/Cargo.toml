@@ -37,4 +37,4 @@ required-features = ["mps"]
 [[bench]]
 name = "backends"
 harness = false
-required-features = ["mps"]
+required-features = ["mps", "parallel"]

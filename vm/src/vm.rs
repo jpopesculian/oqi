@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use num_complex::Complex64;
+use num_complex::{Complex, Complex64};
 use oqi_classical::{
     Array, ArrayRefShape, ArrayTy, BitReg, Duration, DurationUnit, FloatWidth, Index, Primitive,
     PrimitiveTy, Scalar, Value, ValueTy, iw,
@@ -21,19 +21,69 @@ use oqi_lex::Span;
 
 use crate::backend::{BuiltinGate, GateModifiers, QuantumBackend};
 use crate::cal::{FrameHandle, OpaqueCalHandler, OpenPulseHandler, PortHandle, WaveformHandle};
-use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
+use crate::error::{Error, ErrorKind, KindResult, Result};
 use crate::extern_fns::ExternProvider;
 use crate::host::{HostValue, coerce_inputs};
+use crate::spec::{BackendSpec, DEFAULT_SEED};
 
-/// The outcome of a run.
-#[derive(Debug)]
+/// The outcome of one run of a program.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RunResult {
-    /// Measurement outcomes in execution order: (global qubit index, bit).
-    pub measurements: Vec<(u32, bool)>,
-    /// Named program outputs and their final values. Each `SymbolId`
-    /// resolves to a name via [`Program::symbol`]. See
-    /// [`Program::outputs`] for the selection rule.
-    pub outputs: Vec<(SymbolId, Value)>,
+    measurements: Vec<(u32, bool)>,
+    outputs: Vec<(String, Value)>,
+    statevector: Option<Vec<Complex<f64>>>,
+    backend: Option<BackendSpec>,
+}
+
+impl RunResult {
+    /// Every measurement in execution order: `(qubit, outcome)`, `qubit`
+    /// being the global index of the measured qubit.
+    pub fn measurements(&self) -> &[(u32, bool)] {
+        &self.measurements
+    }
+
+    /// The program's outputs and their final values, in program order: its
+    /// `output` variables, or — if it declares none — every variable it
+    /// assigns (docs/directives.rst).
+    pub fn outputs(&self) -> impl ExactSizeIterator<Item = (&str, &Value)> {
+        self.outputs
+            .iter()
+            .map(|(name, value)| (name.as_str(), value))
+    }
+
+    /// The final value of the output `name`, if the run produced one.
+    pub fn output(&self, name: &str) -> Option<&Value> {
+        self.outputs()
+            .find(|(output, _)| *output == name)
+            .map(|(_, value)| value)
+    }
+
+    /// The final state vector, when the run was asked for it
+    /// ([`Runner::statevector`](crate::Runner::statevector)) and the backend
+    /// has one: amplitude `i` is basis state `i`, qubit `q` being bit `q`.
+    pub fn statevector(&self) -> Option<&[Complex<f64>]> {
+        self.statevector.as_deref()
+    }
+
+    /// The backend configuration that ran, when the run went through a
+    /// [`Runner`](crate::Runner): for [`BackendKind::PreferGpu`] it names
+    /// the backend chosen, and its precision is the one used.
+    ///
+    /// [`BackendKind::PreferGpu`]: crate::BackendKind::PreferGpu
+    pub fn backend(&self) -> Option<&BackendSpec> {
+        self.backend.as_ref()
+    }
+
+    pub(crate) fn with_statevector(mut self, statevector: Option<Vec<Complex<f64>>>) -> Self {
+        self.statevector = statevector;
+        self
+    }
+
+    pub(crate) fn with_backend(mut self, backend: BackendSpec) -> Self {
+        self.backend = Some(backend);
+        self
+    }
 }
 
 /// One procedure activation.
@@ -173,11 +223,13 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     backend_used: bool,
     /// How many procedure bodies are executing, nested in one another.
     depth: u32,
+    /// Seeds the draws of [`Vm::sample`]'s fast path.
+    seed: u64,
 }
 
 /// How deeply procedure bodies (subroutine and gate calls, defcals, `cal`
 /// blocks, `durationof` scopes) may nest: a program that recurses deeper
-/// fails with [`VmErrorKind::CallDepth`].
+/// fails with [`ErrorKind::CallDepth`].
 pub const MAX_CALL_DEPTH: u32 = 1000;
 
 /// Interpreting one nesting level takes native stack: about 5 KiB in a
@@ -190,6 +242,17 @@ const SEGMENT_BYTES: usize = if cfg!(debug_assertions) {
 } else {
     512 << 10
 };
+
+impl<B: QuantumBackend, E: ExternProvider> std::fmt::Debug for Vm<'_, B, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Vm")
+            .field("num_qubits", &self.module.num_qubits())
+            .field("seed", &self.seed)
+            .field("pulse_handler", &self.pulse.is_some())
+            .field("opaque_cal_handler", &self.opaque_cal.is_some())
+            .finish_non_exhaustive()
+    }
+}
 
 impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// A VM for `module` on `backend`, with `externs` providing the
@@ -265,7 +328,16 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             inject: None,
             backend_used: false,
             depth: 0,
+            seed: DEFAULT_SEED,
         }
+    }
+
+    /// Seed the draws [`sample`](Self::sample) makes from the state when it
+    /// runs the circuit once (see there); the backend's own seed decides
+    /// measurements. A [`Runner`](crate::Runner) gives both the same seed.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
     }
 
     /// Install an [`OpenPulseHandler`], activating calibration
@@ -294,7 +366,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// inputs. If the program declares any `input`, prefer
     /// [`Vm::run_with_named_inputs`] — running with none errors on the
     /// first missing input.
-    pub async fn run(&mut self) -> VmResult<RunResult> {
+    pub async fn run(&mut self) -> Result<RunResult> {
         self.run_with_inputs(HashMap::new()).await
     }
 
@@ -302,59 +374,59 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// `inputs` (keyed by symbol id). Every declared input must be present
     /// and castable to its declared type; a value for a symbol that isn't a
     /// declared input is rejected.
-    pub async fn run_with_inputs(
-        &mut self,
-        inputs: HashMap<SymbolId, Value>,
-    ) -> VmResult<RunResult> {
+    pub async fn run_with_inputs(&mut self, inputs: HashMap<SymbolId, Value>) -> Result<RunResult> {
         self.current_span = Span::default();
         self.run_inner(inputs)
             .await
-            .map_err(|kind| VmError::new(kind).with_span(self.current_span))
+            .map_err(|kind| Error::new(kind).with_span(self.current_span))
     }
 
     /// [`run_with_inputs`](Self::run_with_inputs) with the inputs given by
     /// name as host values, coerced to their declared types (see
-    /// [`coerce_inputs`]).
+    /// [`HostValue::coerce_to`]).
     pub async fn run_with_named_inputs(
         &mut self,
         inputs: &[(String, HostValue)],
-    ) -> VmResult<RunResult> {
+    ) -> Result<RunResult> {
         let inputs = coerce_inputs(self.module, inputs)?;
         self.run_with_inputs(inputs).await
     }
 
-    /// Run the program `shots` times and return every shot's result, in
-    /// order. Like every run, each shot starts from |0…0⟩.
+    /// Run the program `shots` times, handing each shot's result to `each`
+    /// in order. Like every run, each shot starts from |0…0⟩.
     ///
     /// When no quantum operation depends on a measurement outcome
     /// ([`is_sample_safe`]) and the backend
     /// [can sample its state](QuantumBackend::can_sample_shots), the circuit
     /// runs once: every shot is drawn from the pre-measurement state's
-    /// Born-rule distribution with an RNG seeded by `seed`, and only the
-    /// classical program is replayed per shot. Otherwise the whole
-    /// circuit is re-run per shot, re-zeroing the backend in between while
-    /// the backend's own RNG stream advances — there the backend's seed, not
-    /// `seed`, decides the outcomes (front doors give both the same seed).
+    /// Born-rule distribution with an RNG seeded by the VM's
+    /// [seed](Self::with_seed), and only the classical program is replayed per
+    /// shot. Otherwise the whole circuit re-runs per shot, the backend's own
+    /// RNG stream deciding the measurements.
+    ///
+    /// # Errors
+    ///
+    /// The first shot's error, as for
+    /// [`run_with_inputs`](Self::run_with_inputs).
     pub async fn sample(
         &mut self,
         inputs: HashMap<SymbolId, Value>,
         shots: u32,
-        seed: u64,
-    ) -> VmResult<Vec<RunResult>> {
-        let mut results = Vec::with_capacity(shots as usize);
+        mut each: impl FnMut(RunResult),
+    ) -> Result<()> {
         if self.backend.can_sample_shots()
             && is_sample_safe(self.module)
-            && let Some(drawn) = self.run_capture(inputs.clone(), shots, seed).await?
+            && let Some(drawn) = self.run_capture(inputs.clone(), shots, self.seed).await?
         {
             for basis in drawn {
-                results.push(self.run_inject(inputs.clone(), basis).await?);
+                each(self.run_inject(inputs.clone(), basis).await?);
             }
-            return Ok(results);
+            return Ok(());
         }
         for _ in 0..shots {
-            results.push(self.run_with_inputs(inputs.clone()).await?);
+            each(self.run_with_inputs(inputs.clone()).await?);
         }
-        Ok(results)
+        Ok(())
     }
 
     /// Run once, drawing `shots` samples of the whole register (seeded by
@@ -367,7 +439,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         inputs: HashMap<SymbolId, Value>,
         shots: u32,
         seed: u64,
-    ) -> VmResult<Option<Vec<Vec<bool>>>> {
+    ) -> Result<Option<Vec<Vec<bool>>>> {
         self.capture = Some((shots, seed));
         self.captured_shots = None;
         let r = self.run_with_inputs(inputs).await;
@@ -384,20 +456,20 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         &mut self,
         inputs: HashMap<SymbolId, Value>,
         basis: Vec<bool>,
-    ) -> VmResult<RunResult> {
+    ) -> Result<RunResult> {
         self.inject = Some(basis);
         let r = self.run_with_inputs(inputs).await;
         self.inject = None;
         r
     }
 
-    /// The execution body, raising spanless [`VmErrorKind`]s. The span of the
+    /// The execution body, raising spanless [`ErrorKind`]s. The span of the
     /// instruction in flight is tracked in `self.current_span` and attached by
     /// [`run_with_inputs`](Self::run_with_inputs).
     async fn run_inner(&mut self, mut inputs: HashMap<SymbolId, Value>) -> KindResult<RunResult> {
         let (have, need) = (self.backend.num_qubits(), self.module.qubits.num_qubits);
         if have < need {
-            return Err(VmErrorKind::Backend(format!(
+            return Err(ErrorKind::Backend(format!(
                 "the program uses {need} qubits but the backend has {have}"
             )));
         }
@@ -419,14 +491,14 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         for (sym, reg) in &self.module.inputs {
             let value = inputs
                 .remove(sym)
-                .ok_or_else(|| VmErrorKind::MissingInput(self.module.symbol(*sym).name.clone()))?;
+                .ok_or_else(|| ErrorKind::MissingInput(self.module.symbol(*sym).name.clone()))?;
             let want = reg_types[reg.0 as usize];
             frame.regs[reg.0 as usize] = Some(value.cast(want)?);
         }
         // Any leftover entries name symbols that aren't declared inputs
         // (report the first declared, so the error is deterministic).
         if let Some(sym) = inputs.keys().min_by_key(|sym| sym.0) {
-            return Err(VmErrorKind::UnknownInput(
+            return Err(ErrorKind::UnknownInput(
                 self.module.symbol(*sym).name.clone(),
             ));
         }
@@ -437,22 +509,21 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             .outputs
             .iter()
             .filter_map(|(sym, reg)| {
-                frame
-                    .regs
-                    .get(reg.0 as usize)
-                    .and_then(|v| v.clone())
-                    .map(|v| (*sym, v))
+                let value = frame.regs.get(reg.0 as usize)?.clone()?;
+                Some((self.module.symbol(*sym).name.clone(), value))
             })
             .collect();
         Ok(RunResult {
             measurements: std::mem::take(&mut self.measurements),
             outputs,
+            statevector: None,
+            backend: None,
         })
     }
 
     async fn exec_proc(&mut self, frame: &mut Frame) -> KindResult<Option<Value>> {
         if self.depth >= MAX_CALL_DEPTH {
-            return Err(VmErrorKind::CallDepth {
+            return Err(ErrorKind::CallDepth {
                 limit: MAX_CALL_DEPTH,
             });
         }
@@ -478,7 +549,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 .copied()
                 .unwrap_or(u32::MAX);
             if pos == u32::MAX {
-                return Err(VmErrorKind::Unsupported(format!(
+                return Err(ErrorKind::Unsupported(format!(
                     "missing block bb{}",
                     current.0
                 )));
@@ -533,7 +604,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     });
                 }
                 Terminator::End => return Ok(None),
-                Terminator::Unreachable => return Err(VmErrorKind::Unreachable),
+                Terminator::Unreachable => return Err(ErrorKind::Unreachable),
             }
         }
     }
@@ -601,7 +672,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 value,
             } => {
                 let value = self.eval(frame, value)?;
-                let unset = VmErrorKind::UnsetRegister(target.0);
+                let unset = ErrorKind::UnsetRegister(target.0);
                 let Some(held) = &frame.regs[target.0 as usize] else {
                     return Err(unset);
                 };
@@ -640,7 +711,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     .iter()
                     .map(|op| match self.eval(frame, op)? {
                         Value::Scalar(s) => Ok(s.into_value()),
-                        _ => Err(VmErrorKind::Type("array element must be scalar".into())),
+                        _ => Err(ErrorKind::Type("array element must be scalar".into())),
                     })
                     .collect::<KindResult<_>>()?;
                 let arr = Array::new(prims, aty)?;
@@ -693,7 +764,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         return Ok(());
                     }
                     let bit = value_bit(&ret.ok_or_else(|| {
-                        VmErrorKind::Pulse("measure defcal returned no value".into())
+                        ErrorKind::Pulse("measure defcal returned no value".into())
                     })?)?;
                     self.measurements.push((*n, bit));
                     if let Some(d) = dest {
@@ -721,9 +792,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     if let Some((shots, seed)) = self.capture
                         && self.captured_shots.is_none()
                     {
-                        self.captured_shots = self.backend.sample_shots(shots, seed).await;
+                        self.captured_shots = self.backend.sample_shots(shots, seed).await?;
                     }
-                    self.backend.measure_all(&qs).await
+                    self.backend.measure_all(&qs).await?
                 };
                 self.measurements
                     .extend(qs.iter().copied().zip(outcomes.iter().copied()));
@@ -750,7 +821,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     return Ok(());
                 }
                 for q in self.qubits(frame, qubit)? {
-                    self.backend.reset(q).await;
+                    self.backend.reset(q).await?;
                 }
                 Ok(())
             }
@@ -778,7 +849,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     Value::Scalar(s) => s.value().as_duration(),
                     _ => None,
                 }
-                .ok_or_else(|| VmErrorKind::Type("delay duration must be a duration".into()))?;
+                .ok_or_else(|| ErrorKind::Type("delay duration must be a duration".into()))?;
                 // Timing pass: the delay advances the qubit timeline.
                 if let Some(t) = self.timing.as_mut() {
                     t.advance_base(dur);
@@ -817,7 +888,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 *frame
                     .slots
                     .get_mut(*slot as usize)
-                    .ok_or_else(|| VmErrorKind::Unsupported("alias slot out of range".into()))? =
+                    .ok_or_else(|| ErrorKind::Unsupported("alias slot out of range".into()))? =
                     resolved;
                 Ok(())
             }
@@ -889,7 +960,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             Callee::Intrinsic(i) => {
                 let vals = self.eval_all(frame, args)?;
                 let v = i.apply(vals).ok_or_else(|| {
-                    VmErrorKind::Type(format!("wrong number of arguments for `{i}`"))
+                    ErrorKind::Type(format!("wrong number of arguments for `{i}`"))
                 })??;
                 (i.name(), Some(v))
             }
@@ -907,11 +978,24 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     if self.pulse.is_some() && is_pulse_intrinsic(name) && self.in_cal_proc(frame) {
                         self.call_pulse_intrinsic(name, &vals)?
                     } else {
-                        self.externs.call(name, &vals).await?
+                        let ret = self.externs.call(name, &vals, sym.ty).await?;
+                        // The declared return type decides the value: cast
+                        // what the host returned to it (a void extern's
+                        // return is dropped).
+                        match (ret, sym.ty) {
+                            (Some(value), Some(ty)) => Some(value.cast(ty).map_err(|e| {
+                                ErrorKind::extern_failed(
+                                    name,
+                                    format!("returned a value that is not a `{ty}`: {e}"),
+                                )
+                            })?),
+                            (ret, Some(_)) => ret,
+                            (_, None) => None,
+                        }
                     }
                 } else {
                     let proc_id = *self.sub_procs.get(s).ok_or_else(|| {
-                        VmErrorKind::Unsupported(format!("call to non-subroutine symbol s{}", s.0))
+                        ErrorKind::Unsupported(format!("call to non-subroutine symbol s{}", s.0))
                     })?;
                     let mut child = self.bind_subroutine(frame, proc_id, args)?;
                     Box::pin(self.exec_proc(&mut child)).await?
@@ -920,7 +1004,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
         };
         if let Some(d) = dest {
-            let v = ret.ok_or_else(|| VmErrorKind::Type(format!("`{name}` returned no value")))?;
+            let v = ret.ok_or_else(|| ErrorKind::Type(format!("`{name}` returned no value")))?;
             self.set(frame, d, v);
         }
         Ok(())
@@ -953,7 +1037,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 continue;
             }
             let param = *params.next().ok_or_else(|| {
-                VmErrorKind::Unsupported("more classical args than parameters".into())
+                ErrorKind::Unsupported("more classical args than parameters".into())
             })?;
             child.regs[param.0 as usize] = Some(self.eval(frame, arg)?);
         }
@@ -985,7 +1069,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             return Ok(zero);
         }
         let pulse = self.pulse.as_mut().ok_or_else(|| {
-            VmErrorKind::Pulse(format!(
+            ErrorKind::Pulse(format!(
                 "cal code executed without a pulse handler (reading `{}`)",
                 sym.name
             ))
@@ -994,7 +1078,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             SymbolKind::ExternPort => pulse.port(&sym.name)?.0,
             SymbolKind::ExternFrame => pulse.extern_frame(&sym.name)?.0,
             _ => {
-                return Err(VmErrorKind::Pulse(format!(
+                return Err(ErrorKind::Pulse(format!(
                     "`{}` read before initialization (its `cal` block has not run)",
                     sym.name
                 )));
@@ -1045,7 +1129,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         frame: &Frame,
     ) -> KindResult<Option<Value>> {
         let CalBody::OpenPulse(proc_id) = self.module.calibrations[idx as usize].body else {
-            return Err(VmErrorKind::Pulse(
+            return Err(ErrorKind::Pulse(
                 "opaque defcal bodies cannot execute".into(),
             ));
         };
@@ -1054,7 +1138,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         for (i, arg) in args.iter().enumerate() {
             let v = self.eval(frame, arg)?;
             let reg = proc.params.get(i).ok_or_else(|| {
-                VmErrorKind::Unsupported("more classical args than defcal parameters".into())
+                ErrorKind::Unsupported("more classical args than defcal parameters".into())
             })?;
             child.regs[reg.0 as usize] = Some(v);
         }
@@ -1072,9 +1156,8 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             .as_mut()
             .expect("caller checks a pulse handler is installed");
         let arg = |n: usize| -> KindResult<&Value> {
-            args.get(n).ok_or_else(|| {
-                VmErrorKind::Type(format!("intrinsic `{name}` missing argument {n}"))
-            })
+            args.get(n)
+                .ok_or_else(|| ErrorKind::Type(format!("intrinsic `{name}` missing argument {n}")))
         };
         // A durationof timing pass suppresses pulse emissions: plays
         // and captures advance their frame's clock by handler-reported
@@ -1140,7 +1223,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 Some(Value::bit(bit))
             }
             other => {
-                return Err(VmErrorKind::Pulse(format!(
+                return Err(ErrorKind::Pulse(format!(
                     "`{other}` is not an OpenPulse intrinsic"
                 )));
             }
@@ -1229,7 +1312,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 let proc = &self.module.procedures[proc_id.0 as usize];
                 for (k, v) in arg_vals.iter().enumerate() {
                     let reg = proc.params.get(k).ok_or_else(|| {
-                        VmErrorKind::Unsupported("gate has fewer params than arguments".into())
+                        ErrorKind::Unsupported("gate has fewer params than arguments".into())
                     })?;
                     child.regs[reg.0 as usize] = Some(v.clone());
                 }
@@ -1264,7 +1347,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             match name {
                 "U" => {
                     let [theta, phi, lambda] = args else {
-                        return Err(VmErrorKind::Type("`U` takes three parameters".into()));
+                        return Err(ErrorKind::Type("`U` takes three parameters".into()));
                     };
                     let theta = value_f64(&self.eval(frame, theta)?)?;
                     let phi = value_f64(&self.eval(frame, phi)?)?;
@@ -1284,12 +1367,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 }
                 "gphase" => {
                     let [gamma] = args else {
-                        return Err(VmErrorKind::Type("`gphase` takes one parameter".into()));
+                        return Err(ErrorKind::Type("`gphase` takes one parameter".into()));
                     };
                     let gamma = value_f64(&self.eval(frame, gamma)?)?;
                     self.emit(BuiltinGate::Gphase { gamma, mods: eff })
                 }
-                other => Err(VmErrorKind::UndefinedGate(other.to_string())),
+                other => Err(ErrorKind::UndefinedGate(other.to_string())),
             }
         }
     }
@@ -1348,7 +1431,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             Ok(())
         } else {
             if trace.iter().filter(|c| c.acts_on_a_qubit()).count() > 1 {
-                return Err(VmErrorKind::Unsupported(
+                return Err(ErrorKind::Unsupported(
                     "fractional power of a multi-qubit composite gate".into(),
                 ));
             }
@@ -1388,7 +1471,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 }
                 Subscript::Range { start, step, end } => {
                     let len = *sizes.get(k).ok_or_else(|| {
-                        VmErrorKind::Type(format!("`{ty}` has no dimension {k} to slice"))
+                        ErrorKind::Type(format!("`{ty}` has no dimension {k} to slice"))
                     })?;
                     let positions = self.range_positions(
                         frame,
@@ -1409,16 +1492,16 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         match op {
             Operand::Reg(r) => frame.regs[r.0 as usize]
                 .clone()
-                .ok_or(VmErrorKind::UnsetRegister(r.0)),
+                .ok_or(ErrorKind::UnsetRegister(r.0)),
             Operand::Const(c) => Ok(self.module.constants[c.0 as usize].clone()),
-            _ => Err(VmErrorKind::Type("expected a classical operand".into())),
+            _ => Err(ErrorKind::Type("expected a classical operand".into())),
         }
     }
 
     fn array_ty(&self, frame: &Frame, dest: Reg) -> KindResult<ArrayTy> {
         match self.module.procedures[frame.proc.0 as usize].register_types[dest.0 as usize] {
             ValueTy::Array(aty) => Ok(aty),
-            _ => Err(VmErrorKind::Type(
+            _ => Err(ErrorKind::Type(
                 "NewArray destination is not an array".into(),
             )),
         }
@@ -1436,9 +1519,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 positions
                     .iter()
                     .map(|&p| {
-                        bound.get(p as usize).copied().ok_or_else(|| {
-                            VmErrorKind::Type(format!("qubit index {p} out of range"))
-                        })
+                        bound
+                            .get(p as usize)
+                            .copied()
+                            .ok_or_else(|| ErrorKind::Type(format!("qubit index {p} out of range")))
                     })
                     .collect::<KindResult<Vec<_>>>()?
             }
@@ -1449,15 +1533,15 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     .get(i)
                     .copied()
                     .map(|q| vec![q])
-                    .ok_or_else(|| VmErrorKind::Type(format!("qubit index {i} out of range")))?
+                    .ok_or_else(|| ErrorKind::Type(format!("qubit index {i} out of range")))?
             }
-            _ => return Err(VmErrorKind::Type("expected a qubit operand".into())),
+            _ => return Err(ErrorKind::Type("expected a qubit operand".into())),
         };
 
         let num_qubits = self.module.qubits.num_qubits;
         for &q in &resolved {
             if q >= num_qubits {
-                return Err(VmErrorKind::QubitOutOfRange {
+                return Err(ErrorKind::QubitOutOfRange {
                     qubit: q as usize,
                     num_qubits: num_qubits as usize,
                 });
@@ -1475,7 +1559,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 .slots
                 .get(*s as usize)
                 .cloned()
-                .ok_or_else(|| VmErrorKind::Unsupported("unbound qubit slot".into())),
+                .ok_or_else(|| ErrorKind::Unsupported("unbound qubit slot".into())),
         }
     }
 
@@ -1514,7 +1598,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         };
         let step = bound(step)?.unwrap_or(1);
         if step == 0 {
-            return Err(VmErrorKind::Type("range step must be non-zero".into()));
+            return Err(ErrorKind::Type("range step must be non-zero".into()));
         }
         let (first, last) = if step > 0 { (0, len - 1) } else { (len - 1, 0) };
         let start = bound(start)?.unwrap_or(first);
@@ -1525,7 +1609,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         while (step > 0 && cur <= end) || (step < 0 && cur >= end) {
             let adj = if cur < 0 { cur + len } else { cur };
             if !(0..len).contains(&adj) {
-                return Err(VmErrorKind::Type(format!("index {cur} out of range")));
+                return Err(ErrorKind::Type(format!("index {cur} out of range")));
             }
             out.push(adj as usize);
             cur += step;
@@ -1587,7 +1671,7 @@ impl<F: Future + Unpin> Future for OnFreshStack<F> {
 fn bind_slot(frame: &mut Frame, slot: usize, qubits: Vec<u32>) -> KindResult<()> {
     let count = frame.slots.len();
     let bound = frame.slots.get_mut(slot).ok_or_else(|| {
-        VmErrorKind::Type(format!(
+        ErrorKind::Type(format!(
             "more qubit arguments than the callee's {count} qubit parameters"
         ))
     })?;
@@ -1654,7 +1738,7 @@ fn broadcast_len(operands: &[Vec<u32>]) -> KindResult<usize> {
         if n == 1 {
             n = qs.len();
         } else if n != qs.len() {
-            return Err(VmErrorKind::BroadcastMismatch(
+            return Err(ErrorKind::BroadcastMismatch(
                 operands.iter().map(|q| q.len()).collect(),
             ));
         }
@@ -1701,7 +1785,7 @@ fn hardware_operands(qubits: &[Operand]) -> Option<Vec<u32>> {
 fn scalar(v: &Value) -> KindResult<&Primitive> {
     match v {
         Value::Scalar(s) => Ok(s.value()),
-        _ => Err(VmErrorKind::Type("expected a scalar value".into())),
+        _ => Err(ErrorKind::Type("expected a scalar value".into())),
     }
 }
 
@@ -1712,20 +1796,20 @@ fn value_bit(v: &Value) -> KindResult<bool> {
 fn value_f64(v: &Value) -> KindResult<f64> {
     scalar(v)?
         .as_float(FloatWidth::F64)
-        .ok_or_else(|| VmErrorKind::Type("expected a float-like value".into()))
+        .ok_or_else(|| ErrorKind::Type("expected a float-like value".into()))
 }
 
 fn value_i128(v: &Value) -> KindResult<i128> {
     scalar(v)?
         .as_int(iw(128))
-        .ok_or_else(|| VmErrorKind::Type("expected an integer value".into()))
+        .ok_or_else(|| ErrorKind::Type("expected an integer value".into()))
 }
 
 fn value_usize(v: &Value) -> KindResult<usize> {
     scalar(v)?
         .as_uint(iw(64))
         .map(|u| u as usize)
-        .ok_or_else(|| VmErrorKind::Type("expected an unsigned integer value".into()))
+        .ok_or_else(|| ErrorKind::Type("expected an unsigned integer value".into()))
 }
 
 fn value_isize(v: &Value) -> KindResult<isize> {
@@ -1736,19 +1820,19 @@ fn value_u64(v: &Value) -> KindResult<u64> {
     scalar(v)?
         .as_uint(iw(64))
         .map(|u| u as u64)
-        .ok_or_else(|| VmErrorKind::Type("expected an unsigned integer value".into()))
+        .ok_or_else(|| ErrorKind::Type("expected an unsigned integer value".into()))
 }
 
 fn value_duration(v: &Value) -> KindResult<Duration> {
     scalar(v)?
         .as_duration()
-        .ok_or_else(|| VmErrorKind::Type("expected a duration value".into()))
+        .ok_or_else(|| ErrorKind::Type("expected a duration value".into()))
 }
 
 fn value_complex(v: &Value) -> KindResult<Complex64> {
     scalar(v)?
         .as_complex(FloatWidth::F64)
-        .ok_or_else(|| VmErrorKind::Type("expected a complex value".into()))
+        .ok_or_else(|| ErrorKind::Type("expected a complex value".into()))
 }
 
 /// Wrap an opaque pulse handle for storage in a register.

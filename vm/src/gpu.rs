@@ -14,7 +14,7 @@
 //! re-uploads — gates (the hot path) stay on the GPU, while a measurement
 //! costs one readback plus one upload.
 //!
-//! All device operations are `async`: [`GpuSim::try_zeroed`] and the buffer
+//! All device operations are `async`: [`GpuSim::new`] and the buffer
 //! readback `.await` rather than block, so the backend works on the browser
 //! main thread (where blocking is illegal) as well as natively (where a
 //! caller drives it with any `block_on`, e.g. `pollster`). The only
@@ -30,7 +30,7 @@ use num_complex::Complex;
 use wgpu::util::DeviceExt;
 
 use crate::backend::{GateModifiers, QuantumBackend};
-use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
+use crate::error::{Error, ErrorKind, Result};
 use crate::measure;
 use crate::rng::Rng;
 
@@ -114,17 +114,20 @@ pub struct GpuSim {
 }
 
 impl GpuSim {
-    /// A fresh simulator with `num_qubits` qubits in |0…0⟩ and an explicit
-    /// measurement-RNG seed. Errors with
-    /// [`VmErrorKind::BackendUnavailable`] if no adapter/device is
-    /// available, or [`VmErrorKind::TooManyQubits`] if the state vector
-    /// doesn't fit in one of the device's buffers. Async: `.await` it
-    /// (native callers can block on it, e.g. with `pollster`; the browser
-    /// awaits it directly).
-    pub async fn try_zeroed(num_qubits: u32, seed: u64) -> VmResult<Self> {
-        let unavailable = |why: String| VmError::new(VmErrorKind::BackendUnavailable(why));
+    /// A simulator of `num_qubits` qubits in |0…0⟩ on the default GPU
+    /// adapter, measuring with the [`DEFAULT_SEED`](crate::DEFAULT_SEED).
+    /// Async, because acquiring a device is: native callers can block on it
+    /// (e.g. with `pollster`), the browser awaits it.
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::BackendUnavailable`] if there is no usable adapter or
+    /// device, and [`ErrorKind::TooManyQubits`] if the state vector doesn't
+    /// fit in one of the device's buffers (or needs more than 32 qubits).
+    pub async fn new(num_qubits: u32) -> Result<Self> {
+        let unavailable = |why: String| Error::new(ErrorKind::BackendUnavailable(why));
         let too_many = || {
-            VmError::new(VmErrorKind::TooManyQubits {
+            Error::new(ErrorKind::TooManyQubits {
                 requested: num_qubits,
             })
         };
@@ -247,8 +250,14 @@ impl GpuSim {
             bind_group,
             len,
             global_phase: 0.0,
-            rng: Rng::new(seed),
+            rng: Rng::new(crate::DEFAULT_SEED),
         })
+    }
+
+    /// Seed the measurement RNG: a given seed reproduces a run.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.rng = Rng::new(seed);
+        self
     }
 
     /// Dispatch one gate: write the uniform, encode a compute pass, submit.
@@ -350,6 +359,14 @@ impl GpuSim {
     }
 }
 
+impl std::fmt::Debug for GpuSim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuSim")
+            .field("num_qubits", &self.len.trailing_zeros())
+            .finish_non_exhaustive()
+    }
+}
+
 #[async_trait(?Send)]
 impl QuantumBackend for GpuSim {
     fn num_qubits(&self) -> u32 {
@@ -363,7 +380,7 @@ impl QuantumBackend for GpuSim {
         phi: f64,
         lambda: f64,
         m: &GateModifiers,
-    ) -> KindResult<()> {
+    ) -> Result<(), ErrorKind> {
         let unitary = Unitary::<f32>::new(theta as f32, phi as f32, lambda as f32);
         let mut g = Gate::new(unitary);
         if m.power != 1.0 {
@@ -374,16 +391,16 @@ impl QuantumBackend for GpuSim {
         Ok(())
     }
 
-    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+    fn gphase(&mut self, gamma: f64) -> Result<(), ErrorKind> {
         self.global_phase += gamma;
         Ok(())
     }
 
-    async fn measure(&mut self, qubit: u32) -> bool {
-        self.measure_all(&[qubit]).await[0]
+    async fn measure(&mut self, qubit: u32) -> Result<bool, ErrorKind> {
+        Ok(self.measure_all(&[qubit]).await?[0])
     }
 
-    async fn measure_all(&mut self, qubits: &[u32]) -> Vec<bool> {
+    async fn measure_all(&mut self, qubits: &[u32]) -> Result<Vec<bool>, ErrorKind> {
         // One readback for the whole register: sample and collapse each qubit
         // on the host copy in turn (equivalent to sequential `measure`), then
         // one upload. Turns a per-qubit GPU round-trip into a single pair.
@@ -393,18 +410,19 @@ impl QuantumBackend for GpuSim {
             .map(|&q| measure::measure(&mut amps, q, &mut self.rng))
             .collect();
         self.write_state(&amps);
-        outcomes
+        Ok(outcomes)
     }
 
-    async fn reset(&mut self, qubit: u32) {
-        if self.measure(qubit).await {
+    async fn reset(&mut self, qubit: u32) -> Result<(), ErrorKind> {
+        if self.measure(qubit).await? {
             // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
             let x = Unitary::<f32>::new(std::f32::consts::PI, 0.0, std::f32::consts::PI).matrix();
             self.run_gate(&x, qubit, &[], &[]);
         }
+        Ok(())
     }
 
-    fn reset_state(&mut self) -> KindResult<()> {
+    fn reset_state(&mut self) -> Result<(), ErrorKind> {
         // Re-upload |0…0⟩ to the resident buffer, reusing the device/pipeline
         // (no new adapter).
         let mut init = vec![0f32; self.len * 2];
@@ -452,11 +470,11 @@ mod tests {
 
     /// A simulator, or `None` (with a note) when no GPU adapter is available
     /// (e.g. headless CI), so tests skip gracefully instead of failing.
-    fn gpu(num_qubits: u32) -> Option<VmResult<GpuSim>> {
+    fn gpu(num_qubits: u32) -> Option<Result<GpuSim>> {
         let _turn = crate::spec::gpu_turn();
-        match pollster::block_on(GpuSim::try_zeroed(num_qubits, 0)) {
-            Err(VmError {
-                kind: VmErrorKind::BackendUnavailable(why),
+        match pollster::block_on(GpuSim::new(num_qubits)) {
+            Err(Error {
+                kind: ErrorKind::BackendUnavailable(why),
                 ..
             }) => {
                 eprintln!("skipping gpu test: {why}");
@@ -473,7 +491,9 @@ mod tests {
         pollster::block_on(async {
             let Some(gpu) = gpu(5) else { return };
             let mut gpu = gpu.unwrap();
-            let mut cpu = StateVectorSim::<f64>::try_zeroed(5, 0).unwrap();
+            let mut cpu = StateVectorSim::<f64>::new(5)
+                .map(|s| s.with_seed(0))
+                .unwrap();
 
             gates(&mut gpu);
             gates(&mut cpu);
@@ -496,7 +516,7 @@ mod tests {
                 let Some(gpu) = gpu(n) else { return };
                 assert!(matches!(
                     gpu.err().map(|e| e.kind),
-                    Some(VmErrorKind::TooManyQubits { requested }) if requested == n
+                    Some(ErrorKind::TooManyQubits { requested }) if requested == n
                 ));
             }
         })

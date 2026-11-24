@@ -8,10 +8,7 @@ use clap::{Parser, Subcommand};
 use oqi_compile::classical::ValueTy;
 use oqi_compile::{Compiler, DefaultIncludeResolver, IncludeResolver, Program, TableTimings};
 use oqi_format::Config;
-use oqi_vm::{
-    BackendSpec, DEFAULT_SEED, HostValue, MpsSim, NoExterns, Precision, QuantumBackend, SumPolicy,
-    Vm, VmError, VmErrorKind,
-};
+use oqi_vm::{BackendSpec, DEFAULT_SEED, HostValue, Precision, Runner, SumPolicy};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 #[derive(Parser)]
@@ -205,7 +202,7 @@ struct RunArgs {
 
     /// Maximum bond dimension of the mps backend: past it, the state is
     /// truncated to its largest singular values and renormalized
-    #[arg(long, default_value_t = MpsSim::DEFAULT_MAX_BOND)]
+    #[arg(long, default_value_t = BackendSpec::default().max_bond)]
     max_bond: usize,
 
     /// Simulator RNG seed; a given seed reproduces a run
@@ -373,11 +370,13 @@ async fn run(args: &RunArgs) -> ExitCode {
         ExitCode::FAILURE
     };
     // A runtime error, plus how to act on it from this command line.
-    let fail_run = |e: &VmError| {
+    let fail_run = |e: &oqi_vm::Error| {
         let code = fail(e);
         match e.kind {
-            VmErrorKind::MissingInput(_) => eprintln!("hint: supply it with `--input NAME=VALUE`"),
-            VmErrorKind::RankOverflow { .. } => {
+            oqi_vm::ErrorKind::MissingInput(_) => {
+                eprintln!("hint: supply it with `--input NAME=VALUE`")
+            }
+            oqi_vm::ErrorKind::RankOverflow { .. } => {
                 eprintln!("hint: raise the term budget with `--max-rank`")
             }
             _ => {}
@@ -406,42 +405,34 @@ async fn run(args: &RunArgs) -> ExitCode {
         }
     };
 
-    let seed = args.seed.unwrap_or(DEFAULT_SEED);
-    let spec = BackendSpec {
-        precision: args.precision.unwrap_or_default(),
-        seed,
-        sum_policy: SumPolicy {
-            max_rank: args.max_rank,
-            ..args.backend.sum_policy
-        },
-        max_bond: args.max_bond,
-        ..args.backend
+    let mut spec = args.backend;
+    spec.precision = args.precision.unwrap_or_default();
+    spec.sum_policy.max_rank = args.max_rank;
+    spec.max_bond = args.max_bond;
+    let runner = Runner::new(&module)
+        .backend(spec)
+        .seed(args.seed.unwrap_or(DEFAULT_SEED))
+        .inputs(inputs);
+    // Say when the backend ran at another precision than the one asked for.
+    let note_precision = |built: &BackendSpec| {
+        if let Some(asked) = args.precision
+            && asked != built.precision
+        {
+            eprintln!(
+                "note: the {} backend runs at {}; --precision {asked} ignored",
+                built.name(),
+                built.precision
+            );
+        }
     };
-    let (sim, built) = match spec.build(module.qubits.num_qubits).await {
-        Ok(b) => b,
-        Err(e) => return fail(&e),
-    };
-    if let Some(asked) = args.precision
-        && asked != built.precision
-    {
-        eprintln!(
-            "note: the {} backend runs at {}; --precision {asked} ignored",
-            built.name(),
-            built.precision
-        );
-    }
-    let mut vm = Vm::new(&module, sim, NoExterns);
 
     if let Some(shots) = args.shots {
-        let results = match oqi_vm::coerce_inputs(&module, &inputs) {
-            Ok(inputs) => vm.sample(inputs, shots, seed).await,
-            Err(e) => Err(e),
-        };
-        return match results {
-            Ok(results) => {
-                for histogram in oqi_vm::histograms(&module, &results) {
-                    println!("{}:", histogram.name);
-                    for (label, count) in &histogram.counts {
+        return match runner.sample(shots).await {
+            Ok(samples) => {
+                note_precision(samples.backend());
+                for histogram in samples.histograms() {
+                    println!("{}:", histogram.name());
+                    for (label, count) in histogram.counts() {
                         println!("  {label}: {count}");
                     }
                 }
@@ -451,22 +442,21 @@ async fn run(args: &RunArgs) -> ExitCode {
         };
     }
 
-    match vm.run_with_named_inputs(&inputs).await {
+    match runner.statevector(args.state).run().await {
         Ok(result) => {
-            for (qubit, bit) in &result.measurements {
+            if let Some(built) = result.backend() {
+                note_precision(built);
+            }
+            for (qubit, bit) in result.measurements() {
                 println!("q[{qubit}] = {}", if *bit { 1 } else { 0 });
             }
-            for (sym, value) in &result.outputs {
-                println!("{} = {value}", module.symbol(*sym).name);
+            for (name, value) in result.outputs() {
+                println!("{name} = {value}");
             }
-            if args.state {
-                let width = module.qubits.num_qubits as usize;
-                if let Some(amps) = vm.backend().amplitudes().await {
-                    for (i, amp) in amps.iter().enumerate() {
-                        if amp.norm() > 1e-12 {
-                            println!("|{i:0width$b}> = {amp}");
-                        }
-                    }
+            let width = module.num_qubits() as usize;
+            for (i, amp) in result.statevector().unwrap_or_default().iter().enumerate() {
+                if amp.norm() > 1e-12 {
+                    println!("|{i:0width$b}> = {amp}");
                 }
             }
             ExitCode::SUCCESS

@@ -6,8 +6,8 @@ use oqi_classical::{Value, iw};
 use oqi_compile::SymbolId;
 use oqi_compile::bytecode::{Program, is_sample_safe};
 use oqi_vm::{
-    AutoSim, BackendSpec, FnRegistry, Histogram, HostValue, MpsSim, NoExterns, QuantumBackend,
-    StateVectorSim, SumPolicy, Vm, VmError, VmErrorKind, histograms,
+    AutoSim, BackendSpec, Error, ErrorKind, FnRegistry, Histogram, HostValue, MpsSim, NoExterns,
+    QuantumBackend, RunResult, Runner, StateVectorSim, SumPolicy, Vm,
 };
 
 /// Drive an async VM call to completion (the VM is async; tests are sync).
@@ -55,9 +55,11 @@ fn build(src: &str) -> Program {
 /// Run with the CPU simulator and no externs; return the measurement log.
 fn run_measurements(src: &str) -> Vec<(u32, bool)> {
     let module = build(src);
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(0xABCD))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
-    block_on(vm.run()).expect("run").measurements
+    block_on(vm.run()).expect("run").measurements().to_vec()
 }
 
 const TOL: f64 = 1e-9;
@@ -98,7 +100,7 @@ fn auto_backend_runs_clifford_with_control_flow() {
         AutoSim::new(module.qubits.num_qubits).unwrap(),
         NoExterns,
     );
-    let m = block_on(vm.run()).expect("run").measurements;
+    let m = block_on(vm.run()).expect("run").measurements().to_vec();
     assert_eq!(m, vec![(0, true)]);
 }
 
@@ -119,7 +121,7 @@ fn auto_backend_scales_to_200_qubits() {
         AutoSim::new(module.qubits.num_qubits).unwrap(),
         NoExterns,
     );
-    let m = block_on(vm.run()).expect("run").measurements;
+    let m = block_on(vm.run()).expect("run").measurements().to_vec();
     assert_eq!(m.len(), 200);
     let first = m[0].1;
     assert!(
@@ -149,7 +151,7 @@ fn sum_tier_scales_past_dense_limits() {
         AutoSim::new(module.qubits.num_qubits).unwrap(),
         NoExterns,
     );
-    let m = block_on(vm.run()).expect("run").measurements;
+    let m = block_on(vm.run()).expect("run").measurements().to_vec();
     assert_eq!(m, vec![(0, true), (99, true)]);
 }
 
@@ -173,7 +175,7 @@ fn sum_tier_toffoli_at_scale() {
         AutoSim::new(module.qubits.num_qubits).unwrap(),
         NoExterns,
     );
-    let m = block_on(vm.run()).expect("run").measurements;
+    let m = block_on(vm.run()).expect("run").measurements().to_vec();
     assert_eq!(m, vec![(0, true), (1, true), (2, true)]);
 }
 
@@ -194,15 +196,16 @@ fn sum_tier_rank_overflow_is_a_spanned_error() {
         bit c = measure q[0];
     "#;
     let module = build(src);
-    let policy = SumPolicy {
-        max_rank: 8,
-        dense_escape: true,
-    };
-    let sim = AutoSim::with_policy(module.qubits.num_qubits, 0xABCD, policy).unwrap();
+    let mut policy = SumPolicy::default();
+    policy.max_rank = 8;
+    policy.dense_escape = true;
+    let sim = AutoSim::new(module.qubits.num_qubits)
+        .map(|a| a.with_seed(0xABCD).with_policy(policy))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     match block_on(vm.run()) {
-        Err(VmError {
-            kind: VmErrorKind::RankOverflow { max_rank: 8, .. },
+        Err(Error {
+            kind: ErrorKind::RankOverflow { max_rank: 8, .. },
             span,
         }) => assert!(span.is_some(), "RankOverflow should carry a span"),
         other => panic!("expected RankOverflow, got {other:?}"),
@@ -220,14 +223,24 @@ fn auto_backend_matches_scalar_on_fixtures() {
         include_str!("../../fixtures/qasm/cphase.qasm"),
     ] {
         let module = build(src);
-        let scalar = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap();
+        let scalar = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+            .map(|s| s.with_seed(0xABCD))
+            .unwrap();
         let mut vm = Vm::new(&module, scalar, NoExterns);
-        let expect = block_on(vm.run()).expect("scalar run").measurements;
+        let expect = block_on(vm.run())
+            .expect("scalar run")
+            .measurements()
+            .to_vec();
 
         let module = build(src);
-        let auto = AutoSim::with_seed(module.qubits.num_qubits, 0xABCD).unwrap();
+        let auto = AutoSim::new(module.qubits.num_qubits)
+            .map(|a| a.with_seed(0xABCD))
+            .unwrap();
         let mut vm = Vm::new(&module, auto, NoExterns);
-        let got = block_on(vm.run()).expect("auto run").measurements;
+        let got = block_on(vm.run())
+            .expect("auto run")
+            .measurements()
+            .to_vec();
         assert_eq!(got, expect);
     }
 }
@@ -242,13 +255,18 @@ fn mps_backend_matches_scalar_on_fixtures() {
     ] {
         let module = build(src);
         let n = module.qubits.num_qubits;
-        let scalar = StateVectorSim::<f64>::try_zeroed(n, 0xABCD).unwrap();
+        let scalar = StateVectorSim::<f64>::new(n)
+            .map(|s| s.with_seed(0xABCD))
+            .unwrap();
         let mut vm = Vm::new(&module, scalar, NoExterns);
-        let expect = block_on(vm.run()).expect("scalar run").measurements;
+        let expect = block_on(vm.run())
+            .expect("scalar run")
+            .measurements()
+            .to_vec();
 
-        let mps = MpsSim::new(n, 0xABCD, MpsSim::DEFAULT_MAX_BOND).unwrap();
+        let mps = MpsSim::new(n).unwrap().with_seed(0xABCD);
         let mut vm = Vm::new(&module, mps, NoExterns);
-        let got = block_on(vm.run()).expect("mps run").measurements;
+        let got = block_on(vm.run()).expect("mps run").measurements().to_vec();
         assert_eq!(got, expect);
     }
 }
@@ -264,14 +282,16 @@ fn mps_samples_from_one_run() {
            h q[0]; h q[1]; h q[2]; cx q[0], q[1];
            bit[3] c = measure q;"#,
     );
-    let histogram = |backend_seed| {
+    let shots = |backend_seed| {
         let n = module.qubits.num_qubits;
-        let sim = MpsSim::new(n, backend_seed, MpsSim::DEFAULT_MAX_BOND).unwrap();
-        let mut vm = Vm::new(&module, sim, NoExterns);
-        let results = block_on(vm.sample(HashMap::new(), 300, 9)).expect("sample");
-        histograms(&module, &results)
+        let sim = MpsSim::new(n).unwrap().with_seed(backend_seed);
+        let mut vm = Vm::new(&module, sim, NoExterns).with_seed(9);
+        let mut outputs = Vec::new();
+        block_on(vm.sample(HashMap::new(), 300, |r| outputs.push(shot_outputs(&r))))
+            .expect("sample");
+        outputs
     };
-    assert_eq!(histogram(1), histogram(2));
+    assert_eq!(shots(1), shots(2));
 }
 
 #[test]
@@ -295,7 +315,7 @@ fn mps_backend_scales_to_200_qubits() {
     }
     src.push_str("bit[200] c = measure q;\n");
     let h = sample_counts(&src, "mps", 4, 1);
-    assert_eq!(h[0].counts, [("0".repeat(200), 4)]);
+    assert_eq!(h[0].counts(), [("0".repeat(200), 4)]);
 
     let mut src = format!("include \"stdgates.inc\";\nqubit[{n}] q;\nh q[0];\n");
     for i in 0..n - 1 {
@@ -303,7 +323,7 @@ fn mps_backend_scales_to_200_qubits() {
     }
     src.push_str("bit[200] c = measure q;\n");
     let h = sample_counts(&src, "mps", 2000, 1);
-    let labels: Vec<&str> = h[0].counts.iter().map(|(l, _)| l.as_str()).collect();
+    let labels: Vec<&str> = h[0].counts().iter().map(|(l, _)| l.as_str()).collect();
     assert_eq!(labels, ["0".repeat(200), "1".repeat(200)]);
 }
 
@@ -331,7 +351,9 @@ fn bell_state_amplitudes() {
             cx q[0], q[1];
         "#,
     );
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     block_on(vm.run()).expect("run");
     let amps = block_on(vm.backend().amplitudes()).unwrap();
@@ -416,10 +438,12 @@ fn extern_function_result_is_used() {
         };
         Ok(Some(Value::int(n + 1, iw(32))))
     });
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, registry);
     let result = block_on(vm.run()).expect("run");
-    assert_eq!(result.measurements, vec![(0, true)]);
+    assert_eq!(result.measurements().to_vec(), vec![(0, true)]);
 }
 
 #[test]
@@ -659,11 +683,13 @@ fn mismatched_register_broadcast_is_rejected() {
             cx a, b;
         "#,
     );
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     match block_on(vm.run()) {
-        Err(VmError {
-            kind: VmErrorKind::BroadcastMismatch(lengths),
+        Err(Error {
+            kind: ErrorKind::BroadcastMismatch(lengths),
             ..
         }) => assert_eq!(lengths, vec![2, 3]),
         other => panic!("expected BroadcastMismatch, got {other:?}"),
@@ -681,7 +707,7 @@ fn final_state(src: &str) -> Vec<(f64, f64)> {
 fn amplitudes_on(src: &str, backend: &str) -> Option<Vec<(f64, f64)>> {
     let module = build(src);
     let spec: BackendSpec = backend.parse().unwrap();
-    let (sim, _) = block_on(spec.build(module.qubits.num_qubits)).ok()?;
+    let (sim, _) = block_on(spec.build(module.qubits.num_qubits, SEED)).ok()?;
     let mut vm = Vm::new(&module, sim, NoExterns);
     block_on(vm.run()).expect("run");
     let amps = block_on(vm.backend().amplitudes()).expect("addressable state");
@@ -801,11 +827,13 @@ fn fractional_pow_of_multi_qubit_composite_is_rejected() {
             pow(0.5) @ swap q[0], q[1];
         "#,
     );
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     match block_on(vm.run()) {
-        Err(VmError {
-            kind: VmErrorKind::Unsupported(_),
+        Err(Error {
+            kind: ErrorKind::Unsupported(_),
             ..
         }) => {}
         other => panic!("expected Unsupported, got {other:?}"),
@@ -1122,26 +1150,31 @@ fn oversized_qubit_count_is_a_graceful_error() {
     // must surface a TooManyQubits error via the fallible allocation, not
     // abort the process. 50 qubits is 2^54 bytes — unallocatable anywhere.
     assert!(matches!(
-        StateVectorSim::<f64>::try_zeroed(50, SEED),
-        Err(VmError {
-            kind: VmErrorKind::TooManyQubits { .. },
+        StateVectorSim::<f64>::new(50).map(|s| s.with_seed(SEED)),
+        Err(Error {
+            kind: ErrorKind::TooManyQubits { .. },
             ..
         })
     ));
     // A small register allocates fine.
-    assert!(StateVectorSim::<f64>::try_zeroed(1, SEED).is_ok());
+    assert!(
+        StateVectorSim::<f64>::new(1)
+            .map(|s| s.with_seed(SEED))
+            .is_ok()
+    );
 }
 
 /// Run and return named outputs as `(name, displayed value)`, sorted by name.
 fn run_outputs(src: &str) -> Vec<(String, String)> {
     let module = build(src);
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(0xABCD))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let result = block_on(vm.run()).expect("run");
     let mut out: Vec<(String, String)> = result
-        .outputs
-        .iter()
-        .map(|(sym, v)| (module.symbol(*sym).name.clone(), v.to_string()))
+        .outputs()
+        .map(|(name, v)| (name.to_string(), v.to_string()))
         .collect();
     out.sort();
     out
@@ -1215,22 +1248,26 @@ fn input_value_drives_a_branch() {
     let module = build(INPUT_BRANCH_SRC);
     let n = sym_id(&module, "n");
     for (val, expect) in [(1i128, true), (0, false)] {
-        let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap();
+        let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+            .map(|s| s.with_seed(0xABCD))
+            .unwrap();
         let mut vm = Vm::new(&module, sim, NoExterns);
         let inputs = HashMap::from([(n, Value::int(val, iw(32)))]);
         let r = block_on(vm.run_with_inputs(inputs)).expect("run");
-        assert_eq!(r.measurements, vec![(0, expect)], "n = {val}");
+        assert_eq!(r.measurements().to_vec(), vec![(0, expect)], "n = {val}");
     }
 }
 
 #[test]
 fn missing_input_is_rejected() {
     let module = build(INPUT_BRANCH_SRC);
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     match block_on(vm.run_with_inputs(HashMap::new())) {
-        Err(VmError {
-            kind: VmErrorKind::MissingInput(_),
+        Err(Error {
+            kind: ErrorKind::MissingInput(_),
             ..
         }) => {}
         other => panic!("expected MissingInput, got {other:?}"),
@@ -1244,7 +1281,9 @@ fn physical_qubit_program_sizes_its_register() {
     // with an out-of-range error.
     let module = build("OPENQASM 3.0;\nU(0, 0, 0) $0;\n");
     assert_eq!(module.qubits.num_qubits, 1);
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     block_on(vm.run()).expect("physical-qubit program should run");
 }
@@ -1254,12 +1293,14 @@ fn value_for_non_input_symbol_is_rejected() {
     let module = build(INPUT_BRANCH_SRC);
     let n = sym_id(&module, "n");
     let q = sym_id(&module, "q");
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let inputs = HashMap::from([(n, Value::int(1, iw(32))), (q, Value::int(0, iw(32)))]);
     match block_on(vm.run_with_inputs(inputs)) {
-        Err(VmError {
-            kind: VmErrorKind::UnknownInput(_),
+        Err(Error {
+            kind: ErrorKind::UnknownInput(_),
             ..
         }) => {}
         other => panic!("expected UnknownInput, got {other:?}"),
@@ -1326,17 +1367,14 @@ fn durationof_does_not_execute_gates() {
             bit c = measure q;
         "#,
     );
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(0xABCD))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let result = block_on(vm.run()).expect("run");
     // The X inside durationof never applied: q measures 0.
-    assert_eq!(result.measurements, vec![(0, false)]);
-    let d = result
-        .outputs
-        .iter()
-        .find(|(sym, _)| module.symbol(*sym).name == "d")
-        .map(|(_, v)| v.to_string())
-        .expect("output d");
+    assert_eq!(result.measurements().to_vec(), vec![(0, false)]);
+    let d = result.output("d").map(|v| v.to_string()).expect("output d");
     assert_eq!(d, "0ns");
 }
 
@@ -1415,10 +1453,12 @@ fn named_inputs_are_coerced_to_their_declared_types() {
         HostValue::Float(1.0),
         HostValue::Text("1".into()),
     ] {
-        let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+        let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+            .map(|s| s.with_seed(SEED))
+            .unwrap();
         let mut vm = Vm::new(&module, sim, NoExterns);
         let r = block_on(vm.run_with_named_inputs(&named(&[("n", one)]))).expect("run");
-        assert_eq!(r.measurements, vec![(0, true)]);
+        assert_eq!(r.measurements().to_vec(), vec![(0, true)]);
     }
 }
 
@@ -1434,7 +1474,9 @@ fn complex_and_duration_inputs_reach_the_program() {
     );
     let mut vm = Vm::new(
         &module,
-        StateVectorSim::<f64>::try_zeroed(0, SEED).unwrap(),
+        StateVectorSim::<f64>::new(0)
+            .map(|s| s.with_seed(SEED))
+            .unwrap(),
         NoExterns,
     );
     let inputs = named(&[
@@ -1442,7 +1484,7 @@ fn complex_and_duration_inputs_reach_the_program() {
         ("d", HostValue::Text("100ns".into())),
     ]);
     let r = block_on(vm.run_with_named_inputs(&inputs)).expect("run");
-    let outputs: Vec<String> = r.outputs.iter().map(|(_, v)| v.to_string()).collect();
+    let outputs: Vec<String> = r.outputs().map(|(_, v)| v.to_string()).collect();
     assert_eq!(
         outputs,
         [
@@ -1456,7 +1498,9 @@ fn complex_and_duration_inputs_reach_the_program() {
 fn named_input_errors_are_deterministic() {
     let module = build(INPUT_BRANCH_SRC);
     let run = |inputs: &[(&str, HostValue)]| {
-        let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+        let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+            .map(|s| s.with_seed(SEED))
+            .unwrap();
         let mut vm = Vm::new(&module, sim, NoExterns);
         block_on(vm.run_with_named_inputs(&named(inputs))).unwrap_err()
     };
@@ -1467,11 +1511,11 @@ fn named_input_errors_are_deterministic() {
         ("zzz", HostValue::Int(0)),
         ("q", HostValue::Int(0)),
     ]);
-    assert!(matches!(&err.kind, VmErrorKind::UnknownInput(name) if name == "zzz"));
+    assert!(matches!(&err.kind, ErrorKind::UnknownInput(name) if name == "zzz"));
     assert_eq!(err.to_string(), "no input named `zzz`");
     // … or a value that doesn't fit the declared type.
     let err = run(&[("n", HostValue::Bool(true))]);
-    assert!(matches!(&err.kind, VmErrorKind::Type(msg) if msg.contains("input `n`")));
+    assert!(matches!(&err.kind, ErrorKind::Type(msg) if msg.contains("input `n`")));
 }
 
 #[test]
@@ -1489,12 +1533,14 @@ fn leftover_symbol_inputs_report_the_first_declared() {
     let n = sym_id(&module, "n");
     let extra = ["c", "b", "a"].map(|name| sym_id(&module, name));
     for _ in 0..8 {
-        let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+        let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+            .map(|s| s.with_seed(SEED))
+            .unwrap();
         let mut vm = Vm::new(&module, sim, NoExterns);
         let mut inputs = HashMap::from([(n, Value::int(1, iw(32)))]);
         inputs.extend(extra.map(|sym| (sym, Value::int(0, iw(32)))));
         let err = block_on(vm.run_with_inputs(inputs)).unwrap_err();
-        assert!(matches!(&err.kind, VmErrorKind::UnknownInput(name) if name == "a"));
+        assert!(matches!(&err.kind, ErrorKind::UnknownInput(name) if name == "a"));
     }
 }
 
@@ -1521,13 +1567,19 @@ const FEEDBACK_SRC: &str = r#"
 /// Sample `src` on the named backend and tally its outputs.
 fn sample_counts(src: &str, backend: &str, shots: u32, seed: u64) -> Vec<Histogram> {
     let module = build(src);
-    let mut spec: BackendSpec = backend.parse().unwrap();
-    spec.seed = seed;
-    let (sim, _) = block_on(spec.build(module.qubits.num_qubits)).unwrap();
-    let mut vm = Vm::new(&module, sim, NoExterns);
-    let results = block_on(vm.sample(HashMap::new(), shots, seed)).expect("sample");
-    assert_eq!(results.len(), shots as usize);
-    histograms(&module, &results)
+    let spec: BackendSpec = backend.parse().unwrap();
+    let runner = Runner::new(&module).backend(spec).seed(seed);
+    let samples = block_on(runner.sample(shots)).expect("sample");
+    assert_eq!(samples.shots(), shots);
+    samples.histograms().to_vec()
+}
+
+/// One shot's outputs, as `name = value` text.
+fn shot_outputs(result: &RunResult) -> Vec<String> {
+    let outputs = result.outputs();
+    outputs
+        .map(|(name, value)| format!("{name} = {value}"))
+        .collect()
 }
 
 #[test]
@@ -1538,10 +1590,10 @@ fn sampling_a_bell_state_yields_only_correlated_outcomes() {
     for backend in ["scalar", "simd", "auto", "mps"] {
         let h = sample_counts(BELL_SRC, backend, 400, 11);
         assert_eq!(h.len(), 1, "{backend}");
-        assert_eq!(h[0].name, "c");
-        let labels: Vec<&str> = h[0].counts.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(h[0].name(), "c");
+        let labels: Vec<&str> = h[0].counts().iter().map(|(l, _)| l.as_str()).collect();
         assert_eq!(labels, ["00", "11"], "{backend}");
-        assert_eq!(h[0].counts.iter().map(|(_, n)| n).sum::<u32>(), 400);
+        assert_eq!(h[0].counts().iter().map(|(_, n)| n).sum::<u32>(), 400);
     }
 }
 
@@ -1558,7 +1610,7 @@ fn sampling_is_reproducible_per_seed() {
 fn sampling_with_feedback_reruns_the_circuit_each_shot() {
     for backend in ["scalar", "simd", "auto", "mps"] {
         let h = sample_counts(FEEDBACK_SRC, backend, 200, 5);
-        let counts = |name: &str| &h.iter().find(|h| h.name == name).unwrap().counts;
+        let counts = |name: &str| h.iter().find(|h| h.name() == name).unwrap().counts();
         assert_eq!(counts("a").len(), 2, "{backend}: H yields both outcomes");
         assert_eq!(counts("a"), counts("b"), "{backend}: b mirrors a");
     }
@@ -1580,12 +1632,10 @@ fn histograms_sort_numbers_numerically() {
             if (c[3]) { n += 8; }
         "#,
     );
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
-    let mut vm = Vm::new(&module, sim, NoExterns);
-    let results = block_on(vm.sample(HashMap::new(), 600, 3)).unwrap();
-    let h = histograms(&module, &results);
+    let samples = block_on(Runner::new(&module).seed(3).sample(600)).unwrap();
+    let h = samples.histograms();
     let values: Vec<i32> = h[0]
-        .counts
+        .counts()
         .iter()
         .map(|(l, _)| l.parse().unwrap())
         .collect();
@@ -1615,7 +1665,7 @@ fn sampling_on_the_sum_tier_starts_each_shot_from_a_fresh_state() {
     "#;
     let h = sample_counts(src, "sum", 200, 4);
     for histogram in &h {
-        assert_eq!(histogram.counts.iter().map(|(_, n)| n).sum::<u32>(), 200);
+        assert_eq!(histogram.counts().iter().map(|(_, n)| n).sum::<u32>(), 200);
     }
 }
 
@@ -1687,8 +1737,8 @@ fn measures_a_register_wider_than_128_qubits() {
         NoExterns,
     );
     let result = block_on(vm.run()).expect("run");
-    assert_eq!(result.measurements.len(), 130);
-    let c = &result.outputs[0].1;
+    assert_eq!(result.measurements().to_vec().len(), 130);
+    let c = result.outputs().next().unwrap().1;
     let expect: String = (0..130)
         .rev()
         .map(|i| if i == 129 || i == 3 { '1' } else { '0' })
@@ -1706,12 +1756,14 @@ fn failed_run_leaves_no_measurements_behind() {
            bit c = measure q;
            int x = 1 / n;"#,
     );
-    let sim = StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let n = |v: i128| vec![("n".to_string(), HostValue::Int(v))];
     block_on(vm.run_with_named_inputs(&n(0))).expect_err("division by zero");
     let ok = block_on(vm.run_with_named_inputs(&n(1))).expect("run");
-    assert_eq!(ok.measurements, vec![(0, false)]);
+    assert_eq!(ok.measurements().to_vec(), vec![(0, false)]);
 }
 
 #[test]
@@ -1769,10 +1821,24 @@ const FLIP_FEEDBACK_SRC: &str = r#"
     bit d = measure q[1];
 "#;
 
-fn spec_vm_outputs(results: &[oqi_vm::RunResult], module: &Program) -> Vec<String> {
-    histograms(module, results)
-        .iter()
-        .map(|h| format!("{}={:?}", h.name, h.counts))
+/// Every shot's outputs on `vm`, tallied per output as `name=[(value, count)]`.
+fn sampled_counts<B: QuantumBackend>(vm: &mut Vm<'_, B, NoExterns>, shots: u32) -> Vec<String> {
+    let mut tally: std::collections::BTreeMap<String, std::collections::BTreeMap<String, u32>> =
+        Default::default();
+    block_on(vm.sample(HashMap::new(), shots, |r| {
+        for (name, value) in r.outputs() {
+            let value = value.to_string().trim_matches('"').to_string();
+            *tally
+                .entry(name.to_string())
+                .or_default()
+                .entry(value)
+                .or_default() += 1;
+        }
+    }))
+    .expect("sample");
+    tally
+        .into_iter()
+        .map(|(name, counts)| format!("{name}={:?}", counts.into_iter().collect::<Vec<_>>()))
         .collect()
 }
 
@@ -1791,23 +1857,26 @@ fn a_vm_runs_every_time_from_the_ground_state() {
         };
         for backend in ["scalar", "simd", "auto", "sum", "mps"] {
             let spec: BackendSpec = backend.parse().unwrap();
-            let (sim, _) = block_on(spec.build(module.qubits.num_qubits)).unwrap();
+            let (sim, _) = block_on(spec.build(module.qubits.num_qubits, SEED)).unwrap();
             let mut vm = Vm::new(&module, sim, NoExterns);
             for round in 0..2 {
                 let ran = block_on(vm.run()).expect("run");
-                assert_eq!(ran.measurements[0], (0, true), "{backend} run {round}");
+                assert_eq!(
+                    ran.measurements().to_vec()[0],
+                    (0, true),
+                    "{backend} run {round}"
+                );
             }
             for round in 0..2 {
-                let shots = block_on(vm.sample(HashMap::new(), shots, 7)).expect("sample");
                 assert_eq!(
-                    spec_vm_outputs(&shots, &module),
+                    sampled_counts(&mut vm, shots),
                     expect,
                     "{backend} sample {round}"
                 );
             }
             let ran = block_on(vm.run()).expect("run");
             assert_eq!(
-                ran.measurements[0],
+                ran.measurements().to_vec()[0],
                 (0, true),
                 "{backend} run after sampling"
             );
@@ -1823,13 +1892,17 @@ fn a_backend_smaller_than_the_program_is_an_error() {
            x q[2];
            bit c = measure q[2];"#,
     );
-    let sim = StateVectorSim::<f64>::try_zeroed(2, SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(2)
+        .map(|s| s.with_seed(SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let err = block_on(vm.run()).expect_err("2 qubits for a 3-qubit program");
-    assert!(matches!(err.kind, VmErrorKind::Backend(_)), "{err}");
+    assert!(matches!(err.kind, ErrorKind::Backend(_)), "{err}");
     assert!(err.to_string().contains('3'), "{err}");
     // A larger backend is fine.
-    let sim = StateVectorSim::<f64>::try_zeroed(4, SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(4)
+        .map(|s| s.with_seed(SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     assert!(block_on(vm.run()).is_ok());
 }
@@ -1838,7 +1911,7 @@ fn a_backend_smaller_than_the_program_is_an_error() {
 fn every_backend_reports_its_size() {
     for backend in ["scalar", "simd", "auto", "sum", "mps"] {
         let spec: BackendSpec = backend.parse().unwrap();
-        let (sim, _) = block_on(spec.build(5)).unwrap();
+        let (sim, _) = block_on(spec.build(5, SEED)).unwrap();
         assert_eq!(sim.num_qubits(), 5, "{backend}");
     }
 }
@@ -1849,11 +1922,11 @@ fn wide_registers_are_refused_not_allocated() {
     // TooManyQubits rather than abort the process trying.
     for backend in ["auto", "sum"] {
         let spec: BackendSpec = backend.parse().unwrap();
-        let err = block_on(spec.build(1_000_000)).err().expect(backend);
+        let err = block_on(spec.build(1_000_000, SEED)).err().expect(backend);
         assert!(
             matches!(
                 err.kind,
-                VmErrorKind::TooManyQubits {
+                ErrorKind::TooManyQubits {
                     requested: 1_000_000
                 }
             ),
@@ -1863,10 +1936,10 @@ fn wide_registers_are_refused_not_allocated() {
     // An MPS chain is linear in the qubit count, so it builds — but reading
     // out its 2⁶⁴ amplitudes is refused instead of attempted.
     let spec: BackendSpec = "mps".parse().unwrap();
-    let (sim, _) = block_on(spec.build(64)).unwrap();
+    let (sim, _) = block_on(spec.build(64, SEED)).unwrap();
     assert!(block_on(sim.amplitudes()).is_none());
     // Small ones still read out.
-    let (sim, _) = block_on(spec.build(3)).unwrap();
+    let (sim, _) = block_on(spec.build(3, SEED)).unwrap();
     assert_eq!(block_on(sim.amplitudes()).unwrap().len(), 8);
 }
 
@@ -1874,8 +1947,8 @@ fn wide_registers_are_refused_not_allocated() {
 fn an_mps_bond_cap_of_zero_is_rejected() {
     let mut spec: BackendSpec = "mps".parse().unwrap();
     spec.max_bond = 0;
-    let err = block_on(spec.build(2)).err().expect("max_bond = 0");
-    assert!(matches!(err.kind, VmErrorKind::Backend(_)), "{err}");
+    let err = block_on(spec.build(2, SEED)).err().expect("max_bond = 0");
+    assert!(matches!(err.kind, ErrorKind::Backend(_)), "{err}");
 }
 
 #[test]
@@ -1891,7 +1964,7 @@ fn a_nan_angle_on_the_mps_backend_is_an_error_not_a_panic() {
            bit[3] c = measure q;"#,
     );
     let spec: BackendSpec = "mps".parse().unwrap();
-    let (sim, _) = block_on(spec.build(module.qubits.num_qubits)).unwrap();
+    let (sim, _) = block_on(spec.build(module.qubits.num_qubits, SEED)).unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let inputs = vec![("theta".to_string(), HostValue::Float(f64::NAN))];
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1901,6 +1974,144 @@ fn a_nan_angle_on_the_mps_backend_is_an_error_not_a_panic() {
     // Either the NaN propagates harmlessly, as on the dense backends, or the
     // backend reports it.
     if let Err(err) = result {
-        assert!(matches!(err.kind, VmErrorKind::Backend(_)), "{err}");
+        assert!(matches!(err.kind, ErrorKind::Backend(_)), "{err}");
     }
+}
+
+// ── Runner and the public API ───────────────────────────────────────────
+
+#[test]
+fn an_extern_result_is_cast_to_the_declared_return_type() {
+    let module = build(
+        r#"
+            extern half(int[32]) -> float[64];
+            extern flag() -> bit;
+            float[64] h = half(3);
+            bit f = flag();
+        "#,
+    );
+    let mut registry = FnRegistry::new();
+    // An integer for a `float[64]` extern, and for a `bit` one.
+    registry.register("half", |_: &[Value]| Ok(Some(Value::int(2, iw(32)))));
+    registry.register("flag", |_: &[Value]| Ok(Some(Value::int(1, iw(8)))));
+    let result = block_on(Runner::new(&module).externs(registry).run()).expect("run");
+    let h = result.output("h").unwrap();
+    assert_eq!(
+        h.ty(),
+        oqi_vm::ValueTy::float(oqi_classical::FloatWidth::F64)
+    );
+    assert_eq!(h.to_string(), "2");
+    let f = result.output("f").unwrap();
+    assert_eq!(
+        (f.ty(), f.to_string()),
+        (oqi_vm::ValueTy::bit(), "1".to_string())
+    );
+
+    // A value with no cast to the declared type is the extern's failure.
+    let mut registry = FnRegistry::new();
+    registry.register("half", |_: &[Value]| {
+        Ok(Some(Value::duration(1.0, oqi_classical::DurationUnit::Ns)))
+    });
+    registry.register("flag", |_: &[Value]| Ok(Some(Value::int(1, iw(8)))));
+    let err = block_on(Runner::new(&module).externs(registry).run()).expect_err("a duration");
+    assert!(matches!(err.kind, ErrorKind::Extern { .. }), "{err}");
+    assert!(err.to_string().contains("half"), "{err}");
+}
+
+#[test]
+fn a_runner_takes_inputs_by_name_and_reports_what_ran() {
+    let module = build(
+        r#"
+            include "stdgates.inc";
+            input int n;
+            input angle[16] theta;
+            qubit q;
+            if (n == 3) { rx(theta) q; }
+            output bit c;
+            c = measure q;
+        "#,
+    );
+    let result = block_on(
+        Runner::new(&module)
+            .backend("simd".parse().unwrap())
+            .input("n", 3)
+            .input("theta", std::f64::consts::PI)
+            .statevector(true)
+            .run(),
+    )
+    .expect("run");
+    assert_eq!(result.output("c").unwrap().to_string(), "1");
+    assert_eq!(result.outputs().len(), 1);
+    assert_eq!(result.backend().unwrap().name(), "simd");
+    assert_eq!(result.statevector().unwrap().len(), 2);
+
+    let err = block_on(Runner::new(&module).input("m", 1).run()).expect_err("no input m");
+    assert!(matches!(err.kind, ErrorKind::UnknownInput(_)), "{err}");
+    let err = block_on(Runner::new(&module).input("n", "three").run()).expect_err("not an int");
+    assert!(matches!(err.kind, ErrorKind::Type(_)), "{err}");
+}
+
+#[test]
+fn one_seed_reproduces_a_runner_s_samples() {
+    for src in [BELL_SRC, FEEDBACK_SRC] {
+        let module = build(src);
+        let sample = |seed| {
+            let runner = Runner::new(&module)
+                .backend("mps".parse().unwrap())
+                .seed(seed);
+            block_on(runner.sample(200)).expect("sample")
+        };
+        assert_eq!(sample(5), sample(5));
+        assert_ne!(sample(5).histograms(), sample(6).histograms());
+        let samples = sample(5);
+        assert_eq!(samples.backend().name(), "mps");
+        assert!(samples.histograms().iter().all(|h| h.total() == 200));
+    }
+}
+
+#[test]
+fn backend_kinds_and_precisions_parse_and_print_their_names() {
+    use oqi_vm::{BackendKind, Precision};
+    for kind in ["scalar", "simd", "gpu", "prefer-gpu", "auto", "mps"] {
+        assert_eq!(kind.parse::<BackendKind>().unwrap().to_string(), kind);
+    }
+    for precision in ["f64", "f32"] {
+        assert_eq!(
+            precision.parse::<Precision>().unwrap().to_string(),
+            precision
+        );
+    }
+    let err: Box<dyn std::error::Error> = Box::new("cpu".parse::<BackendSpec>().unwrap_err());
+    assert!(err.to_string().contains("unknown backend `cpu`"), "{err}");
+    assert!(
+        "rayon".parse::<BackendKind>().is_err(),
+        "a spec name, not a kind"
+    );
+}
+
+#[test]
+fn an_mps_bond_cap_makes_the_truncation_error_visible() {
+    use std::num::NonZeroUsize;
+    let module = build(
+        r#"
+            include "stdgates.inc";
+            qubit[3] q;
+            h q[0];
+            cx q[0], q[1];
+            h q[1];
+            cx q[1], q[2];
+        "#,
+    );
+    let mut exact = MpsSim::new(3).unwrap();
+    let mut capped = MpsSim::new(3).unwrap().with_max_bond(NonZeroUsize::MIN);
+    let mut vm = Vm::new(&module, &mut exact, NoExterns);
+    block_on(vm.run()).expect("run");
+    let mut vm = Vm::new(&module, &mut capped, NoExterns);
+    block_on(vm.run()).expect("run");
+    assert_eq!(exact.truncation_error(), 0.0);
+    assert!(
+        capped.truncation_error() > 0.1,
+        "{}",
+        capped.truncation_error()
+    );
 }

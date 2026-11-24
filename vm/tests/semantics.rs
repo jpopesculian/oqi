@@ -12,16 +12,14 @@ fn compile(src: &str) -> Result<Program, CompileError> {
 
 fn output(src: &str, name: &str) -> String {
     let module = compile(src).unwrap_or_else(|e| panic!("compile: {e}\n{src}"));
-    let sim =
-        StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, oqi_vm::DEFAULT_SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(oqi_vm::DEFAULT_SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let result = pollster::block_on(vm.run()).unwrap_or_else(|e| panic!("run: {e}\n{src}"));
     result
-        .outputs
-        .iter()
-        .find(|(sym, _)| module.symbol(*sym).name == name)
+        .output(name)
         .unwrap_or_else(|| panic!("no output `{name}`"))
-        .1
         .to_string()
 }
 

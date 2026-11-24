@@ -9,8 +9,8 @@ use num_complex::Complex64;
 use oqi_classical::{Duration, DurationUnit};
 use oqi_compile::bytecode::Program;
 use oqi_vm::{
-    FrameHandle, KindResult, NoExterns, OpaqueCalHandler, OpenPulseHandler, PortHandle,
-    StateVectorSim, Vm, VmErrorKind, WaveformHandle,
+    ErrorKind, FrameHandle, NoExterns, OpaqueCalHandler, OpenPulseHandler, PortHandle,
+    StateVectorSim, Vm, WaveformHandle,
 };
 
 /// Drive an async VM call to completion (the VM is async; tests are sync).
@@ -24,7 +24,9 @@ fn build(src: &str) -> Program {
 }
 
 fn sim_for(module: &Program) -> StateVectorSim {
-    StateVectorSim::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap()
+    StateVectorSim::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(0xABCD))
+        .unwrap()
 }
 
 const DEFCAL_QASM: &str = include_str!("../../fixtures/qasm/defcal.qasm");
@@ -93,7 +95,7 @@ impl MockPulse {
 const MOCK_IQ: Complex64 = Complex64::new(0.25, -0.5);
 
 impl OpenPulseHandler for MockPulse {
-    fn port(&mut self, name: &str) -> KindResult<PortHandle> {
+    fn port(&mut self, name: &str) -> Result<PortHandle, ErrorKind> {
         self.events.borrow_mut().push(Event::Port(name.to_string()));
         Ok(PortHandle(self.mint()))
     }
@@ -103,7 +105,7 @@ impl OpenPulseHandler for MockPulse {
         port: PortHandle,
         frequency: f64,
         phase: f64,
-    ) -> KindResult<FrameHandle> {
+    ) -> Result<FrameHandle, ErrorKind> {
         self.events.borrow_mut().push(Event::NewFrame {
             port: port.0,
             frequency,
@@ -117,7 +119,7 @@ impl OpenPulseHandler for MockPulse {
         amp: f64,
         duration: Duration,
         sigma: Duration,
-    ) -> KindResult<WaveformHandle> {
+    ) -> Result<WaveformHandle, ErrorKind> {
         self.events.borrow_mut().push(Event::Gaussian {
             amp,
             duration: (duration.value, duration.unit),
@@ -128,7 +130,7 @@ impl OpenPulseHandler for MockPulse {
         Ok(WaveformHandle(h))
     }
 
-    fn play(&mut self, frame: FrameHandle, waveform: WaveformHandle) -> KindResult<()> {
+    fn play(&mut self, frame: FrameHandle, waveform: WaveformHandle) -> Result<(), ErrorKind> {
         self.events.borrow_mut().push(Event::Play {
             frame: frame.0,
             waveform: waveform.0,
@@ -136,7 +138,7 @@ impl OpenPulseHandler for MockPulse {
         Ok(())
     }
 
-    fn capture(&mut self, frame: FrameHandle, samples: u64) -> KindResult<Complex64> {
+    fn capture(&mut self, frame: FrameHandle, samples: u64) -> Result<Complex64, ErrorKind> {
         self.events.borrow_mut().push(Event::Capture {
             frame: frame.0,
             samples,
@@ -144,7 +146,7 @@ impl OpenPulseHandler for MockPulse {
         Ok(MOCK_IQ)
     }
 
-    fn shift_phase(&mut self, frame: FrameHandle, phase: f64) -> KindResult<()> {
+    fn shift_phase(&mut self, frame: FrameHandle, phase: f64) -> Result<(), ErrorKind> {
         self.events.borrow_mut().push(Event::ShiftPhase {
             frame: frame.0,
             phase,
@@ -152,18 +154,18 @@ impl OpenPulseHandler for MockPulse {
         Ok(())
     }
 
-    fn threshold(&mut self, iq: Complex64, discriminator: u64) -> KindResult<bool> {
+    fn threshold(&mut self, iq: Complex64, discriminator: u64) -> Result<bool, ErrorKind> {
         self.events
             .borrow_mut()
             .push(Event::Threshold { iq, discriminator });
         Ok(true)
     }
 
-    fn waveform_duration(&mut self, waveform: WaveformHandle) -> KindResult<Duration> {
+    fn waveform_duration(&mut self, waveform: WaveformHandle) -> Result<Duration, ErrorKind> {
         self.waveforms
             .get(&waveform.0)
             .copied()
-            .ok_or_else(|| VmErrorKind::Pulse("unknown waveform".into()))
+            .ok_or_else(|| ErrorKind::Pulse("unknown waveform".into()))
     }
 }
 
@@ -193,13 +195,8 @@ fn defcal_fixture_dispatches_to_pulse_handler() {
     let result = block_on(vm.run()).expect("run");
 
     // The measure defcal's threshold(…) = true is the measured bit.
-    assert_eq!(result.measurements, vec![(0, true)]);
-    let c = result
-        .outputs
-        .iter()
-        .find(|(sym, _)| module.symbol(*sym).name == "c")
-        .map(|(_, v)| v.to_string())
-        .expect("output c");
+    assert_eq!(result.measurements().to_vec(), vec![(0, true)]);
+    let c = result.output("c").map(|v| v.to_string()).expect("output c");
     assert_eq!(c, "1");
 
     // Handles are minted in order of first use: port d0=1, frame drive0=2,
@@ -296,7 +293,7 @@ fn defcal_fixture_is_inert_without_handler() {
     let sim = sim_for(&module);
     let mut vm = Vm::new(&module, sim, NoExterns);
     let result = block_on(vm.run()).expect("run");
-    assert!(result.measurements.is_empty());
+    assert!(result.measurements().to_vec().is_empty());
 }
 
 /// A generic `defcal x q` alongside stdgates' x, no handler installed:
@@ -322,7 +319,7 @@ fn defcal_dormant_without_handler_gate_body_applies() {
     let sim = sim_for(&module);
     let mut vm = Vm::new(&module, sim, NoExterns);
     let result = block_on(vm.run()).expect("run");
-    assert_eq!(result.measurements, vec![(0, true)]);
+    assert_eq!(result.measurements().to_vec(), vec![(0, true)]);
 }
 
 /// With a handler, the defcal replaces the stdgates body
@@ -335,7 +332,7 @@ fn defcal_beats_gate_body_with_handler() {
     let (mock, events) = MockPulse::new();
     let mut vm = Vm::new(&module, sim, NoExterns).with_pulse_handler(mock);
     let result = block_on(vm.run()).expect("run");
-    assert_eq!(result.measurements, vec![(0, false)]);
+    assert_eq!(result.measurements().to_vec(), vec![(0, false)]);
     let events = events.borrow();
     assert!(events.contains(&Event::Port("d0".into())));
     assert!(
@@ -483,11 +480,7 @@ fn cal_declared_values_are_shared_with_defcals_and_cal_blocks() {
     assert_eq!(*events.borrow(), expected);
 
     // "Values may not leak back to the block's enclosing scope."
-    let outputs: Vec<&str> = result
-        .outputs
-        .iter()
-        .map(|(symbol, _)| module.symbol(*symbol).name.as_str())
-        .collect();
+    let outputs: Vec<&str> = result.outputs().map(|(name, _)| name).collect();
     assert_eq!(outputs, ["scale"]);
 }
 
@@ -577,7 +570,7 @@ type CalCalls = Rc<RefCell<Vec<(Option<String>, String)>>>;
 struct MockCal(CalCalls);
 
 impl OpaqueCalHandler for MockCal {
-    fn cal(&mut self, grammar: Option<&str>, text: &str) -> KindResult<()> {
+    fn cal(&mut self, grammar: Option<&str>, text: &str) -> Result<(), ErrorKind> {
         self.0
             .borrow_mut()
             .push((grammar.map(str::to_string), text.to_string()));
@@ -621,12 +614,10 @@ fn opaque_cal_is_inert_without_handler() {
 // ── durationof over calibrated gates ─────────────────────────────────
 
 /// Extract a named duration output as its display string.
-fn output_str(module: &Program, result: &oqi_vm::RunResult, name: &str) -> String {
+fn output_str(result: &oqi_vm::RunResult, name: &str) -> String {
     result
-        .outputs
-        .iter()
-        .find(|(sym, _)| module.symbol(*sym).name == name)
-        .map(|(_, v)| v.to_string())
+        .output(name)
+        .map(|v| v.to_string())
         .unwrap_or_else(|| panic!("output {name}"))
 }
 
@@ -653,7 +644,7 @@ fn durationof_uses_calibrated_pulse_durations() {
     let mut vm = Vm::new(&module, sim, NoExterns).with_pulse_handler(mock);
     let result = block_on(vm.run()).expect("run");
     // 100dt @ the default dt of 1us.
-    assert_eq!(output_str(&module, &result, "d"), "100us");
+    assert_eq!(output_str(&result, "d"), "100us");
     let events = events.borrow();
     assert!(
         !events.iter().any(|e| matches!(e, Event::Play { .. })),
@@ -672,7 +663,7 @@ fn durationof_takes_max_across_frames() {
     let (mock, events) = MockPulse::new();
     let mut vm = Vm::new(&module, sim, NoExterns).with_pulse_handler(mock);
     let result = block_on(vm.run()).expect("run");
-    assert_eq!(output_str(&module, &result, "d"), "320us");
+    assert_eq!(output_str(&result, "d"), "320us");
     let events = events.borrow();
     assert!(!events.iter().any(|e| matches!(e, Event::Play { .. })));
 }
@@ -682,25 +673,35 @@ fn durationof_takes_max_across_frames() {
 struct MinimalPulse;
 
 impl OpenPulseHandler for MinimalPulse {
-    fn port(&mut self, _name: &str) -> KindResult<PortHandle> {
+    fn port(&mut self, _name: &str) -> Result<PortHandle, ErrorKind> {
         Ok(PortHandle(1))
     }
-    fn new_frame(&mut self, _port: PortHandle, _freq: f64, _phase: f64) -> KindResult<FrameHandle> {
+    fn new_frame(
+        &mut self,
+        _port: PortHandle,
+        _freq: f64,
+        _phase: f64,
+    ) -> Result<FrameHandle, ErrorKind> {
         Ok(FrameHandle(2))
     }
-    fn gaussian(&mut self, _amp: f64, _d: Duration, _s: Duration) -> KindResult<WaveformHandle> {
+    fn gaussian(
+        &mut self,
+        _amp: f64,
+        _d: Duration,
+        _s: Duration,
+    ) -> Result<WaveformHandle, ErrorKind> {
         Ok(WaveformHandle(3))
     }
-    fn play(&mut self, _f: FrameHandle, _w: WaveformHandle) -> KindResult<()> {
+    fn play(&mut self, _f: FrameHandle, _w: WaveformHandle) -> Result<(), ErrorKind> {
         Ok(())
     }
-    fn capture(&mut self, _f: FrameHandle, _s: u64) -> KindResult<Complex64> {
+    fn capture(&mut self, _f: FrameHandle, _s: u64) -> Result<Complex64, ErrorKind> {
         Ok(Complex64::new(0.0, 0.0))
     }
-    fn shift_phase(&mut self, _f: FrameHandle, _p: f64) -> KindResult<()> {
+    fn shift_phase(&mut self, _f: FrameHandle, _p: f64) -> Result<(), ErrorKind> {
         Ok(())
     }
-    fn threshold(&mut self, _iq: Complex64, _d: u64) -> KindResult<bool> {
+    fn threshold(&mut self, _iq: Complex64, _d: u64) -> Result<bool, ErrorKind> {
         Ok(false)
     }
 }
@@ -751,7 +752,7 @@ fn timed_gate_still_executes_when_called() {
     let (mock, events) = MockPulse::new();
     let mut vm = Vm::new(&module, sim, NoExterns).with_pulse_handler(mock);
     let result = block_on(vm.run()).expect("run");
-    assert_eq!(output_str(&module, &result, "d"), "160us");
+    assert_eq!(output_str(&result, "d"), "160us");
     let plays = events
         .borrow()
         .iter()

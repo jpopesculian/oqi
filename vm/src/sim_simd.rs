@@ -13,11 +13,10 @@
 use crate::state::{Gate, Unitary};
 use async_trait::async_trait;
 use num_complex::Complex;
-use num_traits::Float;
 use wide::{f32x8, f64x4};
 
 use crate::backend::{GateModifiers, MAX_STATE_BYTES, QuantumBackend};
-use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
+use crate::error::{Error, ErrorKind, Result};
 use crate::measure::renorm;
 use crate::rng::Rng;
 
@@ -26,20 +25,34 @@ fn arr<T: Copy, const N: usize>(s: &[T]) -> [T; N] {
     <[T; N]>::try_from(&s[..N]).unwrap()
 }
 
-/// A float type with a vectorized single-qubit-gate kernel.
-pub trait SimdLane: Float + Send + Sync + 'static {
-    /// Apply the 2×2 complex matrix `m` to one block in place, updating the
-    /// clear-target half (`a`) and the set-target half (`b`):
-    /// `a' = m00·a + m01·b`, `b' = m10·a + m11·b`. The four slices have
-    /// equal length; processed SIMD-wide with a scalar remainder.
-    fn apply_block(
-        m: &[[Complex<Self>; 2]; 2],
-        a_re: &mut [Self],
-        a_im: &mut [Self],
-        b_re: &mut [Self],
-        b_im: &mut [Self],
-    );
+/// The floating-point type of a state-vector simulator's amplitudes:
+/// [`f64`] or [`f32`]. Sealed: the simulators' kernels exist for these two.
+pub trait Amplitude: sealed::Lane {}
+
+impl Amplitude for f64 {}
+impl Amplitude for f32 {}
+
+mod sealed {
+    use num_complex::Complex;
+    use num_traits::Float;
+
+    /// A float type with a vectorized single-qubit-gate kernel.
+    pub trait Lane: Float + Send + Sync + 'static {
+        /// Apply the 2×2 complex matrix `m` to one block in place, updating
+        /// the clear-target half (`a`) and the set-target half (`b`):
+        /// `a' = m00·a + m01·b`, `b' = m10·a + m11·b`. The four slices have
+        /// equal length; processed SIMD-wide with a scalar remainder.
+        fn apply_block(
+            m: &[[Complex<Self>; 2]; 2],
+            a_re: &mut [Self],
+            a_im: &mut [Self],
+            b_re: &mut [Self],
+            b_im: &mut [Self],
+        );
+    }
 }
+
+use sealed::Lane;
 
 /// Scalar complex update for the four amplitudes of one pair.
 macro_rules! scalar_pair {
@@ -56,7 +69,7 @@ macro_rules! scalar_pair {
 
 macro_rules! impl_simd_lane {
     ($f:ty, $v:ty, $lanes:expr) => {
-        impl SimdLane for $f {
+        impl Lane for $f {
             fn apply_block(
                 m: &[[Complex<$f>; 2]; 2],
                 a_re: &mut [$f],
@@ -112,23 +125,27 @@ impl_simd_lane!(f32, f32x8, 8);
 /// `SimdSim<f32>` for single precision). Amplitudes are stored split into
 /// real/imag arrays; the global phase is tracked separately and resolved
 /// only when amplitudes are read out.
-pub struct SimdSim<F: SimdLane = f64> {
+pub struct SimdSim<F: Amplitude = f64> {
     re: Vec<F>,
     im: Vec<F>,
     global_phase: f64,
     rng: Rng,
-    /// Run the SIMD kernel across blocks in parallel via rayon (no effect
-    /// when the `parallel` feature is disabled).
+    /// Run the SIMD kernel across blocks in parallel via rayon.
+    #[cfg(feature = "parallel")]
     parallel: bool,
 }
 
-impl<F: SimdLane> SimdSim<F> {
-    /// A fresh simulator with an explicit seed, or a
-    /// [`VmErrorKind::TooManyQubits`] error if the `2^num_qubits`-amplitude
-    /// arrays can't be allocated.
-    pub fn try_zeroed(num_qubits: u32, seed: u64) -> VmResult<Self> {
+impl<F: Amplitude> SimdSim<F> {
+    /// A simulator of `num_qubits` qubits in |0…0⟩, measuring with the
+    /// [`DEFAULT_SEED`](crate::DEFAULT_SEED).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::TooManyQubits`] if the `2^num_qubits` amplitudes would
+    /// take more than 16 GiB or can't be allocated.
+    pub fn new(num_qubits: u32) -> Result<Self> {
         let too_many = || {
-            VmError::new(VmErrorKind::TooManyQubits {
+            Error::new(ErrorKind::TooManyQubits {
                 requested: num_qubits,
             })
         };
@@ -156,15 +173,21 @@ impl<F: SimdLane> SimdSim<F> {
             re,
             im,
             global_phase: 0.0,
-            rng: Rng::new(seed),
+            rng: Rng::new(crate::DEFAULT_SEED),
+            #[cfg(feature = "parallel")]
             parallel: false,
         })
     }
 
-    /// Enable (or disable) running the SIMD kernel across blocks in
-    /// parallel. Without the `parallel` build feature the kernel runs
-    /// serially either way; [`BackendSpec`](crate::BackendSpec) reports that
-    /// as an unavailable backend instead.
+    /// Seed the measurement RNG: a given seed reproduces a run.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.rng = Rng::new(seed);
+        self
+    }
+
+    /// Run the SIMD kernel across blocks of the state on several threads
+    /// (rayon).
+    #[cfg(feature = "parallel")]
     pub fn with_parallel(mut self, parallel: bool) -> Self {
         self.parallel = parallel;
         self
@@ -234,8 +257,20 @@ impl<F: SimdLane> SimdSim<F> {
     }
 }
 
+impl<F: Amplitude> std::fmt::Debug for SimdSim<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut debug = f.debug_struct("SimdSim");
+        debug
+            .field("num_qubits", &self.re.len().trailing_zeros())
+            .field("precision", &std::any::type_name::<F>());
+        #[cfg(feature = "parallel")]
+        debug.field("parallel", &self.parallel);
+        debug.finish_non_exhaustive()
+    }
+}
+
 #[async_trait(?Send)]
-impl<F: SimdLane> QuantumBackend for SimdSim<F> {
+impl<F: Amplitude> QuantumBackend for SimdSim<F> {
     fn num_qubits(&self) -> u32 {
         self.re.len().trailing_zeros()
     }
@@ -247,7 +282,7 @@ impl<F: SimdLane> QuantumBackend for SimdSim<F> {
         phi: f64,
         lambda: f64,
         m: &GateModifiers,
-    ) -> KindResult<()> {
+    ) -> Result<(), ErrorKind> {
         let unitary = Unitary::new(Self::cast(theta), Self::cast(phi), Self::cast(lambda));
         let mut g = Gate::new(unitary);
         if m.power != 1.0 {
@@ -260,12 +295,12 @@ impl<F: SimdLane> QuantumBackend for SimdSim<F> {
         Ok(())
     }
 
-    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+    fn gphase(&mut self, gamma: f64) -> Result<(), ErrorKind> {
         self.global_phase += gamma;
         Ok(())
     }
 
-    async fn measure(&mut self, qubit: u32) -> bool {
+    async fn measure(&mut self, qubit: u32) -> Result<bool, ErrorKind> {
         let bit = 1usize << qubit;
 
         // P(outcome = 1) accumulated in f64 even for f32 amplitudes.
@@ -289,19 +324,20 @@ impl<F: SimdLane> QuantumBackend for SimdSim<F> {
                 self.im[i] = F::zero();
             }
         }
-        outcome
+        Ok(outcome)
     }
 
-    async fn reset(&mut self, qubit: u32) {
-        if self.measure(qubit).await {
+    async fn reset(&mut self, qubit: u32) -> Result<(), ErrorKind> {
+        if self.measure(qubit).await? {
             // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
             let pi = Self::cast(std::f64::consts::PI);
             let x = Unitary::new(pi, F::zero(), pi).matrix();
             self.apply_mat(&x, qubit as usize, &[], &[]);
         }
+        Ok(())
     }
 
-    fn reset_state(&mut self) -> KindResult<()> {
+    fn reset_state(&mut self) -> Result<(), ErrorKind> {
         self.re.fill(F::zero());
         self.im.fill(F::zero());
         self.re[0] = F::one();
@@ -368,8 +404,10 @@ mod tests {
     #[test]
     fn matches_scalar_for_single_qubit_gates() {
         pollster::block_on(async {
-            let mut scalar = StateVectorSim::<f64>::try_zeroed(5, 0xABCD).unwrap();
-            let mut simd = SimdSim::<f64>::try_zeroed(5, 0xABCD).unwrap();
+            let mut scalar = StateVectorSim::<f64>::new(5)
+                .map(|s| s.with_seed(0xABCD))
+                .unwrap();
+            let mut simd = SimdSim::<f64>::new(5).map(|s| s.with_seed(0xABCD)).unwrap();
             single_qubit_gates(&mut scalar, 5, (0.37, 0.11, 0.59));
             single_qubit_gates(&mut simd, 5, (0.37, 0.11, 0.59));
             assert_close(
@@ -382,8 +420,10 @@ mod tests {
     #[test]
     fn matches_scalar_for_controlled_and_gphase() {
         pollster::block_on(async {
-            let mut scalar = StateVectorSim::<f64>::try_zeroed(4, 0xABCD).unwrap();
-            let mut simd = SimdSim::<f64>::try_zeroed(4, 0xABCD).unwrap();
+            let mut scalar = StateVectorSim::<f64>::new(4)
+                .map(|s| s.with_seed(0xABCD))
+                .unwrap();
+            let mut simd = SimdSim::<f64>::new(4).map(|s| s.with_seed(0xABCD)).unwrap();
             controlled_gates(&mut scalar);
             controlled_gates(&mut simd);
             assert_close(
@@ -397,7 +437,7 @@ mod tests {
     #[test]
     fn reset_state_clears_the_global_phase() {
         pollster::block_on(async {
-            let mut simd = SimdSim::<f64>::try_zeroed(2, 1).unwrap();
+            let mut simd = SimdSim::<f64>::new(2).map(|s| s.with_seed(1)).unwrap();
             single_qubit_gates(&mut simd, 2, (0.37, 0.11, 0.59));
             simd.gphase(0.3).unwrap();
             simd.reset_state().unwrap();
@@ -414,8 +454,9 @@ mod tests {
     #[test]
     fn parallel_matches_serial() {
         pollster::block_on(async {
-            let mut serial = SimdSim::<f64>::try_zeroed(8, 0xABCD).unwrap();
-            let mut parallel = SimdSim::<f64>::try_zeroed(8, 0xABCD)
+            let mut serial = SimdSim::<f64>::new(8).map(|s| s.with_seed(0xABCD)).unwrap();
+            let mut parallel = SimdSim::<f64>::new(8)
+                .map(|s| s.with_seed(0xABCD))
                 .unwrap()
                 .with_parallel(true);
             single_qubit_gates(&mut serial, 8, (0.21, 0.13, 0.42));

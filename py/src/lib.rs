@@ -14,11 +14,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use num_complex::Complex;
-use oqi_compile::classical::{Value, ValueTy};
 use oqi_compile::{Compiler, IncludeResolver, LibOnlyResolver, Program, TableTimings};
 use oqi_vm::{
-    BackendSpec, DEFAULT_SEED, ExternProvider, HostValue, KindResult, QuantumBackend, SumPolicy,
-    Vm, VmErrorKind,
+    BackendSpec, DEFAULT_SEED, ErrorKind, ExternProvider, HostValue, Runner, Value, ValueTy,
 };
 use pyo3::IntoPyObjectExt;
 use pyo3::create_exception;
@@ -205,36 +203,8 @@ impl SampleResult {
     }
 }
 
-/// Everything [`run`] and [`sample`] share: the compiled module and the
-/// pieces a [`Vm`] is assembled from.
-struct Session {
-    module: Program,
-    /// The source text errors render against (empty for bytecode).
-    source: String,
-    inputs: Vec<(String, HostValue)>,
-    externs: PyExterns,
-    backend: Box<dyn QuantumBackend>,
-    /// The backend configuration that was actually built.
-    built: BackendSpec,
-    seed: u64,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn session(
-    program: &Bound<'_, PyAny>,
-    inputs: Option<&Bound<'_, PyDict>>,
-    seed: Option<u64>,
-    externs: Option<&Bound<'_, PyDict>>,
-    timings: Option<&Bound<'_, PyDict>>,
-    dt: Option<&str>,
-    backend: &str,
-    precision: &str,
-    max_rank: Option<usize>,
-    max_bond: Option<usize>,
-) -> PyResult<Session> {
-    let (module, source) = load(program, timings, dt)?;
-    let externs = PyExterns::new(&module, externs)?;
-
+/// The `inputs=` option as named host values.
+fn named_inputs(inputs: Option<&Bound<'_, PyDict>>) -> PyResult<Vec<(String, HostValue)>> {
     let mut named = Vec::new();
     for (key, val) in inputs.iter().flat_map(|inputs| inputs.iter()) {
         let name: String = key
@@ -248,34 +218,27 @@ fn session(
         })?;
         named.push((name, value));
     }
+    Ok(named)
+}
 
-    let seed = seed.unwrap_or(DEFAULT_SEED);
-    let mut spec: BackendSpec = backend.parse().map_err(OqiError::new_err)?;
-    spec.precision = precision.parse().map_err(OqiError::new_err)?;
-    spec.seed = seed;
+/// The backend the `backend=`, `precision=`, `max_rank=` and `max_bond=`
+/// options describe.
+fn backend_spec(
+    backend: &str,
+    precision: &str,
+    max_rank: Option<usize>,
+    max_bond: Option<usize>,
+) -> PyResult<BackendSpec> {
+    let invalid = |e: oqi_vm::ParseNameError| OqiError::new_err(e.to_string());
+    let mut spec: BackendSpec = backend.parse().map_err(invalid)?;
+    spec.precision = precision.parse().map_err(invalid)?;
     if let Some(max_rank) = max_rank {
-        spec.sum_policy = SumPolicy {
-            max_rank,
-            ..spec.sum_policy
-        };
+        spec.sum_policy.max_rank = max_rank;
     }
     if let Some(max_bond) = max_bond {
         spec.max_bond = max_bond;
     }
-    // Backend construction resolves immediately for the CPU simulators and
-    // polls the device itself for the GPU one, so blocking never parks.
-    let (backend, built) = pollster::block_on(spec.build(module.qubits.num_qubits))
-        .map_err(|e| diag_err(&e, &source))?;
-
-    Ok(Session {
-        module,
-        source,
-        inputs: named,
-        externs,
-        backend,
-        built,
-        seed,
-    })
+    Ok(spec)
 }
 
 /// Run an OpenQASM 3 program on a simulator. `program` is source text
@@ -316,37 +279,30 @@ fn run(
     max_rank: Option<usize>,
     max_bond: Option<usize>,
 ) -> PyResult<RunResult> {
-    let session = session(
-        program, inputs, seed, externs, timings, dt, backend, precision, max_rank, max_bond,
-    )?;
-    let source = session.source.as_str();
-    let module = &session.module;
-    let mut vm = Vm::new(module, session.backend, session.externs);
-
+    let (module, source) = load(program, timings, dt)?;
+    let runner = Runner::new(&module)
+        .backend(backend_spec(backend, precision, max_rank, max_bond)?)
+        .seed(seed.unwrap_or(DEFAULT_SEED))
+        .inputs(named_inputs(inputs)?)
+        .externs(PyExterns::new(externs)?);
     // The VM futures resolve immediately (the CPU simulators and Python
-    // externs never suspend), so blocking here never parks the thread. Runs hold the GIL:
-    // `oqi_vm::RunResult` is not `Send`, which rules out `Python::detach`.
-    let result = pollster::block_on(vm.run_with_named_inputs(&session.inputs))
-        .map_err(|e| diag_err(&e, source))?;
-    let amps = if statevector {
-        pollster::block_on(vm.backend().amplitudes())
-    } else {
-        None
-    };
+    // externs never suspend), so blocking here never parks the thread. Runs
+    // hold the GIL: the VM's values are not `Send`, which rules out
+    // `Python::detach`.
+    let result = pollster::block_on(runner.statevector(statevector).run())
+        .map_err(|e| diag_err(&e, &source))?;
 
     let outputs = PyDict::new(py);
-    for (sym, v) in &result.outputs {
-        outputs.set_item(
-            module.symbol(*sym).name.as_str(),
-            py_value(py, HostValue::from(v))?,
-        )?;
+    for (name, v) in result.outputs() {
+        outputs.set_item(name, py_value(py, HostValue::from(v))?)?;
     }
+    let built = result.backend().expect("a runner reports its backend");
     Ok(RunResult {
-        measurements: result.measurements,
+        measurements: result.measurements().to_vec(),
         outputs: outputs.into(),
-        statevector: amps,
-        backend: session.built.name(),
-        precision: session.built.precision.as_str(),
+        statevector: result.statevector().map(<[Complex<f64>]>::to_vec),
+        backend: built.name(),
+        precision: built.precision.as_str(),
     })
 }
 
@@ -374,30 +330,27 @@ fn sample(
     if shots == 0 {
         return Err(OqiError::new_err("`shots` must be at least 1"));
     }
-    let session = session(
-        program, inputs, seed, externs, timings, dt, backend, precision, max_rank, max_bond,
-    )?;
-    let source = session.source.as_str();
-    let module = &session.module;
-    let mut vm = Vm::new(module, session.backend, session.externs);
-    let inputs =
-        oqi_vm::coerce_inputs(module, &session.inputs).map_err(|e| diag_err(&e, source))?;
-    let results = pollster::block_on(vm.sample(inputs, shots, session.seed))
-        .map_err(|e| diag_err(&e, source))?;
+    let (module, source) = load(program, timings, dt)?;
+    let runner = Runner::new(&module)
+        .backend(backend_spec(backend, precision, max_rank, max_bond)?)
+        .seed(seed.unwrap_or(DEFAULT_SEED))
+        .inputs(named_inputs(inputs)?)
+        .externs(PyExterns::new(externs)?);
+    let samples = pollster::block_on(runner.sample(shots)).map_err(|e| diag_err(&e, &source))?;
 
     let histograms = PyDict::new(py);
-    for histogram in oqi_vm::histograms(module, &results) {
+    for histogram in samples.histograms() {
         let counts = PyDict::new(py);
-        for (label, count) in histogram.counts {
+        for (label, count) in histogram.counts() {
             counts.set_item(label, count)?;
         }
-        histograms.set_item(histogram.name, counts)?;
+        histograms.set_item(histogram.name(), counts)?;
     }
     Ok(SampleResult {
         shots,
         histograms: histograms.into(),
-        backend: session.built.name(),
-        precision: session.built.precision.as_str(),
+        backend: samples.backend().name(),
+        precision: samples.backend().precision.as_str(),
     })
 }
 
@@ -456,26 +409,22 @@ fn py_value<'py>(py: Python<'py>, value: HostValue) -> PyResult<Bound<'py, PyAny
             .map(|item| py_value(py, item))
             .collect::<PyResult<Vec<_>>>()?
             .into_bound_py_any(py),
+        other => Err(PyTypeError::new_err(format!(
+            "no Python form for the value {other:?}"
+        ))),
     }
 }
 
 /// Extern implementations supplied from Python (the `externs` option):
-/// name → callable, plus each declared extern's return type (`None` = void)
-/// — the VM stores extern results uncast, so returns must be built with
-/// their declared type.
+/// name → callable.
 struct PyExterns {
     fns: HashMap<String, Py<PyAny>>,
-    ret_tys: HashMap<String, Option<ValueTy>>,
 }
 
 impl PyExterns {
     /// `externs` is the `externs=` option (`None` ⇒ none). Errors if any
     /// key isn't a string or any value isn't callable.
-    fn new(module: &Program, externs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
-        let ret_tys = module
-            .externs()
-            .map(|(name, ty)| (name.to_string(), ty))
-            .collect();
+    fn new(externs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
         let mut fns = HashMap::new();
         if let Some(externs) = externs {
             for (key, val) in externs.iter() {
@@ -490,18 +439,21 @@ impl PyExterns {
                 fns.insert(name, val.unbind());
             }
         }
-        Ok(PyExterns { fns, ret_tys })
+        Ok(PyExterns { fns })
     }
 }
 
 impl ExternProvider for PyExterns {
-    async fn call(&mut self, name: &str, args: &[Value]) -> KindResult<Option<Value>> {
-        // Not provided, or not a declared classical extern (ports/frames land
-        // here when no pulse handler is installed) — same error as `NoExterns`.
-        let (Some(f), Some(ret_ty)) = (self.fns.get(name), self.ret_tys.get(name)) else {
-            return Err(VmErrorKind::UnknownExtern(name.to_string()));
+    async fn call(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        returns: Option<ValueTy>,
+    ) -> Result<Option<Value>, ErrorKind> {
+        let Some(f) = self.fns.get(name) else {
+            return Err(ErrorKind::UnknownExtern(name.to_string()));
         };
-        let failed = |message: String| VmErrorKind::extern_failed(name, message);
+        let failed = |message: String| ErrorKind::extern_failed(name, message);
         Python::attach(|py| {
             let py_args = args
                 .iter()
@@ -520,7 +472,7 @@ impl ExternProvider for PyExterns {
                     "returned an awaitable; Python externs must be synchronous".to_string(),
                 ));
             }
-            let Some(ty) = ret_ty else {
+            let Some(ty) = returns else {
                 return Ok(None); // void extern: return value ignored
             };
             let raw = host_value(&ret).ok_or_else(|| {
@@ -529,9 +481,11 @@ impl ExternProvider for PyExterns {
                     type_name(&ret)
                 ))
             })?;
-            oqi_vm::coerce("return value", &raw, *ty)
-                .map(Some)
-                .map_err(failed)
+            match raw.coerce_to(ty) {
+                Ok(value) => Ok(Some(value)),
+                Err(ErrorKind::Type(message)) => Err(failed(format!("returned {message}"))),
+                Err(other) => Err(other),
+            }
         })
     }
 }

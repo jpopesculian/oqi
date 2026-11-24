@@ -13,14 +13,14 @@ fn compile(src: &str) -> Result<Program, CompileError> {
 /// Run and return named outputs as `(name, displayed value)`, sorted by name.
 fn run_outputs(src: &str) -> Vec<(String, String)> {
     let module = compile(src).expect("compile");
-    let sim =
-        StateVectorSim::<f64>::try_zeroed(module.qubits.num_qubits, oqi_vm::DEFAULT_SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(module.qubits.num_qubits)
+        .map(|s| s.with_seed(oqi_vm::DEFAULT_SEED))
+        .unwrap();
     let mut vm = Vm::new(&module, sim, NoExterns);
     let result = pollster::block_on(vm.run()).expect("run");
     let mut out: Vec<(String, String)> = result
-        .outputs
-        .iter()
-        .map(|(sym, v)| (module.symbol(*sym).name.clone(), v.to_string()))
+        .outputs()
+        .map(|(name, v)| (name.to_string(), v.to_string()))
         .collect();
     out.sort();
     out

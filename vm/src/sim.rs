@@ -3,12 +3,12 @@
 use crate::state::{Gate, StateVector, Unitary};
 use async_trait::async_trait;
 use num_complex::Complex;
-use num_traits::Float;
 
 use crate::backend::{GateModifiers, QuantumBackend};
-use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
+use crate::error::{Error, ErrorKind, Result};
 use crate::measure;
 use crate::rng::Rng;
+use crate::sim_simd::Amplitude;
 
 /// State-vector simulator over `Complex<F>` amplitudes (`F` = `f64` by
 /// default; instantiate `StateVectorSim<f32>` for single precision).
@@ -22,37 +22,44 @@ pub struct StateVectorSim<F = f64> {
     parallel: bool,
 }
 
-impl<F: Float + Send + Sync> StateVectorSim<F> {
-    /// A fresh simulator with an explicit seed, or a
-    /// [`VmErrorKind::TooManyQubits`] error if the `2^num_qubits`-amplitude
-    /// state vector can't be allocated (it uses a fallible allocation, so an
-    /// oversized circuit fails gracefully instead of aborting).
-    pub fn try_zeroed(num_qubits: u32, seed: u64) -> VmResult<Self> {
+impl<F: Amplitude> StateVectorSim<F> {
+    /// A simulator of `num_qubits` qubits in |0…0⟩, measuring with the
+    /// [`DEFAULT_SEED`](crate::DEFAULT_SEED).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::TooManyQubits`] if the `2^num_qubits` amplitudes would
+    /// take more than 16 GiB or can't be allocated (the allocation is
+    /// fallible, so an oversized program fails instead of aborting).
+    pub fn new(num_qubits: u32) -> Result<Self> {
         let state = StateVector::try_zero(num_qubits as usize).ok_or_else(|| {
-            VmError::new(VmErrorKind::TooManyQubits {
+            Error::new(ErrorKind::TooManyQubits {
                 requested: num_qubits,
             })
         })?;
         Ok(StateVectorSim {
             state,
-            rng: Rng::new(seed),
+            rng: Rng::new(crate::DEFAULT_SEED),
             parallel: false,
         })
     }
 
-    /// Enable (or disable) the rayon-parallel gate kernel. Without the
-    /// `parallel` build feature there is no such kernel and gates run
-    /// serially either way; [`BackendSpec`](crate::BackendSpec) reports that
-    /// as an unavailable backend instead.
+    /// Seed the measurement RNG: a given seed reproduces a run.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.rng = Rng::new(seed);
+        self
+    }
+
+    /// Apply gates with the multi-threaded (rayon) kernel.
+    #[cfg(feature = "parallel")]
     pub fn with_parallel(mut self, parallel: bool) -> Self {
         self.parallel = parallel;
         self
     }
 
     /// Continue an existing measurement RNG stream instead of the seed's.
-    pub(crate) fn with_rng(mut self, rng: Rng) -> Self {
+    pub(crate) fn set_rng(&mut self, rng: Rng) {
         self.rng = rng;
-        self
     }
 
     /// Apply a gate, dispatching to the parallel kernel when enabled.
@@ -76,13 +83,23 @@ impl<F: Float + Send + Sync> StateVectorSim<F> {
     /// measurement with no RNG. Used to replay a recorded measurement
     /// deterministically (e.g. when the auto-routing backend converts a
     /// stabilizer state to a state vector).
-    pub fn project(&mut self, qubit: u32, outcome: bool) {
+    pub(crate) fn project(&mut self, qubit: u32, outcome: bool) {
         measure::project(self.state.state_mut(), qubit, outcome);
     }
 }
 
+impl<F: Amplitude> std::fmt::Debug for StateVectorSim<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StateVectorSim")
+            .field("num_qubits", &self.state.size())
+            .field("precision", &std::any::type_name::<F>())
+            .field("parallel", &self.parallel)
+            .finish_non_exhaustive()
+    }
+}
+
 #[async_trait(?Send)]
-impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
+impl<F: Amplitude> QuantumBackend for StateVectorSim<F> {
     fn num_qubits(&self) -> u32 {
         self.state.size() as u32
     }
@@ -94,7 +111,7 @@ impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
         phi: f64,
         lambda: f64,
         m: &GateModifiers,
-    ) -> KindResult<()> {
+    ) -> Result<(), ErrorKind> {
         let mut g = Gate::new(Unitary::new(
             Self::cast(theta),
             Self::cast(phi),
@@ -113,17 +130,21 @@ impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
         Ok(())
     }
 
-    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+    fn gphase(&mut self, gamma: f64) -> Result<(), ErrorKind> {
         self.state.gphase(Self::cast(gamma));
         Ok(())
     }
 
-    async fn measure(&mut self, qubit: u32) -> bool {
-        measure::measure(self.state.state_mut(), qubit, &mut self.rng)
+    async fn measure(&mut self, qubit: u32) -> Result<bool, ErrorKind> {
+        Ok(measure::measure(
+            self.state.state_mut(),
+            qubit,
+            &mut self.rng,
+        ))
     }
 
-    async fn reset(&mut self, qubit: u32) {
-        if self.measure(qubit).await {
+    async fn reset(&mut self, qubit: u32) -> Result<(), ErrorKind> {
+        if self.measure(qubit).await? {
             // U(π, 0, π) is i·X: Pauli-X up to a global phase of i.
             let x = Unitary::new(
                 Self::cast(std::f64::consts::PI),
@@ -132,9 +153,10 @@ impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
             );
             self.apply_gate(&Gate::new(x), qubit as usize);
         }
+        Ok(())
     }
 
-    fn reset_state(&mut self) -> KindResult<()> {
+    fn reset_state(&mut self) -> Result<(), ErrorKind> {
         // Direct re-zero on the existing buffer.
         self.state.zero_in_place();
         Ok(())
@@ -165,14 +187,22 @@ mod tests {
     fn reset_state_rezeros() {
         pollster::block_on(async {
             let none = GateModifiers::none();
-            let mut sim = StateVectorSim::<f64>::try_zeroed(2, 7).unwrap();
+            let mut sim = StateVectorSim::<f64>::new(2)
+                .map(|s| s.with_seed(7))
+                .unwrap();
             // X on qubit 0 (U(π,0,π)) → |01>; q0 measures 1 deterministically.
             sim.u(0, PI, 0.0, PI, &none).unwrap();
-            assert!(sim.measure(0).await, "X|0⟩ measures 1");
+            assert!(sim.measure(0).await.unwrap(), "X|0⟩ measures 1");
             // A fresh shot: re-zero, then both qubits measure 0.
             sim.reset_state().unwrap();
-            assert!(!sim.measure(0).await, "reset_state returns q0 to |0⟩");
-            assert!(!sim.measure(1).await, "reset_state returns q1 to |0⟩");
+            assert!(
+                !sim.measure(0).await.unwrap(),
+                "reset_state returns q0 to |0⟩"
+            );
+            assert!(
+                !sim.measure(1).await.unwrap(),
+                "reset_state returns q1 to |0⟩"
+            );
         })
     }
 
@@ -181,11 +211,16 @@ mod tests {
     fn measure_all_reads_register() {
         pollster::block_on(async {
             let none = GateModifiers::none();
-            let mut sim = StateVectorSim::<f64>::try_zeroed(3, 1).unwrap();
+            let mut sim = StateVectorSim::<f64>::new(3)
+                .map(|s| s.with_seed(1))
+                .unwrap();
             // X on q0 and q2 → |q2 q1 q0> = |101>.
             sim.u(0, PI, 0.0, PI, &none).unwrap();
             sim.u(2, PI, 0.0, PI, &none).unwrap();
-            assert_eq!(sim.measure_all(&[0, 1, 2]).await, vec![true, false, true]);
+            assert_eq!(
+                sim.measure_all(&[0, 1, 2]).await.unwrap(),
+                vec![true, false, true]
+            );
         })
     }
 
@@ -195,11 +230,13 @@ mod tests {
     fn measure_all_bell_is_correlated() {
         pollster::block_on(async {
             for seed in 0..8u64 {
-                let mut sim = StateVectorSim::<f64>::try_zeroed(2, seed).unwrap();
+                let mut sim = StateVectorSim::<f64>::new(2)
+                    .map(|s| s.with_seed(seed))
+                    .unwrap();
                 sim.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
                     .unwrap(); // H q0
                 sim.u(1, PI, 0.0, PI, &GateModifiers::ctrl(&[0])).unwrap(); // CX 0->1
-                let out = sim.measure_all(&[0, 1]).await;
+                let out = sim.measure_all(&[0, 1]).await.unwrap();
                 assert_eq!(out[0], out[1], "Bell measurement must agree (seed {seed})");
             }
         })

@@ -13,11 +13,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use oqi_compile::classical::{Value, ValueTy};
 use oqi_compile::{Compiler, IncludeResolver, LibOnlyResolver, Program, TableTimings};
 use oqi_vm::{
-    BackendSpec, DEFAULT_SEED, ExternProvider, HostValue, KindResult, QuantumBackend, SumPolicy,
-    Vm, VmErrorKind,
+    BackendSpec, DEFAULT_SEED, ErrorKind, ExternProvider, HostValue, Runner, Value, ValueTy,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
@@ -300,24 +298,18 @@ struct RunOutput {
     statevector: Option<Vec<f64>>,
 }
 
-/// Everything [`run`] and [`sample`] share: the parsed options, the compiled
-/// module, and the pieces a [`Vm`] is assembled from.
+/// The options [`run`] and [`sample`] share, parsed, with the program they
+/// run.
 struct Session {
     module: Program,
     /// The source text errors render against (empty for bytecode).
     source: String,
-    inputs: Vec<(String, HostValue)>,
-    externs: JsExterns,
-    backend: Box<dyn QuantumBackend>,
-    /// The backend configuration that was actually built.
-    built: BackendSpec,
-    seed: u64,
-    statevector: bool,
-    shots: u32,
+    opts: RunOptions,
+    backend: BackendSpec,
 }
 
 impl Session {
-    async fn new(program: &JsValue, options: JsValue) -> Result<Session, JsValue> {
+    fn new(program: &JsValue, options: JsValue) -> Result<Session, JsValue> {
         let invalid = |e: String| JsError::new(&format!("invalid options: {e}"));
         // An absent options object still gets every field's default.
         let options = if options.is_undefined() || options.is_null() {
@@ -327,50 +319,38 @@ impl Session {
         };
         let opts: RunOptions =
             serde_wasm_bindgen::from_value(options).map_err(|e| invalid(e.to_string()))?;
-
         let (module, source) = load(program, opts.timings.as_ref(), opts.dt.as_deref())?;
-        let externs = JsExterns::new(&module, &opts.externs)?;
 
-        let seed = opts.seed.unwrap_or(DEFAULT_SEED);
-        let mut spec: BackendSpec = opts
-            .backend
-            .as_deref()
-            .unwrap_or("scalar")
-            .parse()
-            .map_err(invalid)?;
+        let name = opts.backend.as_deref().unwrap_or("scalar");
+        let mut backend: BackendSpec = name.parse().map_err(|e| invalid(format!("{e}")))?;
         if let Some(precision) = &opts.precision {
-            spec.precision = precision.parse().map_err(invalid)?;
+            backend.precision = precision.parse().map_err(|e| invalid(format!("{e}")))?;
         }
         if let Some(max_rank) = opts.max_rank {
-            spec.sum_policy = SumPolicy {
-                max_rank,
-                ..spec.sum_policy
-            };
+            backend.sum_policy.max_rank = max_rank;
         }
         if let Some(max_bond) = opts.max_bond {
-            spec.max_bond = max_bond;
+            backend.max_bond = max_bond;
         }
-        spec.seed = seed;
-        let (backend, built) = spec
-            .build(module.qubits.num_qubits)
-            .await
-            .map_err(|e| diag_err(&e, &source))?;
-
         Ok(Session {
             module,
             source,
-            inputs: opts
-                .inputs
-                .into_iter()
-                .map(|(name, value)| (name, value.into()))
-                .collect(),
-            externs,
+            opts,
             backend,
-            built,
-            seed,
-            statevector: opts.statevector,
-            shots: opts.shots,
         })
+    }
+
+    /// A runner for the program with these options and `externs`.
+    fn runner(&mut self) -> Result<Runner<'_, JsExterns>, JsValue> {
+        let externs = JsExterns::new(&self.opts.externs)?;
+        let inputs = std::mem::take(&mut self.opts.inputs)
+            .into_iter()
+            .map(|(name, value)| (name, HostValue::from(value)));
+        Ok(Runner::new(&self.module)
+            .backend(self.backend)
+            .seed(self.opts.seed.unwrap_or(DEFAULT_SEED))
+            .inputs(inputs)
+            .externs(externs))
     }
 }
 
@@ -398,41 +378,34 @@ pub async fn run(
     #[wasm_bindgen(unchecked_param_type = "string | Uint8Array")] program: JsValue,
     options: JsValue,
 ) -> Result<JsValue, JsValue> {
-    let session = Session::new(&program, options).await?;
-    let source = &session.source;
-    let module = &session.module;
-    let mut vm = Vm::new(module, session.backend, session.externs);
-    let result = vm
-        .run_with_named_inputs(&session.inputs)
+    let mut session = Session::new(&program, options)?;
+    let statevector = session.opts.statevector;
+    let result = session
+        .runner()?
+        .statevector(statevector)
+        .run()
         .await
-        .map_err(|e| diag_err(&e, source))?;
-
-    let statevector = if session.statevector {
-        vm.backend()
-            .amplitudes()
-            .await
-            .map(|amps| amps.iter().flat_map(|c| [c.re, c.im]).collect())
-    } else {
-        None
-    };
+        .map_err(|e| diag_err(&e, &session.source))?;
+    let built = result.backend().copied().unwrap_or(session.backend);
 
     to_js(&RunOutput {
         measurements: result
-            .measurements
+            .measurements()
             .iter()
             .map(|&(qubit, value)| Measurement { qubit, value })
             .collect(),
         outputs: result
-            .outputs
-            .iter()
-            .map(|(sym, v)| OutputEntry {
-                name: module.symbol(*sym).name.clone(),
+            .outputs()
+            .map(|(name, v)| OutputEntry {
+                name: name.to_string(),
                 value: js_value(HostValue::from(v), v),
             })
             .collect(),
-        backend: session.built.name(),
-        precision: session.built.precision.as_str(),
-        statevector,
+        backend: built.name(),
+        precision: built.precision.as_str(),
+        statevector: result
+            .statevector()
+            .map(|amps| amps.iter().flat_map(|c| [c.re, c.im]).collect()),
     })
 }
 
@@ -448,35 +421,35 @@ pub async fn sample(
     #[wasm_bindgen(unchecked_param_type = "string | Uint8Array")] program: JsValue,
     options: JsValue,
 ) -> Result<JsValue, JsValue> {
-    let session = Session::new(&program, options).await?;
-    let source = &session.source;
-    let shots = session.shots;
+    let mut session = Session::new(&program, options)?;
+    let shots = session.opts.shots;
     if !(1..=MAX_SHOTS).contains(&shots) {
         let message = format!("`shots` must be between 1 and {MAX_SHOTS}, not {shots}");
         return Err(js_sys::Error::new(&message).into());
     }
-    let module = &session.module;
-    let mut vm = Vm::new(module, session.backend, session.externs);
-    let inputs =
-        oqi_vm::coerce_inputs(module, &session.inputs).map_err(|e| diag_err(&e, source))?;
-    let results = vm
-        .sample(inputs, shots, session.seed)
+    let samples = session
+        .runner()?
+        .sample(shots)
         .await
-        .map_err(|e| diag_err(&e, source))?;
+        .map_err(|e| diag_err(&e, &session.source))?;
 
     to_js(&SampleOutput {
         shots,
-        backend: session.built.name(),
-        precision: session.built.precision.as_str(),
-        histograms: oqi_vm::histograms(module, &results)
-            .into_iter()
+        backend: samples.backend().name(),
+        precision: samples.backend().precision.as_str(),
+        histograms: samples
+            .histograms()
+            .iter()
             .map(|h| Histogram {
-                name: h.name,
-                total: h.counts.iter().map(|(_, count)| count).sum(),
+                name: h.name().to_string(),
+                total: h.total(),
                 bars: h
-                    .counts
-                    .into_iter()
-                    .map(|(label, count)| HistoBar { label, count })
+                    .counts()
+                    .iter()
+                    .map(|(label, count)| HistoBar {
+                        label: label.clone(),
+                        count: *count,
+                    })
                     .collect(),
             })
             .collect(),
@@ -484,22 +457,15 @@ pub async fn sample(
 }
 
 /// Extern implementations supplied from JS (`run`'s `externs` option):
-/// name → function, plus each declared extern's return type (`None` = void)
-/// — the VM stores extern results uncast, so returns must be built with
-/// their declared type.
+/// name → function.
 struct JsExterns {
     fns: HashMap<String, js_sys::Function>,
-    ret_tys: HashMap<String, Option<ValueTy>>,
 }
 
 impl JsExterns {
     /// `externs` is the raw option value (undefined/null ⇒ none). Errors if
     /// it isn't an object or any property isn't a function.
-    fn new(module: &Program, externs: &JsValue) -> Result<Self, JsError> {
-        let ret_tys = module
-            .externs()
-            .map(|(name, ty)| (name.to_string(), ty))
-            .collect();
+    fn new(externs: &JsValue) -> Result<Self, JsError> {
         let mut fns = HashMap::new();
         if !externs.is_undefined() && !externs.is_null() {
             let obj = externs.dyn_ref::<js_sys::Object>().ok_or_else(|| {
@@ -518,18 +484,21 @@ impl JsExterns {
                 fns.insert(name, f);
             }
         }
-        Ok(JsExterns { fns, ret_tys })
+        Ok(JsExterns { fns })
     }
 }
 
 impl ExternProvider for JsExterns {
-    async fn call(&mut self, name: &str, args: &[Value]) -> KindResult<Option<Value>> {
-        // Not provided, or not a declared classical extern (ports/frames land
-        // here when no pulse handler is installed) — same error as `NoExterns`.
-        let (Some(f), Some(ret_ty)) = (self.fns.get(name), self.ret_tys.get(name)) else {
-            return Err(VmErrorKind::UnknownExtern(name.to_string()));
+    async fn call(
+        &mut self,
+        name: &str,
+        args: &[Value],
+        returns: Option<ValueTy>,
+    ) -> Result<Option<Value>, ErrorKind> {
+        let Some(f) = self.fns.get(name) else {
+            return Err(ErrorKind::UnknownExtern(name.to_string()));
         };
-        let failed = |message: String| VmErrorKind::extern_failed(name, message);
+        let failed = |message: String| ErrorKind::extern_failed(name, message);
         let js_args = js_sys::Array::new();
         for a in args {
             js_args.push(&match js_value(HostValue::extern_arg(a), a) {
@@ -549,15 +518,17 @@ impl ExternProvider for JsExterns {
                 .map_err(|e| failed(js_error_message(&e)))?,
             Err(v) => v,
         };
-        let Some(ty) = ret_ty else {
+        let Some(ty) = returns else {
             return Ok(None); // void extern: JS return value ignored
         };
         let raw: InputValue = serde_wasm_bindgen::from_value(settled).map_err(|_| {
             failed("returned a value that is not a boolean, number, or string".to_string())
         })?;
-        oqi_vm::coerce("return value", &raw.into(), *ty)
-            .map(Some)
-            .map_err(failed)
+        match HostValue::from(raw).coerce_to(ty) {
+            Ok(value) => Ok(Some(value)),
+            Err(ErrorKind::Type(message)) => Err(failed(format!("returned {message}"))),
+            Err(other) => Err(other),
+        }
     }
 }
 

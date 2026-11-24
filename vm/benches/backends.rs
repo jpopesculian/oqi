@@ -40,13 +40,20 @@ fn variants(n: u32) -> Vec<(&'static str, Maker)> {
     vec![
         (
             "scalar-f64",
-            Box::new(move || Box::new(StateVectorSim::<f64>::try_zeroed(n, SEED).unwrap())),
+            Box::new(move || {
+                Box::new(
+                    StateVectorSim::<f64>::new(n)
+                        .map(|s| s.with_seed(SEED))
+                        .unwrap(),
+                )
+            }),
         ),
         (
             "rayon-f64",
             Box::new(move || {
                 Box::new(
-                    StateVectorSim::<f64>::try_zeroed(n, SEED)
+                    StateVectorSim::<f64>::new(n)
+                        .map(|s| s.with_seed(SEED))
                         .unwrap()
                         .with_parallel(true),
                 )
@@ -54,13 +61,14 @@ fn variants(n: u32) -> Vec<(&'static str, Maker)> {
         ),
         (
             "simd-f64",
-            Box::new(move || Box::new(SimdSim::<f64>::try_zeroed(n, SEED).unwrap())),
+            Box::new(move || Box::new(SimdSim::<f64>::new(n).map(|s| s.with_seed(SEED)).unwrap())),
         ),
         (
             "rayon-simd-f64",
             Box::new(move || {
                 Box::new(
-                    SimdSim::<f64>::try_zeroed(n, SEED)
+                    SimdSim::<f64>::new(n)
+                        .map(|s| s.with_seed(SEED))
                         .unwrap()
                         .with_parallel(true),
                 )
@@ -68,17 +76,24 @@ fn variants(n: u32) -> Vec<(&'static str, Maker)> {
         ),
         (
             "mps-f64",
-            Box::new(move || Box::new(MpsSim::new(n, SEED, MpsSim::DEFAULT_MAX_BOND).unwrap())),
+            Box::new(move || Box::new(MpsSim::new(n).unwrap().with_seed(SEED))),
         ),
         (
             "scalar-f32",
-            Box::new(move || Box::new(StateVectorSim::<f32>::try_zeroed(n, SEED).unwrap())),
+            Box::new(move || {
+                Box::new(
+                    StateVectorSim::<f32>::new(n)
+                        .map(|s| s.with_seed(SEED))
+                        .unwrap(),
+                )
+            }),
         ),
         (
             "rayon-f32",
             Box::new(move || {
                 Box::new(
-                    StateVectorSim::<f32>::try_zeroed(n, SEED)
+                    StateVectorSim::<f32>::new(n)
+                        .map(|s| s.with_seed(SEED))
                         .unwrap()
                         .with_parallel(true),
                 )
@@ -86,13 +101,14 @@ fn variants(n: u32) -> Vec<(&'static str, Maker)> {
         ),
         (
             "simd-f32",
-            Box::new(move || Box::new(SimdSim::<f32>::try_zeroed(n, SEED).unwrap())),
+            Box::new(move || Box::new(SimdSim::<f32>::new(n).map(|s| s.with_seed(SEED)).unwrap())),
         ),
         (
             "rayon-simd-f32",
             Box::new(move || {
                 Box::new(
-                    SimdSim::<f32>::try_zeroed(n, SEED)
+                    SimdSim::<f32>::new(n)
+                        .map(|s| s.with_seed(SEED))
                         .unwrap()
                         .with_parallel(true),
                 )
@@ -125,7 +141,7 @@ fn bench_backends(c: &mut Criterion) {
     // force GPU completion, so we time execution rather than just command
     // submission (this adds one readback the CPU variants don't pay).
     #[cfg(feature = "gpu")]
-    match pollster::block_on(oqi_vm::GpuSim::try_zeroed(n, SEED)) {
+    match pollster::block_on(oqi_vm::GpuSim::new(n)) {
         Ok(mut sim) => {
             group.bench_function("gpu-f32", |b| {
                 b.iter(|| {

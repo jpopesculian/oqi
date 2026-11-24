@@ -12,11 +12,11 @@
 //! count, so a 150-qubit circuit with a few T gates stays exact and cheap.
 //! When the rank would exceed [`SumPolicy::max_rank`], the log is replayed
 //! onto a dense [`StateVectorSim`] if its 2ⁿ amplitudes are allocatable;
-//! otherwise the gate fails with a [`VmErrorKind::RankOverflow`].
+//! otherwise the gate fails with a [`ErrorKind::RankOverflow`].
 //!
 //! Memory is bounded like the dense simulators' (16 GiB): a tableau takes
 //! about 4n² bytes and each sum term 3n², so `AutoSim` refuses more than
-//! about 65 000 qubits with [`VmErrorKind::TooManyQubits`], and the term
+//! about 65 000 qubits with [`ErrorKind::TooManyQubits`], and the term
 //! budget shrinks below [`SumPolicy::max_rank`] when n² terms would not fit.
 //!
 //! Gates arrive as `U(θ,φ,λ)`/`gphase` (the compiler lowers `h`/`s`/`cx`
@@ -35,7 +35,7 @@ use num_complex::Complex;
 
 use crate::backend::{BuiltinGate, GateModifiers, MAX_STATE_BYTES, QuantumBackend};
 use crate::clifford::{CliffordSink, apply_clifford_u};
-use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
+use crate::error::{Error, ErrorKind, Result};
 use crate::rng::Rng;
 use crate::sim::StateVectorSim;
 use crate::stabilizer::Tableau;
@@ -43,8 +43,9 @@ use crate::sum::SumState;
 
 use crate::DEFAULT_SEED;
 
-/// Budget for the sum-over-Cliffords tier.
-#[derive(Clone, Copy, Debug)]
+/// Budget for the sum-over-Cliffords tier of [`AutoSim`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SumPolicy {
     /// Maximum number of stabilizer terms before escalating (each
     /// non-Clifford gate multiplies the term count by 2–3).
@@ -124,23 +125,17 @@ fn rank_budget(n: u32, max_rank: usize) -> usize {
 }
 
 impl AutoSim {
-    /// A fresh simulator with `num_qubits` qubits in |0…0⟩ (default seed
-    /// and [`SumPolicy`]), or [`VmErrorKind::TooManyQubits`] if its tableau
-    /// would not fit in memory.
-    pub fn new(num_qubits: u32) -> VmResult<Self> {
-        Self::with_seed(num_qubits, DEFAULT_SEED)
-    }
-
-    /// A fresh simulator with an explicit RNG seed (for reproducible
-    /// measurement sampling).
-    pub fn with_seed(num_qubits: u32, seed: u64) -> VmResult<Self> {
-        Self::with_policy(num_qubits, seed, SumPolicy::default())
-    }
-
-    /// A fresh simulator with an explicit seed and sum-tier budget.
-    pub fn with_policy(num_qubits: u32, seed: u64, policy: SumPolicy) -> VmResult<Self> {
+    /// A simulator of `num_qubits` qubits in |0…0⟩, with the default
+    /// [`SumPolicy`] and measuring with the
+    /// [`DEFAULT_SEED`](crate::DEFAULT_SEED).
+    ///
+    /// # Errors
+    ///
+    /// [`ErrorKind::TooManyQubits`] if its stabilizer tableau (about 4n²
+    /// bits) would take more than 16 GiB.
+    pub fn new(num_qubits: u32) -> Result<Self> {
         if tableau_bytes(num_qubits.into()) > MAX_STATE_BYTES {
-            return Err(VmError::new(VmErrorKind::TooManyQubits {
+            return Err(Error::new(ErrorKind::TooManyQubits {
                 requested: num_qubits,
             }));
         }
@@ -149,10 +144,27 @@ impl AutoSim {
             mode: Mode::Stabilizer {
                 tab: Tableau::zero(num_qubits as usize),
                 log: Vec::new(),
-                rng: Rng::new(seed),
+                rng: Rng::new(DEFAULT_SEED),
             },
-            policy,
+            policy: SumPolicy::default(),
         })
+    }
+
+    /// Seed the measurement RNG: a given seed reproduces a run. The stream
+    /// carries over when the router changes tier.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        match &mut self.mode {
+            Mode::Stabilizer { rng, .. } | Mode::Sum { rng, .. } => *rng = Rng::new(seed),
+            Mode::StateVector(sv) => sv.set_rng(Rng::new(seed)),
+        }
+        self
+    }
+
+    /// Set the budget of the sum-over-Cliffords tier, and whether exceeding
+    /// it may fall back to a dense state vector.
+    pub fn with_policy(mut self, policy: SumPolicy) -> Self {
+        self.policy = policy;
+        self
     }
 
     /// The sum tier's term budget (see [`rank_budget`]).
@@ -163,7 +175,7 @@ impl AutoSim {
     /// Replay a recorded log onto a fresh state vector, or `None` if its 2ⁿ
     /// amplitudes can't be allocated (its gates themselves never fail).
     fn replay(n: u32, log: &[Op]) -> Option<StateVectorSim<f64>> {
-        let mut sv = StateVectorSim::<f64>::try_zeroed(n, DEFAULT_SEED).ok()?;
+        let mut sv = StateVectorSim::<f64>::new(n).ok()?;
         for op in log {
             match op {
                 Op::Gate(gate) => gate.apply(&mut sv).ok()?,
@@ -225,10 +237,10 @@ impl AutoSim {
 
     /// Sum → dense escalation after a gate would have grown the sum to
     /// `needed` terms, past the budget. Fails with a
-    /// [`VmErrorKind::RankOverflow`], leaving the sum state as it was, if
+    /// [`ErrorKind::RankOverflow`], leaving the sum state as it was, if
     /// the policy forbids the dense tier or its 2ⁿ amplitudes can't be
     /// allocated.
-    fn escalate(&mut self, needed: usize) -> KindResult<()> {
+    fn escalate(&mut self, needed: usize) -> Result<(), ErrorKind> {
         let Mode::Sum { log, rng, .. } = &self.mode else {
             return Ok(());
         };
@@ -238,11 +250,12 @@ impl AutoSim {
             .then(|| Self::replay(self.n, log))
             .flatten();
         match dense {
-            Some(sv) => {
-                self.mode = Mode::StateVector(sv.with_rng(rng.clone()));
+            Some(mut sv) => {
+                sv.set_rng(rng.clone());
+                self.mode = Mode::StateVector(sv);
                 Ok(())
             }
-            None => Err(VmErrorKind::RankOverflow {
+            None => Err(ErrorKind::RankOverflow {
                 rank: needed,
                 max_rank: self.max_rank(),
                 qubits: self.n,
@@ -250,13 +263,23 @@ impl AutoSim {
         }
     }
 
-    #[cfg(test)]
+    /// The tier the state is in.
     fn mode_name(&self) -> &'static str {
         match self.mode {
             Mode::Stabilizer { .. } => "stabilizer",
             Mode::Sum { .. } => "sum",
             Mode::StateVector(_) => "dense",
         }
+    }
+}
+
+impl std::fmt::Debug for AutoSim {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutoSim")
+            .field("num_qubits", &self.n)
+            .field("tier", &self.mode_name())
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
     }
 }
 
@@ -273,7 +296,7 @@ impl QuantumBackend for AutoSim {
         phi: f64,
         lambda: f64,
         m: &GateModifiers,
-    ) -> KindResult<()> {
+    ) -> Result<(), ErrorKind> {
         let max_rank = self.max_rank();
         if let Mode::Stabilizer { tab, .. } = &mut self.mode
             && !apply_clifford_u(tab, target, theta, phi, lambda, m)
@@ -307,7 +330,7 @@ impl QuantumBackend for AutoSim {
         Ok(())
     }
 
-    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+    fn gphase(&mut self, gamma: f64) -> Result<(), ErrorKind> {
         let gate = BuiltinGate::Gphase {
             gamma,
             mods: GateModifiers::none(),
@@ -325,8 +348,8 @@ impl QuantumBackend for AutoSim {
         Ok(())
     }
 
-    async fn measure(&mut self, qubit: u32) -> bool {
-        match &mut self.mode {
+    async fn measure(&mut self, qubit: u32) -> Result<bool, ErrorKind> {
+        Ok(match &mut self.mode {
             Mode::Stabilizer { tab, log, rng } => {
                 let outcome = tab.measure(qubit as usize, rng);
                 log.push(Op::Measure { qubit, outcome });
@@ -337,11 +360,11 @@ impl QuantumBackend for AutoSim {
                 log.push(Op::Measure { qubit, outcome });
                 outcome
             }
-            Mode::StateVector(sv) => sv.measure(qubit).await,
-        }
+            Mode::StateVector(sv) => sv.measure(qubit).await?,
+        })
     }
 
-    async fn reset(&mut self, qubit: u32) {
+    async fn reset(&mut self, qubit: u32) -> Result<(), ErrorKind> {
         match &mut self.mode {
             Mode::Stabilizer { tab, log, rng } => {
                 let outcome = tab.measure(qubit as usize, rng);
@@ -354,11 +377,12 @@ impl QuantumBackend for AutoSim {
                 let outcome = sum.reset(qubit as usize, rng);
                 log.push(Op::Reset { qubit, outcome });
             }
-            Mode::StateVector(sv) => sv.reset(qubit).await,
+            Mode::StateVector(sv) => sv.reset(qubit).await?,
         }
+        Ok(())
     }
 
-    fn reset_state(&mut self) -> KindResult<()> {
+    fn reset_state(&mut self) -> Result<(), ErrorKind> {
         match &mut self.mode {
             // A circuit that outgrew the exact tiers once will again: stay
             // dense rather than replay the escalation every shot.
@@ -482,20 +506,24 @@ mod tests {
             for seed in 0..12u64 {
                 let circ = random_clifford(n, 40, seed);
 
-                let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
+                let mut sv = StateVectorSim::<f64>::new(n)
+                    .map(|s| s.with_seed(0))
+                    .unwrap();
                 for &g in &circ {
                     apply(&mut sv, g);
                 }
                 let amps = sv.amplitudes().await.unwrap();
 
                 for shot in 0..16u64 {
-                    let mut auto = AutoSim::with_seed(n, seed * 1000 + shot + 1).unwrap();
+                    let mut auto = AutoSim::new(n)
+                        .map(|a| a.with_seed(seed * 1000 + shot + 1))
+                        .unwrap();
                     for &g in &circ {
                         apply(&mut auto, g);
                     }
                     let mut idx = 0usize;
                     for q in 0..n {
-                        if auto.measure(q).await {
+                        if auto.measure(q).await.unwrap() {
                             idx |= 1 << q;
                         }
                     }
@@ -518,11 +546,11 @@ mod tests {
                 // Spread seeds so the first RNG draw varies (xorshift mixes weakly
                 // across tiny sequential seeds).
                 let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
-                let mut a = AutoSim::with_seed(2, s).unwrap();
+                let mut a = AutoSim::new(2).map(|a| a.with_seed(s)).unwrap();
                 apply(&mut a, G::H(0));
                 apply(&mut a, G::Cx(0, 1));
-                let m0 = a.measure(0).await;
-                let m1 = a.measure(1).await;
+                let m0 = a.measure(0).await.unwrap();
+                let m1 = a.measure(1).await.unwrap();
                 assert_eq!(m0, m1, "bell pair uncorrelated");
                 saw_zero |= !m0;
                 saw_one |= m0;
@@ -536,11 +564,14 @@ mod tests {
     fn hzh_flips_deterministically() {
         pollster::block_on(async {
             for seed in 0..8u64 {
-                let mut a = AutoSim::with_seed(1, seed + 1).unwrap();
+                let mut a = AutoSim::new(1).map(|a| a.with_seed(seed + 1)).unwrap();
                 apply(&mut a, G::H(0));
                 apply(&mut a, G::Z(0));
                 apply(&mut a, G::H(0));
-                assert!(a.measure(0).await, "HZH|0> should always measure 1");
+                assert!(
+                    a.measure(0).await.unwrap(),
+                    "HZH|0> should always measure 1"
+                );
             }
         })
     }
@@ -573,7 +604,9 @@ mod tests {
             // A few non-Clifford gates fit comfortably in the default budget:
             // the run must stay exact in the sum tier, not go dense.
             assert_eq!(auto.mode_name(), "sum");
-            let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
+            let mut sv = StateVectorSim::<f64>::new(n)
+                .map(|s| s.with_seed(0))
+                .unwrap();
             mixed_circuit(&mut sv);
 
             let a = auto.amplitudes().await.unwrap();
@@ -595,10 +628,14 @@ mod tests {
                 max_rank: 2,
                 dense_escape: true,
             };
-            let mut auto = AutoSim::with_policy(n, DEFAULT_SEED, policy).unwrap();
+            let mut auto = AutoSim::new(n)
+                .map(|a| a.with_seed(DEFAULT_SEED).with_policy(policy))
+                .unwrap();
             mixed_circuit(&mut auto);
             assert_eq!(auto.mode_name(), "dense");
-            let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
+            let mut sv = StateVectorSim::<f64>::new(n)
+                .map(|s| s.with_seed(0))
+                .unwrap();
             mixed_circuit(&mut sv);
 
             let a = auto.amplitudes().await.unwrap();
@@ -617,20 +654,22 @@ mod tests {
             let none = GateModifiers::none();
             for seed in 0..10u64 {
                 let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
-                let mut auto = AutoSim::with_seed(3, s).unwrap();
+                let mut auto = AutoSim::new(3).map(|a| a.with_seed(s)).unwrap();
                 // Random outcome (Bell pair), then a deterministic one (X|0⟩).
                 apply(&mut auto, G::H(0));
                 apply(&mut auto, G::Cx(0, 1));
-                let o0 = auto.measure(0).await;
+                let o0 = auto.measure(0).await.unwrap();
                 apply(&mut auto, G::X(2));
-                auto.reset(2).await; // deterministic 1, recorded reset
+                auto.reset(2).await.unwrap(); // deterministic 1, recorded reset
                 assert_eq!(auto.mode_name(), "stabilizer");
                 // First non-Clifford triggers the handoff replay.
                 auto.u(1, 0.0, 0.0, FRAC_PI_4, &none).unwrap();
                 apply(&mut auto, G::H(1));
                 assert_eq!(auto.mode_name(), "sum");
 
-                let mut sv = StateVectorSim::<f64>::try_zeroed(3, 0).unwrap();
+                let mut sv = StateVectorSim::<f64>::new(3)
+                    .map(|s| s.with_seed(0))
+                    .unwrap();
                 apply(&mut sv, G::H(0));
                 apply(&mut sv, G::Cx(0, 1));
                 sv.project(0, o0);
@@ -660,7 +699,9 @@ mod tests {
                     dense_escape: true,
                 };
                 let none = GateModifiers::none();
-                let mut auto = AutoSim::with_policy(16, seed, policy).unwrap();
+                let mut auto = AutoSim::new(16)
+                    .map(|a| a.with_seed(seed).with_policy(policy))
+                    .unwrap();
                 for q in 0..16 {
                     apply(&mut auto, G::H(q));
                 }
@@ -668,7 +709,9 @@ mod tests {
                     auto.u(q, 0.0, 0.0, FRAC_PI_4, &none).unwrap(); // T
                 }
                 assert_eq!(auto.mode_name(), "dense");
-                auto.measure_all(&(0..16).collect::<Vec<_>>()).await
+                auto.measure_all(&(0..16).collect::<Vec<_>>())
+                    .await
+                    .unwrap()
             }
             assert_eq!(outcomes(7).await, outcomes(7).await);
             assert_ne!(outcomes(7).await, outcomes(0x9E3779B97F4A7C15).await);
@@ -685,7 +728,9 @@ mod tests {
                 max_rank: 8,
                 dense_escape: true,
             };
-            let mut auto = AutoSim::with_policy(n, DEFAULT_SEED, policy).unwrap();
+            let mut auto = AutoSim::new(n)
+                .map(|a| a.with_seed(DEFAULT_SEED).with_policy(policy))
+                .unwrap();
             let none = GateModifiers::none();
             apply(&mut auto, G::X(1));
             let t = |auto: &mut AutoSim| auto.u(0, 0.0, 0.0, FRAC_PI_4, &none);
@@ -693,7 +738,7 @@ mod tests {
                 t(&mut auto).unwrap(); // rank 2, 4, 8
             }
             match t(&mut auto) {
-                Err(VmErrorKind::RankOverflow {
+                Err(ErrorKind::RankOverflow {
                     rank,
                     max_rank,
                     qubits,
@@ -703,7 +748,10 @@ mod tests {
                 other => panic!("expected RankOverflow, got {other:?}"),
             }
             assert_eq!(auto.mode_name(), "sum");
-            assert!(auto.measure(1).await, "the state before the gate survives");
+            assert!(
+                auto.measure(1).await.unwrap(),
+                "the state before the gate survives"
+            );
         })
     }
 
@@ -714,7 +762,7 @@ mod tests {
     fn memory_bounds_the_qubits_and_the_term_budget() {
         assert!(matches!(
             AutoSim::new(1_000_000).err().map(|e| e.kind),
-            Some(VmErrorKind::TooManyQubits {
+            Some(ErrorKind::TooManyQubits {
                 requested: 1_000_000
             })
         ));

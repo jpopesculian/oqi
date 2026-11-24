@@ -11,8 +11,8 @@ use oqi_classical::{Duration, PrimitiveTy, ValueTy};
 use oqi_compile::Program;
 use oqi_compile::bytecode::{Callee, Op, ProcOwner, Terminator};
 use oqi_vm::{
-    DEFAULT_SEED, GateModifiers, KindResult, MAX_CALL_DEPTH, NoExterns, QuantumBackend,
-    StateVectorSim, Vm, VmErrorKind,
+    DEFAULT_SEED, ErrorKind, GateModifiers, MAX_CALL_DEPTH, NoExterns, QuantumBackend,
+    StateVectorSim, Vm,
 };
 
 /// Every fixture, except the two that take minutes to run in a debug build.
@@ -68,16 +68,17 @@ fn round_trip(program: &Program) -> Program {
 
 /// A seeded run, as text: measurements and outputs, or the error.
 fn run(program: &Program) -> String {
-    let sim = StateVectorSim::<f64>::try_zeroed(program.num_qubits(), DEFAULT_SEED).unwrap();
+    let sim = StateVectorSim::<f64>::new(program.num_qubits())
+        .map(|s| s.with_seed(DEFAULT_SEED))
+        .unwrap();
     let mut vm = Vm::new(program, sim, NoExterns);
     match pollster::block_on(vm.run()) {
         Ok(result) => {
             let outputs: Vec<String> = result
-                .outputs
-                .iter()
-                .map(|(symbol, value)| format!("{} = {value}", program.symbol(*symbol).name))
+                .outputs()
+                .map(|(name, value)| format!("{name} = {value}"))
                 .collect();
-            format!("{:?} {outputs:?}", result.measurements)
+            format!("{:?} {outputs:?}", result.measurements().to_vec())
         }
         Err(e) => format!("error: {e}"),
     }
@@ -121,10 +122,12 @@ fn recursion_deeper_than_the_limit_is_an_error() {
     );
 
     let too_deep = program(MAX_CALL_DEPTH);
-    let sim = StateVectorSim::<f64>::try_zeroed(0, 1).unwrap();
+    let sim = StateVectorSim::<f64>::new(0)
+        .map(|s| s.with_seed(1))
+        .unwrap();
     let err = pollster::block_on(Vm::new(&too_deep, sim, NoExterns).run()).unwrap_err();
     assert!(
-        matches!(err.kind, VmErrorKind::CallDepth { limit } if limit == MAX_CALL_DEPTH),
+        matches!(err.kind, ErrorKind::CallDepth { limit } if limit == MAX_CALL_DEPTH),
         "{err}"
     );
 }
@@ -171,11 +174,11 @@ struct Budget {
 }
 
 impl Budget {
-    fn spend(&mut self) -> KindResult<()> {
+    fn spend(&mut self) -> Result<(), ErrorKind> {
         self.left = self
             .left
             .checked_sub(1)
-            .ok_or_else(|| VmErrorKind::Backend("gate budget spent".into()))?;
+            .ok_or_else(|| ErrorKind::Backend("gate budget spent".into()))?;
         Ok(())
     }
 }
@@ -192,21 +195,21 @@ impl QuantumBackend for Budget {
         phi: f64,
         lambda: f64,
         modifiers: &GateModifiers,
-    ) -> KindResult<()> {
+    ) -> Result<(), ErrorKind> {
         self.spend()?;
         self.sim.u(target, theta, phi, lambda, modifiers)
     }
-    fn gphase(&mut self, gamma: f64) -> KindResult<()> {
+    fn gphase(&mut self, gamma: f64) -> Result<(), ErrorKind> {
         self.spend()?;
         self.sim.gphase(gamma)
     }
-    async fn measure(&mut self, qubit: u32) -> bool {
+    async fn measure(&mut self, qubit: u32) -> Result<bool, ErrorKind> {
         self.sim.measure(qubit).await
     }
-    async fn reset(&mut self, qubit: u32) {
+    async fn reset(&mut self, qubit: u32) -> Result<(), ErrorKind> {
         self.sim.reset(qubit).await
     }
-    fn reset_state(&mut self) -> KindResult<()> {
+    fn reset_state(&mut self) -> Result<(), ErrorKind> {
         self.sim.reset_state()
     }
     fn delay(&mut self, qubits: &[u32], duration: Duration) {
@@ -331,7 +334,7 @@ fn decode_and_run(bytes: &[u8]) -> bool {
     if !finishes_quickly(&program) {
         return false;
     }
-    let Ok(sim) = StateVectorSim::<f64>::try_zeroed(program.num_qubits(), 7) else {
+    let Ok(sim) = StateVectorSim::<f64>::new(program.num_qubits()).map(|s| s.with_seed(7)) else {
         return false;
     };
     let backend = Budget { sim, left: 10_000 };
@@ -407,7 +410,8 @@ fn a_qubit_used_twice_in_one_gate_is_an_error() {
         let program = oqi_compile::compile(source).unwrap();
         for name in ["scalar", "simd", "auto", "mps"] {
             let spec: oqi_vm::BackendSpec = name.parse().unwrap();
-            let (backend, _) = pollster::block_on(spec.build(program.num_qubits())).unwrap();
+            let (backend, _) =
+                pollster::block_on(spec.build(program.num_qubits(), oqi_vm::DEFAULT_SEED)).unwrap();
             let err = pollster::block_on(Vm::new(&program, backend, NoExterns).run())
                 .err()
                 .unwrap_or_else(|| panic!("{name}: {source} ran"));

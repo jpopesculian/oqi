@@ -5,12 +5,13 @@ use std::path::{Component, Path, PathBuf};
 
 use oqi_lex::Span;
 
+use crate::classical::FloatWidth;
 use crate::classical::{Value, ValueTy};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::scope::ScopeId;
 use crate::sir::{CallTarget, Intrinsic};
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
-use crate::types::{CompileOptions, FloatWidth, Type};
+use crate::types::{CompileOptions, Type};
 
 #[derive(Debug, Clone)]
 pub enum IncludeSource {
@@ -18,7 +19,16 @@ pub enum IncludeSource {
     Path(PathBuf),
 }
 
+/// Where `include` statements get their text.
+///
+/// `include "stdgates.inc";` names a library ([`resolve_lib`](Self::resolve_lib));
+/// any other name is a path, relative to the including file
+/// ([`resolve_path`](Self::resolve_path)). The defaults read paths from the
+/// filesystem and serve the embedded OpenQASM standard library, so a
+/// resolver only overrides what it needs: serving files from memory, say, or
+/// refusing file includes ([`LibOnlyResolver`]).
 pub trait IncludeResolver {
+    /// The text of the file at `path`. Defaults to reading it from disk.
     fn resolve_path(
         &self,
         path: &Path,
@@ -26,6 +36,8 @@ pub trait IncludeResolver {
         Ok(Cow::Owned(std::fs::read_to_string(path)?))
     }
 
+    /// The text of the library `lib`. Defaults to serving the OpenQASM 3
+    /// standard library, `stdgates.inc`.
     fn resolve_lib(
         &self,
         lib: &str,
@@ -37,6 +49,25 @@ pub trait IncludeResolver {
     }
 }
 
+impl<T: IncludeResolver + ?Sized> IncludeResolver for &T {
+    fn resolve_path(
+        &self,
+        path: &Path,
+    ) -> std::result::Result<Cow<'_, str>, Box<dyn std::error::Error>> {
+        (**self).resolve_path(path)
+    }
+
+    fn resolve_lib(
+        &self,
+        lib: &str,
+    ) -> std::result::Result<Cow<'_, str>, Box<dyn std::error::Error>> {
+        (**self).resolve_lib(lib)
+    }
+}
+
+/// Reads included files from disk and serves the standard library: the
+/// [`IncludeResolver`] defaults, and what [`Compiler`](crate::Compiler) uses
+/// unless told otherwise.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultIncludeResolver;
 
@@ -61,7 +92,7 @@ impl IncludeResolver for LibOnlyResolver {
     }
 }
 
-pub struct Resolver {
+pub struct Resolver<'r> {
     symbols: SymbolTable,
     /// Number of non-global scopes opened so far; the next [`ScopeId`].
     scope_count: usize,
@@ -83,11 +114,11 @@ pub struct Resolver {
     in_definition: bool,
     include_stack: Vec<PathBuf>,
     options: CompileOptions,
-    include_resolver: Box<dyn IncludeResolver>,
+    include_resolver: &'r dyn IncludeResolver,
 }
 
-impl Resolver {
-    pub fn new(include_resolver: impl IncludeResolver + 'static, options: CompileOptions) -> Self {
+impl<'r> Resolver<'r> {
+    pub fn new(include_resolver: &'r dyn IncludeResolver, options: CompileOptions) -> Self {
         let mut symbols = SymbolTable::new();
         let mut global = HashMap::new();
 
@@ -157,7 +188,7 @@ impl Resolver {
             in_definition: false,
             include_stack: Vec::new(),
             options,
-            include_resolver: Box::new(include_resolver),
+            include_resolver,
         }
     }
 
@@ -392,8 +423,8 @@ mod tests {
         oqi_lex::Span::new(start, end)
     }
 
-    fn default_resolver() -> Resolver {
-        Resolver::new(DefaultIncludeResolver, CompileOptions::default())
+    fn default_resolver() -> Resolver<'static> {
+        Resolver::new(&DefaultIncludeResolver, CompileOptions::default())
     }
 
     #[test]
@@ -689,7 +720,7 @@ mod tests {
             source_name: Some(PathBuf::from("/project/src/main.qasm")),
             ..Default::default()
         };
-        let r = Resolver::new(DefaultIncludeResolver, opts);
+        let r = Resolver::new(&DefaultIncludeResolver, opts);
         let source = r
             .classify_include("./utils.qasm", Default::default())
             .unwrap();
@@ -705,7 +736,7 @@ mod tests {
             source_name: Some(PathBuf::from("/project/root/main.qasm")),
             ..Default::default()
         };
-        let mut r = Resolver::new(DefaultIncludeResolver, opts);
+        let mut r = Resolver::new(&DefaultIncludeResolver, opts);
         r.push_include(PathBuf::from("/project/file/1/path"))
             .unwrap();
         let source = r.classify_include("../2/path", Default::default()).unwrap();
@@ -721,7 +752,7 @@ mod tests {
         let span = span(7, 18);
         let err = r.classify_include("./other.qasm", span).unwrap_err();
         assert!(matches!(err.kind, ErrorKind::MissingSourceContext));
-        assert_eq!(err.span, span);
+        assert_eq!(err.span, Some(span));
     }
 
     #[test]

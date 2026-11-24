@@ -1,14 +1,13 @@
-//! The crate's public entry points: `compile`, `compile_source`, and the
-//! option helpers the front doors share.
+//! The crate's public entry points: `compile`, `Compiler`, and the option
+//! helpers the front doors share.
 
 use std::borrow::Cow;
 use std::path::Path;
 
 use oqi_compile::classical::{DurationUnit, ValueTy, iw};
-use oqi_compile::symbol::SymbolKind;
 use oqi_compile::{
-    CompileOptions, DefaultIncludeResolver, ErrorKind, IncludeResolver, LibOnlyResolver,
-    SystemWidth, compile, compile_source, parse_dt,
+    Compiler, ErrorKind, IncludeResolver, LibOnlyResolver, SymbolKind, SystemWidth, TableTimings,
+    compile, parse_dt,
 };
 use oqi_diagnostics::Diagnostic;
 
@@ -20,13 +19,7 @@ const TIMED: &str = r#"
 
 #[test]
 fn compile_goes_from_source_to_bytecode() {
-    let module = compile(
-        "input int[32] n; output int[32] m; m = n + 1;",
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        None,
-    )
-    .expect("compile");
+    let module = compile("input int[32] n; output int[32] m; m = n + 1;").expect("compile");
     assert_eq!(module.inputs.len(), 1);
     assert_eq!(module.outputs.len(), 1);
 
@@ -41,13 +34,8 @@ fn compile_goes_from_source_to_bytecode() {
 
 #[test]
 fn externs_are_listed_with_their_return_types() {
-    let module = compile(
-        "extern inc(int[32]) -> int[32]; extern log_it(int[32]);",
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        None,
-    )
-    .expect("compile");
+    let module =
+        compile("extern inc(int[32]) -> int[32]; extern log_it(int[32]);").expect("compile");
     let externs: Vec<_> = module.externs().collect();
     assert_eq!(
         externs,
@@ -57,55 +45,42 @@ fn externs_are_listed_with_their_return_types() {
 
 #[test]
 fn timings_resolve_durationof_at_compile_time() {
-    let has_durationof = |timings| {
-        let program = compile_source(
-            TIMED,
-            DefaultIncludeResolver,
-            &CompileOptions::default(),
-            timings,
-        )
-        .expect("compile");
+    let has_durationof = |compiler: Compiler<'_>| {
+        let program = compiler.compile_to_sir(TIMED).expect("compile");
         format!("{program}").contains("durationof")
+    };
+    let table = |entries: &[(&str, &str)]| {
+        TableTimings::from_str_entries(
+            entries.iter().copied(),
+            &Compiler::new().compile_options().dt,
+        )
     };
     // Left for the VM without timings; folded to a constant with them (an
     // empty table still enables the pass).
-    assert!(has_durationof(None));
-    assert!(!has_durationof(Some(&[("x", "20ns")])));
-    assert!(!has_durationof(Some(&[])));
+    assert!(has_durationof(Compiler::new()));
+    let x = table(&[("x", "20ns")]).expect("table");
+    assert!(!has_durationof(Compiler::new().timings(x)));
+    assert!(!has_durationof(
+        Compiler::new().timings(TableTimings::new())
+    ));
 
-    let err = compile(
-        TIMED,
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        Some(&[("x", "abc")]),
-    )
-    .err()
-    .expect("bad timing literal");
+    let err = table(&[("x", "abc")]).expect_err("bad timing literal");
     assert!(matches!(err.kind, ErrorKind::InvalidLiteral(_)));
 }
 
 #[test]
 fn lib_only_resolver_serves_stdgates_but_no_files() {
     // Relative includes resolve against the root source's name.
-    let options = CompileOptions {
-        source_name: Some("<source>".into()),
-        ..Default::default()
-    };
-    compile(
-        r#"include "stdgates.inc";"#,
-        LibOnlyResolver,
-        &options,
-        None,
-    )
-    .expect("stdgates");
-    let err = compile(
-        r#"include "./other.qasm";"#,
-        LibOnlyResolver,
-        &options,
-        None,
-    )
-    .err()
-    .expect("file include");
+    let compiler = Compiler::new()
+        .include_resolver(&LibOnlyResolver)
+        .source_name("<source>");
+    compiler
+        .compile(r#"include "stdgates.inc";"#)
+        .expect("stdgates");
+    let err = compiler
+        .compile(r#"include "./other.qasm";"#)
+        .err()
+        .expect("file include");
     assert!(
         err.to_string().contains("file includes are not supported"),
         "{err}"
@@ -127,31 +102,18 @@ fn plain_types_are_64_bits_wide_on_every_host() {
     // Not the compiler host's pointer width: the same program must mean the
     // same thing natively and on wasm32.
     assert_eq!(SystemWidth::default(), SystemWidth::B64);
-    let module = compile(
-        "input int n;",
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        None,
-    )
-    .expect("compile");
+    let module = compile("input int n;").expect("compile");
     assert_eq!(module.input("n").unwrap().1, ValueTy::int(iw(64)));
 }
 
 #[test]
 fn syntax_errors_keep_their_code_and_location() {
     let source = "int x = ;";
-    let err = compile(
-        source,
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        None,
-    )
-    .err()
-    .expect("a compile error");
+    let err = compile(source).err().expect("a compile error");
     assert!(matches!(err.kind, ErrorKind::Syntax(_)), "{:?}", err.kind);
     assert_eq!(err.code().to_string(), "S0001");
     assert_eq!(err.to_string(), "expected expression");
-    assert_eq!(&source[err.span], ";");
+    assert_eq!(&source[err.span.unwrap()], ";");
 }
 
 /// Serves the same broken source for every file, and another for every
@@ -172,38 +134,34 @@ impl IncludeResolver for BrokenIncludes {
 
 #[test]
 fn a_syntax_error_in_an_included_file_points_into_that_file() {
-    let options = CompileOptions {
-        source_name: Some("/project/main.qasm".into()),
-        ..Default::default()
-    };
-    let err = compile(r#"include "./other.qasm";"#, BrokenIncludes, &options, None)
+    let err = Compiler::new()
+        .include_resolver(&BrokenIncludes)
+        .source_name("/project/main.qasm")
+        .compile(r#"include "./other.qasm";"#)
         .err()
         .expect("a compile error");
     assert_eq!(err.code().to_string(), "S0001");
     assert_eq!(err.to_string(), "expected expression");
     assert_eq!(err.path.as_deref(), Some(Path::new("/project/other.qasm")));
-    assert_eq!(&BROKEN_FILE[err.span], ";");
+    assert_eq!(&BROKEN_FILE[err.span.unwrap()], ";");
 }
 
 #[test]
 fn a_syntax_error_in_a_library_is_reported_at_the_include() {
     // A library is not a file a diagnostic could point into.
     let source = r#"qubit q; include "broken.inc";"#;
-    let err = compile(source, BrokenIncludes, &CompileOptions::default(), None)
+    let err = Compiler::new()
+        .include_resolver(&BrokenIncludes)
+        .compile(source)
         .err()
         .expect("a compile error");
     assert_eq!(err.code().to_string(), "S0001");
     assert_eq!(err.to_string(), "in include 'broken.inc': expected ';'");
-    assert_eq!(&source[err.span], r#"include "broken.inc";"#);
+    assert_eq!(&source[err.span.unwrap()], r#"include "broken.inc";"#);
 }
 
-fn compile_default(src: &str) -> oqi_compile::Result<oqi_compile::BcModule> {
-    compile(
-        src,
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        None,
-    )
+fn compile_default(src: &str) -> oqi_compile::Result<oqi_compile::Program> {
+    compile(src)
 }
 
 #[test]

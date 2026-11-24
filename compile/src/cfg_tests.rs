@@ -4,15 +4,15 @@ use std::path::Path;
 use crate::cfg::{self, BasicBlockId, Cfg, ProgramCfgs, Terminator};
 use crate::classical::{IntWidth, ValueTy};
 use crate::error::{CompileError, ErrorKind};
-use crate::lower::compile_source;
+use crate::lower::compile_to_sir;
 use crate::resolve::DefaultIncludeResolver;
 use crate::sir;
 use crate::types::{CompileOptions, Type};
 
 fn compile(src: &str) -> sir::Program {
-    compile_source(
+    compile_to_sir(
         src,
-        DefaultIncludeResolver,
+        &DefaultIncludeResolver,
         &CompileOptions::default(),
         None,
     )
@@ -27,7 +27,8 @@ fn compile_fixture(name: &str) -> sir::Program {
         source_name: Some(path.to_path_buf()),
         ..Default::default()
     };
-    compile_source(&source, DefaultIncludeResolver, &options, None).expect("compile should succeed")
+    compile_to_sir(&source, &DefaultIncludeResolver, &options, None)
+        .expect("compile should succeed")
 }
 
 fn build(p: &sir::Program) -> ProgramCfgs {

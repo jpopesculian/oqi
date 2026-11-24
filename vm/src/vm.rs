@@ -1,6 +1,6 @@
 //! The bytecode interpreter.
 //!
-//! Executes a [`BcModule`] by walking each procedure's basic blocks and
+//! Executes a [`Program`] by walking each procedure's basic blocks and
 //! following terminators. Classical work is delegated to `oqi-classical`
 //! (operators, `Value::cast`, array indexing); quantum work to a
 //! pluggable [`QuantumBackend`]; `extern` calls to an [`ExternProvider`].
@@ -13,11 +13,10 @@ use oqi_classical::{
     PrimitiveTy, Scalar, Value, ValueTy, iw,
 };
 use oqi_compile::bytecode::{
-    BcAliasSegment, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCallTarget, BcGateModifier,
-    BcIndex, BcModule, BcOp, BcOperand, BcTerminator, BlockId, ProcId, ProcOwner, QubitSource, Reg,
-    is_sample_safe,
+    AliasSegment, BlockId, CalArg, CalBody, CalOperand, CalTarget, Callee, Modifier, Op, Operand,
+    ProcId, ProcOwner, Program, QubitSource, Reg, Subscript, Terminator, is_sample_safe,
 };
-use oqi_compile::symbol::{SymbolId, SymbolKind};
+use oqi_compile::{SymbolId, SymbolKind};
 use oqi_lex::Span;
 
 use crate::backend::{BuiltinGate, GateModifiers, QuantumBackend};
@@ -32,8 +31,8 @@ pub struct RunResult {
     /// Measurement outcomes in execution order: (global qubit index, bit).
     pub measurements: Vec<(u32, bool)>,
     /// Named program outputs and their final values. Each `SymbolId`
-    /// resolves to a name via [`BcModule::symbol`]. See
-    /// [`BcModule::outputs`] for the selection rule.
+    /// resolves to a name via [`Program::symbol`]. See
+    /// [`Program::outputs`] for the selection rule.
     pub outputs: Vec<(SymbolId, Value)>,
 }
 
@@ -43,9 +42,9 @@ struct Frame {
     /// Register file, indexed by [`Reg`].
     regs: Vec<Option<Value>>,
     /// Frame-local qubit slots, indexed by slot id (size
-    /// `BcProcedure::num_qubit_slots`). Slots `[0, n_qubit_params)` hold
+    /// `Procedure::num_qubit_slots`). Slots `[0, n_qubit_params)` hold
     /// the bound qubit parameters; the rest hold runtime aliases,
-    /// populated by [`BcOp::AliasBind`](oqi_compile::bytecode::BcOp) as
+    /// populated by [`Op::AliasBind`](oqi_compile::bytecode::Op) as
     /// the body runs. Each slot holds resolved global qubit indices.
     slots: Vec<Vec<u32>>,
     /// Modifier context (controls / power) inherited by gate calls in
@@ -55,7 +54,7 @@ struct Frame {
 
 /// State of an active `durationof` timing pass: quantum side effects
 /// are suppressed and elapsed time accumulates here instead (see the
-/// `BcOp::DurationOf` arm of `exec_op`). Frames and the qubit timeline
+/// `Op::DurationOf` arm of `exec_op`). Frames and the qubit timeline
 /// are modeled as independent parallel timelines; the pass's result is
 /// their maximum.
 struct TimingState {
@@ -117,13 +116,13 @@ impl TimingState {
 /// A virtual machine over a bytecode module with a chosen quantum
 /// backend and extern provider.
 pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
-    module: &'m BcModule,
+    module: &'m Program,
     backend: B,
     externs: E,
     gate_procs: HashMap<SymbolId, ProcId>,
     sub_procs: HashMap<SymbolId, ProcId>,
     /// Dispatchable defcal candidates — indexes into
-    /// [`BcModule::calibrations`] — gate defcals grouped by target gate
+    /// [`Program::calibrations`] — gate defcals grouped by target gate
     /// symbol, measure/reset defcals as flat lists. Only OpenPulse
     /// bodies whose args are all plain `Param`s are dispatchable
     /// (measure additionally requires a return type).
@@ -179,7 +178,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// program's `extern` functions. The backend must have at least as many
     /// qubits as the program uses (a run fails otherwise) and should be in
     /// |0…0⟩; every run after the first resets it there.
-    pub fn new(module: &'m BcModule, backend: B, externs: E) -> Self {
+    pub fn new(module: &'m Program, backend: B, externs: E) -> Self {
         let mut gate_procs = HashMap::new();
         let mut sub_procs = HashMap::new();
         for (i, proc) in module.procedures.iter().enumerate() {
@@ -197,18 +196,18 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         let mut cal_measures = Vec::new();
         let mut cal_resets = Vec::new();
         for (i, cal) in module.calibrations.iter().enumerate() {
-            let dispatchable = matches!(cal.body, BcCalBody::OpenPulse(_))
-                && cal.args.iter().all(|a| matches!(a, BcCalArg::Param(_)));
+            let dispatchable = matches!(cal.body, CalBody::OpenPulse(_))
+                && cal.args.iter().all(|a| matches!(a, CalArg::Param(_)));
             if !dispatchable {
                 continue;
             }
             match cal.target {
-                BcCalTarget::Gate(s) => cal_gates.entry(s).or_default().push(i as u32),
-                BcCalTarget::Measure if cal.has_return => cal_measures.push(i as u32),
+                CalTarget::Gate(s) => cal_gates.entry(s).or_default().push(i as u32),
+                CalTarget::Measure if cal.has_return => cal_measures.push(i as u32),
                 // A measure defcal without a return type has nothing to
                 // yield to `measure`; delay defcals are never dispatched.
-                BcCalTarget::Measure | BcCalTarget::Delay => {}
-                BcCalTarget::Reset => cal_resets.push(i as u32),
+                CalTarget::Measure | CalTarget::Delay => {}
+                CalTarget::Reset => cal_resets.push(i as u32),
             }
         }
         // Per-procedure block-id → position lookup, so the block-walking
@@ -454,8 +453,8 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
             self.current_span = block.span;
             match &block.terminator {
-                BcTerminator::Goto(b) => current = *b,
-                BcTerminator::Branch {
+                Terminator::Goto(b) => current = *b,
+                Terminator::Branch {
                     cond,
                     then_bb,
                     else_bb,
@@ -463,7 +462,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     let v = self.eval(frame, cond)?;
                     current = if value_bit(&v)? { *then_bb } else { *else_bb };
                 }
-                BcTerminator::Switch {
+                Terminator::Switch {
                     target,
                     cases,
                     default,
@@ -471,7 +470,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     let t = value_i128(&self.eval(frame, target)?)?;
                     current = self.switch_target(frame, t, cases, *default)?;
                 }
-                BcTerminator::Box {
+                Terminator::Box {
                     duration,
                     body,
                     after,
@@ -490,14 +489,14 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                         }
                     };
                 }
-                BcTerminator::Return(opt) => {
+                Terminator::Return(opt) => {
                     return Ok(match opt {
                         Some(o) => Some(self.eval(frame, o)?),
                         None => None,
                     });
                 }
-                BcTerminator::End => return Ok(None),
-                BcTerminator::Unreachable => return Err(VmErrorKind::Unreachable),
+                Terminator::End => return Ok(None),
+                Terminator::Unreachable => return Err(VmErrorKind::Unreachable),
             }
         }
     }
@@ -506,7 +505,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         &self,
         frame: &Frame,
         target: i128,
-        cases: &[(Vec<BcOperand>, BlockId)],
+        cases: &[(Vec<Operand>, BlockId)],
         default: BlockId,
     ) -> KindResult<BlockId> {
         for (labels, bb) in cases {
@@ -519,20 +518,20 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         Ok(default)
     }
 
-    async fn exec_op(&mut self, op: &BcOp, frame: &mut Frame) -> KindResult<()> {
+    async fn exec_op(&mut self, op: &Op, frame: &mut Frame) -> KindResult<()> {
         match op {
             // ── Classical operators ───────────────────────────────────
-            BcOp::Binary { op, dest, lhs, rhs } => {
+            Op::Binary { op, dest, lhs, rhs } => {
                 let (lhs, rhs) = (self.eval(frame, lhs)?, self.eval(frame, rhs)?);
                 self.set(frame, *dest, op.apply(lhs, rhs)?);
                 Ok(())
             }
-            BcOp::Unary { op, dest, src } => {
+            Op::Unary { op, dest, src } => {
                 let value = op.apply(self.eval(frame, src)?)?;
                 self.set(frame, *dest, value);
                 Ok(())
             }
-            BcOp::Cast {
+            Op::Cast {
                 dest,
                 target_ty,
                 src,
@@ -543,12 +542,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
 
             // ── Moves & memory ────────────────────────────────────────
-            BcOp::Move { dest, src } => {
+            Op::Move { dest, src } => {
                 let v = self.eval(frame, src)?;
                 self.set(frame, *dest, v);
                 Ok(())
             }
-            BcOp::LoadElement {
+            Op::LoadElement {
                 dest,
                 base,
                 indices,
@@ -559,7 +558,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 self.set(frame, *dest, v);
                 Ok(())
             }
-            BcOp::StoreElement {
+            Op::StoreElement {
                 target,
                 indices,
                 value,
@@ -574,7 +573,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 held.set(&idx, value)?;
                 Ok(())
             }
-            BcOp::Borrow {
+            Op::Borrow {
                 dest,
                 base,
                 indices,
@@ -585,20 +584,20 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 if let Some(Value::Array(array)) = held.take_if(|v| matches!(v, Value::Array(_))) {
                     *held = Some(Value::ArrayRef(array.into_ref_mut()));
                 }
-                let shared = self.eval(frame, &BcOperand::Reg(*base))?;
+                let shared = self.eval(frame, &Operand::Reg(*base))?;
                 let idx = self.eval_indices(frame, shared.ty(), indices)?;
                 let lent = shared.get(&idx)?;
                 self.set(frame, *dest, lent);
                 Ok(())
             }
-            BcOp::Release { reg } => {
+            Op::Release { reg } => {
                 if let Some(Value::ArrayRef(shared)) = &frame.regs[reg.0 as usize] {
                     let array = shared.to_owned()?;
                     self.set(frame, *reg, Value::Array(array));
                 }
                 Ok(())
             }
-            BcOp::NewArray { dest, items } => {
+            Op::NewArray { dest, items } => {
                 let aty = self.array_ty(frame, *dest)?;
                 let prims: Vec<Primitive> = items
                     .iter()
@@ -613,10 +612,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
 
             // ── Call ──────────────────────────────────────────────────
-            BcOp::Call { dest, callee, args } => self.exec_call(frame, *dest, callee, args).await,
+            Op::Call { dest, callee, args } => self.exec_call(frame, *dest, callee, args).await,
 
             // ── Quantum ops ───────────────────────────────────────────
-            BcOp::GateCall {
+            Op::GateCall {
                 gate,
                 modifiers,
                 args,
@@ -640,11 +639,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 self.current_span = call_span;
                 r
             }
-            BcOp::Measure { dest, qubit } => {
+            Op::Measure { dest, qubit } => {
                 // Defcal dispatch: `measure $n` runs a matching measure
                 // defcal, whose returned value is the measured bit.
                 if self.pulse.is_some()
-                    && let BcOperand::HardwareQubit(n) = qubit
+                    && let Operand::HardwareQubit(n) = qubit
                     && let Some(idx) = self.match_calibration(&self.cal_measures, &[*n], 0)
                 {
                     let ret = self.exec_defcal(idx, &[], &[*n], frame).await?;
@@ -696,14 +695,14 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 }
                 Ok(())
             }
-            BcOp::Reset { qubit } => {
+            Op::Reset { qubit } => {
                 // Inject (shot replay): quantum no-op.
                 if self.inject.is_some() {
                     return Ok(());
                 }
                 // Defcal dispatch: `reset $n` runs a matching reset defcal.
                 if self.pulse.is_some()
-                    && let BcOperand::HardwareQubit(n) = qubit
+                    && let Operand::HardwareQubit(n) = qubit
                     && let Some(idx) = self.match_calibration(&self.cal_resets, &[*n], 0)
                 {
                     self.exec_defcal(idx, &[], &[*n], frame).await?;
@@ -718,7 +717,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 }
                 Ok(())
             }
-            BcOp::Barrier { qubits } => {
+            Op::Barrier { qubits } => {
                 // Inject (shot replay): quantum no-op.
                 if self.inject.is_some() {
                     return Ok(());
@@ -732,7 +731,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 self.backend.barrier(&qs);
                 Ok(())
             }
-            BcOp::Delay { duration, qubits } => {
+            Op::Delay { duration, qubits } => {
                 // Inject (shot replay): quantum no-op.
                 if self.inject.is_some() {
                     return Ok(());
@@ -752,15 +751,15 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 self.backend.delay(&qs, dur);
                 Ok(())
             }
-            BcOp::Nop { .. } => Ok(()),
+            Op::Nop { .. } => Ok(()),
 
             // ── Structured / misc ──────────────────────────────────────
-            BcOp::AliasBind { slot, segments } => {
+            Op::AliasBind { slot, segments } => {
                 let mut resolved: Vec<u32> = Vec::new();
                 for seg in segments {
                     match seg {
-                        BcAliasSegment::Operand(op) => resolved.extend(self.qubits(frame, op)?),
-                        BcAliasSegment::Slice {
+                        AliasSegment::Operand(op) => resolved.extend(self.qubits(frame, op)?),
+                        AliasSegment::Slice {
                             source,
                             start,
                             step,
@@ -785,15 +784,15 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     resolved;
                 Ok(())
             }
-            BcOp::Pragma { .. } => Ok(()),
-            BcOp::CalOpaque { content } => {
+            Op::Pragma { .. } => Ok(()),
+            Op::CalOpaque { content } => {
                 if let Some(handler) = self.opaque_cal.as_mut() {
                     let text = &self.module.strings[content.0 as usize];
                     handler.cal(self.module.calibration_grammar.as_deref(), text)?;
                 }
                 Ok(())
             }
-            BcOp::CalOpenPulse { body } => {
+            Op::CalOpenPulse { body } => {
                 // Inline cal blocks execute only when a pulse handler is
                 // installed; otherwise calibrations stay dormant.
                 if self.pulse.is_some() {
@@ -805,17 +804,17 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 }
                 Ok(())
             }
-            BcOp::CalLoad { dest, symbol } => {
+            Op::CalLoad { dest, symbol } => {
                 let v = self.cal_load(*symbol)?;
                 self.set(frame, *dest, v);
                 Ok(())
             }
-            BcOp::CalStore { symbol, src } => {
+            Op::CalStore { symbol, src } => {
                 let v = self.eval(frame, src)?;
                 self.cal_values.insert(*symbol, v);
                 Ok(())
             }
-            BcOp::DurationOf { dest, body } => {
+            Op::DurationOf { dest, body } => {
                 // Run the body as a timing pass: quantum side effects
                 // are suppressed and elapsed time accumulates in a
                 // fresh [`TimingState`]. Save/restore nests correctly.
@@ -845,19 +844,19 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         &mut self,
         frame: &mut Frame,
         dest: Option<Reg>,
-        callee: &BcCallTarget,
-        args: &[BcOperand],
+        callee: &Callee,
+        args: &[Operand],
     ) -> KindResult<()> {
         let module = self.module;
         let (name, ret) = match callee {
-            BcCallTarget::Intrinsic(i) => {
+            Callee::Intrinsic(i) => {
                 let vals = self.eval_all(frame, args)?;
                 let v = i.apply(vals).ok_or_else(|| {
                     VmErrorKind::Type(format!("wrong number of arguments for `{i}`"))
                 })??;
                 (i.name(), Some(v))
             }
-            BcCallTarget::Symbol(s) => {
+            Callee::Symbol(s) => {
                 let sym = module.symbol(*s);
                 let name = sym.name.as_str();
                 let ret = if matches!(
@@ -897,12 +896,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// Array parameters are references (docs/subroutines.rst). A `readonly`
     /// one can't be told from a copy, so it is bound as one; the argument
     /// of a `mutable` one is a reference the caller made with
-    /// [`BcOp::Borrow`].
+    /// [`Op::Borrow`].
     fn bind_subroutine(
         &self,
         frame: &Frame,
         proc_id: ProcId,
-        args: &[BcOperand],
+        args: &[Operand],
     ) -> KindResult<Frame> {
         let proc = &self.module.procedures[proc_id.0 as usize];
         let mut child = self.fresh_frame(proc_id);
@@ -983,11 +982,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
             let mut exact = 0usize;
             let matches = cal.operands.iter().zip(hw).all(|(op, q)| match op {
-                BcCalOperand::Hardware(n) => {
+                CalOperand::Hardware(n) => {
                     exact += 1;
                     n == q
                 }
-                BcCalOperand::Any => true,
+                CalOperand::Any => true,
             });
             if matches && best.is_none_or(|(_, e)| exact > e) {
                 best = Some((idx, exact));
@@ -1004,11 +1003,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     async fn exec_defcal(
         &mut self,
         idx: u32,
-        args: &[BcOperand],
+        args: &[Operand],
         hw: &[u32],
         frame: &Frame,
     ) -> KindResult<Option<Value>> {
-        let BcCalBody::OpenPulse(proc_id) = self.module.calibrations[idx as usize].body else {
+        let CalBody::OpenPulse(proc_id) = self.module.calibrations[idx as usize].body else {
             return Err(VmErrorKind::Pulse(
                 "opaque defcal bodies cannot execute".into(),
             ));
@@ -1116,9 +1115,9 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     async fn exec_gate_call(
         &mut self,
         gate: SymbolId,
-        modifiers: &[BcGateModifier],
-        args: &[BcOperand],
-        qubits: &[BcOperand],
+        modifiers: &[Modifier],
+        args: &[Operand],
+        qubits: &[Operand],
         frame: &mut Frame,
     ) -> KindResult<()> {
         // Defcal dispatch: with a pulse handler installed, an unmodified
@@ -1154,14 +1153,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         let mut ctrl_kinds: Vec<bool> = Vec::new(); // true = negctrl
         for m in modifiers {
             match m {
-                BcGateModifier::Inv => power = -power,
-                BcGateModifier::Pow(e) => power *= value_f64(&self.eval(frame, e)?)?,
-                BcGateModifier::Ctrl(k) => {
-                    ctrl_kinds.extend(std::iter::repeat_n(false, *k as usize))
-                }
-                BcGateModifier::NegCtrl(k) => {
-                    ctrl_kinds.extend(std::iter::repeat_n(true, *k as usize))
-                }
+                Modifier::Inv => power = -power,
+                Modifier::Pow(e) => power *= value_f64(&self.eval(frame, e)?)?,
+                Modifier::Ctrl(k) => ctrl_kinds.extend(std::iter::repeat_n(false, *k as usize)),
+                Modifier::NegCtrl(k) => ctrl_kinds.extend(std::iter::repeat_n(true, *k as usize)),
             }
         }
         let n_ctrl = ctrl_kinds.len();
@@ -1322,7 +1317,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     }
 
     /// Resolve a list of classical operands to values.
-    fn eval_all(&self, frame: &Frame, ops: &[BcOperand]) -> KindResult<Vec<Value>> {
+    fn eval_all(&self, frame: &Frame, ops: &[Operand]) -> KindResult<Vec<Value>> {
         ops.iter().map(|op| self.eval(frame, op)).collect()
     }
 
@@ -1333,17 +1328,17 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         &self,
         frame: &Frame,
         ty: ValueTy,
-        indices: &[BcIndex],
+        indices: &[Subscript],
     ) -> KindResult<Vec<Index>> {
-        let position = |op: &BcOperand| value_isize(&self.eval(frame, op)?);
+        let position = |op: &Operand| value_isize(&self.eval(frame, op)?);
         let sizes = index_sizes(ty);
-        let resolve = |(k, index): (usize, &BcIndex)| {
+        let resolve = |(k, index): (usize, &Subscript)| {
             Ok(match index {
-                BcIndex::Item(op) => Index::Item(position(op)?),
-                BcIndex::Set(members) => {
+                Subscript::Item(op) => Index::Item(position(op)?),
+                Subscript::Set(members) => {
                     Index::Select(members.iter().map(position).collect::<KindResult<_>>()?)
                 }
-                BcIndex::Range { start, step, end } => {
+                Subscript::Range { start, step, end } => {
                     let len = *sizes.get(k).ok_or_else(|| {
                         VmErrorKind::Type(format!("`{ty}` has no dimension {k} to slice"))
                     })?;
@@ -1362,12 +1357,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     }
 
     /// Resolve a classical operand to a value.
-    fn eval(&self, frame: &Frame, op: &BcOperand) -> KindResult<Value> {
+    fn eval(&self, frame: &Frame, op: &Operand) -> KindResult<Value> {
         match op {
-            BcOperand::Reg(r) => frame.regs[r.0 as usize]
+            Operand::Reg(r) => frame.regs[r.0 as usize]
                 .clone()
                 .ok_or(VmErrorKind::UnsetRegister(r.0)),
-            BcOperand::Const(c) => Ok(self.module.constants[c.0 as usize].clone()),
+            Operand::Const(c) => Ok(self.module.constants[c.0 as usize].clone()),
             _ => Err(VmErrorKind::Type("expected a classical operand".into())),
         }
     }
@@ -1383,12 +1378,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 
     /// Resolve a qubit operand to its global qubit indices, validating that
     /// each is within the program's allocated qubit memory.
-    fn qubits(&self, frame: &Frame, op: &BcOperand) -> KindResult<Vec<u32>> {
+    fn qubits(&self, frame: &Frame, op: &Operand) -> KindResult<Vec<u32>> {
         let resolved = match op {
-            BcOperand::Qubit(i) => vec![*i],
-            BcOperand::HardwareQubit(i) => vec![*i],
-            BcOperand::Whole(source) => self.source_list(frame, source)?,
-            BcOperand::Select { source, positions } => {
+            Operand::Qubit(i) => vec![*i],
+            Operand::HardwareQubit(i) => vec![*i],
+            Operand::Whole(source) => self.source_list(frame, source)?,
+            Operand::Select { source, positions } => {
                 let bound = self.source_list(frame, source)?;
                 positions
                     .iter()
@@ -1399,7 +1394,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     })
                     .collect::<KindResult<Vec<_>>>()?
             }
-            BcOperand::Index { source, index } => {
+            Operand::Index { source, index } => {
                 let bound = self.source_list(frame, source)?;
                 let i = value_usize(&self.eval(frame, index)?)?;
                 bound
@@ -1437,7 +1432,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     }
 
     /// Resolve and flatten a list of qubit operands.
-    fn qubit_list(&self, frame: &Frame, ops: &[BcOperand]) -> KindResult<Vec<u32>> {
+    fn qubit_list(&self, frame: &Frame, ops: &[Operand]) -> KindResult<Vec<u32>> {
         let mut out = Vec::new();
         for op in ops {
             out.extend(self.qubits(frame, op)?);
@@ -1461,12 +1456,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         &self,
         frame: &Frame,
         len: usize,
-        start: Option<&BcOperand>,
-        step: Option<&BcOperand>,
-        end: Option<&BcOperand>,
+        start: Option<&Operand>,
+        step: Option<&Operand>,
+        end: Option<&Operand>,
     ) -> KindResult<Vec<usize>> {
         let len = len as i128;
-        let bound = |op: Option<&BcOperand>| -> KindResult<Option<i128>> {
+        let bound = |op: Option<&Operand>| -> KindResult<Option<i128>> {
             op.map(|op| value_i128(&self.eval(frame, op)?)).transpose()
         };
         let step = bound(step)?.unwrap_or(1);
@@ -1516,7 +1511,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 
     /// An empty qubit-slot vector sized to `proc`'s slot count. Parameter
     /// slots are filled by the caller; alias slots are filled by
-    /// [`BcOp::AliasBind`] as the body runs.
+    /// [`Op::AliasBind`] as the body runs.
     fn fresh_slots(&self, proc: ProcId) -> Vec<Vec<u32>> {
         vec![Vec::new(); self.module.procedures[proc.0 as usize].num_qubit_slots as usize]
     }
@@ -1603,25 +1598,25 @@ fn measured_value(outcomes: &[bool]) -> Value {
     Value::bitreg(reg, width)
 }
 
-fn is_qubit_operand(op: &BcOperand) -> bool {
+fn is_qubit_operand(op: &Operand) -> bool {
     matches!(
         op,
-        BcOperand::Qubit(_)
-            | BcOperand::HardwareQubit(_)
-            | BcOperand::Whole(_)
-            | BcOperand::Select { .. }
-            | BcOperand::Index { .. }
+        Operand::Qubit(_)
+            | Operand::HardwareQubit(_)
+            | Operand::Whole(_)
+            | Operand::Select { .. }
+            | Operand::Index { .. }
     )
 }
 
 /// The hardware indices of a qubit-operand list, if every operand is a
 /// literal `$n` reference — the only form defcals dispatch on
 /// (docs/pulses.rst binds calibrations to physical qubits).
-fn hardware_operands(qubits: &[BcOperand]) -> Option<Vec<u32>> {
+fn hardware_operands(qubits: &[Operand]) -> Option<Vec<u32>> {
     qubits
         .iter()
         .map(|q| match q {
-            BcOperand::HardwareQubit(n) => Some(*n),
+            Operand::HardwareQubit(n) => Some(*n),
             _ => None,
         })
         .collect()

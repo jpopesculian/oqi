@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
 use oqi_compile::classical::ValueTy;
-use oqi_compile::{BcModule, CompileOptions, DefaultIncludeResolver, IncludeResolver};
+use oqi_compile::{Compiler, DefaultIncludeResolver, IncludeResolver, Program, TableTimings};
 use oqi_format::Config;
 use oqi_vm::{
     BackendSpec, DEFAULT_SEED, HostValue, MpsSim, NoExterns, Precision, QuantumBackend, SumPolicy,
@@ -53,16 +53,11 @@ struct TimingArgs {
 
 /// What [`TimingArgs`] resolves to: the compile options, plus the timing
 /// entries when compile-time `durationof` resolution was requested.
-struct Timing {
-    options: CompileOptions,
-    entries: Option<Vec<(String, String)>>,
-}
-
 impl TimingArgs {
-    /// Compile options honoring the profile's "dt" and `--dt`, and the
-    /// timing table (file entries first, so `--timing` flags override), or
-    /// a reported failure.
-    fn resolve(&self, path: &Path) -> Result<Timing, ExitCode> {
+    /// A compiler honoring the profile's "dt" and `--dt`, and the timing
+    /// table (file entries first, so `--timing` flags override), or a
+    /// reported failure.
+    fn compiler(&self, path: &Path) -> Result<Compiler<'static>, ExitCode> {
         let fail = |msg: String| {
             eprintln!("{msg}");
             ExitCode::FAILURE
@@ -81,23 +76,19 @@ impl TimingArgs {
             }
         };
 
-        let mut options = CompileOptions {
-            source_name: Some(path.to_path_buf()),
-            ..Default::default()
-        };
+        let mut compiler = Compiler::new().source_name(path);
         if let Some(spec) = file.remove("dt") {
-            options.dt =
+            let dt =
                 oqi_compile::parse_dt(&spec).map_err(|e| fail(format!("--timings dt: {e}")))?;
+            compiler = compiler.dt(dt);
         }
         if let Some(spec) = &self.dt {
-            options.dt = oqi_compile::parse_dt(spec).map_err(|e| fail(format!("--dt: {e}")))?;
+            let dt = oqi_compile::parse_dt(spec).map_err(|e| fail(format!("--dt: {e}")))?;
+            compiler = compiler.dt(dt);
         }
 
         if !(self.resolve_durations || !self.timing.is_empty() || self.timings_file.is_some()) {
-            return Ok(Timing {
-                options,
-                entries: None,
-            });
+            return Ok(compiler);
         }
         let mut entries: Vec<(String, String)> = file.into_iter().collect();
         for spec in &self.timing {
@@ -108,10 +99,13 @@ impl TimingArgs {
             })?;
             entries.push((name.to_string(), dur.to_string()));
         }
-        Ok(Timing {
-            options,
-            entries: Some(entries),
-        })
+        let entries = entries.iter().map(|(n, d)| (n.as_str(), d.as_str()));
+        let table = TableTimings::from_str_entries(entries, &compiler.compile_options().dt)
+            .map_err(|e| {
+                oqi_diagnostics::emit(&e, path, "", &included_file);
+                ExitCode::FAILURE
+            })?;
+        Ok(compiler.timings(table))
     }
 }
 
@@ -244,12 +238,6 @@ fn read_source(path: &Path) -> Result<String, ExitCode> {
 }
 
 /// The timing entries as the borrowed pairs the compiler takes.
-fn borrowed(entries: &Option<Vec<(String, String)>>) -> Option<Vec<(&str, &str)>> {
-    entries
-        .as_ref()
-        .map(|e| e.iter().map(|(n, d)| (n.as_str(), d.as_str())).collect())
-}
-
 /// The text of a file a diagnostic points into, read the way `include`
 /// read it.
 fn included_file(path: &Path) -> Option<String> {
@@ -260,7 +248,7 @@ fn included_file(path: &Path) -> Option<String> {
 }
 
 fn compile(path: &Path, dump: bool, dump_sir: bool, timing: &TimingArgs) -> ExitCode {
-    let (source, timing) = match read_source(path).and_then(|s| Ok((s, timing.resolve(path)?))) {
+    let (source, compiler) = match read_source(path).and_then(|s| Ok((s, timing.compiler(path)?))) {
         Ok(v) => v,
         Err(code) => return code,
     };
@@ -269,12 +257,7 @@ fn compile(path: &Path, dump: bool, dump_sir: bool, timing: &TimingArgs) -> Exit
         ExitCode::FAILURE
     };
 
-    let program = match oqi_compile::compile_source(
-        &source,
-        DefaultIncludeResolver,
-        &timing.options,
-        borrowed(&timing.entries).as_deref(),
-    ) {
+    let program = match compiler.compile_to_sir(&source) {
         Ok(p) => p,
         Err(e) => return fail(e),
     };
@@ -293,11 +276,11 @@ fn compile(path: &Path, dump: bool, dump_sir: bool, timing: &TimingArgs) -> Exit
 
 async fn run(args: &RunArgs) -> ExitCode {
     let path = args.path.as_path();
-    let (source, timing) = match read_source(path).and_then(|s| Ok((s, args.timing.resolve(path)?)))
-    {
-        Ok(v) => v,
-        Err(code) => return code,
-    };
+    let (source, compiler) =
+        match read_source(path).and_then(|s| Ok((s, args.timing.compiler(path)?))) {
+            Ok(v) => v,
+            Err(code) => return code,
+        };
     let fail = |e: &dyn oqi_diagnostics::Diagnostic| {
         oqi_diagnostics::emit(e, path, &source, &included_file);
         ExitCode::FAILURE
@@ -315,12 +298,7 @@ async fn run(args: &RunArgs) -> ExitCode {
         code
     };
 
-    let module = match oqi_compile::compile(
-        &source,
-        DefaultIncludeResolver,
-        &timing.options,
-        borrowed(&timing.entries).as_deref(),
-    ) {
+    let module = match compiler.compile(&source) {
         Ok(m) => m,
         Err(e) => return fail(&e),
     };
@@ -405,7 +383,7 @@ async fn run(args: &RunArgs) -> ExitCode {
 /// coerce to each input's declared type. An array input takes a
 /// comma-separated list, optionally bracketed (`1,2,3` or `[1,2,3]`), filled
 /// row-major for multi-dimensional arrays.
-fn parse_inputs(module: &BcModule, specs: &[String]) -> Result<Vec<(String, HostValue)>, String> {
+fn parse_inputs(module: &Program, specs: &[String]) -> Result<Vec<(String, HostValue)>, String> {
     specs
         .iter()
         .map(|spec| {

@@ -5,7 +5,8 @@ use crate::classical::Value;
 use crate::scope::ScopeId;
 use crate::types::Type;
 
-/// Unique identifier for a symbol in the symbol table.
+/// A name the program declares, as an index into its symbol table
+/// ([`Program::symbol`](crate::Program::symbol)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SymbolId(pub usize);
 
@@ -29,7 +30,9 @@ pub struct Symbol {
     pub scope: Option<ScopeId>,
 }
 
+/// What a name declares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum SymbolKind {
     /// `const int[32] N = 10;`
     Const,
@@ -256,7 +259,7 @@ mod tests {
         let id = table.insert(
             "theta".to_string(),
             SymbolKind::Input,
-            Type::Classical(ValueTy::float(crate::types::FloatWidth::F64)),
+            Type::Classical(ValueTy::float(crate::classical::FloatWidth::F64)),
             span(0, 5),
             None,
         );

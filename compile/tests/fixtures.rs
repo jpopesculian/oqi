@@ -1,26 +1,17 @@
 use std::path::Path;
 
 use oqi_compile::classical::{ValueTy, iw};
-use oqi_compile::{CompileError, CompileOptions, DefaultIncludeResolver, compile_source};
+use oqi_compile::{CompileError, CompileOptions, Compiler};
 
 fn compile_fixture(name: &str) -> Result<oqi_compile::sir::Program, CompileError> {
     let path_str = format!("../fixtures/qasm/{name}");
     let path = Path::new(&path_str);
     let source = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path_str}: {e}"));
-    let options = CompileOptions {
-        source_name: Some(path.to_path_buf()),
-        ..Default::default()
-    };
-    compile_source(&source, DefaultIncludeResolver, &options, None)
+    Compiler::new().source_name(path).compile_to_sir(&source)
 }
 
 fn compile_inline(source: &str) -> Result<oqi_compile::sir::Program, CompileError> {
-    compile_source(
-        source,
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        None,
-    )
+    Compiler::new().compile_to_sir(source)
 }
 
 // ── Fixtures that must compile successfully ──────────────────────────
@@ -368,10 +359,10 @@ fn bit_bool_assignments_are_implicit() {
 
 #[test]
 fn compound_assign_with_measure_desugars() {
+    use oqi_compile::SymbolKind;
     use oqi_compile::sir::{
         Assignment, BinOp, Binary, ExprKind, LValue, Measure, MeasureExprKind, RValue, StmtKind,
     };
-    use oqi_compile::symbol::SymbolKind;
 
     let src = r#"
         qubit q;
@@ -582,7 +573,9 @@ fn classical_scalar_types() {
     );
     assert_eq!(
         sym("my_float").ty,
-        oqi_compile::types::Type::Classical(ValueTy::float(oqi_compile::types::FloatWidth::F64))
+        oqi_compile::types::Type::Classical(ValueTy::float(
+            oqi_compile::classical::FloatWidth::F64
+        ))
     );
 }
 
@@ -611,7 +604,9 @@ fn complex_type_declaration() {
     let sym = p.symbols.iter().find(|s| s.name == "c").unwrap();
     assert_eq!(
         sym.ty,
-        oqi_compile::types::Type::Classical(ValueTy::complex(oqi_compile::types::FloatWidth::F64))
+        oqi_compile::types::Type::Classical(ValueTy::complex(
+            oqi_compile::classical::FloatWidth::F64
+        ))
     );
 }
 
@@ -680,7 +675,7 @@ fn const_declarations_and_builtin_constants() {
     let p = compile_inline(src).expect("const decls should compile");
     let sym = |name: &str| p.symbols.iter().find(|s| s.name == name).unwrap();
 
-    assert_eq!(sym("SIZE").kind, oqi_compile::symbol::SymbolKind::Const);
+    assert_eq!(sym("SIZE").kind, oqi_compile::SymbolKind::Const);
     assert_eq!(sym("q").ty, oqi_compile::types::Type::QubitReg(32));
     assert_eq!(
         sym("i").ty,
@@ -1094,8 +1089,8 @@ fn io_declarations() {
     let p = compile_inline(src).expect("io decls should compile");
     let sym = |name: &str| p.symbols.iter().find(|s| s.name == name).unwrap();
 
-    assert_eq!(sym("theta").kind, oqi_compile::symbol::SymbolKind::Input);
-    assert_eq!(sym("result").kind, oqi_compile::symbol::SymbolKind::Output);
+    assert_eq!(sym("theta").kind, oqi_compile::SymbolKind::Input);
+    assert_eq!(sym("result").kind, oqi_compile::SymbolKind::Output);
 }
 
 /// Source → bytecode, then the names of the module's program outputs,

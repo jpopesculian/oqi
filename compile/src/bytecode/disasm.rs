@@ -3,13 +3,9 @@
 
 use std::fmt;
 
-use super::types::{
-    BcAliasSegment, BcBlock, BcCalArg, BcCalBody, BcCalOperand, BcCalTarget, BcCallTarget,
-    BcGateModifier, BcIndex, BcInstr, BcModule, BcOp, BcOperand, BcTerminator, BlockId, ConstId,
-    ProcId, ProcOwner, QubitSource, Reg, StringId,
-};
+use super::types::{self as bc, BlockId, ConstId, ProcId, ProcOwner, QubitSource, Reg, StringId};
 
-impl fmt::Display for BcModule {
+impl fmt::Display for bc::Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, ".module openqasm 3")?;
         writeln!(f, ".version {}.{}", self.version.major, self.version.minor)?;
@@ -70,10 +66,10 @@ impl fmt::Display for BcModule {
             for (i, cal) in self.calibrations.iter().enumerate() {
                 write!(f, "  cal{i} = ")?;
                 match &cal.target {
-                    BcCalTarget::Measure => write!(f, "measure")?,
-                    BcCalTarget::Reset => write!(f, "reset")?,
-                    BcCalTarget::Delay => write!(f, "delay")?,
-                    BcCalTarget::Gate(s) => write!(f, "gate(s{})", s.0)?,
+                    bc::CalTarget::Measure => write!(f, "measure")?,
+                    bc::CalTarget::Reset => write!(f, "reset")?,
+                    bc::CalTarget::Delay => write!(f, "delay")?,
+                    bc::CalTarget::Gate(s) => write!(f, "gate(s{})", s.0)?,
                 }
                 if !cal.args.is_empty() {
                     write!(f, "(")?;
@@ -82,8 +78,8 @@ impl fmt::Display for BcModule {
                             write!(f, ", ")?;
                         }
                         match a {
-                            BcCalArg::Param(s) => write!(f, "s{}", s.0)?,
-                            BcCalArg::Unsupported => write!(f, "?")?,
+                            bc::CalArg::Param(s) => write!(f, "s{}", s.0)?,
+                            bc::CalArg::Unsupported => write!(f, "?")?,
                         }
                     }
                     write!(f, ")")?;
@@ -91,16 +87,16 @@ impl fmt::Display for BcModule {
                 for (j, op) in cal.operands.iter().enumerate() {
                     write!(f, "{}", if j == 0 { " " } else { ", " })?;
                     match op {
-                        BcCalOperand::Hardware(n) => write!(f, "${n}")?,
-                        BcCalOperand::Any => write!(f, "any")?,
+                        bc::CalOperand::Hardware(n) => write!(f, "${n}")?,
+                        bc::CalOperand::Any => write!(f, "any")?,
                     }
                 }
                 if cal.has_return {
                     write!(f, " -> ret")?;
                 }
                 match &cal.body {
-                    BcCalBody::OpenPulse(p) => writeln!(f, " => {}", fmt_proc(*p))?,
-                    BcCalBody::Opaque(s) => writeln!(f, " => {}", fmt_str(*s))?,
+                    bc::CalBody::OpenPulse(p) => writeln!(f, " => {}", fmt_proc(*p))?,
+                    bc::CalBody::Opaque(s) => writeln!(f, " => {}", fmt_str(*s))?,
                 }
             }
         }
@@ -140,7 +136,7 @@ fn fmt_owner(f: &mut fmt::Formatter<'_>, owner: &ProcOwner) -> fmt::Result {
     }
 }
 
-fn fmt_block(f: &mut fmt::Formatter<'_>, block: &BcBlock) -> fmt::Result {
+fn fmt_block(f: &mut fmt::Formatter<'_>, block: &bc::Block) -> fmt::Result {
     writeln!(f, "  bb{}:", block.id.0)?;
     for instr in &block.instrs {
         write!(f, "    ")?;
@@ -152,23 +148,23 @@ fn fmt_block(f: &mut fmt::Formatter<'_>, block: &BcBlock) -> fmt::Result {
     writeln!(f)
 }
 
-fn fmt_instr(f: &mut fmt::Formatter<'_>, instr: &BcInstr) -> fmt::Result {
+fn fmt_instr(f: &mut fmt::Formatter<'_>, instr: &bc::Instr) -> fmt::Result {
     fmt_op(f, &instr.op)
 }
 
-fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
+fn fmt_op(f: &mut fmt::Formatter<'_>, op: &bc::Op) -> fmt::Result {
     match op {
-        BcOp::Binary { op, dest, lhs, rhs } => {
+        bc::Op::Binary { op, dest, lhs, rhs } => {
             write!(f, "{} = {} ", fmt_reg(*dest), mnemonic(op))?;
             fmt_operand(f, lhs)?;
             write!(f, ", ")?;
             fmt_operand(f, rhs)
         }
-        BcOp::Unary { op, dest, src } => {
+        bc::Op::Unary { op, dest, src } => {
             write!(f, "{} = {} ", fmt_reg(*dest), mnemonic(op))?;
             fmt_operand(f, src)
         }
-        BcOp::Cast {
+        bc::Op::Cast {
             dest,
             target_ty,
             src,
@@ -176,11 +172,11 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             write!(f, "{} = cast {} ", fmt_reg(*dest), target_ty)?;
             fmt_operand(f, src)
         }
-        BcOp::Move { dest, src } => {
+        bc::Op::Move { dest, src } => {
             write!(f, "{} = move ", fmt_reg(*dest))?;
             fmt_operand(f, src)
         }
-        BcOp::LoadElement {
+        bc::Op::LoadElement {
             dest,
             base,
             indices,
@@ -189,7 +185,7 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             fmt_operand(f, base)?;
             fmt_index_list(f, indices)
         }
-        BcOp::StoreElement {
+        bc::Op::StoreElement {
             target,
             indices,
             value,
@@ -199,7 +195,7 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             write!(f, " = ")?;
             fmt_operand(f, value)
         }
-        BcOp::Borrow {
+        bc::Op::Borrow {
             dest,
             base,
             indices,
@@ -207,8 +203,8 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             write!(f, "{} = borrow {}", fmt_reg(*dest), fmt_reg(*base))?;
             fmt_index_list(f, indices)
         }
-        BcOp::Release { reg } => write!(f, "release {}", fmt_reg(*reg)),
-        BcOp::NewArray { dest, items } => {
+        bc::Op::Release { reg } => write!(f, "release {}", fmt_reg(*reg)),
+        bc::Op::NewArray { dest, items } => {
             write!(f, "{} = new_array [", fmt_reg(*dest))?;
             for (i, it) in items.iter().enumerate() {
                 if i > 0 {
@@ -218,7 +214,7 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             }
             write!(f, "]")
         }
-        BcOp::Call { dest, callee, args } => {
+        bc::Op::Call { dest, callee, args } => {
             if let Some(d) = dest {
                 write!(f, "{} = ", fmt_reg(*d))?;
             }
@@ -233,7 +229,7 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             }
             write!(f, ")")
         }
-        BcOp::GateCall {
+        bc::Op::GateCall {
             gate,
             modifiers,
             args,
@@ -260,18 +256,18 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             }
             write!(f, "]")
         }
-        BcOp::Measure { dest, qubit } => {
+        bc::Op::Measure { dest, qubit } => {
             if let Some(d) = dest {
                 write!(f, "{} = ", fmt_reg(*d))?;
             }
             write!(f, "measure ")?;
             fmt_operand(f, qubit)
         }
-        BcOp::Reset { qubit } => {
+        bc::Op::Reset { qubit } => {
             write!(f, "reset ")?;
             fmt_operand(f, qubit)
         }
-        BcOp::Barrier { qubits } => {
+        bc::Op::Barrier { qubits } => {
             write!(f, "barrier")?;
             for q in qubits {
                 write!(f, " ")?;
@@ -279,7 +275,7 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             }
             Ok(())
         }
-        BcOp::Delay { duration, qubits } => {
+        bc::Op::Delay { duration, qubits } => {
             write!(f, "delay ")?;
             fmt_operand(f, duration)?;
             for q in qubits {
@@ -288,7 +284,7 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             }
             Ok(())
         }
-        BcOp::Nop { qubits } => {
+        bc::Op::Nop { qubits } => {
             write!(f, "nop")?;
             for q in qubits {
                 write!(f, " ")?;
@@ -296,20 +292,20 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
             }
             Ok(())
         }
-        BcOp::CalOpaque { content } => write!(f, "cal_opaque {}", fmt_str(*content)),
-        BcOp::CalOpenPulse { body } => write!(f, "cal_openpulse -> {}", fmt_proc(*body)),
-        BcOp::CalLoad { dest, symbol } => {
+        bc::Op::CalOpaque { content } => write!(f, "cal_opaque {}", fmt_str(*content)),
+        bc::Op::CalOpenPulse { body } => write!(f, "cal_openpulse -> {}", fmt_proc(*body)),
+        bc::Op::CalLoad { dest, symbol } => {
             write!(f, "{} = cal_load s{}", fmt_reg(*dest), symbol.0)
         }
-        BcOp::CalStore { symbol, src } => {
+        bc::Op::CalStore { symbol, src } => {
             write!(f, "cal_store s{} = ", symbol.0)?;
             fmt_operand(f, src)
         }
-        BcOp::DurationOf { dest, body } => {
+        bc::Op::DurationOf { dest, body } => {
             write!(f, "{} = durationof -> {}", fmt_reg(*dest), fmt_proc(*body))
         }
-        BcOp::Pragma { content } => write!(f, "pragma {}", fmt_str(*content)),
-        BcOp::AliasBind { slot, segments } => {
+        bc::Op::Pragma { content } => write!(f, "pragma {}", fmt_str(*content)),
+        bc::Op::AliasBind { slot, segments } => {
             write!(f, "aliasbind qa{slot} = ")?;
             for (i, seg) in segments.iter().enumerate() {
                 if i > 0 {
@@ -322,10 +318,10 @@ fn fmt_op(f: &mut fmt::Formatter<'_>, op: &BcOp) -> fmt::Result {
     }
 }
 
-fn fmt_alias_segment(f: &mut fmt::Formatter<'_>, seg: &BcAliasSegment) -> fmt::Result {
+fn fmt_alias_segment(f: &mut fmt::Formatter<'_>, seg: &bc::AliasSegment) -> fmt::Result {
     match seg {
-        BcAliasSegment::Operand(op) => fmt_operand(f, op),
-        BcAliasSegment::Slice {
+        bc::AliasSegment::Operand(op) => fmt_operand(f, op),
+        bc::AliasSegment::Slice {
             source,
             start,
             step,
@@ -349,10 +345,10 @@ fn fmt_alias_segment(f: &mut fmt::Formatter<'_>, seg: &BcAliasSegment) -> fmt::R
     }
 }
 
-fn fmt_terminator(f: &mut fmt::Formatter<'_>, term: &BcTerminator) -> fmt::Result {
+fn fmt_terminator(f: &mut fmt::Formatter<'_>, term: &bc::Terminator) -> fmt::Result {
     match term {
-        BcTerminator::Goto(b) => write!(f, "goto {}", fmt_block_id(*b)),
-        BcTerminator::Branch {
+        bc::Terminator::Goto(b) => write!(f, "goto {}", fmt_block_id(*b)),
+        bc::Terminator::Branch {
             cond,
             then_bb,
             else_bb,
@@ -366,7 +362,7 @@ fn fmt_terminator(f: &mut fmt::Formatter<'_>, term: &BcTerminator) -> fmt::Resul
                 fmt_block_id(*else_bb)
             )
         }
-        BcTerminator::Switch {
+        bc::Terminator::Switch {
             target,
             cases,
             default,
@@ -385,7 +381,7 @@ fn fmt_terminator(f: &mut fmt::Formatter<'_>, term: &BcTerminator) -> fmt::Resul
             }
             write!(f, " | default -> {}", fmt_block_id(*default))
         }
-        BcTerminator::Box {
+        bc::Terminator::Box {
             duration,
             body,
             after,
@@ -394,7 +390,7 @@ fn fmt_terminator(f: &mut fmt::Formatter<'_>, term: &BcTerminator) -> fmt::Resul
             fmt_operand(f, duration)?;
             write!(f, "] {} then {}", fmt_block_id(*body), fmt_block_id(*after))
         }
-        BcTerminator::Return(rv) => {
+        bc::Terminator::Return(rv) => {
             write!(f, "return")?;
             if let Some(v) = rv {
                 write!(f, " ")?;
@@ -402,8 +398,8 @@ fn fmt_terminator(f: &mut fmt::Formatter<'_>, term: &BcTerminator) -> fmt::Resul
             }
             Ok(())
         }
-        BcTerminator::End => write!(f, "end"),
-        BcTerminator::Unreachable => write!(f, "unreachable"),
+        bc::Terminator::End => write!(f, "end"),
+        bc::Terminator::Unreachable => write!(f, "unreachable"),
     }
 }
 
@@ -414,15 +410,15 @@ fn mnemonic(op: &impl fmt::Debug) -> String {
 }
 
 /// Render `[i0, i1, …]` for an element access's per-dimension indices.
-fn fmt_index_list(f: &mut fmt::Formatter<'_>, indices: &[BcIndex]) -> fmt::Result {
+fn fmt_index_list(f: &mut fmt::Formatter<'_>, indices: &[bc::Subscript]) -> fmt::Result {
     write!(f, "[")?;
     for (i, idx) in indices.iter().enumerate() {
         if i > 0 {
             write!(f, ", ")?;
         }
         match idx {
-            BcIndex::Item(position) => fmt_operand(f, position)?,
-            BcIndex::Set(members) => {
+            bc::Subscript::Item(position) => fmt_operand(f, position)?,
+            bc::Subscript::Set(members) => {
                 write!(f, "{{")?;
                 for (i, member) in members.iter().enumerate() {
                     if i > 0 {
@@ -432,7 +428,7 @@ fn fmt_index_list(f: &mut fmt::Formatter<'_>, indices: &[BcIndex]) -> fmt::Resul
                 }
                 write!(f, "}}")?;
             }
-            BcIndex::Range { start, step, end } => {
+            bc::Subscript::Range { start, step, end } => {
                 for (i, bound) in [start, step, end].into_iter().enumerate() {
                     // The step and its colon are left out when it is.
                     if i > 0 && (i != 1 || bound.is_some()) {
@@ -448,18 +444,18 @@ fn fmt_index_list(f: &mut fmt::Formatter<'_>, indices: &[BcIndex]) -> fmt::Resul
     write!(f, "]")
 }
 
-fn fmt_operand(f: &mut fmt::Formatter<'_>, op: &BcOperand) -> fmt::Result {
+fn fmt_operand(f: &mut fmt::Formatter<'_>, op: &bc::Operand) -> fmt::Result {
     match op {
-        BcOperand::Reg(r) => write!(f, "{}", fmt_reg(*r)),
-        BcOperand::Const(c) => write!(f, "{}", fmt_const(*c)),
-        BcOperand::HardwareQubit(n) => write!(f, "${n}"),
-        BcOperand::Qubit(n) => write!(f, "q@{n}"),
-        BcOperand::Whole(source) => fmt_qubit_source(f, source),
-        BcOperand::Select { source, positions } => {
+        bc::Operand::Reg(r) => write!(f, "{}", fmt_reg(*r)),
+        bc::Operand::Const(c) => write!(f, "{}", fmt_const(*c)),
+        bc::Operand::HardwareQubit(n) => write!(f, "${n}"),
+        bc::Operand::Qubit(n) => write!(f, "q@{n}"),
+        bc::Operand::Whole(source) => fmt_qubit_source(f, source),
+        bc::Operand::Select { source, positions } => {
             fmt_qubit_source(f, source)?;
             write!(f, "{positions:?}")
         }
-        BcOperand::Index { source, index } => {
+        bc::Operand::Index { source, index } => {
             fmt_qubit_source(f, source)?;
             write!(f, "[")?;
             fmt_operand(f, index)?;
@@ -477,23 +473,23 @@ fn fmt_qubit_source(f: &mut fmt::Formatter<'_>, source: &QubitSource) -> fmt::Re
     }
 }
 
-fn fmt_call_target(f: &mut fmt::Formatter<'_>, t: &BcCallTarget) -> fmt::Result {
+fn fmt_call_target(f: &mut fmt::Formatter<'_>, t: &bc::Callee) -> fmt::Result {
     match t {
-        BcCallTarget::Symbol(s) => write!(f, "s{}", s.0),
-        BcCallTarget::Intrinsic(i) => write!(f, "{i}"),
+        bc::Callee::Symbol(s) => write!(f, "s{}", s.0),
+        bc::Callee::Intrinsic(i) => write!(f, "{i}"),
     }
 }
 
-fn fmt_gate_modifier(f: &mut fmt::Formatter<'_>, m: &BcGateModifier) -> fmt::Result {
+fn fmt_gate_modifier(f: &mut fmt::Formatter<'_>, m: &bc::Modifier) -> fmt::Result {
     match m {
-        BcGateModifier::Inv => write!(f, "inv @"),
-        BcGateModifier::Pow(o) => {
+        bc::Modifier::Inv => write!(f, "inv @"),
+        bc::Modifier::Pow(o) => {
             write!(f, "pow(")?;
             fmt_operand(f, o)?;
             write!(f, ") @")
         }
-        BcGateModifier::Ctrl(n) => write!(f, "ctrl({n}) @"),
-        BcGateModifier::NegCtrl(n) => write!(f, "negctrl({n}) @"),
+        bc::Modifier::Ctrl(n) => write!(f, "ctrl({n}) @"),
+        bc::Modifier::NegCtrl(n) => write!(f, "negctrl({n}) @"),
     }
 }
 

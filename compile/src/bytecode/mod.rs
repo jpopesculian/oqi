@@ -24,6 +24,7 @@ mod disasm;
 mod emit;
 mod types;
 
+#[doc(hidden)]
 pub use analysis::is_sample_safe;
 pub use binary::{DecodeError, from_bytes, to_bytes};
 pub use emit::emit;
@@ -32,25 +33,18 @@ pub use types::*;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve::DefaultIncludeResolver;
-    use crate::types::CompileOptions;
 
-    fn symbol_id(module: &BcModule, name: &str) -> crate::symbol::SymbolId {
+    fn symbol_id(module: &Program, name: &str) -> crate::symbol::SymbolId {
         let pos = module.symbols.iter().position(|s| s.name == name);
         crate::symbol::SymbolId(pos.expect("symbol"))
     }
 
-    fn build_bytecode(src: &str) -> BcModule {
+    fn build_bytecode(src: &str) -> Program {
         try_build_bytecode(src).expect("emit bytecode")
     }
 
-    fn try_build_bytecode(src: &str) -> Result<BcModule, crate::error::CompileError> {
-        crate::compile(
-            src,
-            DefaultIncludeResolver,
-            &CompileOptions::default(),
-            None,
-        )
+    fn try_build_bytecode(src: &str) -> Result<Program, crate::error::CompileError> {
+        crate::compile(src)
     }
 
     #[test]
@@ -67,7 +61,7 @@ mod tests {
         let proc0 = &module.procedures[0];
         assert!(!proc0.blocks.is_empty());
         let last_term = &proc0.blocks.last().unwrap().terminator;
-        assert!(matches!(last_term, BcTerminator::Return(_)));
+        assert!(matches!(last_term, Terminator::Return(_)));
     }
 
     #[test]
@@ -87,12 +81,12 @@ mod tests {
             .iter()
             .flat_map(|b| &b.instrs)
             .filter_map(|i| match &i.op {
-                BcOp::Move { dest, src } => Some((*dest, src)),
+                Op::Move { dest, src } => Some((*dest, src)),
                 _ => None,
             });
         let moves: Vec<_> = moves.collect();
         let (_, read) = moves.last().expect("`y = x`");
-        let BcOperand::Reg(x) = read else {
+        let Operand::Reg(x) = read else {
             panic!("`y` is assigned from a register");
         };
         assert_eq!(moves.iter().filter(|(dest, _)| dest == x).count(), 3);
@@ -116,8 +110,8 @@ mod tests {
             for block in &proc.blocks {
                 for instr in &block.instrs {
                     match &instr.op {
-                        BcOp::Measure { dest: Some(d), .. } => measure_dest = Some(*d),
-                        BcOp::StoreElement { value, .. } => store_value = Some(value.clone()),
+                        Op::Measure { dest: Some(d), .. } => measure_dest = Some(*d),
+                        Op::StoreElement { value, .. } => store_value = Some(value.clone()),
                         _ => {}
                     }
                 }
@@ -126,13 +120,13 @@ mod tests {
         let dest = measure_dest.expect("measure should have a dest register");
         let value = store_value.expect("indexed measure target should emit StoreElement");
         assert!(
-            matches!(value, BcOperand::Reg(r) if r == dest),
+            matches!(value, Operand::Reg(r) if r == dest),
             "StoreElement should read the measured value's register"
         );
     }
 
     /// All ops of every block of every procedure.
-    fn all_ops(module: &BcModule) -> impl Iterator<Item = &BcOp> {
+    fn all_ops(module: &Program) -> impl Iterator<Item = &Op> {
         module
             .procedures
             .iter()
@@ -144,7 +138,7 @@ mod tests {
     #[test]
     fn bare_subroutine_call_emits_call_not_gatecall() {
         // `flip q;` invokes a `def` with bare gate-call syntax; it must lower
-        // to BcOp::Call (a subroutine call), never BcOp::GateCall.
+        // to Op::Call (a subroutine call), never Op::GateCall.
         let module = build_bytecode(
             r#"
                 include "stdgates.inc";
@@ -154,15 +148,14 @@ mod tests {
             "#,
         );
         let flip = symbol_id(&module, "flip");
-        let emits_call = all_ops(&module).any(
-            |op| matches!(op, BcOp::Call { callee: BcCallTarget::Symbol(s), .. } if *s == flip),
-        );
+        let emits_call = all_ops(&module)
+            .any(|op| matches!(op, Op::Call { callee: Callee::Symbol(s), .. } if *s == flip));
         assert!(
             emits_call,
             "bare `flip q;` should emit a Call to `flip`:\n{module}"
         );
         let emits_gatecall =
-            all_ops(&module).any(|op| matches!(op, BcOp::GateCall { gate, .. } if *gate == flip));
+            all_ops(&module).any(|op| matches!(op, Op::GateCall { gate, .. } if *gate == flip));
         assert!(!emits_gatecall, "bare `flip q;` must not emit a GateCall");
     }
 
@@ -174,8 +167,8 @@ mod tests {
         let found = all_ops(&module).any(|op| {
             matches!(
                 op,
-                BcOp::Reset {
-                    qubit: BcOperand::Qubit(4)
+                Op::Reset {
+                    qubit: Operand::Qubit(4)
                 }
             )
         });
@@ -187,8 +180,8 @@ mod tests {
         let module = build_bytecode("qubit[3] a; reset a;");
         let region = all_ops(&module)
             .find_map(|op| match op {
-                BcOp::Reset {
-                    qubit: BcOperand::Whole(QubitSource::Region(id)),
+                Op::Reset {
+                    qubit: Operand::Whole(QubitSource::Region(id)),
                 } => Some(*id),
                 _ => None,
             })
@@ -201,8 +194,8 @@ mod tests {
         let module = build_bytecode("qubit[4] b; reset b[1:2];");
         let region = all_ops(&module)
             .find_map(|op| match op {
-                BcOp::Reset {
-                    qubit: BcOperand::Whole(QubitSource::Region(id)),
+                Op::Reset {
+                    qubit: Operand::Whole(QubitSource::Region(id)),
                 } => Some(*id),
                 _ => None,
             })
@@ -216,8 +209,8 @@ mod tests {
         let found = all_ops(&module).any(|op| {
             matches!(
                 op,
-                BcOp::Reset {
-                    qubit: BcOperand::Index {
+                Op::Reset {
+                    qubit: Operand::Index {
                         source: QubitSource::Region(_),
                         ..
                     },
@@ -241,8 +234,8 @@ mod tests {
         let found = all_ops(&module).any(|op| {
             matches!(
                 op,
-                BcOp::Reset {
-                    qubit: BcOperand::Qubit(5)
+                Op::Reset {
+                    qubit: Operand::Qubit(5)
                 }
             )
         });
@@ -265,8 +258,8 @@ mod tests {
         let body_ok = all_ops(&module).any(|op| {
             matches!(
                 op,
-                BcOp::Reset {
-                    qubit: BcOperand::Index {
+                Op::Reset {
+                    qubit: Operand::Index {
                         source: QubitSource::Slot(0),
                         ..
                     },
@@ -276,13 +269,10 @@ mod tests {
         assert!(body_ok, "body should index qubit slot 0:\n{module}");
         // The call site passes a resolved global region.
         let call_ok = all_ops(&module).any(|op| match op {
-            BcOp::Call { args, .. } => {
+            Op::Call { args, .. } => {
                 matches!(
                     args.as_slice(),
-                    [
-                        BcOperand::Const(_),
-                        BcOperand::Whole(QubitSource::Region(_))
-                    ]
+                    [Operand::Const(_), Operand::Whole(QubitSource::Region(_))]
                 )
             }
             _ => false,
@@ -303,15 +293,15 @@ mod tests {
             "#,
         );
         let body_ok = all_ops(&module).any(|op| match op {
-            BcOp::GateCall { qubits, .. } => {
-                matches!(qubits.as_slice(), [BcOperand::Whole(QubitSource::Slot(0))])
+            Op::GateCall { qubits, .. } => {
+                matches!(qubits.as_slice(), [Operand::Whole(QubitSource::Slot(0))])
             }
             _ => false,
         });
         assert!(body_ok, "gate body should use qubit slot 0:\n{module}");
         let call_ok = all_ops(&module).any(|op| match op {
-            BcOp::GateCall { qubits, .. } => {
-                matches!(qubits.as_slice(), [BcOperand::Qubit(0)])
+            Op::GateCall { qubits, .. } => {
+                matches!(qubits.as_slice(), [Operand::Qubit(0)])
             }
             _ => false,
         });
@@ -321,18 +311,18 @@ mod tests {
     #[test]
     fn runtime_indexed_alias_emits_aliasbind_and_qubit_alias() {
         // A `let` over a runtime index set binds a slot at run time
-        // (BcOp::AliasBind) and references resolve to that QubitSource::Slot.
+        // (Op::AliasBind) and references resolve to that QubitSource::Slot.
         let module = build_bytecode(
             "input uint[32] i; qubit[8] q; let bp = q[{2*i, 2*i + 1}]; reset bp; reset bp[1];",
         );
         let bind = all_ops(&module)
-            .any(|op| matches!(op, BcOp::AliasBind { slot: 0, segments } if segments.len() == 2));
+            .any(|op| matches!(op, Op::AliasBind { slot: 0, segments } if segments.len() == 2));
         assert!(bind, "runtime alias should emit AliasBind:\n{module}");
         let whole = all_ops(&module).any(|op| {
             matches!(
                 op,
-                BcOp::Reset {
-                    qubit: BcOperand::Whole(QubitSource::Slot(0))
+                Op::Reset {
+                    qubit: Operand::Whole(QubitSource::Slot(0))
                 }
             )
         });
@@ -340,8 +330,8 @@ mod tests {
         let indexed = all_ops(&module).any(|op| {
             matches!(
                 op,
-                BcOp::Reset {
-                    qubit: BcOperand::Index {
+                Op::Reset {
+                    qubit: Operand::Index {
                         source: QubitSource::Slot(0),
                         ..
                     }
@@ -355,7 +345,7 @@ mod tests {
         // Static aliases must still resolve at compile time (no AliasBind).
         let static_mod = build_bytecode("qubit[4] q; let a = q[1:2]; reset a;");
         assert!(
-            !all_ops(&static_mod).any(|op| matches!(op, BcOp::AliasBind { .. })),
+            !all_ops(&static_mod).any(|op| matches!(op, Op::AliasBind { .. })),
             "static alias should not emit AliasBind:\n{static_mod}"
         );
     }
@@ -399,20 +389,20 @@ mod tests {
         let top = &module.procedures[module.entry.0 as usize];
         let block = |id: BlockId| top.blocks.iter().find(|b| b.id == id).unwrap();
         let entry = block(top.entry);
-        let BcTerminator::Box { body, after, .. } = &entry.terminator else {
+        let Terminator::Box { body, after, .. } = &entry.terminator else {
             panic!("a timed box is entered through a box terminator");
         };
         let body = block(*body);
-        assert!(matches!(body.terminator, BcTerminator::Goto(t) if t == *after));
+        assert!(matches!(body.terminator, Terminator::Goto(t) if t == *after));
         assert!(
             body.instrs
                 .iter()
-                .any(|i| matches!(i.op, BcOp::GateCall { .. }))
+                .any(|i| matches!(i.op, Op::GateCall { .. }))
         );
         // `n` is one register, written before the box and inside it.
-        let writes = |block: &BcBlock| {
+        let writes = |block: &Block| {
             let dests = block.instrs.iter().filter_map(|i| match &i.op {
-                BcOp::Move { dest, .. } | BcOp::Binary { dest, .. } => Some(*dest),
+                Op::Move { dest, .. } | Op::Binary { dest, .. } => Some(*dest),
                 _ => None,
             });
             dests.collect::<Vec<_>>()
@@ -497,27 +487,27 @@ mod tests {
         let x = sym("x");
         for (i, hw) in [(0usize, 0u32), (1, 1)] {
             let cal = &module.calibrations[i];
-            assert!(matches!(cal.target, BcCalTarget::Gate(s) if s == x));
+            assert!(matches!(cal.target, CalTarget::Gate(s) if s == x));
             assert!(cal.args.is_empty());
             assert!(!cal.has_return);
-            assert!(matches!(cal.operands.as_slice(), [BcCalOperand::Hardware(n)] if *n == hw));
+            assert!(matches!(cal.operands.as_slice(), [CalOperand::Hardware(n)] if *n == hw));
         }
 
         // defcal rz(angle[20] theta) q — one Param arg, one Any operand.
         let rz = sym("rz");
         let cal_rz = &module.calibrations[2];
-        assert!(matches!(cal_rz.target, BcCalTarget::Gate(s) if s == rz));
-        assert!(matches!(cal_rz.args.as_slice(), [BcCalArg::Param(_)]));
-        assert!(matches!(cal_rz.operands.as_slice(), [BcCalOperand::Any]));
+        assert!(matches!(cal_rz.target, CalTarget::Gate(s) if s == rz));
+        assert!(matches!(cal_rz.args.as_slice(), [CalArg::Param(_)]));
+        assert!(matches!(cal_rz.operands.as_slice(), [CalOperand::Any]));
 
         // defcal measure $0 -> bit.
         let cal_measure = &module.calibrations[3];
-        assert!(matches!(cal_measure.target, BcCalTarget::Measure));
+        assert!(matches!(cal_measure.target, CalTarget::Measure));
         assert!(cal_measure.has_return);
 
         // Every body is OpenPulse and points at its Calibration-owned proc.
         for (i, cal) in module.calibrations.iter().enumerate() {
-            let BcCalBody::OpenPulse(p) = &cal.body else {
+            let CalBody::OpenPulse(p) = &cal.body else {
                 panic!("calibration {i} should have an OpenPulse body");
             };
             assert!(matches!(
@@ -552,12 +542,12 @@ mod tests {
         );
         assert_eq!(module.calibration_grammar.as_deref(), Some("mypulses"));
         assert_eq!(module.calibrations.len(), 1);
-        let BcCalBody::Opaque(s) = &module.calibrations[0].body else {
+        let CalBody::Opaque(s) = &module.calibrations[0].body else {
             panic!("non-openpulse defcal should have an opaque body");
         };
         assert!(module.strings[s.0 as usize].contains("more raw text"));
         assert!(
-            all_ops(&module).any(|op| matches!(op, BcOp::CalOpaque { .. })),
+            all_ops(&module).any(|op| matches!(op, Op::CalOpaque { .. })),
             "inline cal should emit CalOpaque:\n{module}"
         );
     }

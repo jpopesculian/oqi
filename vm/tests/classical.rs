@@ -2,17 +2,12 @@
 //! (docs/types.rst, docs/classical.rst): compile a program, run it, and read
 //! the named outputs back.
 
-use oqi_compile::bytecode::BcModule;
-use oqi_compile::{CompileError, CompileOptions, DefaultIncludeResolver};
+use oqi_compile::CompileError;
+use oqi_compile::bytecode::Program;
 use oqi_vm::{NoExterns, StateVectorSim, Vm};
 
-fn compile(src: &str) -> Result<BcModule, CompileError> {
-    oqi_compile::compile(
-        src,
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        None,
-    )
+fn compile(src: &str) -> Result<Program, CompileError> {
+    oqi_compile::compile(src)
 }
 
 /// Run and return named outputs as `(name, displayed value)`, sorted by name.

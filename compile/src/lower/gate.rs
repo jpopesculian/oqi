@@ -17,7 +17,7 @@ use crate::types::{Type, eval_const_expr, resolve_scalar_type};
 
 use super::Lowerer;
 
-impl Lowerer {
+impl Lowerer<'_> {
     pub(super) fn lower_gate_body(&mut self, scope: &ast::Scope<'_>) -> Result<Vec<sir::Stmt>> {
         let mut stmts = Vec::new();
         for item in &scope.body {

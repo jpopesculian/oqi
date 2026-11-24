@@ -13,7 +13,7 @@ use std::path::Path;
 
 use num_complex::Complex;
 use oqi_compile::classical::{Value, ValueTy};
-use oqi_compile::{BcModule, CompileOptions, IncludeResolver, LibOnlyResolver};
+use oqi_compile::{Compiler, IncludeResolver, LibOnlyResolver, Program, TableTimings};
 use oqi_vm::{
     BackendSpec, DEFAULT_SEED, ExternProvider, HostValue, KindResult, QuantumBackend, SumPolicy,
     Vm, VmErrorKind,
@@ -60,37 +60,34 @@ fn build_module(
     source: &str,
     timings: Option<&Bound<'_, PyDict>>,
     dt: Option<&str>,
-) -> PyResult<BcModule> {
-    let mut options = CompileOptions {
-        source_name: Some(Path::new(SOURCE_NAME).to_path_buf()),
-        ..Default::default()
-    };
+) -> PyResult<Program> {
+    let mut compiler = Compiler::new()
+        .include_resolver(&LibOnlyResolver)
+        .source_name(SOURCE_NAME);
     if let Some(spec) = dt {
-        options.dt = oqi_compile::parse_dt(spec).map_err(|e| diag_err(&e, source))?;
+        compiler = compiler.dt(oqi_compile::parse_dt(spec).map_err(|e| diag_err(&e, source))?);
     }
-    let timings: Option<Vec<(String, String)>> = timings
-        .map(|timings| {
-            timings
-                .iter()
-                .map(|(key, val)| {
-                    let name: String = key
-                        .extract()
-                        .map_err(|_| OqiError::new_err("timing names must be strings"))?;
-                    let dur: String = val.extract().map_err(|_| {
-                        OqiError::new_err(format!(
-                            "timing for `{name}` must be a duration string (e.g. \"50ns\")"
-                        ))
-                    })?;
-                    Ok((name, dur))
-                })
-                .collect::<PyResult<_>>()
-        })
-        .transpose()?;
-    let timings: Option<Vec<(&str, &str)>> = timings
-        .as_ref()
-        .map(|t| t.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect());
-    oqi_compile::compile(source, LibOnlyResolver, &options, timings.as_deref())
-        .map_err(|e| diag_err(&e, source))
+    if let Some(timings) = timings {
+        let entries = timings
+            .iter()
+            .map(|(key, val)| {
+                let name: String = key
+                    .extract()
+                    .map_err(|_| OqiError::new_err("timing names must be strings"))?;
+                let dur: String = val.extract().map_err(|_| {
+                    OqiError::new_err(format!(
+                        "timing for `{name}` must be a duration string (e.g. \"50ns\")"
+                    ))
+                })?;
+                Ok((name, dur))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let entries = entries.iter().map(|(k, v)| (k.as_str(), v.as_str()));
+        let table = TableTimings::from_str_entries(entries, &compiler.compile_options().dt)
+            .map_err(|e| diag_err(&e, source))?;
+        compiler = compiler.timings(table);
+    }
+    compiler.compile(source).map_err(|e| diag_err(&e, source))
 }
 
 /// Result of [`compile`]: postcard-encoded bytecode plus its disassembly.
@@ -176,7 +173,7 @@ impl SampleResult {
 /// Everything [`run`] and [`sample`] share: the compiled module and the
 /// pieces a [`Vm`] is assembled from.
 struct Session {
-    module: BcModule,
+    module: Program,
     inputs: Vec<(String, HostValue)>,
     externs: PyExterns,
     backend: Box<dyn QuantumBackend>,
@@ -432,7 +429,7 @@ struct PyExterns {
 impl PyExterns {
     /// `externs` is the `externs=` option (`None` ⇒ none). Errors if any
     /// key isn't a string or any value isn't callable.
-    fn new(module: &BcModule, externs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+    fn new(module: &Program, externs: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
         let ret_tys = module
             .externs()
             .map(|(name, ty)| (name.to_string(), ty))

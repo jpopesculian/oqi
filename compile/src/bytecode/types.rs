@@ -1,4 +1,8 @@
 //! Bytecode types. Flat, indexed, serializable.
+//!
+//! [`Program`] and [`Symbol`] are the public face of a compiled program.
+//! Everything else here is the instruction set the VM executes: it is
+//! public for `oqi-vm`, and changes whenever the compiler does.
 
 use oqi_classical::{Value, ValueTy};
 use oqi_lex::Span;
@@ -9,40 +13,48 @@ use crate::symbol::{SymbolId, SymbolKind};
 
 // ── IDs ──────────────────────────────────────────────────────────────
 
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProcId(pub u32);
 
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ConstId(pub u32);
 
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StringId(pub u32);
 
+#[doc(hidden)]
 /// Dense per-procedure register identifier. `Reg(0)`..`Reg(n)` cover
 /// every classical variable the procedure touches and every temporary it
 /// computes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Reg(pub u32);
 
+#[doc(hidden)]
 /// Index into [`QubitTable::regions`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct QubitRegionId(pub u32);
 
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockId(pub u32);
 
 // ── Module / procedure / block ───────────────────────────────────────
 
+#[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BcVersion {
+pub struct Version {
     pub major: u16,
     pub minor: u16,
 }
 
-impl BcVersion {
-    pub const CURRENT: BcVersion = BcVersion { major: 6, minor: 0 };
+impl Version {
+    pub const CURRENT: Version = Version { major: 6, minor: 0 };
 }
 
+#[doc(hidden)]
 /// Global quantum memory: every named register is statically allocated
 /// into one flat index space; operands reference it via regions.
 #[derive(Clone, Serialize, Deserialize)]
@@ -52,6 +64,7 @@ pub struct QubitTable {
     pub regions: Vec<QubitRegion>,
 }
 
+#[doc(hidden)]
 /// A (possibly non-contiguous) set of global qubit indices: a declared
 /// register, a resolved `let` alias, or a static slice.
 #[derive(Clone, Serialize, Deserialize)]
@@ -64,11 +77,13 @@ pub struct QubitRegion {
     pub origin: Option<SymbolId>,
 }
 
-/// What a bytecode consumer needs to know about a source symbol: enough to
-/// name it, classify it, and (for classical values) type it.
+/// A name the program declares: enough to name it, classify it, and (for
+/// classical values) type it.
 #[derive(Clone, Serialize, Deserialize)]
-pub struct BcSymbol {
+pub struct Symbol {
+    /// The name as written in the source.
     pub name: String,
+    /// What the name declares.
     pub kind: SymbolKind,
     /// Classical value type: a variable's declared type, or an `extern`'s
     /// return type. `None` for everything else (qubits, gates, void
@@ -76,43 +91,66 @@ pub struct BcSymbol {
     pub ty: Option<ValueTy>,
 }
 
+/// A compiled program: what [`compile`](crate::compile) produces and the VM
+/// runs. Serialize it with [`to_bytes`](super::to_bytes).
+///
+/// Its fields describe the program to the VM; outside it, use the methods.
 #[derive(Clone, Serialize, Deserialize)]
-pub struct BcModule {
-    pub version: BcVersion,
+pub struct Program {
+    #[doc(hidden)]
+    pub version: Version,
     /// The program's symbols, indexed by [`SymbolId`].
-    pub symbols: Vec<BcSymbol>,
-    /// Pool of classical values referenced by [`BcOperand::Const`].
+    pub symbols: Vec<Symbol>,
+    #[doc(hidden)]
+    /// Pool of classical values referenced by [`Operand::Const`].
     pub constants: Vec<Value>,
+    #[doc(hidden)]
     /// Pool of strings (pragma payloads, opaque cal text).
     pub strings: Vec<String>,
+    #[doc(hidden)]
     /// Global quantum memory layout referenced by qubit operands.
     pub qubits: QubitTable,
-    pub procedures: Vec<BcProcedure>,
+    #[doc(hidden)]
+    pub procedures: Vec<Procedure>,
+    #[doc(hidden)]
     /// Index into `procedures` for the program's top-level body.
     pub entry: ProcId,
+    #[doc(hidden)]
     /// The program's input contract: each `(symbol, reg)` pairs an
     /// `input`-declared variable with the register in the entry
     /// procedure's register file that holds its value. The host seeds
     /// these before running. One entry per declared `input`, sorted by
     /// symbol id (declaration order).
     pub inputs: Vec<(SymbolId, Reg)>,
+    #[doc(hidden)]
     /// Named program outputs: each `(symbol, reg)` pairs a source-level
     /// classical variable with the register in the entry procedure's
     /// register file holding its final value. Follows OpenQASM 3
     /// semantics — if any `output` is declared only those appear, else
     /// every named classical variable. Sorted by symbol id.
     pub outputs: Vec<(SymbolId, Reg)>,
+    #[doc(hidden)]
     /// `defcal` declarations, in declaration order. When a pulse handler
     /// is installed, the VM dispatches matching gate/measure/reset
     /// operations on hardware qubits to these bodies.
-    pub calibrations: Vec<BcCalibration>,
+    pub calibrations: Vec<Calibration>,
+    #[doc(hidden)]
     /// The `defcalgrammar` string, quotes stripped (e.g. `openpulse`).
     pub calibration_grammar: Option<String>,
 }
 
-impl BcModule {
+impl Program {
+    /// How many qubits the program uses: the size of the backend it needs.
+    pub fn num_qubits(&self) -> u32 {
+        self.qubits.num_qubits
+    }
+
     /// The symbol `id` names.
-    pub fn symbol(&self, id: SymbolId) -> &BcSymbol {
+    ///
+    /// # Panics
+    ///
+    /// If `id` is not one of this program's symbols.
+    pub fn symbol(&self, id: SymbolId) -> &Symbol {
         &self.symbols[id.0]
     }
 
@@ -134,6 +172,7 @@ impl BcModule {
     }
 }
 
+#[doc(hidden)]
 /// A body of code and the layout of the frame it runs on.
 ///
 /// A gate, subroutine, `defcal` or the program itself runs on a frame of
@@ -142,7 +181,7 @@ impl BcModule {
 /// procedure it appears in: it sees that procedure's variables, and so
 /// repeats its register and qubit-slot layout.
 #[derive(Clone, Serialize, Deserialize)]
-pub struct BcProcedure {
+pub struct Procedure {
     pub owner: ProcOwner,
     /// Classical type of each register, indexed by [`Reg`].
     pub register_types: Vec<ValueTy>,
@@ -159,10 +198,11 @@ pub struct BcProcedure {
     /// binds. The VM pre-sizes the slot vector to this. Parameters occupy
     /// `[0, n_qubit_params)`; aliases occupy the rest.
     pub num_qubit_slots: u32,
-    pub blocks: Vec<BcBlock>,
+    pub blocks: Vec<Block>,
     pub entry: BlockId,
 }
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
 pub enum ProcOwner {
     TopLevel,
@@ -177,32 +217,35 @@ pub enum ProcOwner {
 
 // ── Calibrations ─────────────────────────────────────────────────────
 
+#[doc(hidden)]
 /// A `defcal` declaration: the operation it calibrates, its signature,
 /// and its lowered body. With a pulse handler installed, the VM matches
 /// gate/measure/reset operations on hardware qubits against these
 /// (most-specific operand match wins; ties go to the first declared).
 #[derive(Clone, Serialize, Deserialize)]
-pub struct BcCalibration {
-    pub target: BcCalTarget,
+pub struct Calibration {
+    pub target: CalTarget,
     /// Classical parameter list. A calibration with any
-    /// [`BcCalArg::Unsupported`] entry is never dispatched.
-    pub args: Vec<BcCalArg>,
-    pub operands: Vec<BcCalOperand>,
+    /// [`CalArg::Unsupported`] entry is never dispatched.
+    pub args: Vec<CalArg>,
+    pub operands: Vec<CalOperand>,
     /// True for measure defcals, whose body returns the measured value.
     pub has_return: bool,
-    pub body: BcCalBody,
+    pub body: CalBody,
 }
 
+#[doc(hidden)]
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum BcCalTarget {
+pub enum CalTarget {
     Measure,
     Reset,
     Delay,
     Gate(SymbolId),
 }
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
-pub enum BcCalArg {
+pub enum CalArg {
     /// A declared parameter, bound positionally to the call's argument.
     Param(SymbolId),
     /// An expression specialization (e.g. `defcal rx(pi/2)`); such
@@ -210,38 +253,43 @@ pub enum BcCalArg {
     Unsupported,
 }
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
-pub enum BcCalOperand {
+pub enum CalOperand {
     /// A specific hardware qubit: the call's operand must be `$n`.
     Hardware(u32),
     /// A named (generic) operand: matches any hardware qubit.
     Any,
 }
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
-pub enum BcCalBody {
+pub enum CalBody {
     /// Lowered OpenPulse body.
     OpenPulse(ProcId),
     /// Unlowered text of a non-OpenPulse grammar.
     Opaque(StringId),
 }
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
-pub struct BcBlock {
+pub struct Block {
     pub id: BlockId,
-    pub instrs: Vec<BcInstr>,
-    pub terminator: BcTerminator,
+    pub instrs: Vec<Instr>,
+    pub terminator: Terminator,
     pub span: Span,
 }
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
-pub struct BcInstr {
-    pub op: BcOp,
+pub struct Instr {
+    pub op: Op,
     pub span: Span,
 }
 
 // ── Operands ─────────────────────────────────────────────────────────
 
+#[doc(hidden)]
 /// The base an indexable qubit operand selects from: a region of global
 /// quantum memory, or a call/`AliasBind`-bound slot of the enclosing
 /// frame.
@@ -252,12 +300,13 @@ pub enum QubitSource {
     Region(QubitRegionId),
     /// A frame-local qubit slot. Slots `[0, n_qubit_params)` are the
     /// gate/subroutine's qubit parameters, bound positionally at call
-    /// time; the rest are runtime aliases bound by [`BcOp::AliasBind`].
+    /// time; the rest are runtime aliases bound by [`Op::AliasBind`].
     Slot(u32),
 }
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
-pub enum BcOperand {
+pub enum Operand {
     /// Classical register.
     Reg(Reg),
     /// Pooled constant value.
@@ -282,124 +331,129 @@ pub enum BcOperand {
     /// evaluates `index` and maps it through the list at execution time.
     Index {
         source: QubitSource,
-        index: Box<BcOperand>,
+        index: Box<Operand>,
     },
 }
 
-/// One piece of a runtime-bound qubit alias value (see [`BcOp::AliasBind`]).
+#[doc(hidden)]
+/// One piece of a runtime-bound qubit alias value (see [`Op::AliasBind`]).
 #[derive(Clone, Serialize, Deserialize)]
-pub enum BcAliasSegment {
+pub enum AliasSegment {
     /// Append the qubit(s) this operand resolves to via the VM's qubit
     /// resolution (single qubit, whole region, runtime index, …).
-    Operand(BcOperand),
+    Operand(Operand),
     /// Append a runtime slice `source[start : step : end]` of `source`'s
     /// qubit list, following OpenQASM range semantics (defaults: start 0,
     /// step 1, end len-1; negative indices count from the end).
     Slice {
-        source: BcOperand,
-        start: Option<Box<BcOperand>>,
-        step: Option<Box<BcOperand>>,
-        end: Option<Box<BcOperand>>,
+        source: Operand,
+        start: Option<Box<Operand>>,
+        step: Option<Box<Operand>>,
+        end: Option<Box<Operand>>,
     },
 }
 
+#[doc(hidden)]
 /// How one subscript position selects from a bit register or an array
 /// dimension. Negative positions count from the end.
 #[derive(Clone, Serialize, Deserialize)]
-pub enum BcIndex {
+pub enum Subscript {
     /// One position: `a[i]`.
-    Item(BcOperand),
+    Item(Operand),
     /// The listed positions, in order: `a[{i, j}]`.
-    Set(Vec<BcOperand>),
+    Set(Vec<Operand>),
     /// Every `step`-th position from `start` to `end`, both included:
     /// `a[start:step:end]`. A bound left out is the first or last position
     /// in the direction of `step`, which defaults to 1.
     Range {
-        start: Option<BcOperand>,
-        step: Option<BcOperand>,
-        end: Option<BcOperand>,
+        start: Option<Operand>,
+        step: Option<Operand>,
+        end: Option<Operand>,
     },
 }
 
 // ── Gate modifiers ───────────────────────────────────────────────────
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
-pub enum BcGateModifier {
+pub enum Modifier {
     Inv,
-    Pow(BcOperand),
+    Pow(Operand),
     Ctrl(u32),
     NegCtrl(u32),
 }
 
 // ── Call target ──────────────────────────────────────────────────────
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
-pub enum BcCallTarget {
+pub enum Callee {
     Symbol(SymbolId),
     Intrinsic(Intrinsic),
 }
 
 // ── Opcodes ──────────────────────────────────────────────────────────
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
-pub enum BcOp {
+pub enum Op {
     // ── Classical arithmetic / bit / comparison (TAC) ──────────────
     Binary {
         op: BinOp,
         dest: Reg,
-        lhs: BcOperand,
-        rhs: BcOperand,
+        lhs: Operand,
+        rhs: Operand,
     },
     Unary {
         op: UnOp,
         dest: Reg,
-        src: BcOperand,
+        src: Operand,
     },
     Cast {
         dest: Reg,
         target_ty: ValueTy,
-        src: BcOperand,
+        src: Operand,
     },
 
     // ── Moves & memory ─────────────────────────────────────────────
     /// `dest = src`.
     Move {
         dest: Reg,
-        src: BcOperand,
+        src: Operand,
     },
     /// Indexed read `dest = base[indices]`: an element or sub-array for
-    /// [`BcIndex::Item`]s, a slice for a final set or range, and bits of an
+    /// [`Subscript::Item`]s, a slice for a final set or range, and bits of an
     /// element once the array dimensions are used up. `indices` are applied
     /// in order, each to the leading dimension of what the previous ones
     /// left.
     LoadElement {
         dest: Reg,
-        base: BcOperand,
-        indices: Vec<BcIndex>,
+        base: Operand,
+        indices: Vec<Subscript>,
     },
     /// Indexed write `target[indices] = value`, in place (see
-    /// [`BcOp::LoadElement`] for `indices`).
+    /// [`Op::LoadElement`] for `indices`).
     StoreElement {
         target: Reg,
-        indices: Vec<BcIndex>,
-        value: BcOperand,
+        indices: Vec<Subscript>,
+        value: Operand,
     },
     NewArray {
         dest: Reg,
-        items: Vec<BcOperand>,
+        items: Vec<Operand>,
     },
     /// Lend out the array in `base` (or the part of it `indices` select) to
     /// pass to a `mutable` array parameter: `dest` becomes a reference
     /// through which the callee writes to the array itself. `base` is
-    /// shared for as long as the reference is out; [`BcOp::Release`] ends
+    /// shared for as long as the reference is out; [`Op::Release`] ends
     /// that.
     Borrow {
         dest: Reg,
         base: Reg,
-        indices: Vec<BcIndex>,
+        indices: Vec<Subscript>,
     },
     /// Take back sole ownership of the array in `reg` after a
-    /// [`BcOp::Borrow`].
+    /// [`Op::Borrow`].
     Release {
         reg: Reg,
     },
@@ -407,33 +461,33 @@ pub enum BcOp {
     // ── Call ───────────────────────────────────────────────────────
     Call {
         dest: Option<Reg>,
-        callee: BcCallTarget,
-        args: Vec<BcOperand>,
+        callee: Callee,
+        args: Vec<Operand>,
     },
 
     // ── Quantum ops ────────────────────────────────────────────────
     GateCall {
         gate: SymbolId,
-        modifiers: Vec<BcGateModifier>,
-        args: Vec<BcOperand>,
-        qubits: Vec<BcOperand>,
+        modifiers: Vec<Modifier>,
+        args: Vec<Operand>,
+        qubits: Vec<Operand>,
     },
     Measure {
         dest: Option<Reg>,
-        qubit: BcOperand,
+        qubit: Operand,
     },
     Reset {
-        qubit: BcOperand,
+        qubit: Operand,
     },
     Barrier {
-        qubits: Vec<BcOperand>,
+        qubits: Vec<Operand>,
     },
     Delay {
-        duration: BcOperand,
-        qubits: Vec<BcOperand>,
+        duration: Operand,
+        qubits: Vec<Operand>,
     },
     Nop {
-        qubits: Vec<BcOperand>,
+        qubits: Vec<Operand>,
     },
 
     // ── Nested bodies ──────────────────────────────────────────────
@@ -459,7 +513,7 @@ pub enum BcOp {
     /// resolved `segments`, for later [`QubitSource::Slot`] references.
     AliasBind {
         slot: u32,
-        segments: Vec<BcAliasSegment>,
+        segments: Vec<AliasSegment>,
     },
 
     // ── The cal scope ──────────────────────────────────────────────
@@ -472,34 +526,35 @@ pub enum BcOp {
     /// Write a value of the cal scope to the VM's store of them.
     CalStore {
         symbol: SymbolId,
-        src: BcOperand,
+        src: Operand,
     },
 }
 
 // ── Terminators ──────────────────────────────────────────────────────
 
+#[doc(hidden)]
 #[derive(Clone, Serialize, Deserialize)]
-pub enum BcTerminator {
+pub enum Terminator {
     Goto(BlockId),
     Branch {
-        cond: BcOperand,
+        cond: Operand,
         then_bb: BlockId,
         else_bb: BlockId,
     },
     Switch {
-        target: BcOperand,
-        cases: Vec<(Vec<BcOperand>, BlockId)>,
+        target: Operand,
+        cases: Vec<(Vec<Operand>, BlockId)>,
         default: BlockId,
     },
     /// Entry to a `box[duration]`: run its contents from `body`, which
     /// fall through to `after` — or, in a timing pass, count `duration`
     /// and go straight to `after`.
     Box {
-        duration: BcOperand,
+        duration: Operand,
         body: BlockId,
         after: BlockId,
     },
-    Return(Option<BcOperand>),
+    Return(Option<Operand>),
     End,
     Unreachable,
 }

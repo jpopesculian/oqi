@@ -24,9 +24,7 @@ use std::collections::{HashMap, HashSet};
 
 use oqi_lex::Span;
 
-use crate::classical::{
-    Duration, DurationUnit, Primitive, PrimitiveTy, Value, ValueTy, value_as_usize,
-};
+use crate::classical::{Duration, DurationUnit, Primitive, PrimitiveTy, Value, ValueTy};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::sir::{
     CalibrationArg, CalibrationBody, CalibrationDecl, CalibrationOperand, CalibrationTarget,
@@ -34,7 +32,7 @@ use crate::sir::{
     LValue, MeasureExpr, MeasureExprKind, Program, QubitOperand, RValue, Stmt, StmtKind,
 };
 use crate::symbol::{SymbolId, SymbolTable};
-use crate::types::{CompileOptions, Type};
+use crate::types::{CompileOptions, Type, value_as_usize};
 
 mod stretch;
 
@@ -54,21 +52,27 @@ pub enum TimingDuration {
 }
 
 impl TimingDuration {
+    /// `v` nanoseconds.
     pub const fn ns(v: f64) -> Self {
         Self::Si(Duration::new(v, DurationUnit::Ns))
     }
+    /// `v` microseconds.
     pub const fn us(v: f64) -> Self {
         Self::Si(Duration::new(v, DurationUnit::Us))
     }
+    /// `v` milliseconds.
     pub const fn ms(v: f64) -> Self {
         Self::Si(Duration::new(v, DurationUnit::Ms))
     }
+    /// `v` seconds.
     pub const fn s(v: f64) -> Self {
         Self::Si(Duration::new(v, DurationUnit::S))
     }
+    /// `v` device time units (`dt`).
     pub const fn dt(v: f64) -> Self {
         Self::Dt(v)
     }
+    /// No time at all.
     pub const fn zero() -> Self {
         Self::Si(Duration::new(0.0, DurationUnit::Ns))
     }
@@ -880,8 +884,8 @@ fn value_to_duration(v: &Value, span: Span) -> Result<Duration> {
     let mismatch = || {
         CompileError::at(
             ErrorKind::TypeMismatch {
-                expected: Box::new(Type::Classical(ValueTy::duration())),
-                got: Box::new(Type::Classical(v.ty())),
+                expected: Type::Classical(ValueTy::duration()).to_string(),
+                got: Type::Classical(v.ty()).to_string(),
             },
             span,
         )
@@ -915,7 +919,7 @@ fn stretch_err(span: Span) -> CompileError {
 /// Attach `span` to `e` unless it already carries one (provider errors may
 /// point inside a defcal body; keep the more precise span).
 fn at_span(e: CompileError, span: Span) -> CompileError {
-    if e.span == Span::default() {
+    if e.span.is_none() {
         e.with_span(span)
     } else {
         e
@@ -957,6 +961,8 @@ impl std::fmt::Debug for TableTimings {
 }
 
 impl TableTimings {
+    /// An empty table: every operation takes no time unless the program's
+    /// own defcals say otherwise.
     pub fn new() -> Self {
         Self::default()
     }
@@ -1564,13 +1570,13 @@ fn eval_cal_expr(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lower::compile_source;
+    use crate::lower::compile_to_sir;
     use crate::resolve::DefaultIncludeResolver;
 
     fn compile(source: &str) -> Program {
-        compile_source(
+        compile_to_sir(
             source,
-            DefaultIncludeResolver,
+            &DefaultIncludeResolver,
             &CompileOptions::default(),
             None,
         )
@@ -1851,9 +1857,9 @@ mod tests {
         // `f(1)[100ns] q -> c;` — designators have no meaning on measure
         // calls; the parser rejects them.
         assert!(
-            compile_source(
+            compile_to_sir(
                 "qubit q;\nbit c;\nf(1)[100ns] q -> c;\n",
-                DefaultIncludeResolver,
+                &DefaultIncludeResolver,
                 &CompileOptions::default(),
                 None,
             )

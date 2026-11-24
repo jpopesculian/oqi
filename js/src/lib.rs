@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use oqi_compile::classical::{Value, ValueTy};
-use oqi_compile::{BcModule, CompileOptions, IncludeResolver, LibOnlyResolver};
+use oqi_compile::{Compiler, IncludeResolver, LibOnlyResolver, Program, TableTimings};
 use oqi_vm::{
     BackendSpec, DEFAULT_SEED, ExternProvider, HostValue, KindResult, QuantumBackend, SumPolicy,
     Vm, VmErrorKind,
@@ -96,18 +96,20 @@ fn build_module(
     source: &str,
     timings: Option<&HashMap<String, String>>,
     dt: Option<&str>,
-) -> Result<BcModule, JsValue> {
-    let mut options = CompileOptions {
-        source_name: Some(Path::new(SOURCE_NAME).to_path_buf()),
-        ..Default::default()
-    };
+) -> Result<Program, JsValue> {
+    let mut compiler = Compiler::new()
+        .include_resolver(&LibOnlyResolver)
+        .source_name(SOURCE_NAME);
     if let Some(spec) = dt {
-        options.dt = oqi_compile::parse_dt(spec).map_err(|e| diag_err(&e, source))?;
+        compiler = compiler.dt(oqi_compile::parse_dt(spec).map_err(|e| diag_err(&e, source))?);
     }
-    let timings: Option<Vec<(&str, &str)>> =
-        timings.map(|t| t.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect());
-    oqi_compile::compile(source, LibOnlyResolver, &options, timings.as_deref())
-        .map_err(|e| diag_err(&e, source))
+    if let Some(timings) = timings {
+        let entries = timings.iter().map(|(k, v)| (k.as_str(), v.as_str()));
+        let table = TableTimings::from_str_entries(entries, &compiler.compile_options().dt)
+            .map_err(|e| diag_err(&e, source))?;
+        compiler = compiler.timings(table);
+    }
+    compiler.compile(source).map_err(|e| diag_err(&e, source))
 }
 
 #[wasm_bindgen(getter_with_clone)]
@@ -269,7 +271,7 @@ struct RunOutput {
 /// Everything [`run`] and [`sample`] share: the parsed options, the compiled
 /// module, and the pieces a [`Vm`] is assembled from.
 struct Session {
-    module: BcModule,
+    module: Program,
     inputs: Vec<(String, HostValue)>,
     externs: JsExterns,
     backend: Box<dyn QuantumBackend>,
@@ -447,7 +449,7 @@ struct JsExterns {
 impl JsExterns {
     /// `externs` is the raw option value (undefined/null ⇒ none). Errors if
     /// it isn't an object or any property isn't a function.
-    fn new(module: &BcModule, externs: &JsValue) -> Result<Self, JsError> {
+    fn new(module: &Program, externs: &JsValue) -> Result<Self, JsError> {
         let ret_tys = module
             .externs()
             .map(|(name, ty)| (name.to_string(), ty))

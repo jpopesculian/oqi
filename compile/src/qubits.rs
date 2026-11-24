@@ -48,7 +48,7 @@ pub struct QubitLayout {
     /// expressions or derived from another dynamic alias); populated
     /// during bytecode emission. References resolve to a
     /// [`QubitSource::Slot`](super::bytecode::QubitSource) bound at run
-    /// time by [`BcOp::AliasBind`](super::bytecode::BcOp).
+    /// time by [`Op::AliasBind`](super::bytecode::Op).
     dynamic_aliases: HashMap<SymbolId, DynAlias>,
     /// Gate qubit params and qubit-typed subroutine params, mapped to
     /// their positional slot (gate: position in the declared qubit
@@ -460,14 +460,14 @@ pub fn expand_range(r: &RangeExpr, len: usize) -> Result<Option<Vec<usize>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lower::compile_source;
+    use crate::lower::compile_to_sir;
     use crate::resolve::DefaultIncludeResolver;
     use crate::types::CompileOptions;
 
     fn compile(src: &str) -> sir::Program {
-        compile_source(
+        compile_to_sir(
             src,
-            DefaultIncludeResolver,
+            &DefaultIncludeResolver,
             &CompileOptions::default(),
             None,
         )
@@ -477,9 +477,9 @@ mod tests {
     /// Build the layout and resolve every top-level alias in program
     /// order, mirroring what the bytecode emitter does.
     fn try_layout(src: &str) -> Result<(sir::Program, QubitLayout)> {
-        let p = compile_source(
+        let p = compile_to_sir(
             src,
-            DefaultIncludeResolver,
+            &DefaultIncludeResolver,
             &CompileOptions::default(),
             None,
         )?;

@@ -1176,14 +1176,14 @@ fn rewrite_expr(expr: &mut Expr, values: &HashMap<SymbolId, Duration>) {
 mod tests {
     use super::super::{TableTimings, TimingDuration, resolve_durationof};
     use super::*;
-    use crate::lower::compile_source;
+    use crate::lower::compile_to_sir;
     use crate::resolve::DefaultIncludeResolver;
     use crate::sir::BinOp;
 
     fn compile(source: &str) -> Program {
-        compile_source(
+        compile_to_sir(
             source,
-            DefaultIncludeResolver,
+            &DefaultIncludeResolver,
             &CompileOptions::default(),
             None,
         )

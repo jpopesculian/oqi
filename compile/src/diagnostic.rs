@@ -18,7 +18,7 @@ impl ErrorKind {
             ErrorKind::UndefinedName(_) => (1, "not found in this scope"),
             ErrorKind::DuplicateDefinition { .. } => (2, "redefined here"),
             ErrorKind::TypeMismatch { .. } => (3, "type mismatch"),
-            ErrorKind::InvalidOperands(_) => (3, "not defined for these types"),
+            ErrorKind::InvalidOperands(_) => (12, "not defined for these types"),
             ErrorKind::NonConstantDesignator => (4, "not a constant"),
             ErrorKind::NonConstantExpression => (5, "not a constant"),
             ErrorKind::InvalidType(_) => (6, "invalid type"),
@@ -102,7 +102,11 @@ impl Diagnostic for CompileError {
     }
 
     fn labels(&self) -> Vec<DiagLabel> {
-        let mut labels = vec![DiagLabel::primary(self.span, self.kind.code_and_label().1)];
+        // No location, no labels: the renderer prints just the headline.
+        let Some(span) = self.span else {
+            return Vec::new();
+        };
+        let mut labels = vec![DiagLabel::primary(span, self.kind.code_and_label().1)];
         match &self.kind {
             ErrorKind::DuplicateDefinition { prior, .. } => {
                 labels.push(DiagLabel::secondary(*prior, "first defined here"));

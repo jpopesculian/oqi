@@ -42,11 +42,19 @@ source → parse → resolve (includes) → lower → cfg → bytecode → vm
 - **`parse/`** (`oqi-parse`) — hand-written parser; AST in `parse/src/ast.rs`.
   `parse` and `parse_with_comments` are the whole public API. Every list goes
   through `comma_list`, which implements the grammar's trailing-comma rule.
-- **`compile/`** (`oqi-compile`) — the heart. `oqi_compile::compile` is the main
-  entry point (source → `BcModule`); `compile_source` stops at the SIR
-  (source → `sir::Program`) and `bytecode::emit` lowers that the rest of the
-  way. The pipeline stages (`cfg`, `qubits`, `lower`, `resolve`) are
-  crate-private. Key modules:
+- **`compile/`** (`oqi-compile`) — the heart. `oqi_compile::compile(source)`
+  is the main entry point (source → `Program`, the compiled bytecode
+  program); `Compiler` is its builder (include resolver, `dt`, system width,
+  a `TableTimings` for compile-time `durationof`), and
+  `Compiler::compile_to_sir` stops at the SIR, which `bytecode::emit` lowers
+  the rest of the way. Errors are `CompileError { kind, span: Option<Span>,
+  path }`. The pipeline stages (`cfg`, `qubits`, `lower`, `resolve`) are
+  crate-private; `sir`, `types`, `symbol`, `scope`, `duration` and
+  `openpulse` are `#[doc(hidden)]` public for tests and debugging output, and
+  the bytecode instruction set (`bytecode::{Op, Operand, Terminator, …}`) is
+  `#[doc(hidden)]` — it is the VM's interface, not a stable API. Inside
+  `bytecode/`, the emitter and disassembler refer to its types as `bc::*`
+  to keep them apart from the SIR/CFG types of the same names. Key modules:
   - `lower.rs` — AST → SIR, name resolution, type checking.
   - `resolve.rs` — `include` resolution; `stdgates.inc` is embedded via
     `include_str!` and served as a library include.
@@ -68,8 +76,8 @@ source → parse → resolve (includes) → lower → cfg → bytecode → vm
   128 bits, floats, complex, arrays, bit registers of any width) and the
   operators under `classical/src/ops/`. An operator is a value (`ops::BinOp`,
   `ops::UnOp`): `return_ty` type-checks it and `apply` evaluates it, both from
-  the same per-operator signature, so the SIR, the bytecode (`BcOp::Binary` /
-  `BcOp::Unary`) and the VM all carry the one enum and never dispatch on it
+  the same per-operator signature, so the SIR, the bytecode (`Op::Binary` /
+  `Op::Unary`) and the VM all carry the one enum and never dispatch on it
   themselves. `PrimitiveTy::cast` is the spec's allowed-casts table; operator
   promotions (e.g. `angle + float`) are separate and not casts. Used by both
   compile and vm. Its `serde` feature (and `oqi-lex`'s, for `Span`) exists for

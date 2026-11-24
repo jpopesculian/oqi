@@ -2,17 +2,12 @@
 //! (docs/scope.rst, docs/types.rst, docs/classical.rst, docs/subroutines.rst):
 //! compile a program, run it, and read the named outputs back.
 
-use oqi_compile::bytecode::BcModule;
-use oqi_compile::{CompileError, CompileOptions, DefaultIncludeResolver};
+use oqi_compile::CompileError;
+use oqi_compile::bytecode::Program;
 use oqi_vm::{NoExterns, StateVectorSim, Vm};
 
-fn compile(src: &str) -> Result<BcModule, CompileError> {
-    oqi_compile::compile(
-        src,
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        None,
-    )
+fn compile(src: &str) -> Result<Program, CompileError> {
+    oqi_compile::compile(src)
 }
 
 fn output(src: &str, name: &str) -> String {
@@ -382,7 +377,8 @@ fn only_registers_can_be_aliased() {
     ] {
         let err = compile_error(src);
         assert!(err.to_string().contains(what), "{src}: {err}");
-        assert!(err.span.end > err.span.start, "{src}: no location");
+        let span = err.span.expect("a location");
+        assert!(span.end > span.start, "{src}: no location");
     }
 }
 
@@ -410,7 +406,7 @@ fn a_shadowing_constant_does_not_outlive_its_scope() {
 #[test]
 fn qubit_index_out_of_range_points_at_the_index() {
     let err = compile_error("qubit[2] q; reset q[3];");
-    assert_ne!(err.span, Default::default(), "{err}");
+    assert!(err.span.is_some_and(|s| s != Default::default()), "{err}");
 }
 
 #[test]
@@ -453,7 +449,7 @@ fn definitions_see_only_the_constants_of_the_global_scope() {
         let err = compile_error(src);
         let message = format!("`{name}` is not visible");
         assert!(err.to_string().contains(&message), "{src}: {err}");
-        assert_ne!(err.span, Default::default(), "{src}");
+        assert!(err.span.is_some_and(|s| s != Default::default()), "{src}");
     }
 
     // Constants, gates and subroutines of the global scope are visible, a

@@ -13,8 +13,8 @@ use num_complex::Complex64;
 use oqi_classical::{
     Array, BitReg, DurationUnit, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy,
 };
-use oqi_compile::bytecode::BcModule;
-use oqi_compile::symbol::SymbolId;
+use oqi_compile::Program;
+use oqi_compile::SymbolId;
 
 use crate::error::{VmError, VmErrorKind, VmResult};
 use crate::vm::RunResult;
@@ -274,7 +274,7 @@ pub fn coerce(what: &str, raw: &HostValue, ty: ValueTy) -> Result<Value, String>
 /// each to its declared type. Fails on the first (in the given order) name
 /// that isn't a declared input or value that doesn't fit its type.
 pub fn coerce_inputs(
-    module: &BcModule,
+    module: &Program,
     named: &[(String, HostValue)],
 ) -> VmResult<HashMap<SymbolId, Value>> {
     let mut inputs = HashMap::new();
@@ -316,7 +316,7 @@ pub struct Histogram {
 
 /// Tally the outputs of `shots` (e.g. from [`Vm::sample`](crate::Vm::sample))
 /// into one [`Histogram`] per output variable, in program order.
-pub fn histograms(module: &BcModule, shots: &[RunResult]) -> Vec<Histogram> {
+pub fn histograms(module: &Program, shots: &[RunResult]) -> Vec<Histogram> {
     let mut tallies: HashMap<SymbolId, HashMap<String, u32>> = HashMap::new();
     for shot in shots {
         for (sym, value) in &shot.outputs {

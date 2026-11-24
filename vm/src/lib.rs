@@ -1,6 +1,6 @@
 //! A virtual machine for OQI bytecode ([`oqi_compile::bytecode`]).
 //!
-//! [`Vm`] interprets a [`BcModule`](oqi_compile::bytecode::BcModule)
+//! [`Vm`] interprets a [`Program`](oqi_compile::Program)
 //! against two pluggable extension points:
 //!
 //! - a [`QuantumBackend`] — the quantum execution layer (a CPU

@@ -1,8 +1,8 @@
-//! Static analyses over a [`BcModule`].
+//! Static analyses over a [`bc::Program`].
 
 use std::collections::{HashMap, HashSet};
 
-use crate::bytecode::types::{BcModule, BcOp, BcProcedure, BcTerminator};
+use crate::bytecode::types as bc;
 
 /// Whether a shot of this program can be sampled from a single final state —
 /// i.e. no quantum operation depends on a measurement outcome, so the
@@ -15,7 +15,7 @@ use crate::bytecode::types::{BcModule, BcOp, BcProcedure, BcTerminator};
 /// every shot from it; measurement-dependent *classical* control flow is still
 /// fine (the classical program is replayed per shot). Any doubt returns
 /// `false`, falling back to per-shot re-execution.
-pub fn is_sample_safe(module: &BcModule) -> bool {
+pub fn is_sample_safe(module: &bc::Program) -> bool {
     let entry = module.entry.0 as usize;
     if entry >= module.procedures.len() {
         return false;
@@ -45,7 +45,7 @@ pub fn is_sample_safe(module: &BcModule) -> bool {
         let mut measured = false;
         for ins in &b.instrs {
             match &ins.op {
-                BcOp::Measure { .. } => measured = true,
+                bc::Op::Measure { .. } => measured = true,
                 op if measured && is_gate_applying(op) => return false,
                 _ => {}
             }
@@ -76,33 +76,33 @@ pub fn is_sample_safe(module: &BcModule) -> bool {
 
 /// Ops that apply a unitary / touch the quantum state. `Call` (a subroutine or
 /// intrinsic) is treated conservatively — it might contain gates.
-fn is_gate_applying(op: &BcOp) -> bool {
+fn is_gate_applying(op: &bc::Op) -> bool {
     matches!(
         op,
-        BcOp::GateCall { .. } | BcOp::Reset { .. } | BcOp::Call { .. }
+        bc::Op::GateCall { .. } | bc::Op::Reset { .. } | bc::Op::Call { .. }
     )
 }
 
-fn has_measure(proc: &BcProcedure) -> bool {
+fn has_measure(proc: &bc::Procedure) -> bool {
     proc.blocks.iter().any(|b| {
         b.instrs
             .iter()
-            .any(|i| matches!(i.op, BcOp::Measure { .. }))
+            .any(|i| matches!(i.op, bc::Op::Measure { .. }))
     })
 }
 
-fn successors(term: &BcTerminator) -> Vec<u32> {
+fn successors(term: &bc::Terminator) -> Vec<u32> {
     match term {
-        BcTerminator::Goto(b) => vec![b.0],
-        BcTerminator::Branch {
+        bc::Terminator::Goto(b) => vec![b.0],
+        bc::Terminator::Branch {
             then_bb, else_bb, ..
         } => vec![then_bb.0, else_bb.0],
-        BcTerminator::Box { body, after, .. } => vec![body.0, after.0],
-        BcTerminator::Switch { cases, default, .. } => {
+        bc::Terminator::Box { body, after, .. } => vec![body.0, after.0],
+        bc::Terminator::Switch { cases, default, .. } => {
             let mut v: Vec<u32> = cases.iter().map(|(_, b)| b.0).collect();
             v.push(default.0);
             v
         }
-        BcTerminator::Return(_) | BcTerminator::End | BcTerminator::Unreachable => Vec::new(),
+        bc::Terminator::Return(_) | bc::Terminator::End | bc::Terminator::Unreachable => Vec::new(),
     }
 }

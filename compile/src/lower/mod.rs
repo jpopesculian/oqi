@@ -30,24 +30,23 @@ mod gate;
 
 /// Source → SIR: parse, resolve includes, type-check and lower.
 ///
-/// With `timings` supplied (even an empty slice), `durationof` and `stretch`
-/// are resolved at compile time against those `(name, duration literal)`
-/// entries (see [`TableTimings::from_str_entries`]) plus the program's own
-/// defcal and gate bodies. With `None` they are left for the VM's runtime
-/// pass.
-pub fn compile_source(
+/// With `timings`, `durationof` and `stretch` are resolved at compile time
+/// against that table plus the program's own defcal and gate bodies;
+/// without, they are left for the VM's runtime pass.
+pub(crate) fn compile_to_sir(
     source: &str,
-    include_resolver: impl IncludeResolver + 'static,
+    include_resolver: &dyn IncludeResolver,
     options: &CompileOptions,
-    timings: Option<&[(&str, &str)]>,
+    timings: Option<&TableTimings>,
 ) -> Result<sir::Program> {
     let ast = oqi_parse::parse(source)
-        .map_err(|e| CompileError::from(e).with_path(options.source_name.clone()))?;
+        .map_err(|e| CompileError::from(e).or_path(options.source_name.clone()))?;
     let mut lowerer = Lowerer::new(include_resolver, options.clone());
     lowerer.lower_program(&ast)?;
     let mut program = lowerer.finish(&ast);
-    if let Some(entries) = timings {
-        let table = TableTimings::from_str_entries(entries.iter().copied(), &options.dt)?
+    if let Some(table) = timings {
+        let table = table
+            .clone()
             .with_defcals(&program, &options.dt)
             .with_program_gates(&program);
         resolve_durationof(&mut program, &table, options)?;
@@ -57,8 +56,8 @@ pub fn compile_source(
 
 // ── Lowerer ─────────────────────────────────────────────────────────────
 
-struct Lowerer {
-    resolver: Resolver,
+struct Lowerer<'r> {
+    resolver: Resolver<'r>,
     gates: Vec<sir::GateDecl>,
     subroutines: Vec<sir::SubroutineDecl>,
     externs: Vec<sir::ExternDecl>,
@@ -67,8 +66,8 @@ struct Lowerer {
     body: Vec<sir::Stmt>,
 }
 
-impl Lowerer {
-    fn new(include_resolver: impl IncludeResolver + 'static, options: CompileOptions) -> Self {
+impl<'r> Lowerer<'r> {
+    fn new(include_resolver: &'r dyn IncludeResolver, options: CompileOptions) -> Self {
         Self {
             resolver: Resolver::new(include_resolver, options),
             gates: Vec::new(),
@@ -159,7 +158,7 @@ impl Lowerer {
             ast::StmtOrScope::Stmt(stmt) => self.lower_stmt(stmt),
             ast::StmtOrScope::Scope(scope) => self.with_scope(|this| this.lower_items(&scope.body)),
         };
-        result.with_path(current_path)
+        result.or_path(current_path)
     }
 
     fn lower_items(&mut self, items: &[ast::StmtOrScope<'_>]) -> Result<Vec<sir::Stmt>> {
@@ -756,7 +755,7 @@ impl Lowerer {
                 let src = IncludeSource::Path(file_path.to_path_buf());
                 let content = this.resolver.resolve_source(&src, span)?.into_owned();
                 let ast = oqi_parse::parse(&content)
-                    .map_err(|e| CompileError::from(e).with_path(Some(file_path.to_path_buf())))?;
+                    .map_err(|e| CompileError::from(e).or_path(Some(file_path.to_path_buf())))?;
                 this.lower_items(&ast.body)
             }),
         }
@@ -1456,7 +1455,7 @@ fn parse_hardware_qubit(s: &str, span: oqi_lex::Span) -> Result<usize> {
         })
 }
 
-impl Lowerer {
+impl Lowerer<'_> {
     fn lower_cal_body(&mut self, body: &ast::CalBody<'_>) -> Result<sir::CalibrationBody> {
         match body {
             ast::CalBody::Raw(text) => {
@@ -1698,8 +1697,8 @@ fn check_assignable(from: &Type, to: &Type, span: oqi_lex::Span) -> Result<()> {
     let mismatch = || {
         CompileError::at(
             ErrorKind::TypeMismatch {
-                expected: Box::new(to.clone()),
-                got: Box::new(from.clone()),
+                expected: to.to_string(),
+                got: from.to_string(),
             },
             span,
         )
@@ -1982,16 +1981,16 @@ fn validate_cast(from: &Type, to: &Type, span: oqi_lex::Span) -> Result<()> {
         (Some(from_ty), Some(to_ty)) => from_ty.cast(to_ty).map(|_| ()).map_err(|_| {
             CompileError::at(
                 ErrorKind::TypeMismatch {
-                    expected: Box::new(to.clone()),
-                    got: Box::new(from.clone()),
+                    expected: to.to_string(),
+                    got: from.to_string(),
                 },
                 span,
             )
         }),
         _ => Err(CompileError::at(
             ErrorKind::TypeMismatch {
-                expected: Box::new(to.clone()),
-                got: Box::new(from.clone()),
+                expected: to.to_string(),
+                got: from.to_string(),
             },
             span,
         )),
@@ -2003,10 +2002,10 @@ fn validate_cast(from: &Type, to: &Type, span: oqi_lex::Span) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::classical::FloatWidth;
     use crate::classical::PrimitiveTy;
     use crate::resolve::DefaultIncludeResolver;
     use crate::symbol::SymbolKind;
-    use crate::types::FloatWidth;
     use std::borrow::Cow;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -2037,9 +2036,9 @@ mod tests {
     }
 
     fn compile_inline(source: &str) -> Result<sir::Program> {
-        compile_source(
+        compile_to_sir(
             source,
-            DefaultIncludeResolver,
+            &DefaultIncludeResolver,
             &CompileOptions::default(),
             None,
         )
@@ -2097,9 +2096,9 @@ mod tests {
     #[test]
     fn compile_error_in_root_stmt_has_source_path() {
         let path = Path::new("/project/main.qasm");
-        let err = match compile_source(
+        let err = match compile_to_sir(
             "missing_symbol;",
-            DefaultIncludeResolver,
+            &DefaultIncludeResolver,
             &CompileOptions {
                 source_name: Some(path.to_path_buf()),
                 ..Default::default()
@@ -2126,9 +2125,9 @@ mod tests {
             ),
         ]);
 
-        let err = match compile_source(
+        let err = match compile_to_sir(
             "include \"file/1/path\";",
-            include_resolver,
+            &include_resolver,
             &CompileOptions {
                 source_name: Some(path.to_path_buf()),
                 ..Default::default()
@@ -2566,7 +2565,7 @@ mod tests {
             err.to_string(),
             "`complex[float[64]] < complex[float[64]]` is not defined"
         );
-        assert_eq!(&source[err.span], "a < a");
+        assert_eq!(&source[err.span.unwrap()], "a < a");
 
         let err = compile_inline("qubit q; q + q;")
             .err()
@@ -2775,9 +2774,9 @@ mod tests {
 
     #[test]
     fn empty_array_literal_is_rejected() {
-        let err = match compile_source(
+        let err = match compile_to_sir(
             "array[int[32], 1] a = {};",
-            DefaultIncludeResolver,
+            &DefaultIncludeResolver,
             &CompileOptions::default(),
             None,
         ) {
@@ -2789,9 +2788,9 @@ mod tests {
 
     #[test]
     fn overflowing_hardware_qubit_is_rejected() {
-        let err = match compile_source(
+        let err = match compile_to_sir(
             "reset $99999999999999999999999999;",
-            DefaultIncludeResolver,
+            &DefaultIncludeResolver,
             &CompileOptions::default(),
             None,
         ) {
@@ -2893,16 +2892,16 @@ mod tests {
         // control flow (Goto/Return), never a conditional Branch/Switch.
         assert!(proc.blocks.iter().all(|b| matches!(
             b.terminator,
-            crate::bytecode::BcTerminator::Goto(_)
-                | crate::bytecode::BcTerminator::Return(_)
-                | crate::bytecode::BcTerminator::End
+            crate::bytecode::Terminator::Goto(_)
+                | crate::bytecode::Terminator::Return(_)
+                | crate::bytecode::Terminator::End
         )));
         // The three unrolled U calls land in a single straight-line block.
         let gate_calls: usize = proc
             .blocks
             .iter()
             .flat_map(|b| &b.instrs)
-            .filter(|i| matches!(i.op, crate::bytecode::BcOp::GateCall { .. }))
+            .filter(|i| matches!(i.op, crate::bytecode::Op::GateCall { .. }))
             .count();
         assert_eq!(gate_calls, 3);
     }

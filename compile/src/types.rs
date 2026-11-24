@@ -3,21 +3,19 @@ use oqi_lex::Span;
 use oqi_parse::ast;
 
 use crate::classical::{
-    ArrayDim, ArrayRefShape, ArrayRefTy, ArrayShape, ArrayTy, Duration, DurationUnit, IntWidth,
-    PrimitiveTy, RefAccess, Value, ValueTy, iw, value_as_usize,
+    ArrayDim, ArrayRefShape, ArrayRefTy, ArrayShape, ArrayTy, Duration, DurationUnit, FloatWidth,
+    IntWidth, PrimitiveTy, RefAccess, Value, ValueTy, iw,
 };
 use crate::error::{CompileError, ErrorKind, Result, ResultExt};
 use crate::openpulse;
 use crate::resolve::Resolver;
 use crate::sir::{BinOp, Intrinsic, UnOp};
 
-pub use crate::classical::FloatWidth;
-
 /// An integer-like or float literal whose width is not yet fixed. Lives only
 /// in the compiler: it collapses to a concrete sized type the moment it meets
 /// one (a cast, an assignment, a loop variable, a sized binary operand), so it
-/// never reaches the bytecode/VM. An *un*collapsed value falls back to the
-/// historical carrier width via [`Type::value_ty`].
+/// never reaches the bytecode/VM. A value that never meets a sized type is
+/// carried at 64 bits ([`Type::value_ty`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsizedType {
     Int,
@@ -49,9 +47,8 @@ impl Type {
         match self {
             Type::Classical(ty) => Some(*ty),
             Type::Stretch => Some(ValueTy::Scalar(PrimitiveTy::Duration)),
-            // Carrier widths for an uncollapsed literal — the historical
-            // defaults, so a value that never meets a sized type behaves
-            // exactly as it did before unsized literals existed.
+            // An uncollapsed literal is carried at 64 bits (`float[64]`
+            // for floats).
             Type::Unsized(u) => Some(ValueTy::Scalar(match u {
                 UnsizedType::Int => PrimitiveTy::Int(iw(64)),
                 UnsizedType::Uint => PrimitiveTy::Uint(iw(64)),
@@ -131,12 +128,15 @@ pub(crate) fn float_width_from_system_width(width: usize) -> FloatWidth {
 /// host (native and wasm32 alike).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
 pub enum SystemWidth {
+    /// 32-bit `int`/`uint`/`angle`, `float[32]`.
     B32,
+    /// 64-bit `int`/`uint`/`angle`, `float[64]`.
     #[default]
     B64,
 }
 
 impl SystemWidth {
+    /// The width of plain `int`, `uint` and `angle`.
     pub fn iw(self) -> IntWidth {
         match self {
             SystemWidth::B32 => iw(32),
@@ -144,6 +144,7 @@ impl SystemWidth {
         }
     }
 
+    /// The width of plain `float` and `complex`.
     pub fn fw(self) -> FloatWidth {
         match self {
             SystemWidth::B32 => FloatWidth::F32,
@@ -152,8 +153,10 @@ impl SystemWidth {
     }
 }
 
-/// Options affecting type resolution and lowering.
+/// Options affecting type resolution and lowering. Set them through
+/// [`Compiler`](crate::Compiler), or start from `CompileOptions::default()`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CompileOptions {
     /// Source file path, used for include resolution and diagnostics.
     pub source_name: Option<std::path::PathBuf>,
@@ -171,6 +174,15 @@ impl Default for CompileOptions {
             dt: Duration::new(1.0, DurationUnit::Us),
         }
     }
+}
+
+/// `value` as a `usize`, if it is a non-negative integer that fits.
+pub(crate) fn value_as_usize(value: &Value) -> Option<usize> {
+    let Value::Scalar(scalar) = value else {
+        return None;
+    };
+    let scalar = scalar.clone().cast(PrimitiveTy::Int(iw(128))).ok()?;
+    usize::try_from(scalar.value().as_int(iw(128))?).ok()
 }
 
 /// Evaluate a constant expression to a `usize` value for use as a type designator.
@@ -613,13 +625,13 @@ mod tests {
     }
 
     /// The global scope, with only the built-in names in it.
-    fn global_scope() -> Resolver {
+    fn global_scope() -> Resolver<'static> {
         let options = CompileOptions {
             source_name: None,
             system_width: SystemWidth::B64,
             ..Default::default()
         };
-        Resolver::new(crate::resolve::DefaultIncludeResolver, options)
+        Resolver::new(&crate::resolve::DefaultIncludeResolver, options)
     }
 
     #[test]
@@ -743,7 +755,7 @@ mod tests {
             system_width: SystemWidth::B32,
             ..Default::default()
         };
-        let scope = Resolver::new(crate::resolve::DefaultIncludeResolver, options);
+        let scope = Resolver::new(&crate::resolve::DefaultIncludeResolver, options);
         let ty = sized(ast::SizedKind::Angle, None, span(0, 5));
         assert_eq!(
             resolve_scalar_type(&ty, &scope).unwrap(),
@@ -932,7 +944,7 @@ mod tests {
             dt,
             ..Default::default()
         };
-        let scope = Resolver::new(crate::resolve::DefaultIncludeResolver, options);
+        let scope = Resolver::new(&crate::resolve::DefaultIncludeResolver, options);
         let expr = ast::Expr::TimingLiteral("4 dt", span(0, 4));
         let val = eval_const_expr(&expr, &scope).unwrap();
         match val {

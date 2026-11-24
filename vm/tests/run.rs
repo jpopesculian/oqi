@@ -3,9 +3,8 @@
 use std::collections::HashMap;
 
 use oqi_classical::{Value, iw};
-use oqi_compile::bytecode::{BcModule, is_sample_safe};
-use oqi_compile::symbol::SymbolId;
-use oqi_compile::{CompileOptions, DefaultIncludeResolver};
+use oqi_compile::SymbolId;
+use oqi_compile::bytecode::{Program, is_sample_safe};
 use oqi_vm::{
     AutoSim, BackendSpec, FnRegistry, Histogram, HostValue, MpsSim, NoExterns, QuantumBackend,
     StateVectorSim, SumPolicy, Vm, VmError, VmErrorKind, histograms,
@@ -49,14 +48,8 @@ fn sample_safe_rejects_feedback() {
 }
 
 /// Compile source straight through to a bytecode module.
-fn build(src: &str) -> BcModule {
-    oqi_compile::compile(
-        src,
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        None,
-    )
-    .expect("compile")
+fn build(src: &str) -> Program {
+    oqi_compile::compile(src).expect("compile")
 }
 
 /// Run with the CPU simulator and no externs; return the measurement log.
@@ -517,7 +510,7 @@ fn qubit_param_runtime_slice_in_subroutine() {
 
 #[test]
 fn intrinsic_call_is_evaluated() {
-    // popcount(7) == 3 routes through BcCallTarget::Intrinsic.
+    // popcount(7) == 3 routes through Callee::Intrinsic.
     let m = run_measurements(
         r#"
             include "stdgates.inc";
@@ -1205,7 +1198,7 @@ fn output_decl_returns_only_outputs_untaken_branch() {
 }
 
 /// Symbol id of a declared symbol by name.
-fn sym_id(module: &BcModule, name: &str) -> SymbolId {
+fn sym_id(module: &Program, name: &str) -> SymbolId {
     SymbolId(module.symbols.iter().position(|s| s.name == name).unwrap())
 }
 
@@ -1776,7 +1769,7 @@ const FLIP_FEEDBACK_SRC: &str = r#"
     bit d = measure q[1];
 "#;
 
-fn spec_vm_outputs(results: &[oqi_vm::RunResult], module: &BcModule) -> Vec<String> {
+fn spec_vm_outputs(results: &[oqi_vm::RunResult], module: &Program) -> Vec<String> {
     histograms(module, results)
         .iter()
         .map(|h| format!("{}={:?}", h.name, h.counts))

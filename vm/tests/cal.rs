@@ -7,8 +7,7 @@ use std::rc::Rc;
 
 use num_complex::Complex64;
 use oqi_classical::{Duration, DurationUnit};
-use oqi_compile::bytecode::BcModule;
-use oqi_compile::{CompileOptions, DefaultIncludeResolver};
+use oqi_compile::bytecode::Program;
 use oqi_vm::{
     FrameHandle, KindResult, NoExterns, OpaqueCalHandler, OpenPulseHandler, PortHandle,
     StateVectorSim, Vm, VmErrorKind, WaveformHandle,
@@ -20,17 +19,11 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 }
 
 /// Compile source straight through to a bytecode module.
-fn build(src: &str) -> BcModule {
-    oqi_compile::compile(
-        src,
-        DefaultIncludeResolver,
-        &CompileOptions::default(),
-        None,
-    )
-    .expect("compile")
+fn build(src: &str) -> Program {
+    oqi_compile::compile(src).expect("compile")
 }
 
-fn sim_for(module: &BcModule) -> StateVectorSim {
+fn sim_for(module: &Program) -> StateVectorSim {
     StateVectorSim::try_zeroed(module.qubits.num_qubits, 0xABCD).unwrap()
 }
 
@@ -500,10 +493,7 @@ fn cal_declared_values_are_shared_with_defcals_and_cal_blocks() {
 
 #[test]
 fn cal_declared_values_are_not_visible_to_the_program() {
-    let compile = |src: &str| {
-        let options = CompileOptions::default();
-        oqi_compile::compile(src, DefaultIncludeResolver, &options, None)
-    };
+    let compile = oqi_compile::compile;
     for leak in [
         "float leak = step;",
         "count = 1;",
@@ -577,8 +567,7 @@ fn defcal_locals_stay_local() {
         defcal x $0 { float mine = 1.0; shift_phase(f, mine); }
         defcal y $0 { shift_phase(f, mine); }
     "#;
-    let options = CompileOptions::default();
-    let err = oqi_compile::compile(src, DefaultIncludeResolver, &options, None);
+    let err = oqi_compile::compile(src);
     assert!(err.is_err_and(|e| e.to_string().contains("undefined name 'mine'")));
 }
 
@@ -632,7 +621,7 @@ fn opaque_cal_is_inert_without_handler() {
 // ── durationof over calibrated gates ─────────────────────────────────
 
 /// Extract a named duration output as its display string.
-fn output_str(module: &BcModule, result: &oqi_vm::RunResult, name: &str) -> String {
+fn output_str(module: &Program, result: &oqi_vm::RunResult, name: &str) -> String {
     result
         .outputs
         .iter()

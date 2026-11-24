@@ -140,7 +140,7 @@ impl From<ErrorKind> for CompileError {
 
 impl From<oqi_lex::Error> for CompileError {
     fn from(error: oqi_lex::Error) -> Self {
-        CompileError::at(ErrorKind::Syntax(error.message), error.span)
+        CompileError::at(ErrorKind::Syntax(error.message().to_string()), error.span())
     }
 }
 

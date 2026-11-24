@@ -60,7 +60,7 @@ mod whole {
         // time against the concrete array passed in.
         let array_ref_ty = ArrayRefTy::new(
             Uint(iw(8)),
-            crate::ArrayRefShape::Dim(crate::adim(2)),
+            crate::ArrayRefShape::Dim(crate::array::adim(2)),
             RefAccess::Readonly,
         );
 
@@ -166,7 +166,7 @@ mod dimension {
         use crate::array_ref::RefAccess;
         let array_ref_ty = ArrayRefTy::new(
             Uint(iw(8)),
-            crate::ArrayRefShape::Dim(crate::adim(3)),
+            crate::ArrayRefShape::Dim(crate::array::adim(3)),
             RefAccess::Readonly,
         );
 

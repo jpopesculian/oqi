@@ -1,9 +1,18 @@
 use std::fmt;
 use std::ops::{BitAnd, BitOr, BitXor, Not, Range, Shl, Shr};
 
+/// The bits of a `bit[n]` register, of any width. Bit `i` is the `i`-th
+/// least significant; positions past the stored bits read as `0`. The
+/// register does not know its width — that lives in the type
+/// ([`PrimitiveTy::BitReg`](crate::PrimitiveTy::BitReg)).
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum BitReg {
+pub struct BitReg(Repr);
+
+/// Up to 128 bits inline, more on the heap (little-endian bytes).
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+enum Repr {
     Stack(u128),
     Heap(Box<[u8]>),
 }
@@ -16,24 +25,34 @@ fn ceil_div_8(width: u32) -> usize {
 }
 
 impl BitReg {
+    const fn stack(bits: u128) -> Self {
+        Self(Repr::Stack(bits))
+    }
+
+    fn heap(bytes: Box<[u8]>) -> Self {
+        Self(Repr::Heap(bytes))
+    }
+
+    /// A register of `width` zero bits.
     pub fn zeros(width: u32) -> Self {
         if width <= 128 {
-            Self::Stack(0)
+            BitReg::stack(0)
         } else {
-            Self::Heap(vec![0u8; ceil_div_8(width)].into_boxed_slice())
+            BitReg::heap(vec![0u8; ceil_div_8(width)].into_boxed_slice())
         }
     }
 
+    /// Bit `pos`; `false` past the stored bits.
     pub fn get_bit(&self, pos: usize) -> bool {
-        match self {
-            Self::Stack(v) => {
+        match &self.0 {
+            Repr::Stack(v) => {
                 if pos >= 128 {
                     false
                 } else {
                     (v >> pos) & 1 != 0
                 }
             }
-            Self::Heap(bytes) => {
+            Repr::Heap(bytes) => {
                 let byte_idx = pos / 8;
                 if byte_idx >= bytes.len() {
                     false
@@ -44,16 +63,18 @@ impl BitReg {
         }
     }
 
+    /// Set bit `pos`. Positions past the stored bits are ignored: size the
+    /// register with [`zeros`](Self::zeros) or [`resize`](Self::resize).
     pub fn set_bit(&mut self, pos: usize, value: bool) {
-        match self {
-            Self::Stack(v) => {
+        match &mut self.0 {
+            Repr::Stack(v) => {
                 if pos >= 128 {
                     return;
                 }
                 let mask = 1u128 << pos;
                 if value { *v |= mask } else { *v &= !mask }
             }
-            Self::Heap(bytes) => {
+            Repr::Heap(bytes) => {
                 let byte_idx = pos / 8;
                 if byte_idx >= bytes.len() {
                     return;
@@ -72,7 +93,7 @@ impl BitReg {
         BitIter { reg: self, pos: 0 }
     }
 
-    pub fn get_bits(&self, positions: impl IntoIterator<Item = usize>) -> Self {
+    pub(crate) fn get_bits(&self, positions: impl IntoIterator<Item = usize>) -> Self {
         let positions: Vec<usize> = positions.into_iter().collect();
         let mut out = Self::zeros(positions.len() as u32);
         for (i, pos) in positions.into_iter().enumerate() {
@@ -81,14 +102,17 @@ impl BitReg {
         out
     }
 
+    /// Set each `(position, value)` in turn, as [`set_bit`](Self::set_bit).
     pub fn set_bits(&mut self, ops: impl IntoIterator<Item = (usize, bool)>) {
         for (pos, value) in ops {
             self.set_bit(pos, value);
         }
     }
 
-    pub fn rotl(&mut self, slice: Range<u32>, amount: usize) {
-        let len = (slice.end - slice.start) as usize;
+    /// Rotate the bits at `slice` left (towards higher positions) by
+    /// `amount`. An empty or reversed slice is left alone.
+    pub(crate) fn rotl(&mut self, slice: Range<u32>, amount: usize) {
+        let len = slice.end.saturating_sub(slice.start) as usize;
         if len == 0 {
             return;
         }
@@ -105,10 +129,11 @@ impl BitReg {
         }
     }
 
+    /// The low 128 bits as an integer.
     pub fn as_u128(&self) -> u128 {
-        match self {
-            Self::Stack(v) => *v,
-            Self::Heap(bytes) => {
+        match &self.0 {
+            Repr::Stack(v) => *v,
+            Repr::Heap(bytes) => {
                 let mut buf = [0u8; STACK_BYTES];
                 let n = bytes.len().min(STACK_BYTES);
                 buf[..n].copy_from_slice(&bytes[..n]);
@@ -117,6 +142,7 @@ impl BitReg {
         }
     }
 
+    /// The register cut or zero-extended to `new_width` bits.
     pub fn resize(self, new_width: u32) -> Self {
         if new_width <= 128 {
             let v = self.as_u128();
@@ -127,17 +153,17 @@ impl BitReg {
             } else {
                 v & ((1u128 << new_width) - 1)
             };
-            Self::Stack(masked)
+            BitReg::stack(masked)
         } else {
             let n_bytes = ceil_div_8(new_width);
             let mut buf = vec![0u8; n_bytes];
-            match &self {
-                Self::Stack(v) => {
+            match &self.0 {
+                Repr::Stack(v) => {
                     let src = v.to_le_bytes();
                     let copy_len = STACK_BYTES.min(n_bytes);
                     buf[..copy_len].copy_from_slice(&src[..copy_len]);
                 }
-                Self::Heap(bytes) => {
+                Repr::Heap(bytes) => {
                     let copy_len = bytes.len().min(n_bytes);
                     buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
                 }
@@ -147,48 +173,57 @@ impl BitReg {
                 let last = n_bytes - 1;
                 buf[last] &= (1u8 << trailing) - 1;
             }
-            Self::Heap(buf.into_boxed_slice())
+            BitReg::heap(buf.into_boxed_slice())
         }
     }
 
-    pub fn default_width(&self) -> u32 {
-        match self {
-            Self::Stack(_) => 128,
-            Self::Heap(b) => (b.len() as u32) * 8,
+    /// The number of bits stored: 128 inline, or the heap allocation's.
+    pub(crate) fn default_width(&self) -> u32 {
+        match &self.0 {
+            Repr::Stack(_) => 128,
+            Repr::Heap(b) => (b.len() as u32) * 8,
         }
     }
 
-    pub fn count_ones(&self) -> u32 {
-        match self {
-            Self::Stack(v) => v.count_ones(),
-            Self::Heap(bytes) => bytes.iter().map(|b| b.count_ones()).sum(),
+    pub(crate) fn count_ones(&self) -> u32 {
+        match &self.0 {
+            Repr::Stack(v) => v.count_ones(),
+            Repr::Heap(bytes) => bytes.iter().map(|b| b.count_ones()).sum(),
         }
     }
 
-    pub fn fmt_bits(&self, f: &mut fmt::Formatter<'_>, width: u32) -> fmt::Result {
+    pub(crate) fn fmt_bits(&self, f: &mut fmt::Formatter<'_>, width: u32) -> fmt::Result {
         for i in (0..width as usize).rev() {
             f.write_str(if self.get_bit(i) { "1" } else { "0" })?;
         }
         Ok(())
     }
 
+    /// Whether any bit is set.
+    pub(crate) fn any(&self) -> bool {
+        match &self.0 {
+            Repr::Stack(v) => *v != 0,
+            Repr::Heap(bytes) => bytes.iter().any(|&b| b != 0),
+        }
+    }
+
     fn storage_byte(&self, i: usize) -> u8 {
-        match self {
-            Self::Stack(v) => {
+        match &self.0 {
+            Repr::Stack(v) => {
                 if i < STACK_BYTES {
                     v.to_le_bytes()[i]
                 } else {
                     0
                 }
             }
-            Self::Heap(bytes) => bytes.get(i).copied().unwrap_or(0),
+            Repr::Heap(bytes) => bytes.get(i).copied().unwrap_or(0),
         }
     }
 
     fn storage_byte_count(&self) -> usize {
-        match self {
-            Self::Stack(_) => STACK_BYTES,
-            Self::Heap(b) => b.len(),
+        match &self.0 {
+            Repr::Stack(_) => STACK_BYTES,
+            Repr::Heap(b) => b.len(),
         }
     }
 
@@ -199,13 +234,13 @@ impl BitReg {
 
 impl From<u128> for BitReg {
     fn from(value: u128) -> Self {
-        Self::Stack(value)
+        BitReg::stack(value)
     }
 }
 
 impl From<Box<[u8]>> for BitReg {
     fn from(bytes: Box<[u8]>) -> Self {
-        Self::Heap(bytes)
+        BitReg::heap(bytes)
     }
 }
 
@@ -240,6 +275,19 @@ impl PartialEq for BitReg {
 
 impl Eq for BitReg {}
 
+/// Consistent with `==`: zero bytes past the last set bit do not count.
+impl std::hash::Hash for BitReg {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        let used = (0..self.storage_byte_count())
+            .rev()
+            .find(|&i| self.storage_byte(i) != 0)
+            .map_or(0, |i| i + 1);
+        for i in 0..used {
+            self.storage_byte(i).hash(state);
+        }
+    }
+}
+
 /// Registers order as the unsigned integers their bits spell.
 impl Ord for BitReg {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -260,7 +308,7 @@ impl PartialOrd for BitReg {
 
 impl PartialEq<u128> for BitReg {
     fn eq(&self, other: &u128) -> bool {
-        self == &BitReg::Stack(*other)
+        self == &BitReg::stack(*other)
     }
 }
 
@@ -271,21 +319,21 @@ impl PartialEq<BitReg> for u128 {
 }
 
 fn binop_bytes(lhs: &BitReg, rhs: &BitReg, op: impl Fn(u8, u8) -> u8) -> BitReg {
-    if let (BitReg::Stack(a), BitReg::Stack(b)) = (lhs, rhs) {
+    if let (Repr::Stack(a), Repr::Stack(b)) = (&lhs.0, &rhs.0) {
         let a_bytes = a.to_le_bytes();
         let b_bytes = b.to_le_bytes();
         let mut out = [0u8; STACK_BYTES];
         for i in 0..STACK_BYTES {
             out[i] = op(a_bytes[i], b_bytes[i]);
         }
-        return BitReg::Stack(u128::from_le_bytes(out));
+        return BitReg::stack(u128::from_le_bytes(out));
     }
     let n = lhs.storage_byte_count().max(rhs.storage_byte_count());
     let mut out = vec![0u8; n];
     for (i, o) in out.iter_mut().enumerate() {
         *o = op(lhs.storage_byte(i), rhs.storage_byte(i));
     }
-    BitReg::Heap(out.into_boxed_slice())
+    BitReg::heap(out.into_boxed_slice())
 }
 
 impl BitAnd<&BitReg> for &BitReg {
@@ -312,11 +360,11 @@ impl BitXor<&BitReg> for &BitReg {
 impl Not for &BitReg {
     type Output = BitReg;
     fn not(self) -> BitReg {
-        match self {
-            BitReg::Stack(v) => BitReg::Stack(!v),
-            BitReg::Heap(bytes) => {
+        match &self.0 {
+            Repr::Stack(v) => BitReg::stack(!v),
+            Repr::Heap(bytes) => {
                 let out: Vec<u8> = bytes.iter().map(|b| !b).collect();
-                BitReg::Heap(out.into_boxed_slice())
+                BitReg::heap(out.into_boxed_slice())
             }
         }
     }
@@ -325,15 +373,15 @@ impl Not for &BitReg {
 impl Shl<u32> for &BitReg {
     type Output = BitReg;
     fn shl(self, amount: u32) -> BitReg {
-        match self {
-            BitReg::Stack(v) => {
+        match &self.0 {
+            Repr::Stack(v) => {
                 if amount >= 128 {
-                    BitReg::Stack(0)
+                    BitReg::stack(0)
                 } else {
-                    BitReg::Stack(v << amount)
+                    BitReg::stack(v << amount)
                 }
             }
-            BitReg::Heap(bytes) => {
+            Repr::Heap(bytes) => {
                 let n = bytes.len();
                 let total_bits = n * 8;
                 let mut out = vec![0u8; n];
@@ -356,7 +404,7 @@ impl Shl<u32> for &BitReg {
                         }
                     }
                 }
-                BitReg::Heap(out.into_boxed_slice())
+                BitReg::heap(out.into_boxed_slice())
             }
         }
     }
@@ -365,15 +413,15 @@ impl Shl<u32> for &BitReg {
 impl Shr<u32> for &BitReg {
     type Output = BitReg;
     fn shr(self, amount: u32) -> BitReg {
-        match self {
-            BitReg::Stack(v) => {
+        match &self.0 {
+            Repr::Stack(v) => {
                 if amount >= 128 {
-                    BitReg::Stack(0)
+                    BitReg::stack(0)
                 } else {
-                    BitReg::Stack(v >> amount)
+                    BitReg::stack(v >> amount)
                 }
             }
-            BitReg::Heap(bytes) => {
+            Repr::Heap(bytes) => {
                 let n = bytes.len();
                 let total_bits = n * 8;
                 let mut out = vec![0u8; n];
@@ -396,7 +444,7 @@ impl Shr<u32> for &BitReg {
                         }
                     }
                 }
-                BitReg::Heap(out.into_boxed_slice())
+                BitReg::heap(out.into_boxed_slice())
             }
         }
     }
@@ -414,21 +462,21 @@ mod tests {
 
     #[test]
     fn zeros_picks_stack_for_small_widths() {
-        assert!(matches!(BitReg::zeros(0), BitReg::Stack(0)));
-        assert!(matches!(BitReg::zeros(1), BitReg::Stack(0)));
-        assert!(matches!(BitReg::zeros(128), BitReg::Stack(0)));
+        assert!(matches!(BitReg::zeros(0).0, Repr::Stack(0)));
+        assert!(matches!(BitReg::zeros(1).0, Repr::Stack(0)));
+        assert!(matches!(BitReg::zeros(128).0, Repr::Stack(0)));
     }
 
     #[test]
     fn zeros_picks_heap_for_large_widths() {
         let r = BitReg::zeros(129);
-        match r {
-            BitReg::Heap(bytes) => assert_eq!(bytes.len(), 17),
+        match r.0 {
+            Repr::Heap(bytes) => assert_eq!(bytes.len(), 17),
             _ => panic!("expected heap"),
         }
         let r = BitReg::zeros(256);
-        match r {
-            BitReg::Heap(bytes) => assert_eq!(bytes.len(), 32),
+        match r.0 {
+            Repr::Heap(bytes) => assert_eq!(bytes.len(), 32),
             _ => panic!("expected heap"),
         }
     }
@@ -436,21 +484,21 @@ mod tests {
     #[test]
     fn from_u128_is_stack() {
         let r = BitReg::from(0xCAFE_u128);
-        assert!(matches!(r, BitReg::Stack(0xCAFE)));
+        assert!(matches!(r.0, Repr::Stack(0xCAFE)));
     }
 
     #[test]
     fn from_box_is_heap() {
         let r = BitReg::from(Box::new([1u8, 2, 3]) as Box<[u8]>);
-        match r {
-            BitReg::Heap(b) => assert_eq!(&b[..], &[1, 2, 3]),
+        match r.0 {
+            Repr::Heap(b) => assert_eq!(&b[..], &[1, 2, 3]),
             _ => panic!("expected heap"),
         }
     }
 
     #[test]
     fn get_bit_stack() {
-        let r = BitReg::Stack(0b1010);
+        let r = BitReg::stack(0b1010);
         assert!(!r.get_bit(0));
         assert!(r.get_bit(1));
         assert!(!r.get_bit(2));
@@ -461,7 +509,7 @@ mod tests {
 
     #[test]
     fn get_bit_heap() {
-        let r = BitReg::Heap(Box::new([0b1010_0000, 0b0000_0001]));
+        let r = BitReg::heap(Box::new([0b1010_0000, 0b0000_0001]));
         assert!(!r.get_bit(0));
         assert!(r.get_bit(5));
         assert!(r.get_bit(7));
@@ -471,12 +519,12 @@ mod tests {
 
     #[test]
     fn set_bit_stack() {
-        let mut r = BitReg::Stack(0);
+        let mut r = BitReg::stack(0);
         r.set_bit(3, true);
         r.set_bit(127, true);
-        assert!(matches!(r, BitReg::Stack(v) if v == (1u128 << 3) | (1u128 << 127)));
+        assert!(matches!(r.0, Repr::Stack(v) if v == (1u128 << 3) | (1u128 << 127)));
         r.set_bit(3, false);
-        assert!(matches!(r, BitReg::Stack(v) if v == 1u128 << 127));
+        assert!(matches!(r.0, Repr::Stack(v) if v == 1u128 << 127));
     }
 
     #[test]
@@ -491,7 +539,7 @@ mod tests {
 
     #[test]
     fn stack_eq_heap_when_padding_is_zero() {
-        let stack = BitReg::Stack(0xAA_u128);
+        let stack = BitReg::stack(0xAA_u128);
         let heap =
             BitReg::from(
                 Box::new([0xAA, 0u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) as Box<[u8]>,
@@ -501,7 +549,7 @@ mod tests {
 
     #[test]
     fn stack_neq_heap_when_extra_bytes_nonzero() {
-        let stack = BitReg::Stack(0xAA_u128);
+        let stack = BitReg::stack(0xAA_u128);
         let mut bytes = vec![0u8; 20];
         bytes[0] = 0xAA;
         bytes[17] = 0x01;
@@ -526,20 +574,20 @@ mod tests {
 
     #[test]
     fn resize_zeros_padding() {
-        let r = BitReg::Stack(0xFFFF_FFFF);
+        let r = BitReg::stack(0xFFFF_FFFF);
         let r = r.resize(12);
-        match r {
-            BitReg::Stack(v) => assert_eq!(v, 0xFFF),
+        match r.0 {
+            Repr::Stack(v) => assert_eq!(v, 0xFFF),
             _ => panic!("expected stack"),
         }
     }
 
     #[test]
     fn resize_extends_to_heap() {
-        let r = BitReg::Stack(0xAA_u128);
+        let r = BitReg::stack(0xAA_u128);
         let r = r.resize(200);
-        match &r {
-            BitReg::Heap(b) => {
+        match &r.0 {
+            Repr::Heap(b) => {
                 assert_eq!(b.len(), 25);
                 assert_eq!(b[0], 0xAA);
                 for &byte in &b[1..] {
@@ -552,10 +600,10 @@ mod tests {
 
     #[test]
     fn bitand_stack() {
-        let a = BitReg::Stack(0b1100);
-        let b = BitReg::Stack(0b1010);
+        let a = BitReg::stack(0b1100);
+        let b = BitReg::stack(0b1010);
         let r = &a & &b;
-        assert!(matches!(r, BitReg::Stack(0b1000)));
+        assert!(matches!(r.0, Repr::Stack(0b1000)));
     }
 
     #[test]
@@ -563,8 +611,8 @@ mod tests {
         let a = BitReg::from(Box::new([0xF0_u8, 0x0F, 0x00]) as Box<[u8]>);
         let b = BitReg::from(Box::new([0x0F_u8, 0xF0, 0xFF]) as Box<[u8]>);
         let r = &a | &b;
-        match r {
-            BitReg::Heap(bytes) => assert_eq!(&bytes[..], &[0xFF, 0xFF, 0xFF]),
+        match r.0 {
+            Repr::Heap(bytes) => assert_eq!(&bytes[..], &[0xFF, 0xFF, 0xFF]),
             _ => panic!("expected heap"),
         }
     }
@@ -573,8 +621,8 @@ mod tests {
     fn shl_heap_byte_aligned() {
         let r = BitReg::from(Box::new([0xFF_u8, 0x00, 0x00]) as Box<[u8]>);
         let s = &r << 8;
-        match s {
-            BitReg::Heap(b) => assert_eq!(&b[..], &[0x00, 0xFF, 0x00]),
+        match s.0 {
+            Repr::Heap(b) => assert_eq!(&b[..], &[0x00, 0xFF, 0x00]),
             _ => panic!("expected heap"),
         }
     }
@@ -583,8 +631,8 @@ mod tests {
     fn shl_heap_cross_byte() {
         let r = BitReg::from(Box::new([0xFF_u8, 0x00]) as Box<[u8]>);
         let s = &r << 4;
-        match s {
-            BitReg::Heap(b) => assert_eq!(&b[..], &[0xF0, 0x0F]),
+        match s.0 {
+            Repr::Heap(b) => assert_eq!(&b[..], &[0xF0, 0x0F]),
             _ => panic!("expected heap"),
         }
     }
@@ -593,18 +641,18 @@ mod tests {
     fn shr_heap_cross_byte() {
         let r = BitReg::from(Box::new([0x00_u8, 0xFF]) as Box<[u8]>);
         let s = &r >> 4;
-        match s {
-            BitReg::Heap(b) => assert_eq!(&b[..], &[0xF0, 0x0F]),
+        match s.0 {
+            Repr::Heap(b) => assert_eq!(&b[..], &[0xF0, 0x0F]),
             _ => panic!("expected heap"),
         }
     }
 
     #[test]
     fn rotl_stack_full_width() {
-        let mut r = BitReg::Stack(0b0010_1010);
+        let mut r = BitReg::stack(0b0010_1010);
         r.rotl(0..8, 3);
         // 0b00101010 rotated left 3 = 0b01010001
-        assert!(matches!(r, BitReg::Stack(v) if v == 0b0101_0001));
+        assert!(matches!(r.0, Repr::Stack(v) if v == 0b0101_0001));
     }
 
     #[test]
@@ -615,6 +663,15 @@ mod tests {
         r.rotl(0..200, 17);
         assert!(r.get_bit(17));
         assert!(!r.get_bit(0));
+    }
+
+    #[test]
+    fn rotl_ignores_an_empty_or_reversed_slice() {
+        let mut r = BitReg::from(0b1011_u128);
+        #[allow(clippy::reversed_empty_ranges)]
+        r.rotl(4..2, 1);
+        r.rotl(3..3, 1);
+        assert_eq!(r, 0b1011_u128);
     }
 
     #[test]
@@ -633,7 +690,7 @@ mod tests {
 
     #[test]
     fn count_ones_works_for_both_variants() {
-        let s = BitReg::Stack(0b1011_1010);
+        let s = BitReg::stack(0b1011_1010);
         assert_eq!(s.count_ones(), 5);
         let h = BitReg::from(Box::new([0xFF_u8, 0x0F]) as Box<[u8]>);
         assert_eq!(h.count_ones(), 12);

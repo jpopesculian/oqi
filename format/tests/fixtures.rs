@@ -7,7 +7,9 @@ fn normalize_ast(source: &str) -> String {
     let program = parse(source).unwrap_or_else(|error| {
         panic!(
             "parse error: {} at {:?}\nsource:\n{}",
-            error.message, error.span, source
+            error.message(),
+            error.span(),
+            source
         )
     });
     strip_spans(&format!("{program:#?}"))
@@ -117,15 +119,18 @@ fn check_fixture(name: &str) {
     let formatted_default = format(&source, Config::default()).unwrap_or_else(|error| {
         panic!(
             "{name}: format error: {} at {:?}",
-            error.message, error.span
+            error.message(),
+            error.span()
         )
     });
-    let formatted_compact = format(&source, Config::compact()).unwrap_or_else(|error| {
-        panic!(
-            "{name}: format error: {} at {:?}",
-            error.message, error.span
-        )
-    });
+    let formatted_compact =
+        format(&source, Config::default().compact(true)).unwrap_or_else(|error| {
+            panic!(
+                "{name}: format error: {} at {:?}",
+                error.message(),
+                error.span()
+            )
+        });
 
     let expected = normalize_ast(&source);
     let default = normalize_ast(&formatted_default);
@@ -143,7 +148,7 @@ fn check_fixture(name: &str) {
     // Formatting is idempotent.
     for (config, formatted) in [
         (Config::default(), &formatted_default),
-        (Config::compact(), &formatted_compact),
+        (Config::default().compact(true), &formatted_compact),
     ] {
         let again = format(formatted, config).unwrap();
         assert_eq!(&again, formatted, "{name}: formatting is not idempotent");

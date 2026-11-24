@@ -5,6 +5,13 @@ use std::rc::Rc;
 #[derive(Clone, Debug)]
 pub struct Shared<T>(Rc<RefCell<T>>);
 
+/// Identity: two handles are equal when they share one value.
+impl<T> PartialEq for Shared<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
 pub type Ref<'a, T> = std::cell::Ref<'a, T>;
 pub type RefMut<'a, T> = std::cell::RefMut<'a, T>;
 

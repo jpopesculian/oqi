@@ -9,7 +9,12 @@ use crate::{
 use num_complex::{Complex32, Complex64, c64};
 use turns::{Angle8, Angle16, Angle32, Angle64, Angle128};
 
-#[derive(Clone)]
+/// A classical value without its type: the payload of a [`Scalar`] or an
+/// array element. Equality is structural; floats compare as `f64` does
+/// (`NaN` is not equal to itself).
+///
+/// [`Scalar`]: crate::Scalar
+#[derive(Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Primitive {
     Bit(bool),
@@ -23,10 +28,6 @@ pub enum Primitive {
 }
 
 impl Primitive {
-    pub const PI: Self = Self::Float(core::f64::consts::PI);
-    pub const TAU: Self = Self::Float(core::f64::consts::TAU);
-    pub const E: Self = Self::Float(core::f64::consts::E);
-
     #[inline]
     pub const fn bit(v: bool) -> Self {
         Self::Bit(v)
@@ -77,9 +78,7 @@ impl Primitive {
         match self {
             Self::Bit(b) => *b,
             Self::Uint(v) => *v != 0,
-            Self::BitReg(reg) => {
-                reg.as_u128() != 0 || matches!(reg, BitReg::Heap(b) if b.iter().any(|&x| x != 0))
-            }
+            Self::BitReg(reg) => reg.any(),
             Self::Angle(a) => a.0 != 0,
             Self::Int(v) => *v != 0,
             Self::Float(v) => *v != 0.0,
@@ -163,7 +162,7 @@ impl Primitive {
     }
 
     #[inline]
-    pub fn as_angle(&self, bw: IntWidth) -> Option<u128> {
+    pub(crate) fn as_angle(&self, bw: IntWidth) -> Option<u128> {
         Some(match self {
             Self::Bit(b) => {
                 if *b {
@@ -192,7 +191,7 @@ impl Primitive {
     }
 
     #[inline]
-    pub fn default_ty(&self) -> PrimitiveTy {
+    pub(crate) fn default_ty(&self) -> PrimitiveTy {
         match self {
             Primitive::Bit(_) => PrimitiveTy::Bit,
             Primitive::BitReg(reg) => PrimitiveTy::BitReg(reg.default_width()),
@@ -220,7 +219,8 @@ impl Primitive {
         result.ok_or(Error::TypeMismatch { value: self, ty })
     }
 
-    pub fn cast(self, from: PrimitiveTy, to: PrimitiveTy) -> Result<Self> {
+    #[cfg(test)]
+    fn cast(self, from: PrimitiveTy, to: PrimitiveTy) -> Result<Self> {
         from.cast(to)?;
         self.as_ty(from)?.as_ty(to)
     }
@@ -372,11 +372,13 @@ impl IntWidth {
     }
 }
 
-/// Shorthand for a width known to be valid (a literal in the source).
+/// Shorthand for a width known to be valid, for tests and literals.
 ///
 /// # Panics
+///
 /// If `bits` is not in `1..=IntWidth::MAX`; use [`IntWidth::new`] for
 /// widths that come from a program.
+#[doc(hidden)]
 #[inline]
 pub fn iw(bits: u32) -> IntWidth {
     IntWidth::new(bits).unwrap()
@@ -450,7 +452,7 @@ impl PrimitiveTy {
     /// Whether a value of this type can stand in for one of `other`
     /// without conversion: the same type, or the scalar `bit`/`bool` pair,
     /// which the spec makes interchangeable.
-    pub fn is_compatible(self, other: PrimitiveTy) -> bool {
+    pub(crate) fn is_compatible(self, other: PrimitiveTy) -> bool {
         use PrimitiveTy::*;
         self == other || matches!((self, other), (Bit, Bool) | (Bool, Bit))
     }

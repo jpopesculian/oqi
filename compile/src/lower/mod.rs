@@ -746,7 +746,7 @@ impl<'r> Lowerer<'r> {
                 // A library is not a file a diagnostic could point into, so a
                 // syntax error in one is reported at the `include`.
                 let ast = oqi_parse::parse(&content).map_err(|e| {
-                    let message = format!("in include '{path}': {}", e.message);
+                    let message = format!("in include '{path}': {}", e.message());
                     CompileError::at(ErrorKind::Syntax(message), span)
                 })?;
                 self.lower_items(&ast.body)
@@ -815,7 +815,7 @@ impl<'r> Lowerer<'r> {
                 span,
             }),
 
-            ast::Expr::ImagLiteral(s, _) => {
+            ast::Expr::ImaginaryLiteral(s, _) => {
                 let fw = self.resolver.options().system_width.fw();
                 let (re, im) = parse_imag_literal(s)?;
                 Ok(sir::Expr {
@@ -851,7 +851,7 @@ impl<'r> Lowerer<'r> {
 
             ast::Expr::Paren(inner, _) => self.lower_expr(inner),
 
-            ast::Expr::BinOp {
+            ast::Expr::Binary {
                 left, op, right, ..
             } => {
                 let l = self.lower_expr(left)?;
@@ -878,7 +878,7 @@ impl<'r> Lowerer<'r> {
                 })
             }
 
-            ast::Expr::UnaryOp { op, operand, .. } => {
+            ast::Expr::Unary { op, operand, .. } => {
                 let inner = self.lower_expr(operand)?;
                 let sir_op = un_op(*op);
                 let ty = unary_result_type(&sir_op, &inner.ty);
@@ -1025,7 +1025,7 @@ impl<'r> Lowerer<'r> {
         for idx in &id.indices {
             let sir_idx = self.lower_index_op(idx)?;
             let ty = index_result_type(&expr.ty, &sir_idx)?;
-            let span = id.name.span.to(idx.span);
+            let span = id.name.span.join(idx.span);
             expr = sir::Expr {
                 kind: sir::ExprKind::Index(sir::Index {
                     base: Box::new(expr),
@@ -1205,7 +1205,7 @@ impl<'r> Lowerer<'r> {
             n if n != parts.len() => {
                 let message = "an alias concatenates registers of the same type, \
                                classical or quantum";
-                let span = parts[0].span.to(parts[parts.len() - 1].span);
+                let span = parts[0].span.join(parts[parts.len() - 1].span);
                 Err(invalid(message, span))
             }
             _ if one_bit => Ok(Type::Classical(ValueTy::bit())),
@@ -1729,9 +1729,9 @@ fn check_assignable(from: &Type, to: &Type, span: oqi_lex::Span) -> Result<()> {
 fn array_shape(ty: ValueTy) -> Option<Option<Vec<usize>>> {
     match ty {
         ValueTy::Scalar(_) => None,
-        ValueTy::Array(ty) => Some(Some(ty.shape().get().to_vec())),
+        ValueTy::Array(ty) => Some(Some(ty.shape().dims().to_vec())),
         ValueTy::ArrayRef(ty) => Some(match ty.shape() {
-            ArrayRefShape::Fixed(shape) => Some(shape.get().to_vec()),
+            ArrayRefShape::Fixed(shape) => Some(shape.dims().to_vec()),
             ArrayRefShape::Dim(_) => None,
         }),
     }
@@ -1758,8 +1758,8 @@ fn is_foldable_kind(expr: &ast::Expr<'_>) -> bool {
     matches!(
         expr,
         ast::Expr::Ident(_)
-            | ast::Expr::BinOp { .. }
-            | ast::Expr::UnaryOp { .. }
+            | ast::Expr::Binary { .. }
+            | ast::Expr::Unary { .. }
             | ast::Expr::Call { .. }
             | ast::Expr::Cast { .. }
             | ast::Expr::Paren(_, _)
@@ -1812,14 +1812,15 @@ fn typing_indices(ty: ValueTy, index: &sir::IndexOp) -> Result<Vec<ClassicalInde
     let (mut sizes, element): (Vec<Option<usize>>, PrimitiveTy) = match ty {
         ValueTy::Scalar(ty) => (Vec::new(), ty),
         ValueTy::Array(ty) => (
-            ty.shape().get().iter().copied().map(Some).collect(),
-            ty.ty(),
+            ty.shape().dims().iter().copied().map(Some).collect(),
+            ty.element_ty(),
         ),
         ValueTy::ArrayRef(ty) => match ty.shape() {
-            ArrayRefShape::Fixed(shape) => {
-                (shape.get().iter().copied().map(Some).collect(), ty.ty())
-            }
-            ArrayRefShape::Dim(rank) => (vec![None; rank.get()], ty.ty()),
+            ArrayRefShape::Fixed(shape) => (
+                shape.dims().iter().copied().map(Some).collect(),
+                ty.element_ty(),
+            ),
+            ArrayRefShape::Dim(rank) => (vec![None; rank.get()], ty.element_ty()),
         },
     };
     let is_array = !sizes.is_empty();
@@ -1881,8 +1882,8 @@ fn synth_array_literal_ty(items: &[sir::Expr]) -> oqi_classical::Result<Type> {
     Ok(match &first.ty {
         Type::Classical(ValueTy::Array(inner)) => {
             let mut shape = vec![len];
-            shape.extend_from_slice(inner.shape().get());
-            Type::from(ArrayTy::new(inner.ty(), ArrayShape::new(shape)?))
+            shape.extend_from_slice(inner.shape().dims());
+            Type::from(ArrayTy::new(inner.element_ty(), ArrayShape::new(shape)?))
         }
         Type::Classical(ValueTy::Scalar(prim)) => {
             Type::from(ArrayTy::new(*prim, ArrayShape::new(vec![len])?))

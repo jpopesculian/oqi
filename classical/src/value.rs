@@ -12,7 +12,11 @@ use crate::{
     scalar::Scalar,
 };
 
-#[derive(Clone, Debug)]
+/// A classical value: a scalar, an owned array, or a reference to part of
+/// an array. Equality is structural for scalars and arrays (floats compare
+/// as `f64` does); two references are equal when they view the same
+/// elements of the same array.
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Value {
     Scalar(Scalar),
@@ -21,10 +25,6 @@ pub enum Value {
 }
 
 impl Value {
-    pub const PI: Self = Value::Scalar(Scalar::PI);
-    pub const TAU: Self = Value::Scalar(Scalar::TAU);
-    pub const E: Self = Value::Scalar(Scalar::E);
-
     pub fn ty(&self) -> ValueTy {
         match self {
             Value::Scalar(s) => ValueTy::Scalar(s.ty()),
@@ -44,7 +44,7 @@ impl Value {
                 Ok(Value::Array(ar.into_ref_mut().cast(ty)?))
             }
             (Value::ArrayRef(ar), ValueTy::Array(ty)) => {
-                Ok(Value::Array(ar.cast(ty.as_ref(RefAccess::Readonly))?))
+                Ok(Value::Array(ar.cast(ty.ref_ty(RefAccess::Readonly))?))
             }
             (value, ty) => Err(Error::unsupported_cast(value.ty(), ty)),
         }
@@ -54,7 +54,7 @@ impl Value {
     /// scalars and owned arrays pass through.
     pub fn into_owned(self) -> Result<Self> {
         match self {
-            Value::ArrayRef(ar) => ar.to_owned().map(Value::Array),
+            Value::ArrayRef(ar) => ar.to_array().map(Value::Array),
             owned => Ok(owned),
         }
     }
@@ -189,11 +189,11 @@ impl ValueTy {
                 Ok(ValueTy::ArrayRef(to))
             }
             (ValueTy::Array(from), ValueTy::ArrayRef(to)) => {
-                from.as_ref(RefAccess::Mutable).cast(to)?;
+                from.ref_ty(RefAccess::Mutable).cast(to)?;
                 Ok(ValueTy::ArrayRef(to))
             }
             (ValueTy::ArrayRef(from), ValueTy::Array(to)) => {
-                from.cast(to.as_ref(RefAccess::Readonly))?;
+                from.cast(to.ref_ty(RefAccess::Readonly))?;
                 Ok(ValueTy::Array(to))
             }
             (from, to) => Err(Error::unsupported_cast(from, to)),
@@ -203,14 +203,14 @@ impl ValueTy {
     /// Whether a value of this type can stand in for one of `other`
     /// without conversion (see [`PrimitiveTy::is_compatible`] and
     /// [`ArrayRefShape::is_compatible`]).
-    pub fn is_compatible(&self, other: &ValueTy) -> bool {
+    pub(crate) fn is_compatible(&self, other: &ValueTy) -> bool {
         match (self, other) {
             (ValueTy::Scalar(a), ValueTy::Scalar(b)) => a.is_compatible(*b),
             (ValueTy::Array(a), ValueTy::Array(b)) => {
-                a.ty().is_compatible(b.ty()) && a.shape() == b.shape()
+                a.element_ty().is_compatible(b.element_ty()) && a.shape() == b.shape()
             }
             (ValueTy::ArrayRef(a), ValueTy::ArrayRef(b)) => {
-                a.ty().is_compatible(b.ty())
+                a.element_ty().is_compatible(b.element_ty())
                     && a.shape().is_compatible(&b.shape())
                     && a.access() == b.access()
             }
@@ -236,17 +236,17 @@ impl ValueTy {
             ValueTy::Scalar(ty) if dim == 0 => ty.bit_count().map(|bw| bw as usize),
             ValueTy::Array(ty) => {
                 if dim == ty.shape().dim().get() {
-                    ty.ty().bit_count().map(|bw| bw as usize)
+                    ty.element_ty().bit_count().map(|bw| bw as usize)
                 } else {
-                    ty.shape().get().get(dim).copied()
+                    ty.shape().dims().get(dim).copied()
                 }
             }
             ValueTy::ArrayRef(ty) => match ty.shape() {
                 ArrayRefShape::Fixed(shape) => {
                     if dim == shape.dim().get() {
-                        ty.ty().bit_count().map(|bw| bw as usize)
+                        ty.element_ty().bit_count().map(|bw| bw as usize)
                     } else {
-                        shape.get().get(dim).copied()
+                        shape.dims().get(dim).copied()
                     }
                 }
                 ArrayRefShape::Dim(_) => None,
@@ -385,8 +385,8 @@ mod tests {
 
         match cast {
             Value::Array(a) => {
-                assert!(matches!(a.ty().ty(), Float(F64)));
-                assert_eq!(a.ty().shape().get(), &[2]);
+                assert!(matches!(a.ty().element_ty(), Float(F64)));
+                assert_eq!(a.ty().shape().dims(), &[2]);
                 assert_eq!(
                     a.values()
                         .iter()

@@ -1,13 +1,17 @@
 use std::ops::{Index, Range};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// A half-open range `start..end` of byte offsets into a source text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Span {
+    /// Offset of the first byte.
     pub start: usize,
+    /// Offset one past the last byte.
     pub end: usize,
 }
 
 impl Span {
+    /// The span `start..end`.
     #[inline]
     pub const fn new(start: usize, end: usize) -> Self {
         Self { start, end }
@@ -15,13 +19,14 @@ impl Span {
 
     /// The span from the start of `self` to the end of `end`.
     #[inline]
-    pub const fn to(self, end: Span) -> Self {
+    pub const fn join(self, end: Span) -> Self {
         Self {
             start: self.start,
             end: end.end,
         }
     }
 
+    /// The same span, `offset` bytes later.
     #[inline]
     pub const fn offset(self, offset: usize) -> Self {
         Self {
@@ -30,27 +35,22 @@ impl Span {
         }
     }
 
-    pub fn doc_position(self, doc: &str, tab_size: usize) -> (usize, usize) {
-        let mut line = 1;
-        let mut column = 1;
-        for (i, c) in doc.char_indices() {
-            if i >= self.start {
-                break;
-            }
-            match c {
-                '\n' => {
-                    line += 1;
-                    column = 1;
-                }
-                '\t' => {
-                    column += tab_size;
-                }
-                _ => {
-                    column += 1;
-                }
-            }
-        }
-        (line, column)
+    /// The number of bytes the span covers.
+    #[inline]
+    pub const fn len(self) -> usize {
+        self.end.saturating_sub(self.start)
+    }
+
+    /// Whether the span covers no bytes.
+    #[inline]
+    pub const fn is_empty(self) -> bool {
+        self.end <= self.start
+    }
+
+    /// Whether the byte at `offset` lies in the span.
+    #[inline]
+    pub const fn contains(self, offset: usize) -> bool {
+        self.start <= offset && offset < self.end
     }
 }
 

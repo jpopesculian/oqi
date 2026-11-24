@@ -1,10 +1,11 @@
 //! Source formatter for OpenQASM 3.
 //!
-//! [`format`] parses the source and prints the syntax tree back out with
+//! [`format()`] parses the source and prints the syntax tree back out with
 //! canonical spacing. Blank lines between statements and (outside compact
 //! mode) comments are carried over from the source.
 
-use oqi_parse::{Error, ast, parse_with_comments};
+pub use oqi_parse::Error;
+use oqi_parse::{ast, parse_with_comments};
 
 /// Format each item into the printer, in order.
 macro_rules! put {
@@ -13,19 +14,48 @@ macro_rules! put {
     }};
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+/// How to format: [`Config::default`] is the canonical layout, with
+/// comments kept.
+///
+/// ```
+/// use oqi_format::Config;
+///
+/// let config = Config::default().compact(true);
+/// assert!(config.is_compact());
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Config {
-    /// Put as much as possible on one line, and drop comments.
-    pub compact: bool,
+    compact: bool,
 }
 
 impl Config {
-    pub fn compact() -> Self {
-        Self { compact: true }
+    /// Whether to put as much as possible on one line, dropping comments.
+    pub fn compact(mut self, compact: bool) -> Self {
+        self.compact = compact;
+        self
+    }
+
+    /// Whether this is the compact layout.
+    pub fn is_compact(&self) -> bool {
+        self.compact
     }
 }
 
-/// Format `source`. Non-empty output ends with exactly one newline.
+/// Format `source`. Non-empty output ends with exactly one newline, and
+/// formatting is idempotent: formatting the output again changes nothing.
+///
+/// ```
+/// use oqi_format::{format, Config};
+///
+/// let formatted = format("qubit q;h  q ;", Config::default())?;
+/// assert_eq!(formatted, "qubit q;\nh q;\n");
+/// # Ok::<(), oqi_format::Error>(())
+/// ```
+///
+/// # Errors
+///
+/// The syntax error, if `source` does not parse.
 pub fn format(source: &str, config: Config) -> Result<String, Error> {
     let (program, comments) = parse_with_comments(source)?;
     let mut printer = Printer::new(source, comments, config);
@@ -563,12 +593,12 @@ impl Format for ast::Expr<'_> {
             ast::Expr::HardwareQubit(text, _)
             | ast::Expr::IntLiteral(text, _, _)
             | ast::Expr::FloatLiteral(text, _)
-            | ast::Expr::ImagLiteral(text, _)
+            | ast::Expr::ImaginaryLiteral(text, _)
             | ast::Expr::BitstringLiteral(text, _)
             | ast::Expr::TimingLiteral(text, _) => p.write(text),
             ast::Expr::BoolLiteral(value, _) => p.write(if *value { "true" } else { "false" }),
             ast::Expr::Paren(inner, _) => put!(p, "(", inner, ")"),
-            ast::Expr::BinOp {
+            ast::Expr::Binary {
                 left, op, right, ..
             } => {
                 // As in the parser: the operand on the side an operator does
@@ -583,7 +613,7 @@ impl Format for ast::Expr<'_> {
                 put!(p, " ", op.as_str(), " ");
                 operand(right, right_min, p);
             }
-            ast::Expr::UnaryOp { op, operand: e, .. } => {
+            ast::Expr::Unary { op, operand: e, .. } => {
                 p.write(op.as_str());
                 operand(e, ast::UnOp::PRECEDENCE, p);
             }
@@ -925,7 +955,7 @@ if (true) { x q[0]; }"#;
     #[test]
     fn compact_inlines_simple_scope() {
         let source = "if (a) { x q; y q; }";
-        let formatted = format(source, Config::compact()).unwrap();
+        let formatted = format(source, Config::default().compact(true)).unwrap();
         assert_eq!(formatted, "if (a) { x q; y q; }\n");
     }
 
@@ -987,7 +1017,7 @@ if (true) { x q[0]; }"#;
     #[test]
     fn compact_keeps_a_pragma_on_its_own_line() {
         let source = "{ pragma foo\n }";
-        let formatted = format(source, Config::compact()).unwrap();
+        let formatted = format(source, Config::default().compact(true)).unwrap();
         assert_eq!(formatted, "{ pragma foo\n}\n");
         assert!(parse(&formatted).is_ok());
     }

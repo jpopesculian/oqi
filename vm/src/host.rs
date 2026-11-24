@@ -304,11 +304,14 @@ pub(crate) fn coerce(what: &str, raw: &HostValue, ty: ValueTy) -> Result<Value, 
         }
         ValueTy::Array(aty) => {
             if !matches!(raw, HostValue::List(_)) {
-                return Err(format!("{what} must be a list of `{}` values", aty.ty()));
+                return Err(format!(
+                    "{what} must be a list of `{}` values",
+                    aty.element_ty()
+                ));
             }
             let mut leaves = Vec::new();
             raw.leaves(&mut leaves);
-            let elem_ty = ValueTy::Scalar(aty.ty());
+            let elem_ty = ValueTy::Scalar(aty.element_ty());
             let elems = leaves
                 .into_iter()
                 .enumerate()

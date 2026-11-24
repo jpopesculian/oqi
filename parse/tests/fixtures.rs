@@ -540,14 +540,14 @@ fn ast_expr(expr: &Expr) -> S {
         Expr::HardwareQubit(_, _) => S::leaf("HardwareQubit"),
         Expr::IntLiteral(_, _, _) => S::leaf("IntLiteral"),
         Expr::FloatLiteral(_, _) => S::leaf("FloatLiteral"),
-        Expr::ImagLiteral(_, _) => S::leaf("ImagLiteral"),
+        Expr::ImaginaryLiteral(_, _) => S::leaf("ImagLiteral"),
         Expr::BoolLiteral(_, _) => S::leaf("BoolLiteral"),
         Expr::BitstringLiteral(_, _) => S::leaf("BitstringLiteral"),
         Expr::TimingLiteral(_, _) => S::leaf("TimingLiteral"),
 
         Expr::Paren(inner, _) => S::node("Paren", vec![ast_expr(inner)]),
 
-        Expr::BinOp {
+        Expr::Binary {
             left, op, right, ..
         } => {
             let sym = match op {
@@ -577,7 +577,7 @@ fn ast_expr(expr: &Expr) -> S {
             )
         }
 
-        Expr::UnaryOp { op, operand, .. } => {
+        Expr::Unary { op, operand, .. } => {
             let sym = match op {
                 UnOp::Neg => "-",
                 UnOp::BitNot => "~",
@@ -650,7 +650,7 @@ fn check_fixture(name: &str) {
     .unwrap();
 
     let program = oqi_parse::parse(&source)
-        .unwrap_or_else(|e| panic!("{}: parse error: {} at {:?}", name, e.message, e.span));
+        .unwrap_or_else(|e| panic!("{}: parse error: {} at {:?}", name, e.message(), e.span()));
 
     let expected = cst_program(&cst);
     let actual = ast_program(&program);

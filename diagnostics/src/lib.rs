@@ -1,10 +1,22 @@
-//! Shared diagnostic rendering for the OpenQASM toolchain.
+//! Diagnostic rendering for the OpenQASM toolchain.
 //!
-//! Every error type in the workspace implements [`Diagnostic`], which exposes a
-//! stable [`Code`], a headline message, source [`DiagLabel`]s (one primary plus
-//! optional secondary labels), and free-form notes. [`emit`] renders a
-//! diagnostic to stderr through [`ariadne`]; [`render_to_string`] produces the
-//! same report without colour for tests and tooling.
+//! The errors a user sees — syntax errors (`oqi_lex::Error`), compile errors
+//! (`oqi_compile::CompileError`) and runtime errors (`oqi_vm::Error`) —
+//! implement [`Diagnostic`]: a stable [`Code`], a headline message, source
+//! [`DiagLabel`]s (one primary plus optional secondary labels) and free-form
+//! notes. [`emit`] renders a diagnostic to stderr; [`render_to_string`]
+//! produces the same report without colour, for tests and tooling.
+//!
+//! ```
+//! use std::path::Path;
+//! use oqi_diagnostics::{render_to_string, Span};
+//!
+//! let source = "int x = ;\n";
+//! let error = oqi_lex::Error::new(Span::new(8, 9), "expected expression");
+//! let report = render_to_string(&error, Path::new("main.qasm"), source, &|_| None);
+//! assert!(report.contains("main.qasm:1:9: expected expression"));
+//! assert!(report.contains("S0001"));
+//! ```
 //!
 //! # Code table
 //!
@@ -23,16 +35,20 @@ use std::path::Path;
 use std::str::FromStr;
 
 use ariadne::{Config, IndexType, Label, Report, ReportKind, Source};
-use oqi_lex::Span;
+pub use oqi_lex::Span;
 
 /// Tab width used when resolving a byte offset to a `line:column` position.
 const DIAGNOSTIC_TAB_SIZE: usize = 4;
 
 /// The category of a diagnostic, rendered as the code's leading letter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum CodeKind {
+    /// `C`: the program is well-formed but invalid (names, types, scoping).
     Compile,
+    /// `R`: running the program failed.
     Runtime,
+    /// `S`: the program does not parse.
     Syntax,
 }
 
@@ -47,15 +63,18 @@ impl CodeKind {
     }
 }
 
-/// A stable error code such as `C0002`. Round-trips via [`Display`](fmt::Display)
-/// and [`FromStr`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A stable error code such as `C0002`: a [`CodeKind`] letter and four
+/// digits. Round-trips via [`Display`](fmt::Display) and [`FromStr`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Code {
+    /// The category, rendered as the leading letter.
     pub kind: CodeKind,
+    /// The number within the category, rendered as four digits.
     pub num: u16,
 }
 
 impl Code {
+    /// A compile error code, `C{num:04}`.
     pub const fn compile(num: u16) -> Self {
         Self {
             kind: CodeKind::Compile,
@@ -63,6 +82,7 @@ impl Code {
         }
     }
 
+    /// A runtime error code, `R{num:04}`.
     pub const fn runtime(num: u16) -> Self {
         Self {
             kind: CodeKind::Runtime,
@@ -70,6 +90,7 @@ impl Code {
         }
     }
 
+    /// A syntax error code, `S{num:04}`.
     pub const fn syntax(num: u16) -> Self {
         Self {
             kind: CodeKind::Syntax,
@@ -84,7 +105,8 @@ impl fmt::Display for Code {
     }
 }
 
-/// Returned when [`Code::from_str`] is given an unrecognised string.
+/// Returned when [`Code::from_str`] is given anything but a code letter and
+/// exactly four digits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeParseError;
 
@@ -107,15 +129,24 @@ impl FromStr for Code {
             Some('S') => CodeKind::Syntax,
             _ => return Err(CodeParseError),
         };
-        let num = chars.as_str().parse().map_err(|_| CodeParseError)?;
+        let digits = chars.as_str();
+        if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(CodeParseError);
+        }
+        let num = digits.parse().map_err(|_| CodeParseError)?;
         Ok(Code { kind, num })
     }
 }
 
 /// A single annotated span within a diagnostic.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagLabel {
+    /// The source range the label points at. The default `0..0` span means
+    /// "no location": such a label is not drawn.
     pub span: Span,
+    /// The text shown under the span.
     pub message: String,
+    /// Whether this is the label the report's `line:column` refers to.
     pub primary: bool,
 }
 
@@ -239,7 +270,7 @@ fn render(
         return;
     };
 
-    let (line, column) = primary.doc_position(source.as_ref(), DIAGNOSTIC_TAB_SIZE);
+    let (line, column) = line_column(source.as_ref(), primary.start);
     let filename = diagnostic_path.display().to_string();
     let headline = format!("{filename}:{line}:{column}: {}", diag.message());
 
@@ -268,6 +299,27 @@ fn render(
         .write((&filename, Source::from(source.as_ref())), w);
 }
 
+/// The 1-based line and column of byte `offset` in `source`, counting a tab
+/// as [`DIAGNOSTIC_TAB_SIZE`] columns.
+fn line_column(source: &str, offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut column = 1;
+    for (i, c) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        match c {
+            '\n' => {
+                line += 1;
+                column = 1;
+            }
+            '\t' => column += DIAGNOSTIC_TAB_SIZE,
+            _ => column += 1,
+        }
+    }
+    (line, column)
+}
+
 /// Syntax / parse errors (`oqi_lex::Error`, re-exported as `oqi_parse::Error`)
 /// are a single flat `{ span, message }` shape, so they share one code.
 impl Diagnostic for oqi_lex::Error {
@@ -276,11 +328,11 @@ impl Diagnostic for oqi_lex::Error {
     }
 
     fn message(&self) -> String {
-        self.message.clone()
+        self.message().to_string()
     }
 
     fn labels(&self) -> Vec<DiagLabel> {
-        vec![DiagLabel::primary(self.span, "syntax error")]
+        vec![DiagLabel::primary(self.span(), "syntax error")]
     }
 }
 
@@ -297,8 +349,9 @@ mod tests {
         assert_eq!(Code::compile(2).to_string(), "C0002");
         assert_eq!(Code::runtime(13).to_string(), "R0013");
         assert_eq!(Code::syntax(1).to_string(), "S0001");
-        assert!("X0001".parse::<Code>().is_err());
-        assert!("Cnope".parse::<Code>().is_err());
+        for bad in ["X0001", "Cnope", "C1", "C+001", "C00001", "C-001", "", "C"] {
+            assert!(bad.parse::<Code>().is_err(), "{bad:?} parsed");
+        }
     }
 
     struct Fake;

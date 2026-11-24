@@ -18,7 +18,10 @@ const fn round_to(v: f64, fw: FloatWidth) -> f64 {
     }
 }
 
-#[derive(Clone, Debug)]
+/// A classical value of a scalar type: a [`Primitive`] and its
+/// [`PrimitiveTy`], kept consistent (an `int[8]` holds a value that fits
+/// 8 bits). Equality compares both; floats compare as `f64` does.
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Scalar {
     value: Primitive,
@@ -26,10 +29,13 @@ pub struct Scalar {
 }
 
 impl Scalar {
-    pub const PI: Self = Self::new_unchecked(Primitive::PI, PrimitiveTy::Float(FloatWidth::F64));
-    pub const TAU: Self = Self::new_unchecked(Primitive::TAU, PrimitiveTy::Float(FloatWidth::F64));
-    pub const E: Self = Self::new_unchecked(Primitive::E, PrimitiveTy::Float(FloatWidth::F64));
-
+    /// A scalar of `value` without checking it against `ty`.
+    ///
+    /// The caller guarantees `value` already has `ty`'s representation (as
+    /// [`Scalar::new`] would convert it: an `int[8]` within 8 bits, a
+    /// `float[32]` rounded to single precision, …); otherwise arithmetic may
+    /// give wrong results.
+    #[doc(hidden)]
     #[inline]
     pub const fn new_unchecked(value: Primitive, ty: PrimitiveTy) -> Self {
         Scalar { value, ty }

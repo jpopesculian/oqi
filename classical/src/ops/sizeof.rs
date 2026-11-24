@@ -13,8 +13,7 @@ const OUT_TY: ValueTy = ValueTy::Scalar(PrimitiveTy::Uint(IntWidth::B64));
 
 fn unsupported(value: ValueTy, dim: Option<ValueTy>) -> Error {
     Error::UnsupportedOp {
-        op: "sizeof",
-        is_func: true,
+        op: super::Operator::Sizeof,
         args: std::iter::once(value).chain(dim).collect(),
     }
 }

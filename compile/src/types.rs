@@ -204,7 +204,7 @@ pub(crate) fn eval_const_expr(expr: &ast::Expr<'_>, scope: &Resolver) -> Result<
             parse_float_literal(s).with_span(*span)?,
             FloatWidth::F64,
         )),
-        ast::Expr::ImagLiteral(s, span) => {
+        ast::Expr::ImaginaryLiteral(s, span) => {
             let (re, im) = parse_imag_literal(s).with_span(*span)?;
             Ok(Value::complex(re, im, FloatWidth::F64))
         }
@@ -227,7 +227,7 @@ pub(crate) fn eval_const_expr(expr: &ast::Expr<'_>, scope: &Resolver) -> Result<
                 )),
             }
         }
-        ast::Expr::BinOp {
+        ast::Expr::Binary {
             left,
             op,
             right,
@@ -239,7 +239,7 @@ pub(crate) fn eval_const_expr(expr: &ast::Expr<'_>, scope: &Resolver) -> Result<
                 .apply(lv, rv)
                 .map_err(|_| CompileError::at(ErrorKind::NonConstantExpression, *span))
         }
-        ast::Expr::UnaryOp { op, operand, span } => {
+        ast::Expr::Unary { op, operand, span } => {
             let v = eval_const_expr(operand, scope)?;
             un_op(*op)
                 .apply(v)
@@ -899,7 +899,7 @@ mod tests {
 
     #[test]
     fn test_eval_const_expr_imag_literal() {
-        let expr = ast::Expr::ImagLiteral("3 im", span(0, 4));
+        let expr = ast::Expr::ImaginaryLiteral("3 im", span(0, 4));
         let val = eval_const_expr(&expr, &global_scope()).unwrap();
         match val {
             Value::Scalar(scalar) => {
@@ -1077,7 +1077,7 @@ mod tests {
                 name: "real",
                 span: span(0, 4),
             },
-            args: vec![ast::Expr::ImagLiteral("3 im", span(5, 9))],
+            args: vec![ast::Expr::ImaginaryLiteral("3 im", span(5, 9))],
             span: span(0, 10),
         };
         let val = eval_const_expr(&expr, &global_scope()).unwrap();
@@ -1097,7 +1097,7 @@ mod tests {
                 name: "imag",
                 span: span(0, 4),
             },
-            args: vec![ast::Expr::ImagLiteral("3 im", span(5, 9))],
+            args: vec![ast::Expr::ImaginaryLiteral("3 im", span(5, 9))],
             span: span(0, 10),
         };
         let val = eval_const_expr(&expr, &global_scope()).unwrap();

@@ -1,3 +1,20 @@
+//! A parser for OpenQASM 3, including the OpenPulse calibration grammar.
+//!
+//! [`parse`] turns source text into an [`ast::Program`] that borrows from
+//! the source; [`parse_with_comments`] also returns the comments, for tools
+//! such as formatters. The grammar follows the reference ANTLR grammar of the
+//! OpenQASM project. Errors are [`Error`]s: a message and the [`ast::Span`]
+//! it refers to.
+//!
+//! ```
+//! use oqi_parse::{ast, parse};
+//!
+//! let program = parse("OPENQASM 3.0; qubit[2] q; h q[0];")?;
+//! assert_eq!(program.version.unwrap().specifier, "3.0");
+//! assert_eq!(program.body.len(), 2);
+//! # Ok::<(), oqi_parse::Error>(())
+//! ```
+
 pub mod ast;
 
 use ast::*;
@@ -8,12 +25,23 @@ use oqi_lex::{Lexer, Token};
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Parse a whole OpenQASM 3 program.
+///
+/// # Errors
+///
+/// The first lexical or syntax error, located in `source`. Nesting deeper
+/// than the parser's limit (64 levels of statements, scopes and
+/// expressions combined) is also an error, rather than a stack overflow.
 pub fn parse(source: &str) -> Result<Program<'_>> {
     Ok(parse_with_comments(source)?.0)
 }
 
 /// Parse `source`, also returning its comments in source order — including
 /// those inside OpenPulse calibration bodies.
+///
+/// # Errors
+///
+/// As for [`parse`].
 pub fn parse_with_comments(source: &str) -> Result<(Program<'_>, Vec<Comment<'_>>)> {
     let mut parser = Parser::new(Lexer::new(source), 0)?;
     let program = parser.parse_program()?;
@@ -110,7 +138,8 @@ impl<'a> Parser<'a> {
         let mut tokens = Vec::new();
         let mut comments = Vec::new();
         for item in lexer {
-            let (token, span) = item.map_err(|e| Error::new(e.span.offset(offset), e.message))?;
+            let (token, span) =
+                item.map_err(|e| Error::new(e.span().offset(offset), e.message()))?;
             let span = span.offset(offset);
             match token {
                 Token::LineComment(text) | Token::BlockComment(text) => {
@@ -342,7 +371,7 @@ impl<'a> Parser<'a> {
         let end = self.semi()?;
         Ok(Version {
             specifier,
-            span: start.to(end),
+            span: start.join(end),
         })
     }
 
@@ -365,7 +394,7 @@ impl<'a> Parser<'a> {
         let end = self.expect(Token::RBrace, "'}'")?;
         Ok(Scope {
             body,
-            span: start.to(end),
+            span: start.join(end),
         })
     }
 
@@ -380,7 +409,7 @@ impl<'a> Parser<'a> {
         Ok(Stmt {
             annotations,
             kind,
-            span: start.to(self.prev_span()),
+            span: start.join(self.prev_span()),
         })
     }
 
@@ -392,7 +421,7 @@ impl<'a> Parser<'a> {
             annotations.push(Annotation {
                 keyword,
                 content,
-                span: start.to(self.prev_span()),
+                span: start.join(self.prev_span()),
             });
         }
         annotations
@@ -545,7 +574,7 @@ impl<'a> Parser<'a> {
                 let start = self.advance().1;
                 let range = self.parse_range_expression()?;
                 let end = self.expect(Token::RBracket, "']'")?;
-                ForIterable::Range(range, start.to(end))
+                ForIterable::Range(range, start.join(end))
             }
             _ => ForIterable::Expr(self.expr()?),
         };
@@ -640,7 +669,7 @@ impl<'a> Parser<'a> {
     fn parse_measure(&mut self) -> Result<MeasureExpr<'a>> {
         let start = self.advance().1; // eat measure
         let operand = self.parse_gate_operand()?;
-        let span = start.to(operand.span());
+        let span = start.join(operand.span());
         Ok(MeasureExpr::Measure { operand, span })
     }
 
@@ -698,7 +727,7 @@ impl<'a> Parser<'a> {
         self.advance(); // eat ->
         let target = self.parse_indexed_identifier()?;
         self.semi()?;
-        let span = name.span.to(target.span);
+        let span = name.span.join(target.span);
         Ok(StmtKind::MeasureArrow {
             measure: MeasureExpr::QuantumCall {
                 name,
@@ -762,7 +791,7 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        let span = start.to(self.expect(Token::At, "'@'")?);
+        let span = start.join(self.expect(Token::At, "'@'")?);
         Ok(Some(match (tok, arg) {
             (Token::Pow, Some(exponent)) => GateModifier::Pow(exponent, span),
             (Token::Ctrl, count) => GateModifier::Ctrl(count, span),
@@ -1035,7 +1064,7 @@ impl<'a> Parser<'a> {
         let operands = self.comma_list(&[Token::Semicolon], Self::parse_gate_operand)?;
         let span = name
             .span
-            .to(operands.last().map_or(name.span, GateOperand::span));
+            .join(operands.last().map_or(name.span, GateOperand::span));
         Ok(ExprOrMeasure::Measure(MeasureExpr::QuantumCall {
             name,
             args: args.unwrap_or_default(),
@@ -1050,7 +1079,7 @@ impl<'a> Parser<'a> {
         let end = self.expect(Token::RBrace, "'}'")?;
         Ok(ArrayLiteral {
             items,
-            span: start.to(end),
+            span: start.join(end),
         })
     }
 
@@ -1059,7 +1088,7 @@ impl<'a> Parser<'a> {
         let start = self.expect(Token::LParen, "'('")?;
         let expr = self.expr()?;
         let end = self.expect(Token::RParen, "')'")?;
-        Ok((expr, start.to(end)))
+        Ok((expr, start.join(end)))
     }
 
     // ------------------------------------------------------------------
@@ -1086,7 +1115,7 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 let index = self.parse_index_operator()?;
-                let span = lhs.span().to(index.span);
+                let span = lhs.span().join(index.span);
                 lhs = Expr::Index {
                     expr: Box::new(lhs),
                     index,
@@ -1111,8 +1140,8 @@ impl<'a> Parser<'a> {
             } else {
                 precedence + 1
             })?;
-            let span = lhs.span().to(rhs.span());
-            lhs = Expr::BinOp {
+            let span = lhs.span().join(rhs.span());
+            lhs = Expr::Binary {
                 left: Box::new(lhs),
                 op,
                 right: Box::new(rhs),
@@ -1133,9 +1162,9 @@ impl<'a> Parser<'a> {
         if let Some(op) = un_op(tok) {
             self.advance();
             let operand = self.parse_expr(UnOp::PRECEDENCE)?;
-            return Ok(Expr::UnaryOp {
+            return Ok(Expr::Unary {
                 op,
-                span: span.to(operand.span()),
+                span: span.join(operand.span()),
                 operand: Box::new(operand),
             });
         }
@@ -1147,7 +1176,7 @@ impl<'a> Parser<'a> {
             return Ok(Expr::Cast {
                 ty: Box::new(ty),
                 operand: Box::new(operand),
-                span: span.to(parens),
+                span: span.join(parens),
             });
         }
 
@@ -1164,7 +1193,7 @@ impl<'a> Parser<'a> {
                 let end = self.expect(Token::RParen, "')'")?;
                 return Ok(Expr::DurationOf {
                     scope,
-                    span: span.to(end),
+                    span: span.join(end),
                 });
             }
             // Identifier or call: Identifier LPAREN expressionList? RPAREN
@@ -1178,7 +1207,7 @@ impl<'a> Parser<'a> {
                 return Ok(Expr::Call {
                     name,
                     args,
-                    span: span.to(end),
+                    span: span.join(end),
                 });
             }
             Token::DecimalIntegerLiteral(s) => Expr::IntLiteral(s, IntEncoding::Decimal, span),
@@ -1186,7 +1215,7 @@ impl<'a> Parser<'a> {
             Token::OctalIntegerLiteral(s) => Expr::IntLiteral(s, IntEncoding::Octal, span),
             Token::HexIntegerLiteral(s) => Expr::IntLiteral(s, IntEncoding::Hex, span),
             Token::FloatLiteral(s) => Expr::FloatLiteral(s, span),
-            Token::ImaginaryLiteral(s) => Expr::ImagLiteral(s, span),
+            Token::ImaginaryLiteral(s) => Expr::ImaginaryLiteral(s, span),
             Token::True => Expr::BoolLiteral(true, span),
             Token::False => Expr::BoolLiteral(false, span),
             Token::BitstringLiteral(s) => Expr::BitstringLiteral(s, span),
@@ -1212,7 +1241,7 @@ impl<'a> Parser<'a> {
         let end = self.expect(Token::RBracket, "']'")?;
         Ok(IndexOp {
             kind,
-            span: start.to(end),
+            span: start.join(end),
         })
     }
 
@@ -1277,7 +1306,7 @@ impl<'a> Parser<'a> {
         let start = self.expect(Token::LBrace, "'{'")?;
         let exprs = self.expr_list(Token::RBrace)?;
         let end = self.expect(Token::RBrace, "'}'")?;
-        Ok((exprs, start.to(end)))
+        Ok((exprs, start.join(end)))
     }
 
     // ------------------------------------------------------------------
@@ -1315,7 +1344,7 @@ impl<'a> Parser<'a> {
         }
         Ok(ScalarType {
             kind,
-            span: start.to(self.prev_span()),
+            span: start.join(self.prev_span()),
         })
     }
 
@@ -1324,7 +1353,7 @@ impl<'a> Parser<'a> {
         let designator = self.opt_designator()?.map(Box::new);
         Ok(QubitType {
             designator,
-            span: start.to(self.prev_span()),
+            span: start.join(self.prev_span()),
         })
     }
 
@@ -1346,7 +1375,7 @@ impl<'a> Parser<'a> {
         Ok(ArrayType {
             element_type,
             dimensions,
-            span: start.to(end),
+            span: start.join(end),
         })
     }
 
@@ -1371,7 +1400,7 @@ impl<'a> Parser<'a> {
             mutability,
             element_type,
             dimensions,
-            span: start.to(end),
+            span: start.join(end),
         })
     }
 
@@ -1409,7 +1438,7 @@ impl<'a> Parser<'a> {
             indices.push(self.parse_index_operator()?);
         }
         Ok(IndexedIdent {
-            span: name.span.to(self.prev_span()),
+            span: name.span.join(self.prev_span()),
             name,
             indices,
         })
@@ -1565,7 +1594,7 @@ mod tests {
     use super::*;
 
     fn parse_ok(src: &str) -> Program<'_> {
-        parse(src).unwrap_or_else(|e| panic!("parse error: {} at {:?}", e.message, e.span))
+        parse(src).unwrap_or_else(|e| panic!("parse error: {} at {:?}", e.message(), e.span()))
     }
 
     fn parse_stmt(src: &str) -> Stmt<'_> {
@@ -1725,12 +1754,12 @@ mod tests {
         // a + b * c should parse as a + (b * c)
         let stmt = parse_stmt("a + b * c;");
         match stmt.kind {
-            StmtKind::Expr(Expr::BinOp {
+            StmtKind::Expr(Expr::Binary {
                 op: BinOp::Add,
                 right,
                 ..
             }) => {
-                assert!(matches!(*right, Expr::BinOp { op: BinOp::Mul, .. }));
+                assert!(matches!(*right, Expr::Binary { op: BinOp::Mul, .. }));
             }
             _ => panic!("expected binary op"),
         }
@@ -1741,12 +1770,12 @@ mod tests {
         // a ** b ** c should parse as a ** (b ** c)
         let stmt = parse_stmt("a ** b ** c;");
         match stmt.kind {
-            StmtKind::Expr(Expr::BinOp {
+            StmtKind::Expr(Expr::Binary {
                 op: BinOp::Pow,
                 right,
                 ..
             }) => {
-                assert!(matches!(*right, Expr::BinOp { op: BinOp::Pow, .. }));
+                assert!(matches!(*right, Expr::Binary { op: BinOp::Pow, .. }));
             }
             _ => panic!("expected power expression"),
         }
@@ -1757,12 +1786,12 @@ mod tests {
         // -a ** b should parse as -(a ** b)
         let stmt = parse_stmt("-a ** b;");
         match stmt.kind {
-            StmtKind::Expr(Expr::UnaryOp {
+            StmtKind::Expr(Expr::Unary {
                 op: UnOp::Neg,
                 operand,
                 ..
             }) => {
-                assert!(matches!(*operand, Expr::BinOp { op: BinOp::Pow, .. }));
+                assert!(matches!(*operand, Expr::Binary { op: BinOp::Pow, .. }));
             }
             _ => panic!("expected unary neg wrapping power"),
         }
@@ -1914,7 +1943,7 @@ mod tests {
                 gate g q { }
             }"#;
         let err = parse(src).expect_err("parse should fail");
-        assert!(err.message.contains("gate"), "got: {}", err.message);
+        assert!(err.message().contains("gate"), "got: {}", err.message());
     }
 
     #[test]
@@ -2117,7 +2146,7 @@ cphase(π / 2) q[0], q[1];
     fn nested_expression() {
         let stmt = parse_stmt("(a + b) * c;");
         match stmt.kind {
-            StmtKind::Expr(Expr::BinOp {
+            StmtKind::Expr(Expr::Binary {
                 op: BinOp::Mul,
                 left,
                 ..
@@ -2238,9 +2267,9 @@ cphase(π / 2) q[0], q[1];
         ] {
             let err = parse(&format!("{grammar} cal {{ {excluded} }}")).unwrap_err();
             assert!(
-                err.message.contains("not allowed inside"),
+                err.message().contains("not allowed inside"),
                 "{excluded}: {}",
-                err.message
+                err.message()
             );
         }
         parse_ok(&format!("{grammar} cal {{ box {{ nop $0; }} }}"));
@@ -2274,8 +2303,8 @@ cphase(π / 2) q[0], q[1];
     fn gate_head_errors_point_at_the_designator() {
         let src = "g[1:2] q;";
         let err = parse(src).unwrap_err();
-        assert_eq!(err.message, "designator must be a single expression");
-        assert_eq!(&src[err.span], "[1:2]");
+        assert_eq!(err.message(), "designator must be a single expression");
+        assert_eq!(&src[err.span()], "[1:2]");
     }
 
     #[test]
@@ -2292,7 +2321,7 @@ cphase(π / 2) q[0], q[1];
             Some(Expr::IntLiteral("2", ..))
         ));
         assert!(
-            matches!(r.step.as_deref(), Some(Expr::UnaryOp { .. })),
+            matches!(r.step.as_deref(), Some(Expr::Unary { .. })),
             "middle component is the step"
         );
         assert!(

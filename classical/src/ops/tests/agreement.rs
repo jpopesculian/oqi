@@ -187,7 +187,8 @@ fn array_references_are_read_once_and_behave_like_the_array() {
 
 #[test]
 fn a_reference_operand_makes_the_result_type_a_reference() {
-    use crate::{ArrayRefShape, ArrayRefTy, ArrayTy, RefAccess, adim};
+    use crate::array::adim;
+    use crate::{ArrayRefShape, ArrayRefTy, ArrayTy, RefAccess};
     let elem = PrimitiveTy::Int(iw(8));
     let owned = ValueTy::Array(ArrayTy::new(elem, ashape(vec![3])));
     let fixed = |access| ValueTy::ArrayRef(ArrayRefTy::new(elem, ashape(vec![3]).into(), access));

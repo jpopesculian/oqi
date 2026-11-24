@@ -11,7 +11,7 @@ use oqi_lex::Span;
 /// [`OpaqueCalHandler`](crate::OpaqueCalHandler)) report failures as an
 /// `ErrorKind`; the VM wraps it in an [`Error`] carrying the source span of
 /// the instruction in flight.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum ErrorKind {
     /// A register was read before being assigned a value.
@@ -144,7 +144,7 @@ impl std::error::Error for ErrorKind {
 
 /// A runtime error: what went wrong, and the source span of the instruction
 /// that raised it, when known.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Error {
     /// What went wrong.
     pub kind: ErrorKind,

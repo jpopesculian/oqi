@@ -6,7 +6,9 @@ use crate::scalar::Scalar;
 use crate::shared::Shared;
 use crate::{Error, Result};
 
-#[derive(Clone, Debug)]
+/// An owned multi-dimensional array: its elements in row-major order and
+/// its [`ArrayTy`].
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Array {
     values: Vec<Primitive>,
@@ -14,6 +16,13 @@ pub struct Array {
 }
 
 impl Array {
+    /// An array of `values` without checking them against `ty`.
+    ///
+    /// The caller guarantees `values.len() == ty.shape().total()` and that
+    /// every value already has the element type's representation (as
+    /// [`Array::new`] would convert it); otherwise indexing may panic and
+    /// arithmetic give wrong results.
+    #[doc(hidden)]
     #[inline]
     pub fn new_unchecked(values: Vec<Primitive>, ty: ArrayTy) -> Self {
         Array { values, ty }
@@ -41,11 +50,12 @@ impl Array {
         }
         let values = values
             .into_iter()
-            .map(|value| value.as_ty(ty.ty()))
+            .map(|value| value.as_ty(ty.element_ty()))
             .collect::<Result<_>>()?;
         Ok(Array::new_unchecked(values, ty))
     }
 
+    /// The elements, in row-major order.
     pub fn into_values(self) -> Vec<Primitive> {
         self.values
     }
@@ -60,10 +70,11 @@ impl Array {
         ArrayRef::new(Shared::new(self), vec![], RefAccess::Mutable).unwrap()
     }
 
-    pub fn scalars(&self) -> ScalarIter<'_> {
+    /// The elements as scalars of the element type, in row-major order.
+    pub fn scalars(&self) -> impl ExactSizeIterator<Item = Scalar> + '_ {
         ScalarIter {
             slice: self.values(),
-            ty: self.ty.ty(),
+            ty: self.ty.element_ty(),
             index: 0,
         }
     }
@@ -75,7 +86,7 @@ impl Array {
     }
 }
 
-pub struct ScalarIter<'a> {
+struct ScalarIter<'a> {
     slice: &'a [Primitive],
     ty: PrimitiveTy,
     index: usize,
@@ -101,7 +112,7 @@ impl fmt::Display for Array {
         fn fmt_values(
             f: &mut fmt::Formatter<'_>,
             shape: &[usize],
-            values: &mut ScalarIter,
+            values: &mut dyn Iterator<Item = Scalar>,
         ) -> fmt::Result {
             write!(f, "{{")?;
 
@@ -126,7 +137,7 @@ impl fmt::Display for Array {
             f.write_str("}")
         }
 
-        fmt_values(f, self.ty.shape.get(), &mut self.scalars())
+        fmt_values(f, self.ty.shape.dims(), &mut self.scalars())
     }
 }
 
@@ -174,12 +185,9 @@ impl ArrayDim {
     }
 }
 
-/// Shorthand for a rank known to be valid.
-///
-/// # Panics
-/// If `value` is not in `1..=ArrayDim::MAX`; use [`ArrayDim::new`] for ranks
-/// that come from a program.
-pub fn adim(value: usize) -> ArrayDim {
+/// Shorthand for a rank known to be valid, for tests.
+#[cfg(test)]
+pub(crate) fn adim(value: usize) -> ArrayDim {
     ArrayDim::new(value).unwrap()
 }
 
@@ -206,13 +214,13 @@ impl TryFrom<Vec<usize>> for ArrayShape {
 
 impl From<ArrayShape> for Vec<usize> {
     fn from(shape: ArrayShape) -> Vec<usize> {
-        shape.get().to_vec()
+        shape.dims().to_vec()
     }
 }
 
 impl fmt::Display for ArrayShape {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (idx, size) in self.get().iter().enumerate() {
+        for (idx, size) in self.dims().iter().enumerate() {
             if idx > 0 {
                 write!(f, ", ")?;
             }
@@ -250,22 +258,25 @@ impl ArrayShape {
         self.dim
     }
 
+    /// The size of each dimension, outermost first.
     #[inline]
-    pub fn get(&self) -> &[usize] {
+    pub fn dims(&self) -> &[usize] {
         &self.shape[..self.dim.get()]
     }
 
     #[inline]
     pub fn total(&self) -> usize {
-        self.get().iter().product()
+        self.dims().iter().product()
     }
 }
 
-/// Shorthand for a shape known to be valid.
+/// Shorthand for a shape known to be valid, for tests and literals.
 ///
 /// # Panics
-/// If `values` does not have `1..=ArrayDim::MAX` dimensions; use
-/// [`ArrayShape::new`] for shapes that come from a program.
+///
+/// If `values` does not have `1..=ArrayDim::MAX` dimensions or has too many
+/// elements; use [`ArrayShape::new`] for shapes that come from a program.
+#[doc(hidden)]
 pub fn ashape(values: Vec<usize>) -> ArrayShape {
     ArrayShape::new(values).unwrap()
 }
@@ -298,33 +309,31 @@ impl ArrayTy {
     }
 
     #[inline]
-    pub const fn with_ty(&self, ty: PrimitiveTy) -> Self {
+    pub(crate) const fn with_ty(&self, ty: PrimitiveTy) -> Self {
         Self { ty, ..*self }
     }
 
+    /// The element type.
     #[inline]
-    pub const fn with_shape(&self, shape: ArrayShape) -> Self {
-        Self::new(self.ty, shape)
-    }
-
-    #[inline]
-    pub const fn ty(&self) -> PrimitiveTy {
+    pub const fn element_ty(&self) -> PrimitiveTy {
         self.ty
     }
 
     /// The type of a reference to an array of this type.
     #[inline]
-    pub const fn as_ref(&self, access: RefAccess) -> ArrayRefTy {
+    pub(crate) const fn ref_ty(&self, access: RefAccess) -> ArrayRefTy {
         ArrayRefTy::new(self.ty, ArrayRefShape::Fixed(self.shape), access)
     }
 
+    /// Check the cast to `to` (same element count and an allowed element
+    /// cast), returning `to`.
     #[inline]
     pub fn cast(self, to: ArrayTy) -> Result<Self> {
         if self.shape.total() != to.shape.total() {
             return Err(Error::unsupported_cast(self, to));
         }
         self.ty.cast(to.ty)?;
-        Ok(self)
+        Ok(to)
     }
 }
 
@@ -332,7 +341,7 @@ impl fmt::Debug for ArrayTy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ArrayTy")
             .field("ty", &self.ty)
-            .field("shape", &self.shape.get())
+            .field("shape", &self.shape.dims())
             .finish()
     }
 }

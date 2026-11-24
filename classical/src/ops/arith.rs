@@ -221,7 +221,7 @@ impl MatmulPlan {
 
 /// The shape of `lhs * rhs`, or `None` if the shapes do not multiply.
 pub(super) fn matmul_shape(lhs: ArrayShape, rhs: ArrayShape) -> Option<ArrayShape> {
-    let plan = MatmulPlan::new(lhs.get(), rhs.get())?;
+    let plan = MatmulPlan::new(lhs.dims(), rhs.dims())?;
     ArrayShape::new(plan.output_shape()).ok()
 }
 
@@ -233,9 +233,9 @@ pub(super) fn matmul_rank(lhs: usize, rhs: usize) -> usize {
 
 pub(super) fn matmul(lhs: &Array, rhs: &Array, out: ArrayTy) -> Result<Array> {
     let (lhs_ty, rhs_ty) = (lhs.ty(), rhs.ty());
-    let plan = MatmulPlan::new(lhs_ty.shape().get(), rhs_ty.shape().get())
+    let plan = MatmulPlan::new(lhs_ty.shape().dims(), rhs_ty.shape().dims())
         .ok_or_else(|| BinOp::Mul.unsupported(lhs_ty, rhs_ty))?;
-    let elem = out.ty();
+    let elem = out.element_ty();
     let a: Vec<Scalar> = lhs.scalars().collect();
     let b: Vec<Scalar> = rhs.scalars().collect();
 

@@ -85,6 +85,46 @@ pub enum UnOp {
     Imag,
 }
 
+/// An operation an [`Error::UnsupportedOp`] reports: what was applied to
+/// operands it is not defined for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Operator {
+    /// A binary operator or two-argument built-in.
+    Binary(BinOp),
+    /// A unary operator or one-argument built-in.
+    Unary(UnOp),
+    /// The built-in `sizeof`.
+    Sizeof,
+}
+
+impl Operator {
+    /// The operation as spelled in source: `+`, `sin`, `sizeof`, ….
+    pub const fn name(self) -> &'static str {
+        match self {
+            Operator::Binary(op) => op.name(),
+            Operator::Unary(op) => op.name(),
+            Operator::Sizeof => "sizeof",
+        }
+    }
+
+    /// Whether the operation is written as a call (`sin(x)`) rather than
+    /// with an operator symbol (`a + b`, `-x`).
+    pub(crate) const fn is_func(self) -> bool {
+        match self {
+            Operator::Binary(op) => op.is_func(),
+            Operator::Unary(op) => op.is_func(),
+            Operator::Sizeof => true,
+        }
+    }
+}
+
+impl fmt::Display for Operator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 /// Operand conversions and result type of a binary operator on scalars.
 type BinSignature = (PrimitiveTy, PrimitiveTy, PrimitiveTy);
 /// Operand conversion and result type of a unary operator.
@@ -120,7 +160,7 @@ impl BinOp {
 
     /// Whether the operation is written as a call (`rotl(a, b)`) rather
     /// than infix (`a + b`).
-    pub const fn is_func(self) -> bool {
+    const fn is_func(self) -> bool {
         matches!(self, BinOp::Rotl | BinOp::Rotr)
     }
 
@@ -150,16 +190,20 @@ impl BinOp {
                 out,
                 l.scalars()
                     .zip(r.scalars())
-                    .map(|(l, r)| self.eval(&l, &r, out.ty()))
+                    .map(|(l, r)| self.eval(&l, &r, out.element_ty()))
                     .collect(),
             ),
             (Value::Array(l), Value::Scalar(r), ValueTy::Array(out)) => elementwise(
                 out,
-                l.scalars().map(|l| self.eval(&l, &r, out.ty())).collect(),
+                l.scalars()
+                    .map(|l| self.eval(&l, &r, out.element_ty()))
+                    .collect(),
             ),
             (Value::Scalar(l), Value::Array(r), ValueTy::Array(out)) => elementwise(
                 out,
-                r.scalars().map(|r| self.eval(&l, &r, out.ty())).collect(),
+                r.scalars()
+                    .map(|r| self.eval(&l, &r, out.element_ty()))
+                    .collect(),
             ),
             (lhs, rhs, _) => Err(self.unsupported(lhs.ty(), rhs.ty())),
         }
@@ -235,8 +279,7 @@ impl BinOp {
 
     fn unsupported(self, lhs: impl Into<ValueTy>, rhs: impl Into<ValueTy>) -> Error {
         Error::UnsupportedOp {
-            op: self.name(),
-            is_func: self.is_func(),
+            op: Operator::Binary(self),
             args: vec![lhs.into(), rhs.into()],
         }
     }
@@ -268,7 +311,7 @@ impl UnOp {
 
     /// Whether the operation is written as a call (`sin(x)`) rather than
     /// prefix (`-x`).
-    pub const fn is_func(self) -> bool {
+    const fn is_func(self) -> bool {
         !matches!(self, UnOp::Neg | UnOp::BitNot | UnOp::LogNot)
     }
 
@@ -319,8 +362,7 @@ impl UnOp {
 
     fn unsupported(self, arg: impl Into<ValueTy>) -> Error {
         Error::UnsupportedOp {
-            op: self.name(),
-            is_func: self.is_func(),
+            op: Operator::Unary(self),
             args: vec![arg.into()],
         }
     }
@@ -343,8 +385,8 @@ impl fmt::Display for UnOp {
 fn parts(ty: ValueTy) -> (PrimitiveTy, Option<ArrayRefShape>) {
     match ty {
         ValueTy::Scalar(elem) => (elem, None),
-        ValueTy::Array(array) => (array.ty(), Some(array.shape().into())),
-        ValueTy::ArrayRef(array) => (array.ty(), Some(array.shape())),
+        ValueTy::Array(array) => (array.element_ty(), Some(array.shape().into())),
+        ValueTy::ArrayRef(array) => (array.element_ty(), Some(array.shape())),
     }
 }
 
@@ -358,6 +400,6 @@ fn convert(value: Value, elem: PrimitiveTy) -> Result<Value> {
             let ty = array.ty().with_ty(elem);
             Array::new(array.into_values(), ty).map(Value::Array)
         }
-        Value::ArrayRef(array) => convert(Value::Array(array.to_owned()?), elem),
+        Value::ArrayRef(array) => convert(Value::Array(array.to_array()?), elem),
     }
 }

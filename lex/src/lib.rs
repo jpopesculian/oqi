@@ -509,7 +509,7 @@ mod tests {
         for src in ["include é;", "OPENQASM é;", "cal é { }"] {
             let results: Vec<_> = Lexer::new(src).collect();
             let err = results.iter().find_map(|r| r.as_ref().err()).unwrap();
-            assert_eq!(&src[err.span], "é", "{src}");
+            assert_eq!(&src[err.span()], "é", "{src}");
         }
     }
 

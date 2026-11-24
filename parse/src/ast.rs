@@ -11,7 +11,7 @@ pub struct Comment<'a> {
 
 // ---- Identifiers ----
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Ident<'a> {
     pub name: &'a str,
     pub span: Span,
@@ -19,20 +19,20 @@ pub struct Ident<'a> {
 
 // ---- Program structure ----
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Program<'a> {
     pub version: Option<Version<'a>>,
     pub body: Vec<StmtOrScope<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Version<'a> {
     pub specifier: &'a str,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StmtOrScope<'a> {
     Stmt(Box<Stmt<'a>>),
     Scope(Scope<'a>),
@@ -47,22 +47,25 @@ impl StmtOrScope<'_> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Scope<'a> {
     pub body: Vec<StmtOrScope<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug)]
+/// An annotation such as `@bind $0` on the statement that follows it.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Annotation<'a> {
+    /// The keyword, including the `@`.
     pub keyword: &'a str,
+    /// The rest of the line after the keyword, if any.
     pub content: Option<&'a str>,
     pub span: Span,
 }
 
 // ---- Statements ----
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Stmt<'a> {
     pub annotations: Vec<Annotation<'a>>,
     pub kind: StmtKind<'a>,
@@ -79,7 +82,7 @@ pub struct StringLiteral<'a> {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StmtKind<'a> {
     Pragma(&'a str),
     CalibrationGrammar(StringLiteral<'a>),
@@ -204,7 +207,7 @@ pub enum StmtKind<'a> {
 /// the calibration grammar. `OpenPulse` is populated only when the program has
 /// declared `defcalgrammar "openpulse";`, in which case the body is re-parsed
 /// against the OpenPulse grammar and stored as structured statements.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CalBody<'a> {
     Raw(Option<&'a str>),
     OpenPulse(Vec<StmtOrScope<'a>>),
@@ -212,7 +215,7 @@ pub enum CalBody<'a> {
 
 // ---- Expressions ----
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinOp {
     Add,
     Sub,
@@ -282,7 +285,7 @@ impl BinOp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UnOp {
     Neg,
     BitNot,
@@ -302,7 +305,7 @@ impl UnOp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntEncoding {
     Decimal,
     Binary,
@@ -310,24 +313,34 @@ pub enum IntEncoding {
     Hex,
 }
 
-#[derive(Debug)]
+/// An expression. Literal payloads are the source text, unprocessed.
+#[derive(Debug, Clone, PartialEq)]
 pub enum Expr<'a> {
     Ident(Ident<'a>),
+    /// A physical qubit; the text keeps the `$`, as in `$0`.
     HardwareQubit(&'a str, Span),
+    /// An integer literal; the text keeps its base prefix (`0x`, `0o`,
+    /// `0b`) and any `_` separators.
     IntLiteral(&'a str, IntEncoding, Span),
+    /// A floating-point literal, as written (`1.5e-3`, `.5`, `1_000.0`).
     FloatLiteral(&'a str, Span),
-    ImagLiteral(&'a str, Span),
+    /// An imaginary literal; the text keeps the `im` suffix, as in `2.5im`.
+    ImaginaryLiteral(&'a str, Span),
     BoolLiteral(bool, Span),
+    /// A bitstring literal; the text keeps its quotes and any `_`
+    /// separators, as in `"0101_1100"`.
     BitstringLiteral(&'a str, Span),
+    /// A duration literal; the text keeps its unit, as in `100ns` or `4dt`.
     TimingLiteral(&'a str, Span),
+    /// A parenthesized expression, kept so a formatter can preserve it.
     Paren(Box<Expr<'a>>, Span),
-    BinOp {
+    Binary {
         left: Box<Expr<'a>>,
         op: BinOp,
         right: Box<Expr<'a>>,
         span: Span,
     },
-    UnaryOp {
+    Unary {
         op: UnOp,
         operand: Box<Expr<'a>>,
         span: Span,
@@ -361,13 +374,13 @@ impl<'a> Expr<'a> {
             Expr::HardwareQubit(_, s)
             | Expr::IntLiteral(_, _, s)
             | Expr::FloatLiteral(_, s)
-            | Expr::ImagLiteral(_, s)
+            | Expr::ImaginaryLiteral(_, s)
             | Expr::BoolLiteral(_, s)
             | Expr::BitstringLiteral(_, s)
             | Expr::TimingLiteral(_, s)
             | Expr::Paren(_, s)
-            | Expr::BinOp { span: s, .. }
-            | Expr::UnaryOp { span: s, .. }
+            | Expr::Binary { span: s, .. }
+            | Expr::Unary { span: s, .. }
             | Expr::Index { span: s, .. }
             | Expr::Call { span: s, .. }
             | Expr::Cast { span: s, .. }
@@ -380,8 +393,8 @@ impl<'a> Expr<'a> {
     /// not an operator application binds tightest.
     pub fn precedence(&self) -> u8 {
         match self {
-            Expr::BinOp { op, .. } => op.precedence(),
-            Expr::UnaryOp { .. } => UnOp::PRECEDENCE,
+            Expr::Binary { op, .. } => op.precedence(),
+            Expr::Unary { .. } => UnOp::PRECEDENCE,
             Expr::Index { .. } => IndexOp::PRECEDENCE,
             _ => u8::MAX,
         }
@@ -390,7 +403,7 @@ impl<'a> Expr<'a> {
 
 // ---- Index types ----
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IndexOp<'a> {
     pub kind: IndexKind<'a>,
     pub span: Span,
@@ -401,26 +414,26 @@ impl IndexOp<'_> {
     pub const PRECEDENCE: u8 = 26;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IndexKind<'a> {
     Set(Vec<Expr<'a>>),
     Items(Vec<IndexItem<'a>>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IndexItem<'a> {
     Single(Expr<'a>),
     Range(RangeExpr<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RangeExpr<'a> {
     pub start: Option<Box<Expr<'a>>>,
     pub end: Option<Box<Expr<'a>>>,
     pub step: Option<Box<Expr<'a>>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct IndexedIdent<'a> {
     pub name: Ident<'a>,
     pub indices: Vec<IndexOp<'a>>,
@@ -429,20 +442,20 @@ pub struct IndexedIdent<'a> {
 
 // ---- Statement-specific types ----
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ForIterable<'a> {
     Set(Vec<Expr<'a>>, Span),
     Range(RangeExpr<'a>, Span),
     Expr(Expr<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SwitchCase<'a> {
     Case(Vec<Expr<'a>>, Scope<'a>),
     Default(Scope<'a>),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IoDir {
     Input,
     Output,
@@ -457,7 +470,7 @@ impl IoDir {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OldStyleKind {
     Creg,
     Qreg,
@@ -472,7 +485,7 @@ impl OldStyleKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AssignOp {
     Assign,
     AddAssign,
@@ -507,7 +520,7 @@ impl AssignOp {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GateModifier<'a> {
     Inv(Span),
     Pow(Expr<'a>, Span),
@@ -515,7 +528,7 @@ pub enum GateModifier<'a> {
     NegCtrl(Option<Expr<'a>>, Span),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum GateOperand<'a> {
     Indexed(IndexedIdent<'a>),
     HardwareQubit(&'a str, Span),
@@ -530,7 +543,7 @@ impl<'a> GateOperand<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MeasureExpr<'a> {
     Measure {
         operand: GateOperand<'a>,
@@ -544,13 +557,13 @@ pub enum MeasureExpr<'a> {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExprOrMeasure<'a> {
     Expr(Expr<'a>),
     Measure(MeasureExpr<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DefcalTarget<'a> {
     Measure(Span),
     Reset(Span),
@@ -558,19 +571,19 @@ pub enum DefcalTarget<'a> {
     Ident(Ident<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DefcalArgDef<'a> {
     Expr(Expr<'a>),
     ArgDef(ArgDef<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum DefcalOperand<'a> {
     HardwareQubit(&'a str, Span),
     Ident(Ident<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ArgDef<'a> {
     Scalar(ScalarType<'a>, Ident<'a>),
     Qubit(QubitType<'a>, Ident<'a>),
@@ -579,14 +592,14 @@ pub enum ArgDef<'a> {
     ArrayRef(ArrayRefType<'a>, Ident<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExternArg<'a> {
     Scalar(ScalarType<'a>),
     ArrayRef(ArrayRefType<'a>),
     Creg(Option<Expr<'a>>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ArrayLiteral<'a> {
     pub items: Vec<Expr<'a>>,
     pub span: Span,
@@ -594,13 +607,13 @@ pub struct ArrayLiteral<'a> {
 
 // ---- Type types ----
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScalarType<'a> {
     pub kind: ScalarKind<'a>,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ScalarKind<'a> {
     /// A type that takes an optional `[designator]`.
     Sized(SizedKind, Option<Box<Expr<'a>>>),
@@ -614,7 +627,7 @@ pub enum ScalarKind<'a> {
     Frame,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SizedKind {
     Bit,
     Int,
@@ -635,20 +648,20 @@ impl SizedKind {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct QubitType<'a> {
     pub designator: Option<Box<Expr<'a>>>,
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ArrayType<'a> {
     pub element_type: ScalarType<'a>,
     pub dimensions: Vec<Expr<'a>>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ArrayRefMut {
     Readonly,
     Mutable,
@@ -663,7 +676,7 @@ impl ArrayRefMut {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ArrayRefType<'a> {
     pub mutability: ArrayRefMut,
     pub element_type: ScalarType<'a>,
@@ -671,13 +684,13 @@ pub struct ArrayRefType<'a> {
     pub span: Span,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ArrayRefDims<'a> {
     ExprList(Vec<Expr<'a>>),
     Dim(Expr<'a>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum TypeExpr<'a> {
     Scalar(ScalarType<'a>),
     Array(ArrayType<'a>),

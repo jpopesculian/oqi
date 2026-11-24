@@ -12,7 +12,7 @@ use crate::{
 
 /// One step of indexing into an array dimension or a bit register.
 /// Negative positions count from the end.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Index {
     Item(isize),
@@ -301,13 +301,13 @@ impl ArrayTy {
         let value_ty = ValueTy::Array(self);
         let error = || index_error(value_ty, indices);
         let shape = self.shape();
-        let selected = select(shape.get(), indices).ok_or_else(error)?;
-        let bits = bit_indices(shape.get().len(), indices);
+        let selected = select(shape.dims(), indices).ok_or_else(error)?;
+        let bits = bit_indices(shape.dims().len(), indices);
         if selected.shape.is_empty() {
-            self.ty().get(bits).map(ValueTy::Scalar)
+            self.element_ty().get(bits).map(ValueTy::Scalar)
         } else if bits.is_empty() {
             let shape = ArrayShape::new(selected.shape)?;
-            Ok(ValueTy::Array(ArrayTy::new(self.ty(), shape)))
+            Ok(ValueTy::Array(ArrayTy::new(self.element_ty(), shape)))
         } else {
             Err(error())
         }
@@ -323,17 +323,19 @@ impl ArrayRefTy {
         let value_ty = ValueTy::ArrayRef(self);
         let error = || index_error(value_ty, indices);
         match self.shape() {
-            ArrayRefShape::Fixed(shape) => match ArrayTy::new(self.ty(), shape).get(indices)? {
-                ValueTy::Scalar(ty) => Ok(ValueTy::Scalar(ty)),
-                ValueTy::Array(ty) => Ok(ValueTy::ArrayRef(ArrayRefTy::new(
-                    ty.ty(),
-                    ty.shape().into(),
-                    self.access(),
-                ))),
-                ValueTy::ArrayRef(_) => {
-                    unreachable!("array indexing on ArrayTy cannot yield ArrayRef")
+            ArrayRefShape::Fixed(shape) => {
+                match ArrayTy::new(self.element_ty(), shape).get(indices)? {
+                    ValueTy::Scalar(ty) => Ok(ValueTy::Scalar(ty)),
+                    ValueTy::Array(ty) => Ok(ValueTy::ArrayRef(ArrayRefTy::new(
+                        ty.element_ty(),
+                        ty.shape().into(),
+                        self.access(),
+                    ))),
+                    ValueTy::ArrayRef(_) => {
+                        unreachable!("array indexing on ArrayTy cannot yield ArrayRef")
+                    }
                 }
-            },
+            }
             // Only the rank is known: count the dimensions the subscript
             // drops (see `select`).
             ArrayRefShape::Dim(dim) => {
@@ -351,10 +353,10 @@ impl ArrayRefTy {
                     .filter(|index| matches!(index, Index::Item(_)))
                     .count();
                 if dropped == rank {
-                    self.ty().get(bits).map(ValueTy::Scalar)
+                    self.element_ty().get(bits).map(ValueTy::Scalar)
                 } else if bits.is_empty() {
                     Ok(ValueTy::ArrayRef(ArrayRefTy::new(
-                        self.ty(),
+                        self.element_ty(),
                         ArrayRefShape::Dim(ArrayDim::new(rank - dropped)?),
                         self.access(),
                     )))
@@ -474,10 +476,10 @@ impl Array {
 
         let value_ty = ValueTy::Array(self.ty());
         let error = || index_error(value_ty, indices);
-        let ty = self.ty().ty();
+        let ty = self.ty().element_ty();
         let shape = self.ty().shape();
-        let selected = select(shape.get(), indices).ok_or_else(error)?;
-        let bits = bit_indices(shape.get().len(), indices);
+        let selected = select(shape.dims(), indices).ok_or_else(error)?;
+        let bits = bit_indices(shape.dims().len(), indices);
         let mut values = selected.positions.iter().map(|&p| self.values()[p].clone());
         if selected.shape.is_empty() {
             let element = Scalar::new_unchecked(values.next().ok_or_else(error)?, ty);
@@ -501,7 +503,7 @@ impl Array {
                     Ok(())
                 }
                 Value::ArrayRef(ar) => {
-                    *self = ar.cast(self.ty().as_ref(RefAccess::Mutable))?;
+                    *self = ar.cast(self.ty().ref_ty(RefAccess::Mutable))?;
                     Ok(())
                 }
                 Value::Scalar(s) => Err(Error::unsupported_cast(s.ty(), self.ty())),
@@ -510,10 +512,10 @@ impl Array {
 
         let value_ty = ValueTy::Array(self.ty());
         let error = || index_error(value_ty, indices);
-        let ty = self.ty().ty();
+        let ty = self.ty().element_ty();
         let shape = self.ty().shape();
-        let selected = select(shape.get(), indices).ok_or_else(error)?;
-        let bits = bit_indices(shape.get().len(), indices);
+        let selected = select(shape.dims(), indices).ok_or_else(error)?;
+        let bits = bit_indices(shape.dims().len(), indices);
 
         // One element: replace it, or the bits of it the subscript goes on
         // to select.
@@ -535,10 +537,10 @@ impl Array {
 
         let source = match value {
             Value::Array(a) if bits.is_empty() => a,
-            Value::ArrayRef(ar) if bits.is_empty() => ar.to_owned()?,
+            Value::ArrayRef(ar) if bits.is_empty() => ar.to_array()?,
             _ => return Err(error()),
         };
-        if source.ty().shape().get() != selected.shape.as_slice() {
+        if source.ty().shape().dims() != selected.shape.as_slice() {
             return Err(error());
         }
         let elements = self.values_mut();
@@ -554,7 +556,7 @@ impl ArrayRef {
     /// reference amounts to.
     fn through(&self, indices: &[Index]) -> Result<Vec<Index>> {
         let shape = self.array().borrow()?.ty().shape();
-        compose(shape.get(), self.indices(), indices)
+        compose(shape.dims(), self.indices(), indices)
             .ok_or_else(|| index_error(self.ty().into(), indices))
     }
 
@@ -582,7 +584,7 @@ impl ArrayRef {
         // The value may be a reference into this same array (`a[0] = a[1]`):
         // copy it out before borrowing the array to write.
         let value = match value {
-            Value::ArrayRef(source) => Value::Array(source.to_owned()?),
+            Value::ArrayRef(source) => Value::Array(source.to_array()?),
             value => value,
         };
         self.array().borrow_mut()?.set(&through, value)?;
@@ -855,7 +857,7 @@ mod tests {
                 .map(|s| s.as_uint(iw(8)).unwrap() as u8)
                 .collect(),
             Value::ArrayRef(ar) => ar
-                .to_owned()
+                .to_array()
                 .unwrap()
                 .values()
                 .iter()

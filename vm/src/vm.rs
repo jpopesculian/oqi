@@ -700,7 +700,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             }
             Op::Release { reg } => {
                 if let Some(Value::ArrayRef(shared)) = &frame.regs[reg.0 as usize] {
-                    let array = shared.to_owned()?;
+                    let array = shared.to_array()?;
                     self.set(frame, *reg, Value::Array(array));
                 }
                 Ok(())
@@ -1684,11 +1684,11 @@ fn bind_slot(frame: &mut Frame, slot: usize, qubits: Vec<u32>) -> KindResult<()>
 fn index_sizes(ty: ValueTy) -> Vec<usize> {
     let (mut sizes, element) = match ty {
         ValueTy::Scalar(ty) => (Vec::new(), ty),
-        ValueTy::Array(ty) => (ty.shape().get().to_vec(), ty.ty()),
+        ValueTy::Array(ty) => (ty.shape().dims().to_vec(), ty.element_ty()),
         ValueTy::ArrayRef(ty) => match ty.shape() {
-            ArrayRefShape::Fixed(shape) => (shape.get().to_vec(), ty.ty()),
+            ArrayRefShape::Fixed(shape) => (shape.dims().to_vec(), ty.element_ty()),
             // A reference at run time always knows its shape.
-            ArrayRefShape::Dim(_) => (Vec::new(), ty.ty()),
+            ArrayRefShape::Dim(_) => (Vec::new(), ty.element_ty()),
         },
     };
     sizes.extend(element.bit_count().map(|n| n as usize));
@@ -1705,8 +1705,8 @@ fn zero_value(ty: ValueTy) -> Option<Value> {
             pty,
         ))),
         ValueTy::Array(aty) => {
-            let n: usize = aty.shape().get().iter().product();
-            let prims = vec![zero_primitive(aty.ty()); n];
+            let n: usize = aty.shape().dims().iter().product();
+            let prims = vec![zero_primitive(aty.element_ty()); n];
             Some(Value::Array(Array::new_unchecked(prims, aty)))
         }
         ValueTy::ArrayRef(_) => None,

@@ -500,11 +500,7 @@ fn parse_inputs(module: &Program, specs: &[String]) -> Result<Vec<(String, HostV
 }
 
 fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {
-    let config = if compact {
-        Config { compact: true }
-    } else {
-        Config::default()
-    };
+    let config = Config::default().compact(compact);
 
     // Format in parallel; report and print in the order the files were given.
     let results: Vec<_> = paths

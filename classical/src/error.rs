@@ -1,64 +1,58 @@
 use std::fmt;
 
 use crate::index::Index;
+use crate::ops::Operator;
 use crate::primitive::{Primitive, PrimitiveTy};
 use crate::value::ValueTy;
 
-#[derive(Debug)]
+/// An error from type checking or evaluating classical values.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Error {
+    /// There is no cast from `from` to `to` (docs/types.rst, "Allowed
+    /// casts").
     UnsupportedCast {
         from: Box<ValueTy>,
         to: Box<ValueTy>,
     },
+    /// A value of type `received` where `expected` was required.
     UnexpectedTy {
         expected: Box<ValueTy>,
         received: Box<ValueTy>,
     },
-    /// `op` has no definition for operands of these types. `is_func`
-    /// distinguishes `sin(x)`-style built-ins from infix/prefix operators.
-    UnsupportedOp {
-        op: &'static str,
-        is_func: bool,
-        args: Vec<ValueTy>,
-    },
+    /// `op` has no definition for operands of these types.
+    UnsupportedOp { op: Operator, args: Vec<ValueTy> },
+    /// `index` does not select anything in a value of type `value`.
     IndexOutOfBounds {
         value: Box<ValueTy>,
         index: Vec<Index>,
     },
+    /// A signed integer result does not fit its width.
     Overflow,
+    /// Division or remainder by zero.
     DivideByZero,
     /// `value` has no representation in `ty`.
-    TypeMismatch {
-        value: Primitive,
-        ty: PrimitiveTy,
-    },
+    TypeMismatch { value: Primitive, ty: PrimitiveTy },
     /// An `int`/`uint`/`angle` width outside `1..=max` bits.
-    InvalidWidth {
-        received: usize,
-        max: usize,
-    },
+    InvalidWidth { received: usize, max: usize },
     /// An array rank outside `1..=max` dimensions.
-    InvalidRank {
-        received: usize,
-        max: usize,
-    },
+    InvalidRank { received: usize, max: usize },
     /// An array with more than `max` elements.
-    TooManyElements {
-        max: usize,
-    },
+    TooManyElements { max: usize },
     /// An array built from the wrong number of elements.
-    LengthMismatch {
-        expected: usize,
-        received: usize,
-    },
+    LengthMismatch { expected: usize, received: usize },
+    /// A write through a `readonly` array reference.
     ReadOnly,
+    /// An array was read or written while a mutable reference to it was in
+    /// use.
     BadBorrow,
 }
 
+/// A result with a classical [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
-    pub fn unsupported_cast(from: impl Into<ValueTy>, to: impl Into<ValueTy>) -> Self {
+    pub(crate) fn unsupported_cast(from: impl Into<ValueTy>, to: impl Into<ValueTy>) -> Self {
         Self::UnsupportedCast {
             from: Box::new(from.into()),
             to: Box::new(to.into()),
@@ -83,11 +77,11 @@ impl fmt::Display for Error {
             Error::UnexpectedTy { expected, received } => {
                 write!(f, "expected `{expected}`, got `{received}`")
             }
-            Error::UnsupportedOp { op, is_func, args } => {
+            Error::UnsupportedOp { op, args } => {
                 f.write_str("`")?;
                 match args.as_slice() {
-                    [lhs, rhs] if !is_func => write!(f, "{lhs} {op} {rhs}")?,
-                    [arg] if !is_func => write!(f, "{op}{arg}")?,
+                    [lhs, rhs] if !op.is_func() => write!(f, "{lhs} {op} {rhs}")?,
+                    [arg] if !op.is_func() => write!(f, "{op}{arg}")?,
                     args => {
                         write!(f, "{op}(")?;
                         for (i, arg) in args.iter().enumerate() {

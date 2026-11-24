@@ -1,3 +1,35 @@
+//! Classical values and types for OpenQASM 3: the integers, floats,
+//! angles, complex numbers, durations, bits and bit registers of the
+//! language, and arrays of them, with the language's casts and operators.
+//!
+//! A [`Value`] is a [`Scalar`], an owned [`Array`] or an [`ArrayRef`]; its
+//! [`ValueTy`] describes it. Operators are values too: [`ops::BinOp`] and
+//! [`ops::UnOp`] type-check with `return_ty` and evaluate with `apply`.
+//!
+//! ```
+//! use oqi_classical::{FloatWidth, IntWidth, Value, ValueTy, ops::BinOp};
+//!
+//! let a = Value::int(200, IntWidth::new(32)?);
+//! let b = Value::float(0.5, FloatWidth::F64);
+//! assert_eq!(BinOp::Mul.return_ty(a.ty(), b.ty())?, ValueTy::float(FloatWidth::F64));
+//! assert_eq!(BinOp::Mul.apply(a, b)?.to_string(), "100");
+//! # Ok::<(), oqi_classical::Error>(())
+//! ```
+//!
+//! # Casts
+//!
+//! Every `cast` follows docs/types.rst, "Allowed casts". On a type
+//! (`PrimitiveTy`, `ValueTy`, `ArrayTy`, `ArrayRefTy`), `cast(to)` checks
+//! that the cast is allowed and returns `to`; on a value (`Scalar`,
+//! `Value`, `Array`, `ArrayRef`), `cast(to)` returns the converted value.
+//! Operator promotions (`angle + float`, say) are not casts: the operators
+//! convert their operands themselves.
+//!
+//! # Features
+//!
+//! - `serde`: serialize and deserialize values and types (used by the
+//!   bytecode format of `oqi-compile`).
+
 mod array;
 mod array_ref;
 mod bitreg;
@@ -10,7 +42,10 @@ mod scalar;
 mod shared;
 mod value;
 
-pub use array::{Array, ArrayDim, ArrayShape, ArrayTy, adim, ashape};
+pub use num_complex;
+pub use turns;
+
+pub use array::{Array, ArrayDim, ArrayShape, ArrayTy, ashape};
 pub use array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
 pub use bitreg::BitReg;
 pub use duration::{Duration, DurationUnit, DurationUnitParseError};
@@ -113,7 +148,7 @@ mod serde_tests {
 
     #[test]
     fn bitreg_roundtrips() {
-        let b = BitReg::Stack(0xCAFE_F00D);
+        let b = BitReg::from(0xCAFE_F00D_u128);
         let bytes: Vec<u8> = postcard::to_allocvec(&b).expect("encode");
         let b2: BitReg = postcard::from_bytes(&bytes).expect("decode");
         assert_eq!(format!("{:?}", b), format!("{:?}", b2));

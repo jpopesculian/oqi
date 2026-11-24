@@ -476,9 +476,9 @@ impl CfgBuilder<'_> {
         let len = match values.ty.value_ty() {
             Some(ValueTy::Scalar(PrimitiveTy::BitReg(n))) => Some(n as usize),
             Some(ValueTy::Scalar(_)) => None,
-            Some(ValueTy::Array(ty)) => one_dimension(ty.shape().get()),
+            Some(ValueTy::Array(ty)) => one_dimension(ty.shape().dims()),
             Some(ValueTy::ArrayRef(ty)) => match ty.shape() {
-                ArrayRefShape::Fixed(shape) => one_dimension(shape.get()),
+                ArrayRefShape::Fixed(shape) => one_dimension(shape.dims()),
                 // An unspecified-length reference knows its size at run time.
                 ArrayRefShape::Dim(rank) if rank.get() == 1 => {
                     let uint = Type::Classical(ValueTy::uint(IntWidth::B64));

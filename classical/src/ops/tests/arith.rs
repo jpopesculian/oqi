@@ -656,7 +656,7 @@ mod mul {
         let r = BinOp::Mul.apply(a, b).unwrap();
         match r {
             Value::Array(s) => {
-                assert_eq!(s.ty().shape().get(), &[1]);
+                assert_eq!(s.ty().shape().dims(), &[1]);
                 let value = s.scalars().next().unwrap().into_value();
                 assert_eq!(value.as_float(F64).unwrap(), 32.0)
             }
@@ -681,7 +681,7 @@ mod mul {
         let r = BinOp::Mul.apply(a, b).unwrap();
         match r {
             Value::Array(a) => {
-                assert_eq!(a.ty().shape().get(), &[2]);
+                assert_eq!(a.ty().shape().dims(), &[2]);
                 let vals: Vec<f64> = a
                     .values()
                     .iter()
@@ -710,7 +710,7 @@ mod mul {
         let r = BinOp::Mul.apply(a, b).unwrap();
         match r {
             Value::Array(a) => {
-                assert_eq!(a.ty().shape().get(), &[3]);
+                assert_eq!(a.ty().shape().dims(), &[3]);
                 let vals: Vec<f64> = a
                     .values()
                     .iter()
@@ -732,7 +732,7 @@ mod mul {
         let r = BinOp::Mul.apply(a, b).unwrap();
         match r {
             Value::Array(a) => {
-                assert_eq!(a.ty().shape().get(), &[2, 2]);
+                assert_eq!(a.ty().shape().dims(), &[2, 2]);
                 let vals: Vec<f64> = a
                     .values()
                     .iter()
@@ -755,7 +755,7 @@ mod mul {
         let r = BinOp::Mul.apply(a, b).unwrap();
         match r {
             Value::Array(a) => {
-                assert_eq!(a.ty().shape().get(), &[2, 2]);
+                assert_eq!(a.ty().shape().dims(), &[2, 2]);
                 let vals: Vec<f64> = a
                     .values()
                     .iter()
@@ -785,7 +785,7 @@ mod mul {
         let r = BinOp::Mul.apply(a, b).unwrap();
         match r {
             Value::Array(a) => {
-                assert_eq!(a.ty().shape().get(), &[2, 2, 2]);
+                assert_eq!(a.ty().shape().dims(), &[2, 2, 2]);
                 let vals: Vec<f64> = a
                     .values()
                     .iter()
@@ -813,7 +813,7 @@ mod mul {
         let r = BinOp::Mul.apply(a, b).unwrap();
         match r {
             Value::Array(a) => {
-                assert_eq!(a.ty().shape().get(), &[3, 2, 2]);
+                assert_eq!(a.ty().shape().dims(), &[3, 2, 2]);
                 let vals: Vec<f64> = a
                     .values()
                     .iter()
@@ -847,7 +847,7 @@ mod mul {
         let r = BinOp::Mul.apply(a, b).unwrap();
         match r {
             Value::Array(a) => {
-                assert_eq!(a.ty().shape().get(), &[3, 2, 2]);
+                assert_eq!(a.ty().shape().dims(), &[3, 2, 2]);
                 let vals: Vec<f64> = a
                     .values()
                     .iter()
@@ -878,7 +878,7 @@ mod mul {
         let r = BinOp::Mul.apply(a, b).unwrap();
         match r {
             Value::Array(a) => {
-                assert_eq!(a.ty().shape().get(), &[2, 2, 2]);
+                assert_eq!(a.ty().shape().dims(), &[2, 2, 2]);
                 let vals: Vec<f64> = a
                     .values()
                     .iter()
@@ -934,7 +934,7 @@ mod mul {
         let r = BinOp::Mul.apply(a, b).unwrap();
         match r {
             Value::Array(arr) => {
-                assert_eq!(arr.ty().shape().get(), &[1]);
+                assert_eq!(arr.ty().shape().dims(), &[1]);
                 let value = arr.scalars().next().unwrap().into_value();
                 assert_eq!(value.as_uint(iw(16)).unwrap(), 400)
             }
@@ -951,7 +951,7 @@ mod mul {
         let r = BinOp::Mul.apply(s, a).unwrap();
         match r {
             Value::Array(a) => {
-                assert_eq!(a.ty().shape().get(), &[2, 2]);
+                assert_eq!(a.ty().shape().dims(), &[2, 2]);
                 let vals: Vec<f64> = a
                     .values()
                     .iter()
@@ -988,7 +988,7 @@ mod mul {
         let r = BinOp::Mul.apply(s, a).unwrap();
         match r {
             Value::Array(a) => {
-                assert!(matches!(a.ty().ty(), Float(F64)));
+                assert!(matches!(a.ty().element_ty(), Float(F64)));
                 let vals: Vec<f64> = a
                     .values()
                     .iter()
@@ -1189,7 +1189,7 @@ mod div {
         let r = BinOp::Div.apply(a, s).unwrap();
         match r {
             Value::Array(a) => {
-                assert!(matches!(a.ty().ty(), Float(F64)));
+                assert!(matches!(a.ty().element_ty(), Float(F64)));
                 let vals: Vec<f64> = a
                     .values()
                     .iter()

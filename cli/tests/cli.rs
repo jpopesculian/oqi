@@ -266,3 +266,63 @@ fn runtime_errors_point_at_the_flag_that_fixes_them() {
     );
     assert!(stderr.contains("--input NAME=VALUE"), "{stderr}");
 }
+
+#[test]
+fn bytecode_written_by_compile_runs_like_the_source() {
+    let bell = file("bytecode_bell.qasm", BELL);
+    let bell = bell.to_str().unwrap();
+    // Any name: bytecode is recognized by its header.
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("bytecode_bell.bin");
+    let out = out.to_str().unwrap();
+    assert_eq!(ok(&["compile", bell, "-o", out]), "");
+    assert!(std::fs::read(out).unwrap().starts_with(b"OQIB"));
+
+    let run = ["run", "--seed", "3", "--shots", "50"];
+    assert_eq!(
+        ok(&[run.as_slice(), &[out]].concat()),
+        ok(&[run.as_slice(), &[bell]].concat())
+    );
+    assert_eq!(
+        ok(&["compile", out, "--dump"]),
+        ok(&["compile", bell, "--dump"])
+    );
+
+    // Its durations are resolved, and it keeps no structured IR.
+    for args in [
+        vec!["run", out, "--dt", "1ns"],
+        vec!["compile", out, "--timing", "x=50ns"],
+        vec!["compile", out, "--dump-sir"],
+    ] {
+        let (success, _, stderr) = oqi(&args);
+        assert!(!success, "{args:?}");
+        assert!(stderr.contains("bytecode"), "{args:?}: {stderr}");
+    }
+}
+
+#[test]
+fn errors_running_bytecode_are_reported_by_message() {
+    let src = file(
+        "bytecode_input.qasm",
+        "input int n;\noutput int m;\nm = n + 1;\n",
+    );
+    let out = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("bytecode_input.oqib");
+    let out = out.to_str().unwrap();
+    ok(&["compile", src.to_str().unwrap(), "-o", out]);
+    assert_eq!(ok(&["run", out, "--input", "n=41"]), "m = 42\n");
+
+    let (success, _, stderr) = oqi(&["run", out]);
+    assert!(!success);
+    assert!(
+        stderr.contains("R0002") && stderr.contains("`n`"),
+        "{stderr}"
+    );
+
+    // Damaged bytecode is an error, not a crash.
+    let mut bytes = std::fs::read(out).unwrap();
+    bytes.truncate(bytes.len() - 3);
+    let damaged = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("bytecode_damaged.oqib");
+    std::fs::write(&damaged, bytes).unwrap();
+    let (success, _, stderr) = oqi(&["run", damaged.to_str().unwrap()]);
+    assert!(!success);
+    assert!(stderr.contains("malformed bytecode"), "{stderr}");
+}

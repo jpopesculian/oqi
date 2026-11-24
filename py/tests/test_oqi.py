@@ -311,3 +311,28 @@ def test_sample_with_feedback(backend):
     assert sum(a.values()) == sum(b.values()) == 128
     assert set(a) == {"0", "1"}
     assert a == b
+
+
+def test_bytecode_runs_like_its_source():
+    compiled = oqi.compile(BELL)
+    assert compiled.bytecode.startswith(b"OQIB")
+
+    from_bytes = oqi.run(compiled.bytecode, seed=7, statevector=True)
+    from_source = oqi.run(BELL, seed=7, statevector=True)
+    assert from_bytes.measurements == from_source.measurements
+    assert from_bytes.statevector == from_source.statevector
+
+    sampled = oqi.sample(compiled.bytecode, shots=64, seed=7)
+    assert sampled.histograms == oqi.sample(BELL, shots=64, seed=7).histograms
+
+    assert oqi.compile(compiled.bytecode).disassembly == compiled.disassembly
+
+
+def test_bad_programs_are_errors():
+    compiled = oqi.compile(BELL)
+    with pytest.raises(oqi.OqiError, match="bytecode"):
+        oqi.run(compiled.bytecode, dt="1ns")
+    with pytest.raises(oqi.OqiError, match="malformed bytecode"):
+        oqi.run(compiled.bytecode[:-2])
+    with pytest.raises(TypeError, match="expected a program"):
+        oqi.run(3)

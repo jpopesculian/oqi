@@ -42,6 +42,10 @@ pub enum Error {
         received: usize,
         max: usize,
     },
+    /// An array with more than `max` elements.
+    TooManyElements {
+        max: usize,
+    },
     /// An array built from the wrong number of elements.
     LengthMismatch {
         expected: usize,
@@ -120,6 +124,9 @@ impl fmt::Display for Error {
                 f,
                 "an array of {received} dimensions is not supported (must be between 1 and {max})"
             ),
+            Error::TooManyElements { max } => {
+                write!(f, "an array of more than {max} elements is not supported")
+            }
             Error::LengthMismatch { expected, received } => {
                 write!(f, "expected {expected} array elements, got {received}")
             }

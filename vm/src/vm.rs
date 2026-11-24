@@ -171,7 +171,25 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     /// Whether a run has acted on the backend since it was handed to the VM,
     /// so the next run must return it to |0…0⟩ first.
     backend_used: bool,
+    /// How many procedure bodies are executing, nested in one another.
+    depth: u32,
 }
+
+/// How deeply procedure bodies (subroutine and gate calls, defcals, `cal`
+/// blocks, `durationof` scopes) may nest: a program that recurses deeper
+/// fails with [`VmErrorKind::CallDepth`].
+pub const MAX_CALL_DEPTH: u32 = 1000;
+
+/// Interpreting one nesting level takes native stack: about 5 KiB in a
+/// release build and ten times that in a debug one. So the stack doesn't
+/// overflow before [`MAX_CALL_DEPTH`], every this many levels run on a
+/// fresh stack segment of [`SEGMENT_BYTES`] allocated for them.
+const LEVELS_PER_SEGMENT: u32 = 16;
+const SEGMENT_BYTES: usize = if cfg!(debug_assertions) {
+    2 << 20
+} else {
+    512 << 10
+};
 
 impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// A VM for `module` on `backend`, with `externs` providing the
@@ -246,6 +264,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             captured_shots: None,
             inject: None,
             backend_used: false,
+            depth: 0,
         }
     }
 
@@ -432,6 +451,24 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     }
 
     async fn exec_proc(&mut self, frame: &mut Frame) -> KindResult<Option<Value>> {
+        if self.depth >= MAX_CALL_DEPTH {
+            return Err(VmErrorKind::CallDepth {
+                limit: MAX_CALL_DEPTH,
+            });
+        }
+        self.depth += 1;
+        let fresh_segment = self.depth.is_multiple_of(LEVELS_PER_SEGMENT);
+        let body = self.exec_body(frame);
+        let result = if fresh_segment {
+            OnFreshStack(std::pin::pin!(body)).await
+        } else {
+            body.await
+        };
+        self.depth -= 1;
+        result
+    }
+
+    async fn exec_body(&mut self, frame: &mut Frame) -> KindResult<Option<Value>> {
         let module = self.module;
         let proc = &module.procedures[frame.proc.0 as usize];
         let mut current = proc.entry;
@@ -911,7 +948,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         let mut params = proc.params.iter();
         for arg in args {
             if is_qubit_operand(arg) {
-                child.slots[qslot] = self.qubits(frame, arg)?;
+                bind_slot(&mut child, qslot, self.qubits(frame, arg)?)?;
                 qslot += 1;
                 continue;
             }
@@ -1022,7 +1059,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             child.regs[reg.0 as usize] = Some(v);
         }
         for (slot, q) in hw.iter().enumerate() {
-            child.slots[slot] = vec![*q];
+            bind_slot(&mut child, slot, vec![*q])?;
         }
         Box::pin(self.exec_proc(&mut child)).await
     }
@@ -1201,7 +1238,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                 // are indexed by the broadcast position.
                 for (s, qs) in resolved.iter().enumerate() {
                     let idx = if qs.len() == 1 { 0 } else { j };
-                    child.slots[s] = vec![qs[idx]];
+                    bind_slot(&mut child, s, vec![qs[idx]])?;
                 }
                 if eff.power == 1.0 {
                     // No `inv`/`pow`: recurse, propagating controls. `ctrl`
@@ -1226,9 +1263,12 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             let name = self.module.symbol(gate).name.as_str();
             match name {
                 "U" => {
-                    let theta = value_f64(&self.eval(frame, &args[0])?)?;
-                    let phi = value_f64(&self.eval(frame, &args[1])?)?;
-                    let lambda = value_f64(&self.eval(frame, &args[2])?)?;
+                    let [theta, phi, lambda] = args else {
+                        return Err(VmErrorKind::Type("`U` takes three parameters".into()));
+                    };
+                    let theta = value_f64(&self.eval(frame, theta)?)?;
+                    let phi = value_f64(&self.eval(frame, phi)?)?;
+                    let lambda = value_f64(&self.eval(frame, lambda)?)?;
                     for op in arg_ops {
                         for target in self.qubits(frame, op)? {
                             self.emit(BuiltinGate::U {
@@ -1243,7 +1283,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
                     Ok(())
                 }
                 "gphase" => {
-                    let gamma = value_f64(&self.eval(frame, &args[0])?)?;
+                    let [gamma] = args else {
+                        return Err(VmErrorKind::Type("`gphase` takes one parameter".into()));
+                    };
+                    let gamma = value_f64(&self.eval(frame, gamma)?)?;
                     self.emit(BuiltinGate::Gphase { gamma, mods: eff })
                 }
                 other => Err(VmErrorKind::UndefinedGate(other.to_string())),
@@ -1259,6 +1302,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         if self.timing.is_some() {
             return Ok(());
         }
+        call.check_distinct_qubits()?;
         match self.recording.as_mut() {
             Some(trace) => {
                 trace.push(call);
@@ -1284,6 +1328,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         p: f64,
         eff: &GateModifiers,
     ) -> KindResult<()> {
+        // `pow(k)` of a gate that does nothing does nothing, however large k.
+        if trace.is_empty() {
+            return Ok(());
+        }
         let rounded = p.round();
         if (rounded - p).abs() < 1e-9 {
             for _ in 0..(rounded as i64).unsigned_abs() {
@@ -1518,6 +1566,34 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
 }
 
 // ── Free helpers ──────────────────────────────────────────────────────
+
+/// A future polled on a fresh stack segment, so the procedure bodies it
+/// nests don't run out of the stack they started on.
+struct OnFreshStack<F>(F);
+
+impl<F: Future + Unpin> Future for OnFreshStack<F> {
+    type Output = F::Output;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<F::Output> {
+        let inner = std::pin::Pin::new(&mut self.0);
+        stacker::grow(SEGMENT_BYTES, move || inner.poll(cx))
+    }
+}
+
+/// Bind qubit slot `slot` of a callee's frame to `qubits`.
+fn bind_slot(frame: &mut Frame, slot: usize, qubits: Vec<u32>) -> KindResult<()> {
+    let count = frame.slots.len();
+    let bound = frame.slots.get_mut(slot).ok_or_else(|| {
+        VmErrorKind::Type(format!(
+            "more qubit arguments than the callee's {count} qubit parameters"
+        ))
+    })?;
+    *bound = qubits;
+    Ok(())
+}
 
 /// The sizes successive subscript positions index into on a value of type
 /// `ty`: the dimensions of an array, then (or for a scalar) its bits.

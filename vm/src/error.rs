@@ -55,6 +55,8 @@ pub enum VmErrorKind {
     /// The backend can't run this program: it rejected its configuration,
     /// is smaller than the program, or failed while applying an operation.
     Backend(String),
+    /// Calls nested more than `limit` deep (unbounded recursion).
+    CallDepth { limit: u32 },
     /// Execution reached a block marked unreachable.
     Unreachable,
 }
@@ -115,6 +117,9 @@ impl fmt::Display for VmErrorKind {
             ),
             VmErrorKind::BackendUnavailable(why) => write!(f, "backend unavailable: {why}"),
             VmErrorKind::Backend(why) => write!(f, "backend error: {why}"),
+            VmErrorKind::CallDepth { limit } => {
+                write!(f, "calls nest more than {limit} deep")
+            }
             VmErrorKind::Unreachable => write!(f, "reached an unreachable block"),
         }
     }

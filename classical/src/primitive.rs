@@ -328,8 +328,26 @@ impl FloatWidth {
 
 /// Bit width of an `int`, `uint` or `angle`: `1..=IntWidth::MAX`.
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "u32", into = "u32")
+)]
 pub struct IntWidth(u32);
+
+impl TryFrom<u32> for IntWidth {
+    type Error = Error;
+
+    fn try_from(bits: u32) -> Result<Self> {
+        Self::new(bits)
+    }
+}
+
+impl From<IntWidth> for u32 {
+    fn from(width: IntWidth) -> u32 {
+        width.0
+    }
+}
 
 impl IntWidth {
     /// Integers are carried in 128-bit machine words.

@@ -26,6 +26,7 @@ impl Diagnostic for VmError {
             VmErrorKind::RankOverflow { .. } => 15,
             VmErrorKind::BackendUnavailable(_) => 16,
             VmErrorKind::Backend(_) => 17,
+            VmErrorKind::CallDepth { .. } => 18,
         };
         Code::runtime(num)
     }
@@ -53,6 +54,7 @@ impl Diagnostic for VmError {
             VmErrorKind::RankOverflow { .. } => "sum-over-Cliffords budget exhausted",
             VmErrorKind::BackendUnavailable(_) => "backend unavailable",
             VmErrorKind::Backend(_) => "backend error",
+            VmErrorKind::CallDepth { .. } => "nested too deeply",
         };
         vec![DiagLabel::primary(self.span.unwrap_or_default(), pointer)]
     }

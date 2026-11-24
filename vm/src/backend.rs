@@ -19,7 +19,7 @@ use async_trait::async_trait;
 use num_complex::Complex;
 use oqi_classical::Duration;
 
-use crate::error::KindResult;
+use crate::error::{KindResult, VmErrorKind};
 use crate::rng::Rng;
 
 /// The most memory a CPU backend commits to one quantum state: 16 GiB, about
@@ -100,6 +100,25 @@ pub(crate) enum BuiltinGate {
 }
 
 impl BuiltinGate {
+    /// Fails if a qubit is both a control and the target, or a control
+    /// twice: no gate acts on one qubit through two of its operands.
+    pub(crate) fn check_distinct_qubits(&self) -> KindResult<()> {
+        let (target, mods) = match self {
+            BuiltinGate::U { target, mods, .. } => (Some(*target), mods),
+            BuiltinGate::Gphase { mods, .. } => (None, mods),
+        };
+        let mut seen = std::collections::HashSet::new();
+        let qubits = target.into_iter().chain(mods.controls.iter().copied());
+        for qubit in qubits.chain(mods.neg_controls.iter().copied()) {
+            if !seen.insert(qubit) {
+                return Err(VmErrorKind::Type(format!(
+                    "qubit {qubit} is used by more than one operand of a gate"
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Apply this call to `backend`.
     pub(crate) fn apply<B: QuantumBackend + ?Sized>(&self, backend: &mut B) -> KindResult<()> {
         match self {

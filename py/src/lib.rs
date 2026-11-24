@@ -1,8 +1,10 @@
 //! Python (PyO3) bindings for the oqi compiler and VM.
 //!
-//! Exposes a minimal API: [`compile`] (source → bytecode + disassembly),
-//! [`run`] (source → simulated results) and [`sample`] (source → per-output
-//! histograms over many shots). `run` and `sample` can call host-supplied
+//! Exposes a minimal API: [`compile`] (program → bytecode + disassembly),
+//! [`run`] (program → simulated results) and [`sample`] (program →
+//! per-output histograms over many shots). Each takes a program as
+//! OpenQASM source text (`str`) or as bytecode (`bytes` from `compile`).
+//! `run` and `sample` can call host-supplied
 //! `extern` implementations (the `externs` option), as synchronous callables.
 //! Includes are limited to the embedded `stdgates.inc`; file includes are
 //! rejected. Errors raise [`OqiError`] whose message is the rendered
@@ -21,8 +23,9 @@ use oqi_vm::{
 use pyo3::IntoPyObjectExt;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
+use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyComplex, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyComplex, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 /// Name used for the root source in rendered diagnostics.
 const SOURCE_NAME: &str = "<source>";
@@ -90,12 +93,42 @@ fn build_module(
     compiler.compile(source).map_err(|e| diag_err(&e, source))
 }
 
-/// Result of [`compile`]: postcard-encoded bytecode plus its disassembly.
+/// A program given as source text (`str`), compiled with `timings` and
+/// `dt`, or as bytecode (`bytes`). Returns it with the source text its errors
+/// render against (none for bytecode: errors are reported by message).
+fn load(
+    program: &Bound<'_, PyAny>,
+    timings: Option<&Bound<'_, PyDict>>,
+    dt: Option<&str>,
+) -> PyResult<(Program, String)> {
+    if program.is_instance_of::<PyString>() {
+        let source: String = program.extract()?;
+        let module = build_module(&source, timings, dt)?;
+        return Ok((module, source));
+    }
+    let Ok(bytes) = program.cast::<PyBytes>() else {
+        return Err(PyTypeError::new_err(format!(
+            "expected a program: OpenQASM source text (str) or bytecode (bytes), not `{}`",
+            type_name(program)
+        )));
+    };
+    if timings.is_some() || dt.is_some() {
+        return Err(OqiError::new_err(
+            "`timings` and `dt` apply when compiling source; this program is bytecode, compiled already",
+        ));
+    }
+    let module =
+        Program::from_bytes(bytes.as_bytes()).map_err(|e| OqiError::new_err(e.to_string()))?;
+    Ok((module, String::new()))
+}
+
+/// Result of [`compile`]: the program as bytecode, plus its disassembly.
 #[pyclass(frozen, get_all, module = "oqi")]
 struct CompileResult {
-    /// Postcard-encoded bytecode module.
+    /// The program as bytecode: `run` and `sample` take it in place of the
+    /// source.
     bytecode: Vec<u8>,
-    /// Textual disassembly of the module.
+    /// Textual disassembly of the bytecode.
     disassembly: String,
 }
 
@@ -106,14 +139,16 @@ impl CompileResult {
     }
 }
 
-/// Compile an OpenQASM 3 program to bytecode.
+/// Compile an OpenQASM 3 program (source text) to bytecode, or disassemble
+/// bytecode.
 #[pyfunction]
-fn compile(source: &str) -> PyResult<CompileResult> {
-    let module = build_module(source, None, None)?;
-    let bytes = oqi_compile::bytecode::to_bytes(&module)
-        .map_err(|e| OqiError::new_err(format!("bytecode encoding failed: {e:?}")))?;
+fn compile(program: &Bound<'_, PyAny>) -> PyResult<CompileResult> {
+    let (module, _) = load(program, None, None)?;
+    let bytecode = module
+        .to_bytes()
+        .map_err(|e| OqiError::new_err(e.to_string()))?;
     Ok(CompileResult {
-        bytecode: bytes,
+        bytecode,
         disassembly: module.to_string(),
     })
 }
@@ -174,6 +209,8 @@ impl SampleResult {
 /// pieces a [`Vm`] is assembled from.
 struct Session {
     module: Program,
+    /// The source text errors render against (empty for bytecode).
+    source: String,
     inputs: Vec<(String, HostValue)>,
     externs: PyExterns,
     backend: Box<dyn QuantumBackend>,
@@ -184,7 +221,7 @@ struct Session {
 
 #[allow(clippy::too_many_arguments)]
 fn session(
-    source: &str,
+    program: &Bound<'_, PyAny>,
     inputs: Option<&Bound<'_, PyDict>>,
     seed: Option<u64>,
     externs: Option<&Bound<'_, PyDict>>,
@@ -195,7 +232,7 @@ fn session(
     max_rank: Option<usize>,
     max_bond: Option<usize>,
 ) -> PyResult<Session> {
-    let module = build_module(source, timings, dt)?;
+    let (module, source) = load(program, timings, dt)?;
     let externs = PyExterns::new(&module, externs)?;
 
     let mut named = Vec::new();
@@ -228,10 +265,11 @@ fn session(
     // Backend construction resolves immediately for the CPU simulators and
     // polls the device itself for the GPU one, so blocking never parks.
     let (backend, built) = pollster::block_on(spec.build(module.qubits.num_qubits))
-        .map_err(|e| diag_err(&e, source))?;
+        .map_err(|e| diag_err(&e, &source))?;
 
     Ok(Session {
         module,
+        source,
         inputs: named,
         externs,
         backend,
@@ -240,7 +278,8 @@ fn session(
     })
 }
 
-/// Compile and run an OpenQASM 3 program on a simulator.
+/// Run an OpenQASM 3 program on a simulator. `program` is source text
+/// (`str`), or bytecode (`bytes` from [`compile`]).
 ///
 /// `externs` maps each `extern` function's name to a synchronous Python
 /// callable. Return values are coerced to the declared return type (radians
@@ -252,7 +291,7 @@ fn session(
 /// strings ("50ns", "4dt") and enables compile-time `durationof` resolution,
 /// which also derives durations from the program's defcal bodies (an empty
 /// dict enables defcal derivation alone). `dt` sets the device time unit
-/// (e.g. "0.5ns").
+/// (e.g. "0.5ns"). Both apply to source only: bytecode was compiled already.
 ///
 /// `backend` selects the simulator by the same names as the CLI's
 /// `--backend` (`"scalar"`, `"rayon"`, `"simd"`, `"rayon-simd"`, `"gpu"`,
@@ -261,11 +300,11 @@ fn session(
 /// `max_rank` the stabilizer-term budget of `"auto"`/`"sum"` and `max_bond`
 /// the bond-dimension cap of `"mps"`, past which its state is truncated.
 #[pyfunction]
-#[pyo3(signature = (source, *, inputs=None, seed=None, statevector=false, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None, max_bond=None))]
+#[pyo3(signature = (program, *, inputs=None, seed=None, statevector=false, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None, max_bond=None))]
 #[allow(clippy::too_many_arguments)]
 fn run(
     py: Python<'_>,
-    source: &str,
+    program: &Bound<'_, PyAny>,
     inputs: Option<&Bound<'_, PyDict>>,
     seed: Option<u64>,
     statevector: bool,
@@ -278,8 +317,9 @@ fn run(
     max_bond: Option<usize>,
 ) -> PyResult<RunResult> {
     let session = session(
-        source, inputs, seed, externs, timings, dt, backend, precision, max_rank, max_bond,
+        program, inputs, seed, externs, timings, dt, backend, precision, max_rank, max_bond,
     )?;
+    let source = session.source.as_str();
     let module = &session.module;
     let mut vm = Vm::new(module, session.backend, session.externs);
 
@@ -310,15 +350,16 @@ fn run(
     })
 }
 
-/// Compile and sample an OpenQASM 3 program over `shots` runs, returning a
-/// histogram of observed values per named output variable. Takes the same
-/// options as [`run`]; a given `seed` reproduces the whole histogram.
+/// Sample an OpenQASM 3 program (source text or bytecode, as for [`run`])
+/// over `shots` runs, returning a histogram of observed values per named
+/// output variable. Takes the same options as [`run`]; a given `seed`
+/// reproduces the whole histogram.
 #[pyfunction]
-#[pyo3(signature = (source, *, shots=1024, inputs=None, seed=None, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None, max_bond=None))]
+#[pyo3(signature = (program, *, shots=1024, inputs=None, seed=None, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None, max_bond=None))]
 #[allow(clippy::too_many_arguments)]
 fn sample(
     py: Python<'_>,
-    source: &str,
+    program: &Bound<'_, PyAny>,
     shots: u32,
     inputs: Option<&Bound<'_, PyDict>>,
     seed: Option<u64>,
@@ -334,8 +375,9 @@ fn sample(
         return Err(OqiError::new_err("`shots` must be at least 1"));
     }
     let session = session(
-        source, inputs, seed, externs, timings, dt, backend, precision, max_rank, max_bond,
+        program, inputs, seed, externs, timings, dt, backend, precision, max_rank, max_bond,
     )?;
+    let source = session.source.as_str();
     let module = &session.module;
     let mut vm = Vm::new(module, session.backend, session.externs);
     let inputs =

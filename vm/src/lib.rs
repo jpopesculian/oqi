@@ -51,4 +51,4 @@ pub use mps::MpsSim;
 pub use sim::StateVectorSim;
 pub use sim_simd::{SimdLane, SimdSim};
 pub use spec::{BackendKind, BackendSpec, DEFAULT_SEED, Precision};
-pub use vm::{RunResult, Vm};
+pub use vm::{MAX_CALL_DEPTH, RunResult, Vm};

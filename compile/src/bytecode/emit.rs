@@ -62,8 +62,7 @@ pub fn emit(program: &sir::Program) -> Result<bc::Program> {
         })
         .collect::<Result<_>>()?;
 
-    Ok(bc::Program {
-        version: bc::Version::CURRENT,
+    let program = bc::Program {
         symbols: ctx
             .symbols
             .iter()
@@ -90,7 +89,13 @@ pub fn emit(program: &sir::Program) -> Result<bc::Program> {
         outputs: ctx.outputs,
         calibrations,
         calibration_grammar: program.calibration_grammar.clone(),
-    })
+    };
+    // What a decoded program is checked against holds for every emitted one.
+    #[cfg(debug_assertions)]
+    if let Err(why) = super::validate::check(&program) {
+        panic!("emitted inconsistent bytecode: {why}");
+    }
+    Ok(program)
 }
 
 /// Emission state shared across procedures.

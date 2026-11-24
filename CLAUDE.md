@@ -22,6 +22,8 @@ cargo clippy --all-targets
 # Run the CLI
 cargo run -p oqi-cli -- compile fixtures/qasm/teleport.qasm --dump      # bytecode
 cargo run -p oqi-cli -- compile fixtures/qasm/teleport.qasm --dump-sir  # structured IR
+cargo run -p oqi-cli -- compile fixtures/qasm/teleport.qasm -o t.oqib   # bytecode file
+cargo run -p oqi-cli -- run t.oqib                                      # run bytecode
 cargo run -p oqi-cli -- run fixtures/qasm/adder.qasm --state
 cargo run -p oqi-cli -- run prog.qasm --input n=3 --input theta=0.5
 cargo run -p oqi-cli -- run prog.qasm --shots 1000 --seed 7 --backend auto
@@ -68,8 +70,12 @@ source → parse → resolve (includes) → lower → cfg → bytecode → vm
     (`bytecode::emit`): one register per classical variable per frame, no
     SSA. `box` is a scope of its enclosing body; an inline `cal` body and a
     `durationof` scope are procedures that run on the enclosing frame.
-    Bytecode is postcard-encoded binary with a textual disassembler
-    (`bytecode/disasm.rs`).
+    `Program::to_bytes`/`from_bytes` (`bytecode/binary.rs`) read and write
+    the file format: `OQIB`, a `u16` `FORMAT_VERSION` (bump it whenever the
+    encoding of a `Program` changes), then postcard. Every decoded program
+    goes through `bytecode/validate.rs`, so untrusted bytes can't send the
+    VM out of bounds; the emitter checks its own output against it in debug
+    builds. `bytecode/disasm.rs` is the textual disassembler.
   - `types.rs`, `symbol.rs`, `scope.rs` — type system, symbol table, scoping.
   - `openpulse.rs` — OpenPulse types (port, frame, waveform).
 - **`classical/`** (`oqi-classical`) — classical value/type system (ints up to
@@ -92,6 +98,9 @@ source → parse → resolve (includes) → lower → cfg → bytecode → vm
   and amplitude readback are `async`. It also holds what the front doors
   share: `BackendSpec` (backend selection by name), `HostValue` + `coerce`
   (host values ↔ typed values, `vm/src/host.rs`) and `Vm::sample` (shots).
+  Procedure bodies nest at most `MAX_CALL_DEPTH` deep; interpreting one
+  level takes ~5 KiB of native stack in release and ~50 KiB in debug, so
+  every 16th level runs on a fresh stack segment (`stacker`) instead.
   `vm/src/state.rs` holds the dense state vector and the `U`-with-modifiers
   matrix the dense backends share; compile's flat qubit memory and registers
   are in `compile/src/register.rs`. Features: `parallel` (rayon kernels) and

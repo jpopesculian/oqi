@@ -45,7 +45,7 @@ fn options(json: &str) -> JsValue {
 }
 
 async fn run(source: &str, opts: JsValue) -> Result<RunOutput, JsValue> {
-    let result = oqi_js::run(source.to_string(), opts).await?;
+    let result = oqi_js::run(source.into(), opts).await?;
     Ok(serde_wasm_bindgen::from_value(result).unwrap())
 }
 
@@ -71,7 +71,7 @@ struct SampleOutput {
 }
 
 async fn sample(source: &str, opts: JsValue) -> Result<SampleOutput, JsValue> {
-    let result = oqi_js::sample(source.to_string(), opts).await?;
+    let result = oqi_js::sample(source.into(), opts).await?;
     Ok(serde_wasm_bindgen::from_value(result).unwrap())
 }
 
@@ -81,7 +81,7 @@ fn error_message(err: JsValue) -> String {
 
 #[wasm_bindgen_test]
 fn compile_bell() {
-    let result = oqi_js::compile(BELL).unwrap();
+    let result = oqi_js::compile(BELL.into()).unwrap();
     assert!(!result.bytecode.is_empty());
     assert!(result.disassembly.contains(".module openqasm 3"));
     assert!(result.disassembly.contains(".proc"));
@@ -107,7 +107,7 @@ async fn run_bell() {
 
 #[wasm_bindgen_test]
 fn include_path_rejected() {
-    let err = oqi_js::compile("OPENQASM 3.0;\ninclude \"./foo.qasm\";\n")
+    let err = oqi_js::compile("OPENQASM 3.0;\ninclude \"./foo.qasm\";\n".into())
         .err()
         .expect("expected compile error");
     assert!(error_message(err.into()).contains("file includes are not supported"));
@@ -117,7 +117,7 @@ fn include_path_rejected() {
 fn syntax_error_carries_span() {
     // A missing `;` is a parse error; its source span must reach JS as a
     // non-empty `{ start, end }` property so the playground can highlight it.
-    let err = oqi_js::compile("OPENQASM 3.0\n")
+    let err = oqi_js::compile("OPENQASM 3.0\n".into())
         .err()
         .expect("expected compile error");
     let span = js_sys::Reflect::get(&err, &JsValue::from_str("span")).unwrap();
@@ -558,4 +558,48 @@ async fn input_coercion_matches_the_other_front_doors() {
     .await
     .unwrap_err();
     assert!(error_message(err).contains("must be a 4-character string of 0s and 1s"));
+}
+
+/// `compile`'s bytecode stands in for the source in `run`, `sample` and
+/// `compile` itself.
+#[wasm_bindgen_test]
+async fn bytecode_runs_like_its_source() {
+    let compiled = oqi_js::compile(BELL.into()).unwrap();
+    let bytes: JsValue = js_sys::Uint8Array::from(compiled.bytecode.as_slice()).into();
+
+    let opts = r#"{ "seed": 7, "statevector": true }"#;
+    let from_source = run(BELL, options(opts)).await.unwrap();
+    let from_bytes = oqi_js::run(bytes.clone(), options(opts)).await.unwrap();
+    let from_bytes: RunOutput = serde_wasm_bindgen::from_value(from_bytes).unwrap();
+    assert_eq!(
+        format!("{:?}", from_bytes.measurements),
+        format!("{:?}", from_source.measurements)
+    );
+    assert_eq!(from_bytes.statevector, from_source.statevector);
+
+    let opts = r#"{ "seed": 7, "shots": 64 }"#;
+    let hist = |out: SampleOutput| format!("{:?}", out.histograms);
+    let sampled = oqi_js::sample(bytes.clone(), options(opts)).await.unwrap();
+    let sampled: SampleOutput = serde_wasm_bindgen::from_value(sampled).unwrap();
+    assert_eq!(
+        hist(sampled),
+        hist(sample(BELL, options(opts)).await.unwrap())
+    );
+
+    let again = oqi_js::compile(bytes.clone()).unwrap();
+    assert_eq!(again.disassembly, compiled.disassembly);
+
+    // Timing options are for source; damaged bytes and other values are
+    // errors.
+    let err = oqi_js::run(bytes, options(r#"{ "dt": "1ns" }"#))
+        .await
+        .unwrap_err();
+    assert!(error_message(err).contains("bytecode"));
+    let damaged = &compiled.bytecode[..compiled.bytecode.len() - 2];
+    let err = oqi_js::compile(js_sys::Uint8Array::from(damaged).into())
+        .err()
+        .unwrap();
+    assert!(error_message(err).contains("malformed bytecode"));
+    let err = oqi_js::compile(JsValue::from_f64(3.0)).err().unwrap();
+    assert!(error_message(err).contains("expected a program"));
 }

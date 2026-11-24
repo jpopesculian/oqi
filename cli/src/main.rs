@@ -54,6 +54,14 @@ struct TimingArgs {
 /// What [`TimingArgs`] resolves to: the compile options, plus the timing
 /// entries when compile-time `durationof` resolution was requested.
 impl TimingArgs {
+    /// Whether any timing option was given.
+    fn any(&self) -> bool {
+        !self.timing.is_empty()
+            || self.dt.is_some()
+            || self.resolve_durations
+            || self.timings_file.is_some()
+    }
+
     /// A compiler honoring the profile's "dt" and `--dt`, and the timing
     /// table (file entries first, so `--timing` flags override), or a
     /// reported failure.
@@ -111,10 +119,17 @@ impl TimingArgs {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Compile an OpenQASM file
+    /// Compile an OpenQASM file, checking it, and write or print the
+    /// bytecode
     Compile {
-        /// The OpenQASM file to compile
+        /// The OpenQASM file to compile, or a bytecode file to disassemble
+        /// with --dump (bytecode is recognized by its header, whatever the
+        /// file is called)
         path: PathBuf,
+
+        /// Write the bytecode to this file; `oqi run` runs it
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<PathBuf>,
 
         /// Dump the bytecode disassembly to stdout
         #[arg(long)]
@@ -128,7 +143,8 @@ enum Command {
         timing: TimingArgs,
     },
 
-    /// Compile and run an OpenQASM file on a simulator
+    /// Compile and run an OpenQASM file, or run a bytecode file, on a
+    /// simulator
     Run(RunArgs),
 
     /// Format OpenQASM files
@@ -148,7 +164,8 @@ enum Command {
 
 #[derive(clap::Args)]
 struct RunArgs {
-    /// The OpenQASM file to run
+    /// The OpenQASM file to run, or a bytecode file written by `oqi compile
+    /// -o` (recognized by its header, whatever the file is called)
     path: PathBuf,
 
     /// Print the final state vector after the run
@@ -216,10 +233,11 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Compile {
             path,
+            output,
             dump,
             dump_sir,
             timing,
-        } => compile(&path, dump, dump_sir, &timing),
+        } => compile(&path, output.as_deref(), dump, dump_sir, &timing),
         Command::Run(args) => pollster::block_on(run(&args)),
         Command::Fmt {
             compact,
@@ -229,12 +247,43 @@ fn main() -> ExitCode {
     }
 }
 
-/// Read `path`, or report why it can't be read.
-fn read_source(path: &Path) -> Result<String, ExitCode> {
-    fs::read_to_string(path).map_err(|e| {
-        eprintln!("{}: {e}", path.display());
+/// What a file given on the command line holds.
+enum Input {
+    /// OpenQASM source text.
+    Source(String),
+    /// A program compiled to bytecode.
+    Bytecode(Box<Program>),
+}
+
+/// Read `path` as bytecode or source, or report why it can't be read.
+fn read_input(path: &Path) -> Result<Input, ExitCode> {
+    let fail = |why: String| {
+        eprintln!("{}: {why}", path.display());
         ExitCode::FAILURE
-    })
+    };
+    let bytes = fs::read(path).map_err(|e| fail(e.to_string()))?;
+    if Program::is_bytecode(&bytes) {
+        return Program::from_bytes(&bytes)
+            .map(|program| Input::Bytecode(Box::new(program)))
+            .map_err(|e| fail(e.to_string()));
+    }
+    String::from_utf8(bytes)
+        .map(Input::Source)
+        .map_err(|_| fail("neither OpenQASM source (not UTF-8) nor oqi bytecode".into()))
+}
+
+/// Reject timing options for bytecode: its durations were resolved when it
+/// was compiled.
+fn no_timings_for_bytecode(path: &Path, timing: &TimingArgs) -> Result<(), ExitCode> {
+    if timing.any() {
+        eprintln!(
+            "{}: timing options apply when compiling source; this file is bytecode, \
+             compiled already",
+            path.display()
+        );
+        return Err(ExitCode::FAILURE);
+    }
+    Ok(())
 }
 
 /// The timing entries as the borrowed pairs the compiler takes.
@@ -247,40 +296,78 @@ fn included_file(path: &Path) -> Option<String> {
         .map(|text| text.into_owned())
 }
 
-fn compile(path: &Path, dump: bool, dump_sir: bool, timing: &TimingArgs) -> ExitCode {
-    let (source, compiler) = match read_source(path).and_then(|s| Ok((s, timing.compiler(path)?))) {
-        Ok(v) => v,
+fn compile(
+    path: &Path,
+    output: Option<&Path>,
+    dump: bool,
+    dump_sir: bool,
+    timing: &TimingArgs,
+) -> ExitCode {
+    let module = match read_input(path) {
         Err(code) => return code,
-    };
-    let fail = |e: oqi_compile::CompileError| {
-        oqi_diagnostics::emit(&e, path, &source, &included_file);
-        ExitCode::FAILURE
-    };
-
-    let program = match compiler.compile_to_sir(&source) {
-        Ok(p) => p,
-        Err(e) => return fail(e),
-    };
-    if dump_sir {
-        print!("{program}");
-    }
-    let module = match oqi_compile::bytecode::emit(&program) {
-        Ok(m) => m,
-        Err(e) => return fail(e),
+        Ok(Input::Bytecode(module)) => {
+            if let Err(code) = no_timings_for_bytecode(path, timing) {
+                return code;
+            }
+            if dump_sir {
+                eprintln!(
+                    "{}: bytecode keeps no structured IR; --dump-sir needs the source",
+                    path.display()
+                );
+                return ExitCode::FAILURE;
+            }
+            *module
+        }
+        Ok(Input::Source(source)) => {
+            let compiler = match timing.compiler(path) {
+                Ok(compiler) => compiler,
+                Err(code) => return code,
+            };
+            let fail = |e: oqi_compile::CompileError| {
+                oqi_diagnostics::emit(&e, path, &source, &included_file);
+                ExitCode::FAILURE
+            };
+            let program = match compiler.compile_to_sir(&source) {
+                Ok(p) => p,
+                Err(e) => return fail(e),
+            };
+            if dump_sir {
+                print!("{program}");
+            }
+            match oqi_compile::bytecode::emit(&program) {
+                Ok(m) => m,
+                Err(e) => return fail(e),
+            }
+        }
     };
     if dump {
         print!("{module}");
+    }
+    if let Some(output) = output {
+        let written = module
+            .to_bytes()
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| fs::write(output, bytes).map_err(|e| e.to_string()));
+        if let Err(why) = written {
+            eprintln!("{}: {why}", output.display());
+            return ExitCode::FAILURE;
+        }
     }
     ExitCode::SUCCESS
 }
 
 async fn run(args: &RunArgs) -> ExitCode {
     let path = args.path.as_path();
-    let (source, compiler) =
-        match read_source(path).and_then(|s| Ok((s, args.timing.compiler(path)?))) {
-            Ok(v) => v,
+    // Bytecode keeps the spans of its source but not the text: its errors
+    // are reported by message alone.
+    let (source, compiled) = match read_input(path) {
+        Err(code) => return code,
+        Ok(Input::Bytecode(module)) => match no_timings_for_bytecode(path, &args.timing) {
+            Ok(()) => (String::new(), Some(*module)),
             Err(code) => return code,
-        };
+        },
+        Ok(Input::Source(source)) => (source, None),
+    };
     let fail = |e: &dyn oqi_diagnostics::Diagnostic| {
         oqi_diagnostics::emit(e, path, &source, &included_file);
         ExitCode::FAILURE
@@ -298,9 +385,18 @@ async fn run(args: &RunArgs) -> ExitCode {
         code
     };
 
-    let module = match compiler.compile(&source) {
-        Ok(m) => m,
-        Err(e) => return fail(&e),
+    let module = match compiled {
+        Some(module) => module,
+        None => {
+            let compiled = args
+                .timing
+                .compiler(path)
+                .and_then(|compiler| compiler.compile(&source).map_err(|e| fail(&e)));
+            match compiled {
+                Ok(module) => module,
+                Err(code) => return code,
+            }
+        }
     };
     let inputs = match parse_inputs(&module, &args.input) {
         Ok(i) => i,

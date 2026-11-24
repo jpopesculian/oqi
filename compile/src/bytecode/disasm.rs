@@ -8,7 +8,7 @@ use super::types::{self as bc, BlockId, ConstId, ProcId, ProcOwner, QubitSource,
 impl fmt::Display for bc::Program {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, ".module openqasm 3")?;
-        writeln!(f, ".version {}.{}", self.version.major, self.version.minor)?;
+        writeln!(f, ".version {}", super::FORMAT_VERSION)?;
         writeln!(f, ".entry proc{}", self.entry.0)?;
         if let Some(grammar) = &self.calibration_grammar {
             writeln!(f, ".defcalgrammar {grammar}")?;

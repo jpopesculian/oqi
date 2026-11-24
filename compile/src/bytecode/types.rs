@@ -44,17 +44,6 @@ pub struct BlockId(pub u32);
 // ── Module / procedure / block ───────────────────────────────────────
 
 #[doc(hidden)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Version {
-    pub major: u16,
-    pub minor: u16,
-}
-
-impl Version {
-    pub const CURRENT: Version = Version { major: 6, minor: 0 };
-}
-
-#[doc(hidden)]
 /// Global quantum memory: every named register is statically allocated
 /// into one flat index space; operands reference it via regions.
 #[derive(Clone, Serialize, Deserialize)]
@@ -92,13 +81,12 @@ pub struct Symbol {
 }
 
 /// A compiled program: what [`compile`](crate::compile) produces and the VM
-/// runs. Serialize it with [`to_bytes`](super::to_bytes).
+/// runs. [`Program::to_bytes`] and [`Program::from_bytes`] write and read it
+/// in the bytecode format; its `Display` is the disassembly.
 ///
 /// Its fields describe the program to the VM; outside it, use the methods.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Program {
-    #[doc(hidden)]
-    pub version: Version,
     /// The program's symbols, indexed by [`SymbolId`].
     pub symbols: Vec<Symbol>,
     #[doc(hidden)]

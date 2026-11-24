@@ -14,19 +14,20 @@
 //! - **Constants pooled**: literal values live in a module-level
 //!   `Vec<classical::Value>`; instructions reference them by index.
 //! - **Strings pooled**: pragma payloads, opaque cal text, etc.
-//! - **Both binary and text formats**: postcard-encoded binary (the
-//!   primary, VM-ingestable form) plus a textual disassembly (debug
-//!   aid).
+//! - **Both binary and text formats**: the bytecode format
+//!   ([`Program::to_bytes`], [`Program::from_bytes`]) plus a textual
+//!   disassembly (the `Display` of a [`Program`]).
 
 mod analysis;
 mod binary;
 mod disasm;
 mod emit;
 mod types;
+mod validate;
 
 #[doc(hidden)]
 pub use analysis::is_sample_safe;
-pub use binary::{DecodeError, from_bytes, to_bytes};
+pub use binary::{DecodeError, EncodeError, FORMAT_VERSION};
 pub use emit::emit;
 pub use types::*;
 
@@ -353,22 +354,44 @@ mod tests {
     #[test]
     fn binary_roundtrip_simple() {
         let module = build_bytecode("int x = 1; int y = x + 2;");
-        let bytes = to_bytes(&module).expect("encode");
+        let bytes = module.to_bytes().expect("encode");
         assert!(bytes.starts_with(b"OQIB"));
-        let module2 = from_bytes(&bytes).expect("decode");
+        let module2 = Program::from_bytes(&bytes).expect("decode");
         assert_eq!(module.procedures.len(), module2.procedures.len());
         assert_eq!(module.constants.len(), module2.constants.len());
         assert_eq!(module.entry, module2.entry);
     }
 
     #[test]
-    fn bad_magic_rejected() {
-        let bad = b"NOPE\x00";
-        match from_bytes(bad) {
-            Err(DecodeError::BadMagic) => {}
-            Err(other) => panic!("expected BadMagic, got {other:?}"),
-            Ok(_) => panic!("expected BadMagic, got Ok"),
-        }
+    fn the_header_is_checked_before_the_body() {
+        let bytes = build_bytecode("int x = 1;").to_bytes().expect("encode");
+        assert_eq!(&bytes[..6], b"OQIB\x01\x00");
+
+        let decode = |bytes: &[u8]| Program::from_bytes(bytes).err();
+        assert_eq!(decode(b"NOPE\x01\x00"), Some(DecodeError::NotBytecode));
+        assert_eq!(decode(b"OQIB"), Some(DecodeError::NotBytecode));
+        assert_eq!(decode(b""), Some(DecodeError::NotBytecode));
+        // Another version is reported as such, whatever follows.
+        let mut other = bytes.clone();
+        other[4..6].copy_from_slice(&7u16.to_le_bytes());
+        other.truncate(9);
+        assert_eq!(
+            decode(&other),
+            Some(DecodeError::UnsupportedVersion {
+                found: 7,
+                supported: FORMAT_VERSION,
+            })
+        );
+        // A truncated body, or bytes after it, is malformed.
+        assert!(matches!(
+            decode(&bytes[..bytes.len() - 1]),
+            Some(DecodeError::Malformed(_))
+        ));
+        let mut longer = bytes.clone();
+        longer.push(0);
+        assert!(matches!(decode(&longer), Some(DecodeError::Malformed(_))));
+        assert!(Program::is_bytecode(&bytes));
+        assert!(!Program::is_bytecode(b"OPENQASM 3;"));
     }
 
     #[test]
@@ -446,9 +469,9 @@ mod tests {
         let src = include_str!("../../../fixtures/qasm/teleport.qasm");
         let module = build_bytecode(src);
 
-        let bytes = to_bytes(&module).expect("encode");
+        let bytes = module.to_bytes().expect("encode");
         assert!(bytes.len() > 4, "encoded module should be non-trivial");
-        let module2 = from_bytes(&bytes).expect("decode");
+        let module2 = Program::from_bytes(&bytes).expect("decode");
         assert_eq!(module.procedures.len(), module2.procedures.len());
         assert_eq!(module.qubits.num_qubits, module2.qubits.num_qubits);
         assert_eq!(module.qubits.regions.len(), module2.qubits.regions.len());
@@ -467,9 +490,9 @@ mod tests {
         assert_eq!(module.qubits.num_qubits, 10);
         let text = format!("{module}");
         assert!(text.contains(".qubits 10"), "disasm:\n{text}");
-        let bytes = to_bytes(&module).expect("encode");
+        let bytes = module.to_bytes().expect("encode");
         assert!(bytes.len() > 4);
-        let _ = from_bytes(&bytes).expect("decode");
+        let _ = Program::from_bytes(&bytes).expect("decode");
     }
 
     #[test]
@@ -517,8 +540,8 @@ mod tests {
         }
 
         // Roundtrip preserves the table and the grammar.
-        let bytes = to_bytes(&module).expect("encode");
-        let module2 = from_bytes(&bytes).expect("decode");
+        let bytes = module.to_bytes().expect("encode");
+        let module2 = Program::from_bytes(&bytes).expect("decode");
         assert_eq!(module2.calibrations.len(), 6);
         assert_eq!(module2.calibration_grammar.as_deref(), Some("openpulse"));
 

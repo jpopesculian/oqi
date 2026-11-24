@@ -132,8 +132,26 @@ impl fmt::Display for Array {
 
 /// The rank of an array: `1..=ArrayDim::MAX` dimensions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "usize", into = "usize")
+)]
 pub struct ArrayDim(usize);
+
+impl TryFrom<usize> for ArrayDim {
+    type Error = Error;
+
+    fn try_from(dim: usize) -> Result<Self> {
+        Self::new(dim)
+    }
+}
+
+impl From<ArrayDim> for usize {
+    fn from(dim: ArrayDim) -> usize {
+        dim.0
+    }
+}
 
 impl ArrayDim {
     /// docs/types.rst: arrays have "a maximum of 7 total dimensions".
@@ -165,11 +183,31 @@ pub fn adim(value: usize) -> ArrayDim {
     ArrayDim::new(value).unwrap()
 }
 
+/// The size of each dimension of an array: `1..=ArrayDim::MAX` dimensions
+/// and at most [`ArrayShape::MAX_ELEMENTS`] elements in all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "Vec<usize>", into = "Vec<usize>")
+)]
 pub struct ArrayShape {
     shape: [usize; ArrayDim::MAX],
     dim: ArrayDim,
+}
+
+impl TryFrom<Vec<usize>> for ArrayShape {
+    type Error = Error;
+
+    fn try_from(shape: Vec<usize>) -> Result<Self> {
+        Self::new(shape)
+    }
+}
+
+impl From<ArrayShape> for Vec<usize> {
+    fn from(shape: ArrayShape) -> Vec<usize> {
+        shape.get().to_vec()
+    }
 }
 
 impl fmt::Display for ArrayShape {
@@ -185,8 +223,20 @@ impl fmt::Display for ArrayShape {
 }
 
 impl ArrayShape {
+    /// The most elements an array holds: a variable holds all of them in
+    /// memory at once.
+    pub const MAX_ELEMENTS: usize = 1 << 26;
+
     pub fn new(shape: Vec<usize>) -> Result<Self> {
         let dim = ArrayDim::new(shape.len())?;
+        let total = shape
+            .iter()
+            .try_fold(1usize, |total, &size| total.checked_mul(size));
+        if total.is_none_or(|total| total > Self::MAX_ELEMENTS) {
+            return Err(Error::TooManyElements {
+                max: Self::MAX_ELEMENTS,
+            });
+        }
         let mut shape_arr = [1; ArrayDim::MAX];
         shape_arr[..shape.len()].copy_from_slice(&shape);
         Ok(Self {

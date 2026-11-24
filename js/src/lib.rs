@@ -1,8 +1,10 @@
 //! JavaScript (wasm-bindgen) bindings for the oqi compiler and VM.
 //!
-//! Exposes a minimal API: [`compile`] (source → bytecode + disassembly),
-//! [`run`] (source → simulated results) and [`sample`] (source → per-output
-//! histograms over many shots). `run` and `sample` can call host-supplied
+//! Exposes a minimal API: [`compile`] (program → bytecode + disassembly),
+//! [`run`] (program → simulated results) and [`sample`] (program →
+//! per-output histograms over many shots). Each takes a program as
+//! OpenQASM source text or as bytecode (a `Uint8Array` from `compile`).
+//! `run` and `sample` can call host-supplied
 //! `extern` implementations (the `externs` option), synchronous or
 //! Promise-returning. Includes are limited to the embedded `stdgates.inc`;
 //! file includes are rejected. Errors surface as thrown JS `Error`s whose
@@ -112,22 +114,52 @@ fn build_module(
     compiler.compile(source).map_err(|e| diag_err(&e, source))
 }
 
+/// A program given as OpenQASM source text, compiled with `timings` and
+/// `dt`, or as bytecode. Returns it with the source text its errors render
+/// against (none for bytecode: errors are reported by message).
+fn load(
+    program: &JsValue,
+    timings: Option<&HashMap<String, String>>,
+    dt: Option<&str>,
+) -> Result<(Program, String), JsValue> {
+    if let Some(source) = program.as_string() {
+        let module = build_module(&source, timings, dt)?;
+        return Ok((module, source));
+    }
+    let Some(bytes) = program.dyn_ref::<js_sys::Uint8Array>() else {
+        let message = "expected a program: OpenQASM source text or bytecode (a Uint8Array)";
+        return Err(js_sys::Error::new(message).into());
+    };
+    if timings.is_some() || dt.is_some() {
+        let message = "`timings` and `dt` apply when compiling source; this program is bytecode, compiled already";
+        return Err(js_sys::Error::new(message).into());
+    }
+    let module = Program::from_bytes(&bytes.to_vec())
+        .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))?;
+    Ok((module, String::new()))
+}
+
 #[wasm_bindgen(getter_with_clone)]
 pub struct CompileResult {
-    /// Postcard-encoded bytecode module.
+    /// The program as bytecode: `run` and `sample` take it in place of the
+    /// source.
     pub bytecode: Vec<u8>,
-    /// Textual disassembly of the module.
+    /// Textual disassembly of the bytecode.
     pub disassembly: String,
 }
 
-/// Compile an OpenQASM 3 program to bytecode.
+/// Compile an OpenQASM 3 program (source text) to bytecode, or disassemble
+/// bytecode (a `Uint8Array`).
 #[wasm_bindgen]
-pub fn compile(source: &str) -> Result<CompileResult, JsValue> {
-    let module = build_module(source, None, None)?;
-    let bytes = oqi_compile::bytecode::to_bytes(&module)
-        .map_err(|e| JsError::new(&format!("bytecode encoding failed: {e:?}")))?;
+pub fn compile(
+    #[wasm_bindgen(unchecked_param_type = "string | Uint8Array")] program: JsValue,
+) -> Result<CompileResult, JsValue> {
+    let (module, _) = load(&program, None, None)?;
+    let bytecode = module
+        .to_bytes()
+        .map_err(|e| JsValue::from(js_sys::Error::new(&e.to_string())))?;
     Ok(CompileResult {
-        bytecode: bytes,
+        bytecode,
         disassembly: module.to_string(),
     })
 }
@@ -272,6 +304,8 @@ struct RunOutput {
 /// module, and the pieces a [`Vm`] is assembled from.
 struct Session {
     module: Program,
+    /// The source text errors render against (empty for bytecode).
+    source: String,
     inputs: Vec<(String, HostValue)>,
     externs: JsExterns,
     backend: Box<dyn QuantumBackend>,
@@ -283,7 +317,7 @@ struct Session {
 }
 
 impl Session {
-    async fn new(source: &str, options: JsValue) -> Result<Session, JsValue> {
+    async fn new(program: &JsValue, options: JsValue) -> Result<Session, JsValue> {
         let invalid = |e: String| JsError::new(&format!("invalid options: {e}"));
         // An absent options object still gets every field's default.
         let options = if options.is_undefined() || options.is_null() {
@@ -294,7 +328,7 @@ impl Session {
         let opts: RunOptions =
             serde_wasm_bindgen::from_value(options).map_err(|e| invalid(e.to_string()))?;
 
-        let module = build_module(source, opts.timings.as_ref(), opts.dt.as_deref())?;
+        let (module, source) = load(program, opts.timings.as_ref(), opts.dt.as_deref())?;
         let externs = JsExterns::new(&module, &opts.externs)?;
 
         let seed = opts.seed.unwrap_or(DEFAULT_SEED);
@@ -320,10 +354,11 @@ impl Session {
         let (backend, built) = spec
             .build(module.qubits.num_qubits)
             .await
-            .map_err(|e| diag_err(&e, source))?;
+            .map_err(|e| diag_err(&e, &source))?;
 
         Ok(Session {
             module,
+            source,
             inputs: opts
                 .inputs
                 .into_iter()
@@ -344,7 +379,8 @@ fn to_js(value: &impl Serialize) -> Result<JsValue, JsValue> {
         .map_err(|e| JsError::new(&format!("result serialization failed: {e}")).into())
 }
 
-/// Compile and run an OpenQASM 3 program on a simulator.
+/// Run an OpenQASM 3 program on a simulator. `program` is source text, or
+/// bytecode (a `Uint8Array` from [`compile`]).
 ///
 /// `options` is an optional object:
 /// `{ inputs?, seed?, statevector?, externs?, timings?, dt?, backend?, precision?, maxRank?, maxBond? }`.
@@ -355,16 +391,21 @@ fn to_js(value: &impl Serialize) -> Result<JsValue, JsValue> {
 /// that throws, aborts the run with a diagnostic error. `timings` maps
 /// operation names to duration literals and enables compile-time
 /// `durationof` resolution (defcal bodies included); `dt` sets the device
-/// time unit. Returns `{ measurements, outputs, backend, precision, statevector? }`.
+/// time unit; both apply to source only. Returns
+/// `{ measurements, outputs, backend, precision, statevector? }`.
 #[wasm_bindgen]
-pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsValue> {
-    let session = Session::new(&source, options).await?;
+pub async fn run(
+    #[wasm_bindgen(unchecked_param_type = "string | Uint8Array")] program: JsValue,
+    options: JsValue,
+) -> Result<JsValue, JsValue> {
+    let session = Session::new(&program, options).await?;
+    let source = &session.source;
     let module = &session.module;
     let mut vm = Vm::new(module, session.backend, session.externs);
     let result = vm
         .run_with_named_inputs(&session.inputs)
         .await
-        .map_err(|e| diag_err(&e, &source))?;
+        .map_err(|e| diag_err(&e, source))?;
 
     let statevector = if session.statevector {
         vm.backend()
@@ -395,15 +436,20 @@ pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsValue> {
     })
 }
 
-/// Compile and sample an OpenQASM 3 program over many shots, returning a
-/// histogram of observed values per named output variable.
+/// Sample an OpenQASM 3 program (source text or bytecode, as for [`run`])
+/// over many shots, returning a histogram of observed values per named
+/// output variable.
 ///
 /// `options` accepts the same object as [`run`] plus `shots` (default 1024,
 /// at most 100 000). A given `seed` reproduces the whole histogram.
 /// Returns `{ shots, backend, precision, histograms: [{ name, total, bars: [{ label, count }] }] }`.
 #[wasm_bindgen]
-pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsValue> {
-    let session = Session::new(&source, options).await?;
+pub async fn sample(
+    #[wasm_bindgen(unchecked_param_type = "string | Uint8Array")] program: JsValue,
+    options: JsValue,
+) -> Result<JsValue, JsValue> {
+    let session = Session::new(&program, options).await?;
+    let source = &session.source;
     let shots = session.shots;
     if !(1..=MAX_SHOTS).contains(&shots) {
         let message = format!("`shots` must be between 1 and {MAX_SHOTS}, not {shots}");
@@ -412,11 +458,11 @@ pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsValue
     let module = &session.module;
     let mut vm = Vm::new(module, session.backend, session.externs);
     let inputs =
-        oqi_vm::coerce_inputs(module, &session.inputs).map_err(|e| diag_err(&e, &source))?;
+        oqi_vm::coerce_inputs(module, &session.inputs).map_err(|e| diag_err(&e, source))?;
     let results = vm
         .sample(inputs, shots, session.seed)
         .await
-        .map_err(|e| diag_err(&e, &source))?;
+        .map_err(|e| diag_err(&e, source))?;
 
     to_js(&SampleOutput {
         shots,

@@ -14,7 +14,9 @@ The first release.
   `durationof` and `stretch` resolve at compile time from a timing table, or
   at run time.
 - **Simulators** (`oqi-vm`): scalar, SIMD and multi-threaded state vectors in
-  `f64` or `f32`; a WebGPU state vector; a stabilizer tableau that moves to an
+  `f64` or `f32`; a WebGPU state vector that keeps gates, measurement and
+  shot sampling on the device and spreads over as many buffers as the
+  device's memory allows (up to 32 qubits); a stabilizer tableau that moves to an
   exact sum over Cliffords and, when needed, a dense state vector; and a
   matrix-product-state simulator. Shots are sampled from the final state when
   no gate depends on a measurement.

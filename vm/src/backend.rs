@@ -312,7 +312,7 @@ pub trait QuantumBackend {
     /// each, returning one outcome per qubit. Equivalent to calling
     /// [`measure`](Self::measure) for each in turn (projective measurements on
     /// distinct qubits commute); the default does exactly that. Backends with
-    /// a costly per-measurement path (e.g. a GPU readback) override this to
+    /// a costly per-measurement path (e.g. a remote device) override this to
     /// snapshot the state once and sample every qubit from that copy.
     async fn measure_all(&mut self, qubits: &[u32]) -> Result<Vec<bool>, ErrorKind> {
         let mut out = Vec::with_capacity(qubits.len());

@@ -1,8 +1,10 @@
-//! Wall-clock comparison of the CPU simulator backends.
+//! Wall-clock comparison of the simulator backends.
 //!
-//! Each variant applies the same gate workload to a freshly-allocated state
-//! (allocation is excluded from timing) so the numbers reflect gate-kernel
-//! throughput, not setup. Run with:
+//! `apply_workload_20q` applies the same gate workload to a
+//! freshly-allocated state (allocation is excluded from timing) so the
+//! numbers reflect gate-kernel throughput, not setup;
+//! `measure_register_20q` measures a 20-qubit register in superposition.
+//! Run with:
 //!
 //! ```text
 //! cargo bench -p oqi-vm
@@ -156,5 +158,50 @@ fn bench_backends(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_backends);
+/// Prepare a superposition over every qubit, then measure the whole
+/// register: the path a GPU used to pay a full state readback for.
+fn measure_register(b: &mut dyn QuantumBackend, n: u32) {
+    let none = GateModifiers::none();
+    for q in 0..n {
+        b.u(q, FRAC_PI_2, 0.0, PI, &none).unwrap(); // H
+    }
+    let qubits: Vec<u32> = (0..n).collect();
+    pollster::block_on(b.measure_all(&qubits)).unwrap();
+}
+
+fn bench_measurement(c: &mut Criterion) {
+    let n = 20u32;
+    let mut group = c.benchmark_group("measure_register_20q");
+    group.sample_size(10);
+    for (name, make) in variants(n) {
+        if name.starts_with("mps") {
+            continue; // a product state: nothing to measure the cost of
+        }
+        group.bench_function(name, |b| {
+            b.iter_batched_ref(
+                &make,
+                |sim| measure_register(&mut **sim, n),
+                BatchSize::SmallInput,
+            );
+        });
+    }
+
+    // The device is reused; each iteration starts from |0…0⟩.
+    #[cfg(feature = "gpu")]
+    match pollster::block_on(oqi_vm::GpuSim::new(n)) {
+        Ok(mut sim) => {
+            group.bench_function("gpu-f32", |b| {
+                b.iter(|| {
+                    sim.reset_state().unwrap();
+                    measure_register(&mut sim, n);
+                });
+            });
+        }
+        Err(e) => eprintln!("skipping gpu benchmark: {e}"),
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_backends, bench_measurement);
 criterion_main!(benches);

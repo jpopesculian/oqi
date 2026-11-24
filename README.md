@@ -124,7 +124,8 @@ Known limits:
   dispatch to a calibration.
 - A runtime error raised in included code, or while running saved bytecode,
   is reported without its source text.
-- The WebGPU simulator is single precision and holds at most 32 qubits. The
+- The WebGPU simulator is single precision and holds as many qubits as the
+  device's memory allows, at most 32. The
   matrix-product-state simulator is approximate once a circuit's entanglement
   exceeds its bond cap.
 

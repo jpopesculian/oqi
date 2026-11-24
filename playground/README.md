@@ -47,8 +47,8 @@ npm run preview    # http://localhost:4173/oqi/
   plus the shot count. The option and result types come from `oqi-js`'s TypeScript
   declarations. GPU requires a WebGPU-capable browser (Chrome/Edge, recent Firefox/Safari) over
   HTTPS — GitHub Pages qualifies; selecting GPU where it's unavailable surfaces a clear
-  error. Note that GPU shots re-upload |0> and read back each measurement per shot, so
-  large shot counts can be slower on GPU than CPU at small qubit sizes.
+  error. Shots that have to re-run the circuit (a gate depends on a measurement)
+  pay a few small GPU round-trips each, so at small qubit counts the CPU can be faster.
 
 ## Notes
 

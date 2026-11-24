@@ -125,7 +125,12 @@ source → parse → resolve (includes) → lower → cfg → bytecode → vm
   are in `compile/src/register.rs`. Features: `parallel` (rayon kernels) and
   `mps` (the `MpsSim` backend, pulls in `faer`) are on by default; `gpu`
   (wgpu) is opt-in. A backend whose feature is off still parses by name and
-  fails to build with "backend unavailable".
+  fails to build with "backend unavailable". `GpuSim` (`vm/src/gpu.rs`)
+  splits the state into chunk buffers no larger than the device's binding
+  limit and keeps measurement (a reduction kernel, then a collapse kernel),
+  reset and shot sampling on the device; GPU tests take turns creating a
+  device (`spec::gpu_turn`, llvmpipe crashes otherwise) and force small
+  chunks with `GpuSim::with_chunk_limit`.
 - **`oqi/`** (`oqi`) — the facade crate and the supported Rust API: re-exports
   the everyday items of compile, vm, parse, format and diagnostics at its
   root (`compile`, `Runner`, `Program`, backends, `format`, …), the crates

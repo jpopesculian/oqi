@@ -25,7 +25,7 @@ const MAGIC: [u8; 4] = *b"OQIB";
 const HEADER_LEN: usize = MAGIC.len() + 2;
 
 /// A [`Program`] could not be encoded.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodeError {
     message: String,
 }

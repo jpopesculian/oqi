@@ -1,0 +1,29 @@
+[package]
+name = "oqi"
+version = "0.1.0"
+edition = "2024"
+description = "OpenQASM 3 compiler and quantum simulator: compile, run, sample and format OpenQASM 3 programs"
+readme = "README.md"
+
+[dependencies]
+oqi-compile = { path = "../compile" }
+oqi-diagnostics = { path = "../diagnostics" }
+oqi-format = { path = "../format" }
+oqi-parse = { path = "../parse" }
+oqi-vm = { path = "../vm", default-features = false }
+pollster = { version = "1", optional = true }
+
+[features]
+default = ["blocking", "parallel", "mps"]
+# `Runner::run_blocking` / `Runner::sample_blocking` and `oqi::block_on`, for
+# native callers that don't use an async runtime.
+blocking = ["oqi-vm/blocking", "dep:pollster"]
+# Multi-threaded state-vector kernels (the `rayon` and `rayon-simd` backends).
+parallel = ["oqi-vm/parallel"]
+# The matrix-product-state simulator (`MpsSim`, backend name `mps`).
+mps = ["oqi-vm/mps"]
+# The WebGPU simulator (`GpuSim`, backend names `gpu` and `prefer-gpu`).
+gpu = ["oqi-vm/gpu"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }

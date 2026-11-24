@@ -165,6 +165,32 @@ impl<'p, E: ExternProvider> Runner<'p, E> {
             backend: built,
         })
     }
+
+    /// [`run`](Self::run), blocking the calling thread until it finishes.
+    ///
+    /// For native callers. In the browser the GPU backend has to await its
+    /// device, which a blocked thread can't do: use [`run`](Self::run)
+    /// there.
+    ///
+    /// # Errors
+    ///
+    /// As for [`run`](Self::run).
+    #[cfg(feature = "blocking")]
+    pub fn run_blocking(self) -> Result<RunResult> {
+        pollster::block_on(self.run())
+    }
+
+    /// [`sample`](Self::sample), blocking the calling thread until it
+    /// finishes. As for [`run_blocking`](Self::run_blocking), for native
+    /// callers.
+    ///
+    /// # Errors
+    ///
+    /// As for [`run`](Self::run).
+    #[cfg(feature = "blocking")]
+    pub fn sample_blocking(self, shots: u32) -> Result<Samples> {
+        pollster::block_on(self.sample(shots))
+    }
 }
 
 impl<E> fmt::Debug for Runner<'_, E> {

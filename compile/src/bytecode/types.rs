@@ -127,6 +127,20 @@ pub struct Program {
     pub calibration_grammar: Option<String>,
 }
 
+/// A summary: the disassembly ([`Display`](std::fmt::Display)) is the full
+/// picture.
+impl std::fmt::Debug for Program {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Program")
+            .field("num_qubits", &self.num_qubits())
+            .field("symbols", &self.symbols.len())
+            .field("procedures", &self.procedures.len())
+            .field("inputs", &self.inputs.len())
+            .field("outputs", &self.outputs.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl Program {
     /// How many qubits the program uses: the size of the backend it needs.
     pub fn num_qubits(&self) -> u32 {

@@ -9,13 +9,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-oqi-compile = { path = "../compile" }
-oqi-diagnostics = { path = "../diagnostics" }
-oqi-format = { path = "../format" }
-oqi-vm = { path = "../vm" }
-pollster = "1"
+oqi = { path = "../oqi" }
 rayon = "1"
 serde_json = "1"
 
 [features]
-gpu = ["oqi-vm/gpu"]
+gpu = ["oqi/gpu"]

@@ -1,13 +1,15 @@
 //! How a [`CompileError`] is presented: each [`ErrorKind`]'s stable code
 //! (`C####`, or `S0001` for syntax errors), its headline message, the label
 //! under the offending span, and — where useful — secondary labels and help
-//! notes.
+//! notes. Bytecode errors are diagnostics too: [`DecodeError`] is C0018 and
+//! [`EncodeError`] C0019.
 
 use std::fmt;
 use std::path::Path;
 
 use oqi_diagnostics::{Code, DiagLabel, Diagnostic};
 
+use crate::bytecode::{DecodeError, EncodeError};
 use crate::error::{CompileError, ErrorKind};
 
 impl ErrorKind {
@@ -138,5 +140,37 @@ impl Diagnostic for CompileError {
 
     fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+}
+
+/// Bytes that are not loadable bytecode: code C0018, message only (there
+/// is no source to point into).
+impl Diagnostic for DecodeError {
+    fn code(&self) -> Code {
+        Code::compile(18)
+    }
+
+    fn message(&self) -> String {
+        self.to_string()
+    }
+
+    fn labels(&self) -> Vec<DiagLabel> {
+        Vec::new()
+    }
+}
+
+/// A program that could not be encoded as bytecode: code C0019, message
+/// only.
+impl Diagnostic for EncodeError {
+    fn code(&self) -> Code {
+        Code::compile(19)
+    }
+
+    fn message(&self) -> String {
+        self.to_string()
+    }
+
+    fn labels(&self) -> Vec<DiagLabel> {
+        Vec::new()
     }
 }

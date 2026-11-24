@@ -8,6 +8,7 @@ members = [
   "cli",
   "classical",
   "vm",
+  "oqi",
   "js",
   "py",
 ]

@@ -48,6 +48,8 @@
 //! - `parallel` (default): multi-threaded state-vector kernels.
 //! - `mps` (default): the matrix-product-state simulator.
 //! - `gpu`: the WebGPU simulator.
+//! - `blocking`: `Runner::run_blocking` and `Runner::sample_blocking`,
+//!   for native callers that don't use an async runtime.
 
 mod auto;
 mod backend;

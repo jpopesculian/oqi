@@ -6,10 +6,12 @@ use std::process::ExitCode;
 
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
-use oqi_compile::classical::ValueTy;
-use oqi_compile::{Compiler, DefaultIncludeResolver, IncludeResolver, Program, TableTimings};
-use oqi_format::Config;
-use oqi_vm::{BackendSpec, DEFAULT_SEED, HostValue, Precision, Runner, SumPolicy};
+use oqi::compiler::{DefaultIncludeResolver, IncludeResolver, TableTimings};
+use oqi::vm::DEFAULT_SEED;
+use oqi::{
+    BackendSpec, Compiler, Diagnostic, FormatConfig, HostValue, Precision, Program, Runner,
+    SumPolicy, ValueTy,
+};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 /// Compile, run and format OpenQASM 3 programs.
@@ -85,12 +87,12 @@ impl TimingArgs {
 
         let mut compiler = Compiler::new().source_name(path);
         if let Some(spec) = file.remove("dt") {
-            let dt = oqi_compile::parse_dt(&spec)
+            let dt = oqi::compiler::parse_dt(&spec)
                 .map_err(|e| fail(format!("--timings-file dt: {e}")))?;
             compiler = compiler.dt(dt);
         }
         if let Some(spec) = &self.dt {
-            let dt = oqi_compile::parse_dt(spec).map_err(|e| fail(format!("--dt: {e}")))?;
+            let dt = oqi::compiler::parse_dt(spec).map_err(|e| fail(format!("--dt: {e}")))?;
             compiler = compiler.dt(dt);
         }
 
@@ -109,7 +111,7 @@ impl TimingArgs {
         let entries = entries.iter().map(|(n, d)| (n.as_str(), d.as_str()));
         let table = TableTimings::from_str_entries(entries, &compiler.compile_options().dt)
             .map_err(|e| {
-                oqi_diagnostics::emit(&e, path, "", &included_file);
+                oqi::emit(&e, path, "", &included_file);
                 ExitCode::FAILURE
             })?;
         Ok(compiler.timings(table))
@@ -239,7 +241,7 @@ fn main() -> ExitCode {
             dump_sir,
             timing,
         } => compile(&path, output.as_deref(), dump, dump_sir, &timing),
-        Command::Run(args) => pollster::block_on(run(&args)),
+        Command::Run(args) => run(&args),
         Command::Fmt {
             compact,
             stdout,
@@ -323,8 +325,8 @@ fn compile(
                 Ok(compiler) => compiler,
                 Err(code) => return code,
             };
-            let fail = |e: oqi_compile::CompileError| {
-                oqi_diagnostics::emit(&e, path, &source, &included_file);
+            let fail = |e: oqi::compiler::CompileError| {
+                oqi::emit(&e, path, &source, &included_file);
                 ExitCode::FAILURE
             };
             let program = match compiler.compile_to_sir(&source) {
@@ -334,7 +336,7 @@ fn compile(
             if dump_sir {
                 print!("{program}");
             }
-            match oqi_compile::bytecode::emit(&program) {
+            match oqi::compiler::bytecode::emit(&program) {
                 Ok(m) => m,
                 Err(e) => return fail(e),
             }
@@ -356,7 +358,7 @@ fn compile(
     ExitCode::SUCCESS
 }
 
-async fn run(args: &RunArgs) -> ExitCode {
+fn run(args: &RunArgs) -> ExitCode {
     let path = args.path.as_path();
     // Bytecode keeps the spans of its source but not the text: its errors
     // are reported by message alone.
@@ -368,18 +370,18 @@ async fn run(args: &RunArgs) -> ExitCode {
         },
         Ok(Input::Source(source)) => (source, None),
     };
-    let fail = |e: &dyn oqi_diagnostics::Diagnostic| {
-        oqi_diagnostics::emit(e, path, &source, &included_file);
+    let fail = |e: &dyn Diagnostic| {
+        oqi::emit(e, path, &source, &included_file);
         ExitCode::FAILURE
     };
     // A runtime error, plus how to act on it from this command line.
-    let fail_run = |e: &oqi_vm::Error| {
+    let fail_run = |e: &oqi::vm::Error| {
         let code = fail(e);
         match e.kind {
-            oqi_vm::ErrorKind::MissingInput(_) => {
+            oqi::vm::ErrorKind::MissingInput(_) => {
                 eprintln!("hint: supply it with `--input NAME=VALUE`")
             }
-            oqi_vm::ErrorKind::RankOverflow { .. } => {
+            oqi::vm::ErrorKind::RankOverflow { .. } => {
                 eprintln!("hint: raise the term budget with `--max-rank`")
             }
             _ => {}
@@ -430,7 +432,7 @@ async fn run(args: &RunArgs) -> ExitCode {
     };
 
     if let Some(shots) = args.shots {
-        return match runner.sample(shots).await {
+        return match runner.sample_blocking(shots) {
             Ok(samples) => {
                 note_precision(samples.backend());
                 for histogram in samples.histograms() {
@@ -445,7 +447,7 @@ async fn run(args: &RunArgs) -> ExitCode {
         };
     }
 
-    match runner.statevector(args.state).run().await {
+    match runner.statevector(args.state).run_blocking() {
         Ok(result) => {
             if let Some(built) = result.backend() {
                 note_precision(built);
@@ -503,7 +505,7 @@ fn parse_inputs(module: &Program, specs: &[String]) -> Result<Vec<(String, HostV
 }
 
 fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {
-    let config = Config::default().compact(compact);
+    let config = FormatConfig::default().compact(compact);
     if paths.is_empty() {
         return fmt_stdin(config);
     }
@@ -513,7 +515,7 @@ fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {
         .par_iter()
         .map(|path| -> std::io::Result<_> {
             let source = fs::read_to_string(path)?;
-            let formatted = oqi_format::format(&source, config);
+            let formatted = oqi::format(&source, config);
             Ok((source, formatted))
         })
         .collect();
@@ -531,7 +533,7 @@ fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {
         let formatted = match formatted {
             Ok(s) => s,
             Err(e) => {
-                oqi_diagnostics::emit(&e, path, &source, &|_| None);
+                oqi::emit(&e, path, &source, &|_| None);
                 had_errors = true;
                 continue;
             }
@@ -552,20 +554,20 @@ fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {
 }
 
 /// Format standard input to standard output.
-fn fmt_stdin(config: Config) -> ExitCode {
+fn fmt_stdin(config: FormatConfig) -> ExitCode {
     let path = Path::new("<stdin>");
     let mut source = String::new();
     if let Err(e) = std::io::stdin().read_to_string(&mut source) {
         eprintln!("{}: {e}", path.display());
         return ExitCode::FAILURE;
     }
-    match oqi_format::format(&source, config) {
+    match oqi::format(&source, config) {
         Ok(formatted) => {
             print!("{formatted}");
             ExitCode::SUCCESS
         }
         Err(e) => {
-            oqi_diagnostics::emit(&e, path, &source, &|_| None);
+            oqi::emit(&e, path, &source, &|_| None);
             ExitCode::FAILURE
         }
     }

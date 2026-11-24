@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `oqi` is an OpenQASM 3.0 compiler and CPU simulator, written as a Rust workspace
 (edition 2024). It lexes, parses, type-checks, and lowers OpenQASM (including the
 OpenPulse grammar) to a bytecode IR, then interprets that bytecode against a
-state-vector simulator. The single binary is `oqi` (built from `cli/`).
+state-vector simulator. The single binary is `oqi` (built from `cli/`, which uses
+the `oqi` facade crate).
 
 ## Commands
 
@@ -116,9 +117,19 @@ source → parse → resolve (includes) → lower → cfg → bytecode → vm
   `mps` (the `MpsSim` backend, pulls in `faer`) are on by default; `gpu`
   (wgpu) is opt-in. A backend whose feature is off still parses by name and
   fails to build with "backend unavailable".
+- **`oqi/`** (`oqi`) — the facade crate and the supported Rust API: re-exports
+  the everyday items of compile, vm, parse, format and diagnostics at its
+  root (`compile`, `Runner`, `Program`, backends, `format`, …), the crates
+  themselves as modules (`syntax`, `compiler`, `vm`, `classical`,
+  `diagnostics`), and one `oqi::Error` every step's error converts into.
+  Its default `blocking` feature adds `Runner::run_blocking` /
+  `sample_blocking` (vm's `blocking` feature) and `oqi::block_on`. The crate
+  doc's examples (and the README it includes) are doctests.
 - **`cli/`**, **`js/`** (wasm-bindgen), **`py/`** (PyO3) — the three front
   doors. Keep them thin: native value ↔ `HostValue` mapping and error mapping
-  only; anything two of them need belongs in `vm` or `compile`.
+  only; anything two of them need belongs in `vm` or `compile`. The CLI
+  depends on the `oqi` facade only; js and py use the individual crates (the
+  async API, without default features).
 - **`format/`** (`oqi-format`) — source formatter (the `fmt` subcommand):
   `format(source, Config)`. Output ends with one newline and keeps comments
   (compact mode drops them); formatting is idempotent.

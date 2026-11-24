@@ -79,8 +79,7 @@ fn lib_only_resolver_serves_stdgates_but_no_files() {
         .expect("stdgates");
     let err = compiler
         .compile(r#"include "./other.qasm";"#)
-        .err()
-        .expect("file include");
+        .expect_err("file include");
     assert!(
         err.to_string().contains("file includes are not supported"),
         "{err}"
@@ -109,7 +108,7 @@ fn plain_types_are_64_bits_wide_on_every_host() {
 #[test]
 fn syntax_errors_keep_their_code_and_location() {
     let source = "int x = ;";
-    let err = compile(source).err().expect("a compile error");
+    let err = compile(source).expect_err("a compile error");
     assert!(matches!(err.kind, ErrorKind::Syntax(_)), "{:?}", err.kind);
     assert_eq!(err.code().to_string(), "S0001");
     assert_eq!(err.to_string(), "expected expression");
@@ -138,8 +137,7 @@ fn a_syntax_error_in_an_included_file_points_into_that_file() {
         .include_resolver(&BrokenIncludes)
         .source_name("/project/main.qasm")
         .compile(r#"include "./other.qasm";"#)
-        .err()
-        .expect("a compile error");
+        .expect_err("a compile error");
     assert_eq!(err.code().to_string(), "S0001");
     assert_eq!(err.to_string(), "expected expression");
     assert_eq!(err.path.as_deref(), Some(Path::new("/project/other.qasm")));
@@ -153,8 +151,7 @@ fn a_syntax_error_in_a_library_is_reported_at_the_include() {
     let err = Compiler::new()
         .include_resolver(&BrokenIncludes)
         .compile(source)
-        .err()
-        .expect("a compile error");
+        .expect_err("a compile error");
     assert_eq!(err.code().to_string(), "S0001");
     assert_eq!(err.to_string(), "in include 'broken.inc': expected ';'");
     assert_eq!(&source[err.span.unwrap()], r#"include "broken.inc";"#);

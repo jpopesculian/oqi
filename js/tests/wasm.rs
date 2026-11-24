@@ -448,6 +448,19 @@ async fn sample_defaults_to_1024_shots() {
 }
 
 #[wasm_bindgen_test]
+async fn shots_out_of_range_are_rejected_not_clamped() {
+    for shots in [0, 100_001] {
+        let opts = format!(r#"{{ "shots": {shots} }}"#);
+        let err = sample(BELL, options(&opts)).await.unwrap_err();
+        assert!(error_message(err).contains("shots"), "{shots}");
+    }
+    let out = sample(BELL, options(r#"{ "shots": 100000 }"#))
+        .await
+        .unwrap();
+    assert_eq!(out.shots, 100_000);
+}
+
+#[wasm_bindgen_test]
 async fn backends_share_the_cli_names() {
     // Every CLI backend name is accepted; the result names what ran.
     for (name, precision) in [

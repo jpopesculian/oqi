@@ -523,6 +523,9 @@ mod tests {
 
     #[async_trait::async_trait(?Send)]
     impl QuantumBackend for Unbounded {
+        fn num_qubits(&self) -> u32 {
+            self.0.n as u32
+        }
         fn u(
             &mut self,
             target: u32,

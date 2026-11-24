@@ -352,6 +352,10 @@ impl GpuSim {
 
 #[async_trait(?Send)]
 impl QuantumBackend for GpuSim {
+    fn num_qubits(&self) -> u32 {
+        self.len.trailing_zeros()
+    }
+
     fn u(
         &mut self,
         target: u32,

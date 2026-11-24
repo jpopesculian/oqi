@@ -154,7 +154,9 @@ pub enum Token<'a> {
     FloatLiteral(&'a str),
     #[regex(r"((?&float)|(?&dec))[ \t]*im", |lex| lex.slice())]
     ImaginaryLiteral(&'a str),
-    #[regex(r"((?&float)|(?&dec))[ \t]*(dt|ns|us|µs|ms|s)", |lex| lex.slice())]
+    // `µs` is spelled with U+00B5 MICRO SIGN in lexer.g4 and with U+03BC
+    // GREEK SMALL LETTER MU in docs/types.rst; both are accepted.
+    #[regex(r"((?&float)|(?&dec))[ \t]*(dt|ns|us|µs|μs|ms|s)", |lex| lex.slice())]
     TimingLiteral(&'a str),
     #[regex(r#""[01](_?[01])*""#, |lex| lex.slice())]
     BitstringLiteral(&'a str),

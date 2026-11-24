@@ -52,6 +52,9 @@ pub enum VmErrorKind {
     /// The requested backend can't be constructed here (no GPU adapter, or
     /// support for it was not compiled into this build).
     BackendUnavailable(String),
+    /// The backend can't run this program: it rejected its configuration,
+    /// is smaller than the program, or failed while applying an operation.
+    Backend(String),
     /// Execution reached a block marked unreachable.
     Unreachable,
 }
@@ -111,6 +114,7 @@ impl fmt::Display for VmErrorKind {
                  be allocated; raise the term budget or reduce non-Clifford gates"
             ),
             VmErrorKind::BackendUnavailable(why) => write!(f, "backend unavailable: {why}"),
+            VmErrorKind::Backend(why) => write!(f, "backend error: {why}"),
             VmErrorKind::Unreachable => write!(f, "reached an unreachable block"),
         }
     }

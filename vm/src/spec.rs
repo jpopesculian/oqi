@@ -180,11 +180,15 @@ impl BackendSpec {
             (BackendKind::Auto, _) => {
                 // Exact until it escalates to dense, which is `f64`.
                 self.precision = Precision::F64;
-                Box::new(AutoSim::with_policy(num_qubits, self.seed, self.sum_policy))
+                Box::new(AutoSim::with_policy(
+                    num_qubits,
+                    self.seed,
+                    self.sum_policy,
+                )?)
             }
             (BackendKind::Mps, _) => {
                 self.precision = Precision::F64;
-                Box::new(MpsSim::new(num_qubits, self.seed, self.max_bond))
+                Box::new(MpsSim::new(num_qubits, self.seed, self.max_bond)?)
             }
             (BackendKind::PreferGpu, _) => unreachable!("resolved above"),
         };

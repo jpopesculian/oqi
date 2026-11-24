@@ -2,12 +2,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::builder::{PossibleValuesParser, TypedValueParser};
 use clap::{Parser, Subcommand};
 use oqi_compile::classical::ValueTy;
-use oqi_compile::{BcModule, CompileOptions, DefaultIncludeResolver};
+use oqi_compile::{BcModule, CompileOptions, DefaultIncludeResolver, IncludeResolver};
 use oqi_format::Config;
 use oqi_vm::{
     BackendSpec, DEFAULT_SEED, HostValue, MpsSim, NoExterns, Precision, QuantumBackend, SumPolicy,
@@ -251,13 +250,22 @@ fn borrowed(entries: &Option<Vec<(String, String)>>) -> Option<Vec<(&str, &str)>
         .map(|e| e.iter().map(|(n, d)| (n.as_str(), d.as_str())).collect())
 }
 
+/// The text of a file a diagnostic points into, read the way `include`
+/// read it.
+fn included_file(path: &Path) -> Option<String> {
+    DefaultIncludeResolver
+        .resolve_path(path)
+        .ok()
+        .map(|text| text.into_owned())
+}
+
 fn compile(path: &Path, dump: bool, dump_sir: bool, timing: &TimingArgs) -> ExitCode {
     let (source, timing) = match read_source(path).and_then(|s| Ok((s, timing.resolve(path)?))) {
         Ok(v) => v,
         Err(code) => return code,
     };
     let fail = |e: oqi_compile::CompileError| {
-        oqi_diagnostics::emit(&e, path, &source);
+        oqi_diagnostics::emit(&e, path, &source, &included_file);
         ExitCode::FAILURE
     };
 
@@ -291,7 +299,7 @@ async fn run(args: &RunArgs) -> ExitCode {
         Err(code) => return code,
     };
     let fail = |e: &dyn oqi_diagnostics::Diagnostic| {
-        oqi_diagnostics::emit(e, path, &source);
+        oqi_diagnostics::emit(e, path, &source, &included_file);
         ExitCode::FAILURE
     };
     // A runtime error, plus how to act on it from this command line.
@@ -434,36 +442,43 @@ fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {
         Config::default()
     };
 
-    let had_errors = AtomicBool::new(false);
+    // Format in parallel; report and print in the order the files were given.
+    let results: Vec<_> = paths
+        .par_iter()
+        .map(|path| -> std::io::Result<_> {
+            let source = fs::read_to_string(path)?;
+            let formatted = oqi_format::format(&source, config);
+            Ok((source, formatted))
+        })
+        .collect();
 
-    paths.par_iter().for_each(|path| {
-        let source = match fs::read_to_string(path) {
-            Ok(s) => s,
+    let mut had_errors = false;
+    for (path, result) in paths.iter().zip(results) {
+        let (source, formatted) = match result {
+            Ok(pair) => pair,
             Err(e) => {
                 eprintln!("{}: {e}", path.display());
-                had_errors.store(true, Ordering::Relaxed);
-                return;
+                had_errors = true;
+                continue;
             }
         };
-
-        let formatted = match oqi_format::format(&source, config) {
+        let formatted = match formatted {
             Ok(s) => s,
             Err(e) => {
-                oqi_diagnostics::emit(&e, path, &source);
-                had_errors.store(true, Ordering::Relaxed);
-                return;
+                oqi_diagnostics::emit(&e, path, &source, &|_| None);
+                had_errors = true;
+                continue;
             }
         };
-
         if stdout {
             print!("{formatted}");
         } else if let Err(e) = fs::write(path, &formatted) {
             eprintln!("{}: {e}", path.display());
-            had_errors.store(true, Ordering::Relaxed);
+            had_errors = true;
         }
-    });
+    }
 
-    if had_errors.load(Ordering::Relaxed) {
+    if had_errors {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS

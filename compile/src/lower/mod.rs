@@ -94,6 +94,21 @@ impl Lowerer {
     }
 
     fn lower_program(&mut self, program: &ast::Program<'_>) -> Result<()> {
+        // `OPENQASM M.m;` (docs/comments.rst): this compiler speaks major
+        // version 3, any minor version.
+        if let Some(version) = &program.version {
+            let major = version.specifier.split('.').next().unwrap_or_default();
+            if major != "3" {
+                let message = format!(
+                    "OpenQASM version {} (only version 3 is supported)",
+                    version.specifier
+                );
+                return Err(CompileError::at(
+                    ErrorKind::Unsupported(message),
+                    version.span,
+                ));
+            }
+        }
         self.body = self.lower_items(&program.body)?;
         Ok(())
     }
@@ -195,7 +210,7 @@ impl Lowerer {
         let kind = match &stmt.kind {
             ast::StmtKind::Include(path) => {
                 self.require_global("`include` statements", span)?;
-                return self.lower_include(path, span);
+                return self.lower_include(path.value, span);
             }
 
             ast::StmtKind::ClassicalDecl { ty, name, init } => {
@@ -439,7 +454,7 @@ impl Lowerer {
             }
 
             ast::StmtKind::CalibrationGrammar(grammar) => {
-                let name = grammar.trim_matches(['"', '\'']);
+                let name = grammar.value;
                 if name == "openpulse" {
                     self.seed_openpulse_intrinsics()?;
                 }
@@ -725,7 +740,6 @@ impl Lowerer {
     // ── Include handling ────────────────────────────────────────────────
 
     fn lower_include(&mut self, path: &str, span: oqi_lex::Span) -> Result<Vec<sir::Stmt>> {
-        let path = path.trim_matches('"');
         let source = self.resolver.classify_include(path, span)?;
         match source {
             IncludeSource::Lib(_) => {
@@ -1422,14 +1436,23 @@ impl Lowerer {
 
 // ── Free functions ──────────────────────────────────────────────────────
 
+/// The index of a hardware qubit `$n`. The program's qubit count, which
+/// covers `$n`, is a `u32`, so `n` must be below `u32::MAX`.
 fn parse_hardware_qubit(s: &str, span: oqi_lex::Span) -> Result<usize> {
-    s.strip_prefix('$')
-        .and_then(|n| n.parse().ok())
+    let invalid = |message: String| CompileError::at(ErrorKind::InvalidLiteral(message), span);
+    let digits = s
+        .strip_prefix('$')
+        .ok_or_else(|| invalid(format!("invalid hardware qubit `{s}`")))?;
+    digits
+        .parse::<u32>()
+        .ok()
+        .filter(|&n| n < u32::MAX)
+        .map(|n| n as usize)
         .ok_or_else(|| {
-            CompileError::at(
-                ErrorKind::InvalidLiteral(format!("invalid hardware qubit `{s}`")),
-                span,
-            )
+            invalid(format!(
+                "hardware qubit `{s}` is out of range (the highest is ${})",
+                u32::MAX - 1
+            ))
         })
 }
 

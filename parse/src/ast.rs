@@ -69,11 +69,21 @@ pub struct Stmt<'a> {
     pub span: Span,
 }
 
+/// A quoted string, as in `include "stdgates.inc";`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StringLiteral<'a> {
+    /// The text between the quotes.
+    pub value: &'a str,
+    /// The quote it was written with: `"` or `'`.
+    pub quote: char,
+    pub span: Span,
+}
+
 #[derive(Debug)]
 pub enum StmtKind<'a> {
     Pragma(&'a str),
-    CalibrationGrammar(&'a str),
-    Include(&'a str),
+    CalibrationGrammar(StringLiteral<'a>),
+    Include(StringLiteral<'a>),
     Break,
     Continue,
     End,

@@ -13,7 +13,7 @@ use std::path::Path;
 
 use num_complex::Complex;
 use oqi_compile::classical::{Value, ValueTy};
-use oqi_compile::{BcModule, CompileOptions, LibOnlyResolver};
+use oqi_compile::{BcModule, CompileOptions, IncludeResolver, LibOnlyResolver};
 use oqi_vm::{
     BackendSpec, DEFAULT_SEED, ExternProvider, HostValue, KindResult, QuantumBackend, SumPolicy,
     Vm, VmErrorKind,
@@ -22,7 +22,7 @@ use pyo3::IntoPyObjectExt;
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
+use pyo3::types::{PyBool, PyComplex, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 
 /// Name used for the root source in rendered diagnostics.
 const SOURCE_NAME: &str = "<source>";
@@ -34,12 +34,22 @@ create_exception!(
     "Compile or runtime error; the message is the rendered diagnostic."
 );
 
+/// The text of a file a diagnostic points into: whatever the include
+/// resolver serves (here, no files — only libraries such as `stdgates.inc`).
+fn included_file(path: &Path) -> Option<String> {
+    LibOnlyResolver
+        .resolve_path(path)
+        .ok()
+        .map(|text| text.into_owned())
+}
+
 /// Render any workspace diagnostic against the root source as an `OqiError`.
 fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> PyErr {
     OqiError::new_err(oqi_diagnostics::render_to_string(
         diag,
         Path::new(SOURCE_NAME),
         source,
+        &included_file,
     ))
 }
 
@@ -358,8 +368,8 @@ fn type_name(v: &Bound<'_, PyAny>) -> String {
         .map_or_else(|_| "<unknown>".to_string(), |n| n.to_string())
 }
 
-/// A Python value as a host value: `bool`, `int`, `float`, `str`, and
-/// (nested) `list`/`tuple`s of those. `None` for anything else.
+/// A Python value as a host value: `bool`, `int`, `float`, `complex`, `str`,
+/// and (nested) `list`/`tuple`s of those. `None` for anything else.
 fn host_value(v: &Bound<'_, PyAny>) -> Option<HostValue> {
     // `bool` first: it is a subclass of `int`.
     if v.is_instance_of::<PyBool>() {
@@ -372,6 +382,8 @@ fn host_value(v: &Bound<'_, PyAny>) -> Option<HostValue> {
             .ok()
     } else if v.is_instance_of::<PyFloat>() {
         v.extract().ok().map(HostValue::Float)
+    } else if v.is_instance_of::<PyComplex>() {
+        v.extract().ok().map(HostValue::Complex)
     } else if v.is_instance_of::<PyString>() {
         v.extract().ok().map(HostValue::Text)
     } else if let Ok(list) = v.cast::<PyList>() {

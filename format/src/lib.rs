@@ -278,6 +278,13 @@ trait Format {
     fn format(&self, p: &mut Printer<'_>);
 }
 
+impl Format for ast::StringLiteral<'_> {
+    fn format(&self, p: &mut Printer<'_>) {
+        let quote = self.quote.to_string();
+        put!(p, quote.as_str(), self.value, quote.as_str());
+    }
+}
+
 impl Format for str {
     fn format(&self, p: &mut Printer<'_>) {
         p.write(self);

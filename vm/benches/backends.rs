@@ -68,7 +68,7 @@ fn variants(n: u32) -> Vec<(&'static str, Maker)> {
         ),
         (
             "mps-f64",
-            Box::new(move || Box::new(MpsSim::new(n, SEED, MpsSim::DEFAULT_MAX_BOND))),
+            Box::new(move || Box::new(MpsSim::new(n, SEED, MpsSim::DEFAULT_MAX_BOND).unwrap())),
         ),
         (
             "scalar-f32",

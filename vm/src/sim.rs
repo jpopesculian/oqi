@@ -83,6 +83,10 @@ impl<F: Float + Send + Sync> StateVectorSim<F> {
 
 #[async_trait(?Send)]
 impl<F: Float + Send + Sync> QuantumBackend for StateVectorSim<F> {
+    fn num_qubits(&self) -> u32 {
+        self.state.size() as u32
+    }
+
     fn u(
         &mut self,
         target: u32,

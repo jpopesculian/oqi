@@ -196,3 +196,116 @@ fn a_syntax_error_in_a_library_is_reported_at_the_include() {
     assert_eq!(err.to_string(), "in include 'broken.inc': expected ';'");
     assert_eq!(&source[err.span], r#"include "broken.inc";"#);
 }
+
+fn compile_default(src: &str) -> oqi_compile::Result<oqi_compile::BcModule> {
+    compile(
+        src,
+        DefaultIncludeResolver,
+        &CompileOptions::default(),
+        None,
+    )
+}
+
+#[test]
+fn hardware_qubit_indices_must_fit_the_qubit_count() {
+    for src in [
+        "reset $4294967295;",
+        "reset $4294967296;",
+        "reset $99999999999999999999;",
+    ] {
+        let err = compile_default(src)
+            .err()
+            .unwrap_or_else(|| panic!("{src} compiled"));
+        assert!(err.to_string().contains("hardware qubit"), "{src}: {err}");
+        assert_ne!(err.span, Default::default(), "{src}");
+    }
+    assert_eq!(compile_default("reset $7;").unwrap().qubits.num_qubits, 8);
+}
+
+#[test]
+fn either_quote_delimits_an_include_or_grammar() {
+    for src in [
+        "include 'stdgates.inc'; qubit q; h q;",
+        r#"include "stdgates.inc"; qubit q; h q;"#,
+    ] {
+        compile_default(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+    }
+    let module = compile_default("defcalgrammar 'openpulse';").unwrap();
+    assert_eq!(module.calibration_grammar.as_deref(), Some("openpulse"));
+}
+
+#[test]
+fn the_micro_sign_and_the_greek_mu_both_spell_microseconds() {
+    // U+00B5 MICRO SIGN and U+03BC GREEK SMALL LETTER MU (lexer.g4 accepts
+    // both).
+    for src in ["duration d = 100\u{b5}s;", "duration d = 100\u{3bc}s;"] {
+        compile_default(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+    }
+}
+
+#[test]
+fn only_openqasm_3_is_accepted() {
+    for ok in ["OPENQASM 3;", "OPENQASM 3.0;", "OPENQASM 3.1;"] {
+        compile_default(ok).unwrap_or_else(|e| panic!("{ok}: {e}"));
+    }
+    for bad in ["OPENQASM 2.0;", "OPENQASM 4;", "OPENQASM 30;"] {
+        let err = compile_default(bad)
+            .err()
+            .unwrap_or_else(|| panic!("{bad} compiled"));
+        assert!(err.to_string().contains("version"), "{bad}: {err}");
+    }
+}
+
+/// Compile `src` on a thread with a `stack`-byte stack and return the error
+/// message, if any.
+fn compile_on_stack(src: String, stack: usize) -> Option<String> {
+    std::thread::Builder::new()
+        .stack_size(stack)
+        .spawn(move || compile_default(&src).err().map(|e| e.to_string()))
+        .unwrap()
+        .join()
+        .expect("no stack overflow")
+}
+
+fn nest(n: usize, open: &str, middle: &str, close: &str) -> String {
+    format!("{}{middle}{}", open.repeat(n), close.repeat(n))
+}
+
+#[test]
+fn deep_nesting_is_a_syntax_error_not_a_stack_overflow() {
+    // Far past the limit, on a test thread's 2 MiB stack.
+    for src in [
+        format!("int v = {};", nest(100_000, "(", "1", ")")),
+        format!("int v = {}1;", "-".repeat(100_000)),
+        nest(100_000, "{", "", "}"),
+        nest(100_000, "if (true) ", "end;", ""),
+    ] {
+        let err = compile_on_stack(src, 2 << 20).expect("a syntax error");
+        assert!(err.contains("nested more than 64 levels"), "{err}");
+    }
+    // Just under it, programs compile on a main thread's 8 MiB stack, even
+    // in a debug build (release builds need far less; the wasm build runs
+    // them in 1 MiB).
+    let prelude = "include \"stdgates.inc\"; qubit q; int v;";
+    for src in [
+        format!("{prelude} {}", nest(30, "if (true) { ", "x q;", " }")),
+        format!("{prelude} {}x q;", "if (true) ".repeat(60)),
+        format!("{prelude} v = {};", nest(60, "(", "1", ")")),
+    ] {
+        assert_eq!(compile_on_stack(src, 8 << 20), None);
+    }
+}
+
+#[test]
+fn an_unterminated_string_is_a_syntax_error() {
+    for src in [
+        "include \"stdgates.inc\n;",
+        "include 'stdgates.inc;",
+        "defcalgrammar \"openpulse",
+    ] {
+        let err = compile_default(src)
+            .err()
+            .unwrap_or_else(|| panic!("{src:?} compiled"));
+        assert_eq!(err.code().to_string(), "S0001", "{src:?}: {err}");
+    }
+}

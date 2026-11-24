@@ -227,6 +227,26 @@ def test_angle_and_bitreg_inputs():
         oqi.run(src, inputs={"theta": {}, "mask": "0110"})
 
 
+def test_complex_and_duration_inputs():
+    src = (
+        "OPENQASM 3.0;\n"
+        "input complex[float[64]] z;\n"
+        "input duration d;\n"
+        "output complex[float[64]] twice;\n"
+        "output duration longer;\n"
+        "twice = 2 * z;\n"
+        "longer = d + 50ns;\n"
+    )
+    out = oqi.run(src, inputs={"z": 1.5 - 2j, "d": "100ns"})
+    assert out.outputs["twice"] == 3 - 4j
+    assert out.outputs["longer"] == "150ns"
+    # A complex may also be given as text, as the CLI and JS take it.
+    out = oqi.run(src, inputs={"z": "1.5-2im", "d": "0.1us"})
+    assert out.outputs["twice"] == 3 - 4j
+    with pytest.raises(oqi.OqiError, match="duration with an SI unit"):
+        oqi.run(src, inputs={"z": 1j, "d": 100})
+
+
 @pytest.mark.parametrize(
     "backend", ["scalar", "rayon", "simd", "rayon-simd", "auto", "sum", "mps"]
 )

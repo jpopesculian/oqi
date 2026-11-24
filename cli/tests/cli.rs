@@ -83,6 +83,46 @@ fn fmt_keeps_comments_and_the_final_newline() {
 }
 
 #[test]
+fn fmt_prints_several_files_in_argument_order() {
+    let names: Vec<String> = (0..12)
+        .map(|i| {
+            let path = file(&format!("fmt_order_{i}.qasm"), &format!("qubit q{i};\n"));
+            path.to_str().unwrap().to_string()
+        })
+        .collect();
+    let mut args = vec!["fmt", "--stdout"];
+    args.extend(names.iter().map(String::as_str));
+    let expected: String = (0..12).map(|i| format!("qubit q{i};\n")).collect();
+    for _ in 0..5 {
+        assert_eq!(ok(&args), expected);
+    }
+}
+
+#[test]
+fn zero_shots_is_an_error() {
+    let bell = file("zero_shots.qasm", BELL);
+    let (success, _, stderr) = oqi(&["run", bell.to_str().unwrap(), "--shots", "0"]);
+    assert!(!success);
+    assert!(stderr.contains("--shots"), "{stderr}");
+}
+
+#[test]
+fn an_error_in_an_included_file_is_shown_in_that_file() {
+    let lib = file("diag_lib.qasm", "gate g a {\n  undefined_gate a;\n}\n");
+    let main = file(
+        "diag_main.qasm",
+        "include \"./diag_lib.qasm\";\nqubit q;\ng q;\n",
+    );
+    let (success, _, stderr) = oqi(&["compile", main.to_str().unwrap()]);
+    assert!(!success);
+    assert!(
+        stderr.contains(&format!("{}:2:3", lib.display())),
+        "{stderr}"
+    );
+    assert!(stderr.contains("undefined_gate a;"), "{stderr}");
+}
+
+#[test]
 fn seed_reproduces_a_run() {
     let bell = file("seed_bell.qasm", BELL);
     let bell = bell.to_str().unwrap();

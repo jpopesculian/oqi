@@ -83,6 +83,11 @@ fn assign_op(token: Token) -> Option<AssignOp> {
 // Parser
 // ---------------------------------------------------------------------------
 
+/// How deeply statements and expressions may nest. Parsing (and every pass
+/// after it) recurses once per level, so a limit keeps a pathological
+/// input from overflowing the stack; real programs stay far below it.
+const MAX_NESTING: usize = 64;
+
 struct Parser<'a> {
     tokens: Vec<(Token<'a>, Span)>,
     comments: Vec<Comment<'a>>,
@@ -93,6 +98,8 @@ struct Parser<'a> {
     /// Causes `cal`/`defcal` bodies to be re-lexed and re-parsed against the
     /// OpenPulse grammar instead of being kept as raw `&str` slices.
     openpulse: bool,
+    /// Current nesting depth of statements and expressions.
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
@@ -119,7 +126,21 @@ impl<'a> Parser<'a> {
             pos: 0,
             end,
             openpulse: false,
+            depth: 0,
         })
+    }
+
+    /// Run `f` one nesting level deeper, failing past [`MAX_NESTING`].
+    fn nested<T>(&mut self, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        if self.depth >= MAX_NESTING {
+            return Err(self.error(format!(
+                "statements or expressions nested more than {MAX_NESTING} levels deep"
+            )));
+        }
+        self.depth += 1;
+        let result = f(self);
+        self.depth -= 1;
+        result
     }
 
     // ------------------------------------------------------------------
@@ -189,11 +210,17 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn expect_string(&mut self) -> Result<&'a str> {
+    fn expect_string(&mut self) -> Result<StringLiteral<'a>> {
         match self.peek() {
             Some(Token::StringLiteral(string)) => {
-                self.advance();
-                Ok(string)
+                let (_, span) = self.advance();
+                // The lexer only produces terminated, quoted strings.
+                let quote = string.chars().next().expect("a quote");
+                Ok(StringLiteral {
+                    value: &string[1..string.len() - 1],
+                    quote,
+                    span,
+                })
             }
             _ => Err(self.error("expected string literal")),
         }
@@ -320,11 +347,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt_or_scope(&mut self) -> Result<StmtOrScope<'a>> {
-        if self.at(Token::LBrace) {
-            Ok(StmtOrScope::Scope(self.parse_scope()?))
-        } else {
-            Ok(StmtOrScope::Stmt(Box::new(self.parse_statement()?)))
-        }
+        self.nested(|this| {
+            if this.at(Token::LBrace) {
+                Ok(StmtOrScope::Scope(this.parse_scope()?))
+            } else {
+                Ok(StmtOrScope::Stmt(Box::new(this.parse_statement()?)))
+            }
+        })
     }
 
     fn parse_scope(&mut self) -> Result<Scope<'a>> {
@@ -491,8 +520,7 @@ impl<'a> Parser<'a> {
         self.advance(); // eat defcalgrammar
         let path = self.expect_string()?;
         self.semi()?;
-        // The string literal includes the surrounding quotes.
-        if matches!(path, "\"openpulse\"" | "'openpulse'") {
+        if path.value == "openpulse" {
             self.openpulse = true;
         }
         Ok(StmtKind::CalibrationGrammar(path))
@@ -1045,6 +1073,10 @@ impl<'a> Parser<'a> {
     /// Parse an expression whose operators all bind at least as tightly as
     /// `min_precedence`.
     fn parse_expr(&mut self, min_precedence: u8) -> Result<Expr<'a>> {
+        self.nested(|this| this.parse_expr_unnested(min_precedence))
+    }
+
+    fn parse_expr_unnested(&mut self, min_precedence: u8) -> Result<Expr<'a>> {
         let mut lhs = self.parse_primary_expr()?;
 
         loop {
@@ -1555,7 +1587,15 @@ mod tests {
     #[test]
     fn include() {
         let stmt = parse_stmt(r#"include "stdgates.inc";"#);
-        assert!(matches!(stmt.kind, StmtKind::Include("\"stdgates.inc\"")));
+        let StmtKind::Include(path) = stmt.kind else {
+            panic!("expected include");
+        };
+        assert_eq!((path.value, path.quote), ("stdgates.inc", '"'));
+        let stmt = parse_stmt("include 'other.inc';");
+        let StmtKind::Include(path) = stmt.kind else {
+            panic!("expected include");
+        };
+        assert_eq!((path.value, path.quote), ("other.inc", '\''));
     }
 
     #[test]

@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use oqi_compile::classical::{Value, ValueTy};
-use oqi_compile::{BcModule, CompileOptions, LibOnlyResolver};
+use oqi_compile::{BcModule, CompileOptions, IncludeResolver, LibOnlyResolver};
 use oqi_vm::{
     BackendSpec, DEFAULT_SEED, ExternProvider, HostValue, KindResult, QuantumBackend, SumPolicy,
     Vm, VmErrorKind,
@@ -25,22 +25,40 @@ use wasm_bindgen_futures::JsFuture;
 /// Name used for the root source in rendered diagnostics.
 const SOURCE_NAME: &str = "<source>";
 
+/// The most shots [`sample`] runs: every shot's result is held in memory at
+/// once, and a wasm module's memory is small.
+const MAX_SHOTS: u32 = 100_000;
+
 /// Largest integer a JS `number` represents exactly (2^53 - 1).
 const MAX_SAFE_INTEGER: u128 = (1 << 53) - 1;
 
+/// The text of a file a diagnostic points into: whatever the include
+/// resolver serves (here, no files — only libraries such as `stdgates.inc`).
+fn included_file(path: &Path) -> Option<String> {
+    LibOnlyResolver
+        .resolve_path(path)
+        .ok()
+        .map(|text| text.into_owned())
+}
+
 /// Render any workspace diagnostic against the root source as a thrown JS
 /// `Error`. The rendered diagnostic is the `message`; when the primary label
-/// has a real source span, it's attached as a `{ start, end }` byte-offset
-/// `span` property so callers (e.g. the playground) can highlight it.
+/// has a real span in the root source (not in an included library), it's
+/// attached as a `{ start, end }` byte-offset `span` property so callers
+/// (e.g. the playground) can highlight it.
 fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> JsValue {
     let err = js_sys::Error::new(&oqi_diagnostics::render_to_string(
         diag,
         Path::new(SOURCE_NAME),
         source,
+        &included_file,
     ));
-    if let Some(span) = oqi_diagnostics::primary_span(diag) {
+    let in_root = diag
+        .path()
+        .is_none_or(|path| path == Path::new(SOURCE_NAME));
+    if let Some(span) = oqi_diagnostics::primary_span(diag).filter(|_| in_root) {
         let (mut start, mut end) = (span.start, span.end);
-        if start <= source.len() && end <= source.len() {
+        if source.get(start..end).is_some() {
             // Widen a zero-width span (e.g. a parser "expected ';'") to one
             // character so the editor has a visible range. Prefer the char
             // *before* the gap — for a missing `;` the position sits on the
@@ -177,8 +195,8 @@ struct RunOptions {
     /// truncated.
     #[serde(default)]
     max_bond: Option<usize>,
-    /// Number of shots for [`sample`] (ignored by [`run`]). Clamped to
-    /// `1..=100_000`.
+    /// Number of shots for [`sample`] (ignored by [`run`]): 1 to
+    /// [`MAX_SHOTS`].
     #[serde(default = "default_shots")]
     shots: u32,
 }
@@ -379,12 +397,16 @@ pub async fn run(source: String, options: JsValue) -> Result<JsValue, JsValue> {
 /// histogram of observed values per named output variable.
 ///
 /// `options` accepts the same object as [`run`] plus `shots` (default 1024,
-/// clamped to `1..=100_000`). A given `seed` reproduces the whole histogram.
+/// at most 100 000). A given `seed` reproduces the whole histogram.
 /// Returns `{ shots, backend, precision, histograms: [{ name, total, bars: [{ label, count }] }] }`.
 #[wasm_bindgen]
 pub async fn sample(source: String, options: JsValue) -> Result<JsValue, JsValue> {
     let session = Session::new(&source, options).await?;
-    let shots = session.shots.clamp(1, 100_000);
+    let shots = session.shots;
+    if !(1..=MAX_SHOTS).contains(&shots) {
+        let message = format!("`shots` must be between 1 and {MAX_SHOTS}, not {shots}");
+        return Err(js_sys::Error::new(&message).into());
+    }
     let module = &session.module;
     let mut vm = Vm::new(module, session.backend, session.externs);
     let inputs =

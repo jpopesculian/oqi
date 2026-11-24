@@ -31,9 +31,9 @@ use async_trait::async_trait;
 use faer::{Mat, MatRef};
 use num_complex::Complex;
 
-use crate::backend::{GateModifiers, QuantumBackend};
+use crate::backend::{GateModifiers, MAX_STATE_BYTES, QuantumBackend};
 use crate::clifford::{M2, effective_matrix, identity};
-use crate::error::KindResult;
+use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
 use crate::measure::renorm;
 use crate::rng::Rng;
 
@@ -116,8 +116,17 @@ impl Site {
 /// Matrix-product-state simulator: memory and time scale with the
 /// entanglement (bond dimension) instead of 2ⁿ, truncating to at most
 /// `max_bond` singular values per bond.
+///
+/// Like the dense simulators it keeps its state under 16 GiB: a gate that
+/// would grow the tensors past that fails with [`VmErrorKind::Backend`]
+/// (lower the bond cap to trade accuracy for memory), and
+/// [`amplitudes`](QuantumBackend::amplitudes) returns `None` for more than
+/// 30 qubits.
 pub struct MpsSim {
     sites: Vec<Site>,
+    /// Total entries over every site's tensor, kept up to date by
+    /// [`set_site`](Self::set_site).
+    elements: usize,
     /// The orthogonality centre.
     center: usize,
     /// The global phase from `gphase`, kept off the tensors.
@@ -133,16 +142,53 @@ impl MpsSim {
     pub const DEFAULT_MAX_BOND: usize = 256;
 
     /// A fresh simulator with `num_qubits` qubits in |0…0⟩, an RNG seed for
-    /// measurement sampling, and a cap on the bond dimension (at least 1).
-    pub fn new(num_qubits: u32, seed: u64, max_bond: usize) -> Self {
-        MpsSim {
+    /// measurement sampling, and a cap on the bond dimension.
+    ///
+    /// Fails with [`VmErrorKind::Backend`] if `max_bond` is 0, and with
+    /// [`VmErrorKind::TooManyQubits`] if even the unentangled chain would
+    /// not fit in memory.
+    pub fn new(num_qubits: u32, seed: u64, max_bond: usize) -> VmResult<Self> {
+        if max_bond == 0 {
+            return Err(VmError::new(VmErrorKind::Backend(
+                "the MPS bond cap must be at least 1".into(),
+            )));
+        }
+        let per_site = (std::mem::size_of::<Site>() + 2 * std::mem::size_of::<C64>()) as u64;
+        if u64::from(num_qubits).saturating_mul(per_site) > MAX_STATE_BYTES {
+            return Err(VmError::new(VmErrorKind::TooManyQubits {
+                requested: num_qubits,
+            }));
+        }
+        Ok(MpsSim {
             sites: vec![Site::zero(); num_qubits as usize],
+            elements: 2 * num_qubits as usize,
             center: 0,
             phase: Complex::new(1.0, 0.0),
-            max_bond: max_bond.max(1),
+            max_bond,
             discarded: 0.0,
             rng: Rng::new(seed),
+        })
+    }
+
+    /// Replace site `k`, keeping the entry count current.
+    fn set_site(&mut self, k: usize, site: Site) {
+        self.elements = self.elements - self.sites[k].data.len() + site.data.len();
+        self.sites[k] = site;
+    }
+
+    /// Fail if `extra` more tensor entries would take the state past the
+    /// memory ceiling.
+    fn reserve(&self, extra: usize) -> KindResult<()> {
+        let entries = self.elements.saturating_add(extra) as u64;
+        if entries.saturating_mul(std::mem::size_of::<C64>() as u64) > MAX_STATE_BYTES {
+            return Err(VmErrorKind::Backend(format!(
+                "the matrix-product state would need more than {} GiB at this \
+                 entanglement; lower the bond cap (now {})",
+                MAX_STATE_BYTES >> 30,
+                self.max_bond
+            )));
         }
+        Ok(())
     }
 
     /// Move the orthogonality centre to site `k` by QR sweeps.
@@ -151,18 +197,19 @@ impl MpsSim {
             let c = self.center;
             // A = Q·R: Q stays, R moves right.
             let qr = self.sites[c].left().qr();
-            self.sites[c] = Site::from_left(qr.compute_thin_Q().as_ref());
+            self.set_site(c, Site::from_left(qr.compute_thin_Q().as_ref()));
             let next = qr.thin_R() * self.sites[c + 1].right();
-            self.sites[c + 1] = Site::from_right(next.as_ref());
+            self.set_site(c + 1, Site::from_right(next.as_ref()));
             self.center += 1;
         }
         while self.center > k {
             let c = self.center;
             // A = L·Q, from Aᴴ = Q'·R': Q = Q'ᴴ stays, L = R'ᴴ moves left.
             let qr = self.sites[c].right().adjoint().qr();
-            self.sites[c] = Site::from_right(qr.compute_thin_Q().adjoint().to_owned().as_ref());
+            let q = qr.compute_thin_Q().adjoint().to_owned();
+            self.set_site(c, Site::from_right(q.as_ref()));
             let prev = self.sites[c - 1].left() * qr.thin_R().adjoint();
-            self.sites[c - 1] = Site::from_left(prev.as_ref());
+            self.set_site(c - 1, Site::from_left(prev.as_ref()));
             self.center -= 1;
         }
     }
@@ -170,15 +217,19 @@ impl MpsSim {
     /// Restore canonical form over sites `a..=b` after an operator was
     /// applied there (everything outside still canonical towards it):
     /// orthonormalize left to right, then truncate right to left by SVD.
-    /// The centre ends at `a`.
-    fn compress(&mut self, a: usize, b: usize) {
+    /// The centre ends at `a`. Fails if a singular value decomposition does
+    /// not converge, as it may on non-finite amplitudes (a NaN angle).
+    fn compress(&mut self, a: usize, b: usize) -> KindResult<()> {
         self.center = a;
         self.move_center(b);
         for c in (a + 1..=b).rev() {
-            let svd = self.sites[c]
-                .right()
-                .thin_svd()
-                .expect("SVD of a finite MPS tensor converges");
+            let svd = self.sites[c].right().thin_svd().map_err(|_| {
+                VmErrorKind::Backend(
+                    "a singular value decomposition did not converge \
+                     (non-finite amplitudes?)"
+                        .into(),
+                )
+            })?;
             let s: Vec<f64> = svd.S().column_vector().iter().map(|x| x.re).collect();
             let keep = self.truncation(&s);
             // Keep the norm: scale the kept singular values back up to the
@@ -194,14 +245,15 @@ impl MpsSim {
                 self.discarded += 1.0 - kept / total;
             }
             let v = svd.V().get(.., ..keep);
-            self.sites[c] = Site::from_right(v.adjoint().to_owned().as_ref());
+            self.set_site(c, Site::from_right(v.adjoint().to_owned().as_ref()));
             let us = Mat::from_fn(svd.U().nrows(), keep, |i, j| {
                 svd.U()[(i, j)] * (s[j] * scale)
             });
             let prev = self.sites[c - 1].left() * us;
-            self.sites[c - 1] = Site::from_left(prev.as_ref());
+            self.set_site(c - 1, Site::from_left(prev.as_ref()));
         }
         self.center = a;
+        Ok(())
     }
 
     /// How many of the (descending) singular values `s` to keep.
@@ -257,12 +309,23 @@ impl MpsSim {
     /// Apply `I + ⊗ₖ Oₖ` over sites `a..=b`, where `ops` gives `Oₖ` for the
     /// sites it names and every other site in the span takes `I`. Channel 0
     /// of the doubled bonds carries `I`, channel 1 carries `Oₖ`.
-    fn apply_sum(&mut self, ops: &[(usize, M2)]) {
+    fn apply_sum(&mut self, ops: &[(usize, M2)]) -> KindResult<()> {
         let a = ops.iter().map(|&(k, _)| k).min().expect("an operator");
         let b = ops.iter().map(|&(k, _)| k).max().expect("an operator");
         self.move_center(a);
+        // Each inner bond of the span doubles until `compress` cuts it back.
+        let doubled: usize = (a..=b)
+            .map(|k| {
+                let site = &self.sites[k];
+                let lch = if k == a { 1 } else { 2 };
+                let rch = if k == b { 1 } else { 2 };
+                site.data.len() * (lch * rch - 1)
+            })
+            .sum();
+        self.reserve(doubled)?;
         let id = identity();
-        for (k, site) in self.sites.iter_mut().enumerate().take(b + 1).skip(a) {
+        for k in a..=b {
+            let site = &self.sites[k];
             let op = ops.iter().find(|&&(q, _)| q == k).map_or(&id, |(_, m)| m);
             let (dl, dr) = (site.dl, site.dr);
             let lch = if k == a { 1 } else { 2 };
@@ -285,18 +348,23 @@ impl MpsSim {
                     }
                 }
             }
-            *site = Site {
+            let site = Site {
                 dl: dl * lch,
                 dr: ndr,
                 data,
             };
+            self.set_site(k, site);
         }
-        self.compress(a, b);
+        self.compress(a, b)
     }
 }
 
 #[async_trait(?Send)]
 impl QuantumBackend for MpsSim {
+    fn num_qubits(&self) -> u32 {
+        self.sites.len() as u32
+    }
+
     fn u(
         &mut self,
         target: u32,
@@ -327,8 +395,7 @@ impl QuantumBackend for MpsSim {
                 .iter()
                 .map(|&c| (c as usize, [[one, zero], [zero, zero]])),
         );
-        self.apply_sum(&ops);
-        Ok(())
+        self.apply_sum(&ops)
     }
 
     fn gphase(&mut self, gamma: f64) -> KindResult<()> {
@@ -364,6 +431,7 @@ impl QuantumBackend for MpsSim {
 
     fn reset_state(&mut self) -> KindResult<()> {
         self.sites.fill(Site::zero());
+        self.elements = 2 * self.sites.len();
         self.center = 0;
         self.phase = Complex::new(1.0, 0.0);
         self.discarded = 0.0;
@@ -371,6 +439,11 @@ impl QuantumBackend for MpsSim {
     }
 
     async fn amplitudes(&self) -> Option<Vec<Complex<f64>>> {
+        // The dense vector obeys the dense simulators' memory ceiling.
+        let bytes = (std::mem::size_of::<C64>() as u64).checked_shl(self.num_qubits())?;
+        if self.num_qubits() >= 64 || bytes > MAX_STATE_BYTES {
+            return None;
+        }
         // Contract left to right: `psi[idx·d + r]` holds the amplitude of
         // the qubits so far in basis state `idx` (qubit q is bit q), left
         // open on bond index `r` of width `d`.
@@ -505,7 +578,7 @@ mod tests {
         pollster::block_on(async {
             let n = 6u32;
             for seed in 0..24u64 {
-                let mut mps = MpsSim::new(n, seed + 1, usize::MAX);
+                let mut mps = MpsSim::new(n, seed + 1, usize::MAX).unwrap();
                 let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
                 for op in random_circuit(n, 60, seed) {
                     match op {
@@ -545,7 +618,8 @@ mod tests {
         pollster::block_on(async {
             let (mut saw_zero, mut saw_one) = (false, false);
             for seed in 0..40u64 {
-                let mut mps = MpsSim::new(2, (seed + 1).wrapping_mul(0x9E3779B97F4A7C15), 8);
+                let mut mps =
+                    MpsSim::new(2, (seed + 1).wrapping_mul(0x9E3779B97F4A7C15), 8).unwrap();
                 mps.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
                     .unwrap(); // H
                 mps.u(1, PI, 0.0, PI, &GateModifiers::ctrl(&[0])).unwrap(); // CX
@@ -564,7 +638,7 @@ mod tests {
     fn reset_matches_statevector() {
         pollster::block_on(async {
             let none = GateModifiers::none();
-            let mut mps = MpsSim::new(3, 5, 8);
+            let mut mps = MpsSim::new(3, 5, 8).unwrap();
             let mut sv = StateVectorSim::<f64>::try_zeroed(3, 5).unwrap();
             for b in [&mut mps as &mut dyn QuantumBackend, &mut sv] {
                 b.u(0, FRAC_PI_2, 0.0, PI, &none).unwrap(); // H q0
@@ -580,7 +654,7 @@ mod tests {
     #[test]
     fn reset_state_rezeros() {
         pollster::block_on(async {
-            let mut mps = MpsSim::new(3, 7, 8);
+            let mut mps = MpsSim::new(3, 7, 8).unwrap();
             mps.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
                 .unwrap();
             mps.u(2, PI, 0.0, PI, &GateModifiers::ctrl(&[0])).unwrap();
@@ -597,7 +671,7 @@ mod tests {
     #[test]
     fn truncation_renormalizes() {
         pollster::block_on(async {
-            let mut mps = MpsSim::new(2, 1, 1);
+            let mut mps = MpsSim::new(2, 1, 1).unwrap();
             mps.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
                 .unwrap();
             mps.u(1, PI, 0.0, PI, &GateModifiers::ctrl(&[0])).unwrap();
@@ -634,7 +708,7 @@ mod tests {
         pollster::block_on(async {
             let n = 5u32;
             let circuit = random_circuit(n, 40, 3);
-            let mut mps = MpsSim::new(n, 1, usize::MAX);
+            let mut mps = MpsSim::new(n, 1, usize::MAX).unwrap();
             apply_unitaries(&mut mps, &circuit);
             let mut sv = StateVectorSim::<f64>::try_zeroed(n, 1).unwrap();
             apply_unitaries(&mut sv, &circuit);
@@ -662,7 +736,7 @@ mod tests {
     #[test]
     fn sampling_leaves_the_state_untouched() {
         pollster::block_on(async {
-            let mut mps = MpsSim::new(4, 2, usize::MAX);
+            let mut mps = MpsSim::new(4, 2, usize::MAX).unwrap();
             apply_unitaries(&mut mps, &random_circuit(4, 30, 5));
             mps.measure(3).await; // centre on the last site
             let before = mps.amplitudes().await.unwrap();
@@ -680,7 +754,7 @@ mod tests {
     fn sampling_needs_no_amplitudes() {
         pollster::block_on(async {
             let n = 100u32;
-            let mut mps = MpsSim::new(n, 1, 8);
+            let mut mps = MpsSim::new(n, 1, 8).unwrap();
             mps.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
                 .unwrap();
             for q in 0..n - 1 {
@@ -698,11 +772,31 @@ mod tests {
     #[test]
     fn zero_qubits_hold_the_global_phase() {
         pollster::block_on(async {
-            let mut mps = MpsSim::new(0, 1, 8);
+            let mut mps = MpsSim::new(0, 1, 8).unwrap();
             mps.gphase(0.3).unwrap();
             let amps = mps.amplitudes().await.unwrap();
             assert_eq!(amps.len(), 1);
             assert!((amps[0] - Complex::from_polar(1.0, 0.3)).norm() < TOL);
         })
+    }
+
+    /// The chain refuses what would not fit in memory, before allocating it.
+    #[test]
+    fn memory_is_bounded() {
+        assert!(matches!(
+            MpsSim::new(u32::MAX, 1, 8).err().map(|e| e.kind),
+            Some(VmErrorKind::TooManyQubits { .. })
+        ));
+        assert!(matches!(
+            MpsSim::new(2, 1, 0).err().map(|e| e.kind),
+            Some(VmErrorKind::Backend(_))
+        ));
+        // A state already at the ceiling cannot grow a bond.
+        let mut mps = MpsSim::new(2, 1, 8).unwrap();
+        mps.u(0, FRAC_PI_2, 0.0, PI, &GateModifiers::none())
+            .unwrap();
+        mps.elements = (MAX_STATE_BYTES / std::mem::size_of::<C64>() as u64) as usize;
+        let err = mps.u(1, PI, 0.0, PI, &GateModifiers::ctrl(&[0]));
+        assert!(matches!(err, Err(VmErrorKind::Backend(_))), "{err:?}");
     }
 }

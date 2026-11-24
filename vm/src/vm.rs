@@ -169,9 +169,16 @@ pub struct Vm<'m, B: QuantumBackend, E: ExternProvider> {
     /// no-ops and `measure` returns the injected bit per qubit, so the
     /// classical program runs quantum-free. Set by `run_inject`.
     inject: Option<Vec<bool>>,
+    /// Whether a run has acted on the backend since it was handed to the VM,
+    /// so the next run must return it to |0…0⟩ first.
+    backend_used: bool,
 }
 
 impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
+    /// A VM for `module` on `backend`, with `externs` providing the
+    /// program's `extern` functions. The backend must have at least as many
+    /// qubits as the program uses (a run fails otherwise) and should be in
+    /// |0…0⟩; every run after the first resets it there.
     pub fn new(module: &'m BcModule, backend: B, externs: E) -> Self {
         let mut gate_procs = HashMap::new();
         let mut sub_procs = HashMap::new();
@@ -239,6 +246,7 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
             capture: None,
             captured_shots: None,
             inject: None,
+            backend_used: false,
         }
     }
 
@@ -297,8 +305,8 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         self.run_with_inputs(inputs).await
     }
 
-    /// Run the program `shots` times on a fresh backend and return every
-    /// shot's result, in order.
+    /// Run the program `shots` times and return every shot's result, in
+    /// order. Like every run, each shot starts from |0…0⟩.
     ///
     /// When no quantum operation depends on a measurement outcome
     /// ([`is_sample_safe`]) and the backend
@@ -316,21 +324,16 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
         seed: u64,
     ) -> VmResult<Vec<RunResult>> {
         let mut results = Vec::with_capacity(shots as usize);
-        let mut fresh = true;
-        if self.backend.can_sample_shots() && is_sample_safe(self.module) {
-            fresh = false;
-            if let Some(drawn) = self.run_capture(inputs.clone(), shots, seed).await? {
-                for basis in drawn {
-                    results.push(self.run_inject(inputs.clone(), basis).await?);
-                }
-                return Ok(results);
+        if self.backend.can_sample_shots()
+            && is_sample_safe(self.module)
+            && let Some(drawn) = self.run_capture(inputs.clone(), shots, seed).await?
+        {
+            for basis in drawn {
+                results.push(self.run_inject(inputs.clone(), basis).await?);
             }
+            return Ok(results);
         }
         for _ in 0..shots {
-            if !fresh {
-                self.backend.reset_state()?;
-            }
-            fresh = false;
             results.push(self.run_with_inputs(inputs.clone()).await?);
         }
         Ok(results)
@@ -374,6 +377,20 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// instruction in flight is tracked in `self.current_span` and attached by
     /// [`run_with_inputs`](Self::run_with_inputs).
     async fn run_inner(&mut self, mut inputs: HashMap<SymbolId, Value>) -> KindResult<RunResult> {
+        let (have, need) = (self.backend.num_qubits(), self.module.qubits.num_qubits);
+        if have < need {
+            return Err(VmErrorKind::Backend(format!(
+                "the program uses {need} qubits but the backend has {have}"
+            )));
+        }
+        // Every run starts from |0…0⟩. A shot replay (`inject`) leaves the
+        // backend alone.
+        if self.inject.is_none() {
+            if self.backend_used {
+                self.backend.reset_state()?;
+            }
+            self.backend_used = true;
+        }
         self.cal_values.clear();
         self.measurements.clear();
         let entry = self.module.entry;

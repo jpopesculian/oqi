@@ -7,8 +7,17 @@ use crate::bitreg::BitReg;
 use crate::duration::{Duration, DurationUnit};
 use crate::error::Result;
 use crate::primitive::{
-    FloatWidth, IntWidth, Primitive, PrimitiveTy, angle_bits, angle_from_bits, iw,
+    FloatWidth, IntWidth, Primitive, PrimitiveTy, angle_bits, angle_from_bits, iw, resize_int,
+    resize_uint,
 };
+
+/// `v` as a `float[fw]` holds it: rounded to single precision for 32 bits.
+const fn round_to(v: f64, fw: FloatWidth) -> f64 {
+    match fw {
+        FloatWidth::F32 => v as f32 as f64,
+        _ => v,
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Scalar {
@@ -67,33 +76,45 @@ impl Scalar {
     pub const fn bit(v: bool) -> Self {
         Self::new_unchecked(Primitive::bit(v), PrimitiveTy::Bit)
     }
+    /// An `int[bw]`, wrapping `v` to `bw` bits.
     #[inline]
     pub const fn int(v: i128, bw: IntWidth) -> Self {
-        Self::new_unchecked(Primitive::int(v), PrimitiveTy::Int(bw))
+        Self::new_unchecked(Primitive::int(resize_int(v, bw)), PrimitiveTy::Int(bw))
     }
+    /// A `uint[bw]`, wrapping `v` to `bw` bits.
     #[inline]
     pub const fn uint(v: u128, bw: IntWidth) -> Self {
-        Self::new_unchecked(Primitive::uint(v), PrimitiveTy::Uint(bw))
+        Self::new_unchecked(Primitive::uint(resize_uint(v, bw)), PrimitiveTy::Uint(bw))
     }
+    /// A `float[fw]`, rounding `v` to single precision for `float[32]`.
     #[inline]
     pub const fn float(v: f64, fw: FloatWidth) -> Self {
-        Self::new_unchecked(Primitive::float(v), PrimitiveTy::Float(fw))
+        Self::new_unchecked(Primitive::float(round_to(v, fw)), PrimitiveTy::Float(fw))
     }
+    /// A `complex[float[fw]]`, rounding both parts like [`Scalar::float`].
     #[inline]
     pub const fn complex(re: f64, im: f64, fw: FloatWidth) -> Self {
-        Self::new_unchecked(Primitive::complex(re, im), PrimitiveTy::Complex(fw))
+        Self::new_unchecked(
+            Primitive::complex(round_to(re, fw), round_to(im, fw)),
+            PrimitiveTy::Complex(fw),
+        )
     }
     #[inline]
     pub const fn duration(v: f64, unit: DurationUnit) -> Self {
         Self::new_unchecked(Primitive::duration(v, unit), PrimitiveTy::Duration)
     }
+    /// A `bit[width]` holding the low `width` bits of `reg`.
     #[inline]
     pub fn bitreg(reg: BitReg, width: u32) -> Self {
-        Self::new_unchecked(Primitive::bitreg(reg), PrimitiveTy::BitReg(width))
+        Self::new_unchecked(
+            Primitive::bitreg(reg.resize(width)),
+            PrimitiveTy::BitReg(width),
+        )
     }
+    /// A `bit[width]` holding the low `width` bits of `bits`.
     #[inline]
     pub fn bitreg_u128(bits: u128, width: u32) -> Self {
-        Self::new_unchecked(Primitive::bitreg_u128(bits), PrimitiveTy::BitReg(width))
+        Self::bitreg(BitReg::from(bits), width)
     }
     #[inline]
     pub fn angle(radians: f64) -> Self {
@@ -211,6 +232,27 @@ impl fmt::Display for Scalar {
 mod tests {
     use super::*;
     use crate::iw;
+
+    /// A typed constructor holds the value its type can: wider integers
+    /// wrap, wider registers lose their high bits, `float[32]` rounds.
+    #[test]
+    fn typed_constructors_normalize_to_their_width() {
+        assert_eq!(Scalar::int(200, iw(8)).to_string(), "-56");
+        assert_eq!(Scalar::int(-1, iw(8)).to_string(), "-1");
+        assert_eq!(Scalar::uint(300, iw(8)).to_string(), "44");
+        assert_eq!(Scalar::bitreg_u128(0b1111, 2).to_string(), "\"11\"");
+        assert_eq!(
+            Scalar::bitreg(BitReg::from(0b1111u128), 2).to_string(),
+            "\"11\""
+        );
+        let third = Scalar::float(1.0 / 3.0, FloatWidth::F32);
+        assert_eq!(third.to_string(), f64::from(1.0f32 / 3.0).to_string());
+        let c = Scalar::complex(1.0 / 3.0, 0.0, FloatWidth::F32);
+        let Primitive::Complex(c) = c.value() else {
+            panic!("complex")
+        };
+        assert_eq!(c.re, f64::from(1.0f32 / 3.0));
+    }
 
     #[test]
     fn angle_and_register_casts_copy_the_bit_pattern() {

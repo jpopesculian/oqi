@@ -10,7 +10,9 @@
 use std::collections::HashMap;
 
 use num_complex::Complex64;
-use oqi_classical::{Array, BitReg, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy};
+use oqi_classical::{
+    Array, BitReg, DurationUnit, FloatWidth, Primitive, PrimitiveTy, Scalar, Value, ValueTy,
+};
 use oqi_compile::bytecode::BcModule;
 use oqi_compile::symbol::SymbolId;
 
@@ -101,6 +103,32 @@ impl HostValue {
         }
     }
 
+    fn to_complex(&self, what: &str) -> Result<Complex64, String> {
+        match self {
+            HostValue::Complex(c) => Ok(*c),
+            HostValue::Text(s) => parse_complex(s)
+                .ok_or_else(|| format!("{what}: `{s}` is not a complex number (e.g. `1.5-2im`)")),
+            HostValue::Bool(_) | HostValue::List(_) => Err(format!(
+                "{what} must be a number or a complex string like `1.5-2im`"
+            )),
+            real => Ok(Complex64::new(real.to_f64(what)?, 0.0)),
+        }
+    }
+
+    /// An SI timing literal: a number, then `ns`, `us`, `µs`, `ms` or `s`.
+    fn to_duration(&self, what: &str) -> Result<(f64, DurationUnit), String> {
+        let err = || format!("{what} must be a duration with an SI unit, like `100ns`");
+        let HostValue::Text(s) = self else {
+            return Err(err());
+        };
+        let s = s.trim();
+        let unit_start = s.find(|c: char| c.is_alphabetic()).ok_or_else(err)?;
+        let (number, unit) = s.split_at(unit_start);
+        let value: f64 = number.trim().parse().map_err(|_| err())?;
+        let unit: DurationUnit = unit.parse().map_err(|_| err())?;
+        Ok((value, unit))
+    }
+
     fn to_bool(&self, what: &str) -> Result<bool, String> {
         match self {
             HostValue::Bool(b) => Ok(*b),
@@ -140,6 +168,34 @@ impl HostValue {
     }
 }
 
+/// Parse `a+bim`, `a-bim`, `bim` or `a`, optionally in parentheses and
+/// with spaces, as written in OpenQASM (and as complex outputs print).
+fn parse_complex(text: &str) -> Option<Complex64> {
+    let text: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let text = text
+        .strip_prefix('(')
+        .and_then(|t| t.strip_suffix(')'))
+        .unwrap_or(&text);
+    let Some(body) = text.strip_suffix("im") else {
+        return Some(Complex64::new(text.parse().ok()?, 0.0));
+    };
+    // The imaginary part starts at the first sign that is neither leading
+    // nor an exponent's (its own sign may follow: `1+-2im`).
+    let bytes = body.as_bytes();
+    let split = (1..bytes.len())
+        .find(|&i| matches!(bytes[i], b'+' | b'-') && !matches!(bytes[i - 1], b'e' | b'E'));
+    let (re, im) = match split {
+        Some(i) => (body[..i].parse().ok()?, &body[i..]),
+        None => (0.0, body),
+    };
+    let im = im.strip_prefix('+').unwrap_or(im);
+    let im = match im {
+        "" | "-" => return None,
+        im => im.parse().ok()?,
+    };
+    Some(Complex64::new(re, im))
+}
+
 /// How a host receives a program output: `bit`/`bool` as a boolean, `int`,
 /// `uint`, `float` and `complex` natively, everything else (bit registers,
 /// angles, durations, arrays) as its OpenQASM text form.
@@ -161,9 +217,11 @@ impl From<&Value> for HostValue {
 
 /// Coerce a host value to the declared type `ty`; `what` names the value in
 /// error messages. Integers and floats also accept decimal strings; angles
-/// are radians (wrapped mod 2π and quantized to the declared width); bit
-/// registers are MSB-first "0101" strings of the declared width; arrays take
-/// a (possibly nested) list whose leaves coerce to the element type.
+/// are radians (wrapped mod 2π and quantized to the declared width); complex
+/// numbers take a host complex, a real, or text like `1.5-2im`; durations
+/// take SI timing text like `100ns`; bit registers are MSB-first "0101"
+/// strings of the declared width; arrays take a (possibly nested) list
+/// whose leaves coerce to the element type.
 pub fn coerce(what: &str, raw: &HostValue, ty: ValueTy) -> Result<Value, String> {
     Ok(match ty {
         ValueTy::Scalar(PrimitiveTy::Int(w)) => Value::int(raw.to_i128(what)?, w),
@@ -176,6 +234,14 @@ pub fn coerce(what: &str, raw: &HostValue, ty: ValueTy) -> Result<Value, String>
                 .into()
         }
         ValueTy::Scalar(PrimitiveTy::BitReg(w)) => Value::bitreg(raw.to_bitreg(what, w)?, w),
+        ValueTy::Scalar(PrimitiveTy::Complex(w)) => {
+            let c = raw.to_complex(what)?;
+            Value::complex(c.re, c.im, w)
+        }
+        ValueTy::Scalar(PrimitiveTy::Duration) => {
+            let (value, unit) = raw.to_duration(what)?;
+            Value::duration(value, unit)
+        }
         ValueTy::Array(aty) => {
             if !matches!(raw, HostValue::List(_)) {
                 return Err(format!("{what} must be a list of `{}` values", aty.ty()));
@@ -366,5 +432,58 @@ mod tests {
             HostValue::from(&Value::bitreg_u128(0b101, 3)),
             HostValue::Text("\"101\"".into())
         );
+    }
+
+    fn complex64() -> ValueTy {
+        ValueTy::complex(FloatWidth::F64)
+    }
+
+    #[test]
+    fn complex_values_accept_complex_reals_and_text() {
+        let c = |re: f64, im: f64| Value::complex(re, im, FloatWidth::F64).to_string();
+        for (raw, re, im) in [
+            (HostValue::Complex(Complex64::new(1.5, -2.0)), 1.5, -2.0),
+            (HostValue::Float(0.5), 0.5, 0.0),
+            (HostValue::Int(-3), -3.0, 0.0),
+            (HostValue::Text("1+2im".into()), 1.0, 2.0),
+            (HostValue::Text(" 1.5 - 2.5 im ".into()), 1.5, -2.5),
+            (HostValue::Text("(1+-2im)".into()), 1.0, -2.0),
+            (HostValue::Text("-2im".into()), 0.0, -2.0),
+            (HostValue::Text("1e-3+1e2im".into()), 1e-3, 1e2),
+            (HostValue::Text("4".into()), 4.0, 0.0),
+        ] {
+            let value = coerce("z", &raw, complex64()).unwrap_or_else(|e| panic!("{raw:?}: {e}"));
+            assert_eq!(value.to_string(), c(re, im), "{raw:?}");
+        }
+        for raw in [
+            HostValue::Text("1+2i".into()),
+            HostValue::Text("im".into()),
+            HostValue::Bool(true),
+        ] {
+            assert!(coerce("z", &raw, complex64()).is_err(), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn durations_accept_si_timing_text() {
+        let ty = ValueTy::duration();
+        for (raw, value) in [
+            ("100ns", Value::duration(100.0, DurationUnit::Ns)),
+            ("1.5 us", Value::duration(1.5, DurationUnit::Us)),
+            ("2\u{b5}s", Value::duration(2.0, DurationUnit::Us)),
+            ("3ms", Value::duration(3.0, DurationUnit::Ms)),
+            ("0s", Value::duration(0.0, DurationUnit::S)),
+        ] {
+            let got = coerce("d", &HostValue::Text(raw.into()), ty).unwrap();
+            assert_eq!(got.to_string(), value.to_string(), "{raw}");
+        }
+        for raw in [
+            HostValue::Text("10dt".into()),
+            HostValue::Text("10".into()),
+            HostValue::Text("ns".into()),
+            HostValue::Float(1.0),
+        ] {
+            assert!(coerce("d", &raw, ty).is_err(), "{raw:?}");
+        }
     }
 }

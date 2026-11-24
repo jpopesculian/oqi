@@ -14,6 +14,11 @@
 //! onto a dense [`StateVectorSim`] if its 2ⁿ amplitudes are allocatable;
 //! otherwise the gate fails with a [`VmErrorKind::RankOverflow`].
 //!
+//! Memory is bounded like the dense simulators' (16 GiB): a tableau takes
+//! about 4n² bytes and each sum term 3n², so `AutoSim` refuses more than
+//! about 65 000 qubits with [`VmErrorKind::TooManyQubits`], and the term
+//! budget shrinks below [`SumPolicy::max_rank`] when n² terms would not fit.
+//!
 //! Gates arrive as `U(θ,φ,λ)`/`gphase` (the compiler lowers `h`/`s`/`cx`
 //! before the backend), so Clifford-ness is detected from the gate's matrix
 //! (see [`crate::clifford`]). Every applied op is logged until the dense
@@ -28,9 +33,9 @@ use std::f64::consts::PI;
 use async_trait::async_trait;
 use num_complex::Complex;
 
-use crate::backend::{BuiltinGate, GateModifiers, QuantumBackend};
+use crate::backend::{BuiltinGate, GateModifiers, MAX_STATE_BYTES, QuantumBackend};
 use crate::clifford::{CliffordSink, apply_clifford_u};
-use crate::error::{KindResult, VmErrorKind};
+use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
 use crate::rng::Rng;
 use crate::sim::StateVectorSim;
 use crate::stabilizer::Tableau;
@@ -97,22 +102,49 @@ pub struct AutoSim {
     policy: SumPolicy,
 }
 
+/// Bytes of a tableau over `n` qubits: `2n + 1` rows of two `n`-entry
+/// bit vectors, plus their headers.
+fn tableau_bytes(n: u64) -> u64 {
+    (2 * n + 1).saturating_mul(2 * n + 64)
+}
+
+/// Bytes of one sum-over-Cliffords term over `n` qubits: three `n × n` bit
+/// matrices, plus their headers.
+fn term_bytes(n: u64) -> u64 {
+    (3 * n).saturating_mul(n + 32)
+}
+
+/// The sum tier's term budget over `n` qubits: `max_rank`, or fewer if that
+/// many terms would not fit in memory (but always at least one).
+fn rank_budget(n: u32, max_rank: usize) -> usize {
+    let fits = MAX_STATE_BYTES / term_bytes(n.into());
+    max_rank
+        .min(usize::try_from(fits).unwrap_or(usize::MAX))
+        .max(1)
+}
+
 impl AutoSim {
     /// A fresh simulator with `num_qubits` qubits in |0…0⟩ (default seed
-    /// and [`SumPolicy`]).
-    pub fn new(num_qubits: u32) -> Self {
+    /// and [`SumPolicy`]), or [`VmErrorKind::TooManyQubits`] if its tableau
+    /// would not fit in memory.
+    pub fn new(num_qubits: u32) -> VmResult<Self> {
         Self::with_seed(num_qubits, DEFAULT_SEED)
     }
 
     /// A fresh simulator with an explicit RNG seed (for reproducible
     /// measurement sampling).
-    pub fn with_seed(num_qubits: u32, seed: u64) -> Self {
+    pub fn with_seed(num_qubits: u32, seed: u64) -> VmResult<Self> {
         Self::with_policy(num_qubits, seed, SumPolicy::default())
     }
 
     /// A fresh simulator with an explicit seed and sum-tier budget.
-    pub fn with_policy(num_qubits: u32, seed: u64, policy: SumPolicy) -> Self {
-        AutoSim {
+    pub fn with_policy(num_qubits: u32, seed: u64, policy: SumPolicy) -> VmResult<Self> {
+        if tableau_bytes(num_qubits.into()) > MAX_STATE_BYTES {
+            return Err(VmError::new(VmErrorKind::TooManyQubits {
+                requested: num_qubits,
+            }));
+        }
+        Ok(AutoSim {
             n: num_qubits,
             mode: Mode::Stabilizer {
                 tab: Tableau::zero(num_qubits as usize),
@@ -120,7 +152,12 @@ impl AutoSim {
                 rng: Rng::new(seed),
             },
             policy,
-        }
+        })
+    }
+
+    /// The sum tier's term budget (see [`rank_budget`]).
+    fn max_rank(&self) -> usize {
+        rank_budget(self.n, self.policy.max_rank)
     }
 
     /// Replay a recorded log onto a fresh state vector, or `None` if its 2ⁿ
@@ -207,7 +244,7 @@ impl AutoSim {
             }
             None => Err(VmErrorKind::RankOverflow {
                 rank: needed,
-                max_rank: self.policy.max_rank,
+                max_rank: self.max_rank(),
                 qubits: self.n,
             }),
         }
@@ -225,6 +262,10 @@ impl AutoSim {
 
 #[async_trait(?Send)]
 impl QuantumBackend for AutoSim {
+    fn num_qubits(&self) -> u32 {
+        self.n
+    }
+
     fn u(
         &mut self,
         target: u32,
@@ -233,6 +274,7 @@ impl QuantumBackend for AutoSim {
         lambda: f64,
         m: &GateModifiers,
     ) -> KindResult<()> {
+        let max_rank = self.max_rank();
         if let Mode::Stabilizer { tab, .. } = &mut self.mode
             && !apply_clifford_u(tab, target, theta, phi, lambda, m)
         {
@@ -252,7 +294,7 @@ impl QuantumBackend for AutoSim {
             // Applied to the tableau above.
             Mode::Stabilizer { log, .. } => log.push(gate()),
             Mode::Sum { sum, log, .. } => {
-                match sum.apply_u(target, theta, phi, lambda, m, self.policy.max_rank) {
+                match sum.apply_u(target, theta, phi, lambda, m, max_rank) {
                     Ok(()) => log.push(gate()),
                     Err(needed) => {
                         self.escalate(needed)?;
@@ -447,7 +489,7 @@ mod tests {
                 let amps = sv.amplitudes().await.unwrap();
 
                 for shot in 0..16u64 {
-                    let mut auto = AutoSim::with_seed(n, seed * 1000 + shot + 1);
+                    let mut auto = AutoSim::with_seed(n, seed * 1000 + shot + 1).unwrap();
                     for &g in &circ {
                         apply(&mut auto, g);
                     }
@@ -476,7 +518,7 @@ mod tests {
                 // Spread seeds so the first RNG draw varies (xorshift mixes weakly
                 // across tiny sequential seeds).
                 let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
-                let mut a = AutoSim::with_seed(2, s);
+                let mut a = AutoSim::with_seed(2, s).unwrap();
                 apply(&mut a, G::H(0));
                 apply(&mut a, G::Cx(0, 1));
                 let m0 = a.measure(0).await;
@@ -494,7 +536,7 @@ mod tests {
     fn hzh_flips_deterministically() {
         pollster::block_on(async {
             for seed in 0..8u64 {
-                let mut a = AutoSim::with_seed(1, seed + 1);
+                let mut a = AutoSim::with_seed(1, seed + 1).unwrap();
                 apply(&mut a, G::H(0));
                 apply(&mut a, G::Z(0));
                 apply(&mut a, G::H(0));
@@ -526,7 +568,7 @@ mod tests {
     fn fallback_matches_statevector() {
         pollster::block_on(async {
             let n = 4u32;
-            let mut auto = AutoSim::new(n);
+            let mut auto = AutoSim::new(n).unwrap();
             mixed_circuit(&mut auto);
             // A few non-Clifford gates fit comfortably in the default budget:
             // the run must stay exact in the sum tier, not go dense.
@@ -553,7 +595,7 @@ mod tests {
                 max_rank: 2,
                 dense_escape: true,
             };
-            let mut auto = AutoSim::with_policy(n, DEFAULT_SEED, policy);
+            let mut auto = AutoSim::with_policy(n, DEFAULT_SEED, policy).unwrap();
             mixed_circuit(&mut auto);
             assert_eq!(auto.mode_name(), "dense");
             let mut sv = StateVectorSim::<f64>::try_zeroed(n, 0).unwrap();
@@ -575,7 +617,7 @@ mod tests {
             let none = GateModifiers::none();
             for seed in 0..10u64 {
                 let s = (seed + 1).wrapping_mul(0x9E3779B97F4A7C15);
-                let mut auto = AutoSim::with_seed(3, s);
+                let mut auto = AutoSim::with_seed(3, s).unwrap();
                 // Random outcome (Bell pair), then a deterministic one (X|0⟩).
                 apply(&mut auto, G::H(0));
                 apply(&mut auto, G::Cx(0, 1));
@@ -618,7 +660,7 @@ mod tests {
                     dense_escape: true,
                 };
                 let none = GateModifiers::none();
-                let mut auto = AutoSim::with_policy(16, seed, policy);
+                let mut auto = AutoSim::with_policy(16, seed, policy).unwrap();
                 for q in 0..16 {
                     apply(&mut auto, G::H(q));
                 }
@@ -643,7 +685,7 @@ mod tests {
                 max_rank: 8,
                 dense_escape: true,
             };
-            let mut auto = AutoSim::with_policy(n, DEFAULT_SEED, policy);
+            let mut auto = AutoSim::with_policy(n, DEFAULT_SEED, policy).unwrap();
             let none = GateModifiers::none();
             apply(&mut auto, G::X(1));
             let t = |auto: &mut AutoSim| auto.u(0, 0.0, 0.0, FRAC_PI_4, &none);
@@ -663,5 +705,23 @@ mod tests {
             assert_eq!(auto.mode_name(), "sum");
             assert!(auto.measure(1).await, "the state before the gate survives");
         })
+    }
+
+    /// The tableau and the sum's terms stay under the memory ceiling: a
+    /// register too wide for a tableau is refused, and the term budget
+    /// shrinks with n² so that the terms always fit.
+    #[test]
+    fn memory_bounds_the_qubits_and_the_term_budget() {
+        assert!(matches!(
+            AutoSim::new(1_000_000).err().map(|e| e.kind),
+            Some(VmErrorKind::TooManyQubits {
+                requested: 1_000_000
+            })
+        ));
+        assert_eq!(rank_budget(10, 1024), 1024);
+        let wide = rank_budget(30_000, 1024);
+        assert!((1..1024).contains(&wide), "{wide}");
+        assert!(wide as u64 * term_bytes(30_000) <= MAX_STATE_BYTES);
+        assert_eq!(rank_budget(70_000, 1024), 1);
     }
 }

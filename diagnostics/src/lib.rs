@@ -17,7 +17,7 @@
 
 use std::borrow::Cow;
 use std::fmt;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::ops::Range;
 use std::path::Path;
 use std::str::FromStr;
@@ -156,22 +156,42 @@ pub trait Diagnostic {
     }
 
     /// The file the primary label refers to, when it differs from the file
-    /// being processed (e.g. an error inside an `include`d file).
+    /// being processed (e.g. an error inside an `include`d file). The
+    /// renderer asks its `included` lookup for that file's text.
     fn path(&self) -> Option<&Path> {
         None
     }
 }
 
-/// Render `diag` to stderr with colour.
-pub fn emit(diag: &dyn Diagnostic, root_path: &Path, root_source: &str) {
+/// Render `diag` to stderr: in colour when stderr is a terminal and
+/// `NO_COLOR` is not set.
+///
+/// The diagnostic is drawn against `root_source` (the file at `root_path`),
+/// or, when it points into another file ([`Diagnostic::path`]), against the
+/// text `included` returns for that file. Without that text only a headline
+/// is printed.
+pub fn emit(
+    diag: &dyn Diagnostic,
+    root_path: &Path,
+    root_source: &str,
+    included: &dyn Fn(&Path) -> Option<String>,
+) {
+    let color = std::io::stderr().is_terminal()
+        && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty());
     let mut stderr = std::io::stderr().lock();
-    render(diag, root_path, root_source, true, &mut stderr);
+    render(diag, root_path, root_source, included, color, &mut stderr);
 }
 
-/// Render `diag` to a string without colour — for tests and tooling.
-pub fn render_to_string(diag: &dyn Diagnostic, root_path: &Path, root_source: &str) -> String {
+/// Render `diag` to a string without colour, like [`emit`] — for tests and
+/// tooling.
+pub fn render_to_string(
+    diag: &dyn Diagnostic,
+    root_path: &Path,
+    root_source: &str,
+    included: &dyn Fn(&Path) -> Option<String>,
+) -> String {
     let mut buf = Vec::new();
-    render(diag, root_path, root_source, false, &mut buf);
+    render(diag, root_path, root_source, included, false, &mut buf);
     String::from_utf8_lossy(&buf).into_owned()
 }
 
@@ -187,15 +207,16 @@ fn render(
     diag: &dyn Diagnostic,
     root_path: &Path,
     root_source: &str,
+    included: &dyn Fn(&Path) -> Option<String>,
     color: bool,
     w: &mut impl Write,
 ) {
     let diagnostic_path = diag.path().unwrap_or(root_path);
+    // The text the diagnostic points into: empty when it is another file's
+    // and that file is unavailable, so no span fits and only the headline
+    // is printed.
     let source: Cow<str> = if diagnostic_path != root_path {
-        match std::fs::read_to_string(diagnostic_path) {
-            Ok(s) => Cow::Owned(s),
-            Err(_) => Cow::Borrowed(root_source),
-        }
+        included(diagnostic_path).map_or(Cow::Borrowed(""), Cow::Owned)
     } else {
         Cow::Borrowed(root_source)
     };
@@ -303,7 +324,7 @@ mod tests {
     #[test]
     fn renders_code_labels_and_note() {
         let source = "x;\n      x;\n";
-        let out = render_to_string(&Fake, Path::new("test.qasm"), source);
+        let out = render_to_string(&Fake, Path::new("test.qasm"), source, &|_| None);
         assert!(out.contains("C0002"), "missing code:\n{out}");
         assert!(
             out.contains("duplicate definition"),
@@ -326,7 +347,7 @@ mod tests {
         let source = "// µµµµ ééé\nint x = ;\n";
         let at = source.find(';').unwrap();
         let err = oqi_lex::Error::new(Span::new(at, at + 1), "expected expression");
-        let out = render_to_string(&err, Path::new("test.qasm"), source);
+        let out = render_to_string(&err, Path::new("test.qasm"), source, &|_| None);
         assert!(out.contains("test.qasm:2:9"), "{out}");
         assert!(out.contains("int x = ;"), "missing snippet:\n{out}");
         assert!(out.contains("syntax error"), "missing label:\n{out}");
@@ -337,7 +358,7 @@ mod tests {
         // E.g. an error inside an included file that cannot be re-read.
         for span in [Span::new(40, 45), Span::new(3, 400), Span::new(1, 2)] {
             let err = oqi_lex::Error::new(span, "somewhere else");
-            let out = render_to_string(&err, Path::new("test.qasm"), "é;\n");
+            let out = render_to_string(&err, Path::new("test.qasm"), "é;\n", &|_| None);
             assert!(out.contains("S0001"), "{out}");
             assert!(out.contains("somewhere else"), "{out}");
         }
@@ -349,7 +370,7 @@ mod tests {
         for source in ["int x =", "int x =\n", "é"] {
             let end = source.len();
             let err = oqi_lex::Error::new(Span::new(end, end), "expected expression");
-            let out = render_to_string(&err, Path::new("test.qasm"), source);
+            let out = render_to_string(&err, Path::new("test.qasm"), source, &|_| None);
             assert!(out.contains("syntax error"), "missing label:\n{out}");
         }
     }
@@ -375,8 +396,61 @@ mod tests {
                 vec![DiagLabel::primary(Span::default(), "here")]
             }
         }
-        let out = render_to_string(&NoSpan, Path::new("test.qasm"), "");
+        let out = render_to_string(&NoSpan, Path::new("test.qasm"), "", &|_| None);
         assert!(out.contains("R0007"), "{out}");
         assert!(out.contains("something went wrong"), "{out}");
+    }
+
+    /// An error inside an included file, at `5..8` of that file.
+    struct InInclude;
+
+    impl Diagnostic for InInclude {
+        fn code(&self) -> Code {
+            Code::compile(1)
+        }
+        fn message(&self) -> String {
+            "undefined name 'zzz'".into()
+        }
+        fn labels(&self) -> Vec<DiagLabel> {
+            vec![DiagLabel::primary(
+                Span::new(5, 8),
+                "not found in this scope",
+            )]
+        }
+        fn path(&self) -> Option<&Path> {
+            Some(Path::new("lib.inc"))
+        }
+    }
+
+    #[test]
+    fn an_error_in_an_included_file_renders_against_that_file() {
+        let root = "include \"lib.inc\";\n";
+        let lib = |path: &Path| (path == Path::new("lib.inc")).then(|| "int\n zzz;\n".to_string());
+        let out = render_to_string(&InInclude, Path::new("main.qasm"), root, &lib);
+        assert!(out.contains("lib.inc:2:2"), "{out}");
+        assert!(
+            out.contains(" zzz;"),
+            "missing the included snippet:\n{out}"
+        );
+        assert!(
+            !out.contains("include"),
+            "rendered against the root:\n{out}"
+        );
+    }
+
+    #[test]
+    fn an_included_file_that_cannot_be_read_gets_a_headline() {
+        // The span happens to fit the root source too; it must not be drawn
+        // there.
+        let root = "include \"lib.inc\";\n";
+        let out = render_to_string(&InInclude, Path::new("main.qasm"), root, &|_| None);
+        assert!(
+            out.contains("lib.inc: error[C0001]: undefined name 'zzz'"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("include"),
+            "rendered against the root:\n{out}"
+        );
     }
 }

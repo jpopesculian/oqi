@@ -186,7 +186,9 @@ impl FromStr for DurationUnit {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "ns" => Ok(DurationUnit::Ns),
-            "us" | "μs" => Ok(DurationUnit::Us),
+            // U+03BC GREEK SMALL LETTER MU or U+00B5 MICRO SIGN (lexer.g4
+            // accepts both).
+            "us" | "\u{3bc}s" | "\u{b5}s" => Ok(DurationUnit::Us),
             "ms" => Ok(DurationUnit::Ms),
             "s" => Ok(DurationUnit::S),
             _ => Err(DurationUnitParseError),

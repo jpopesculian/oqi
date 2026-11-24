@@ -177,14 +177,19 @@ impl<'a> Lexer<'a> {
             return Some(Err(self.reject_char("expected quoted string")));
         }
 
-        // Up to and including the closing quote; a line break or tab ends an
-        // unterminated string early.
-        let len = match rest[1..].find([quote, '\r', '\n', '\t']) {
-            Some(i) if rest[1 + i..].starts_with(quote) => i + 2,
-            Some(i) => i + 1,
-            None => rest.len(),
-        };
-        Some(Ok(self.take(len, Token::StringLiteral)))
+        // Up to and including the closing quote. As in lexer.g4, a string
+        // cannot span a line break or a tab.
+        match rest[1..].find([quote, '\r', '\n', '\t']) {
+            Some(i) if rest[1 + i..].starts_with(quote) => {
+                Some(Ok(self.take(i + 2, Token::StringLiteral)))
+            }
+            end => {
+                let len = end.map_or(rest.len(), |i| i + 1);
+                let span = Span::new(self.pos, self.pos + len);
+                self.pos = span.end;
+                Some(Err(Error::new(span, "unterminated string literal")))
+            }
+        }
     }
 
     // ------------------------------------------------------------------

@@ -22,6 +22,12 @@ use oqi_classical::Duration;
 use crate::error::KindResult;
 use crate::rng::Rng;
 
+/// The most memory a CPU backend commits to one quantum state: 16 GiB, about
+/// 30 qubits of `f64` amplitudes. A larger request is refused up front with
+/// [`VmErrorKind::TooManyQubits`](crate::VmErrorKind::TooManyQubits)
+/// rather than risk an overcommitting allocator killing the process later.
+pub(crate) const MAX_STATE_BYTES: u64 = 1 << 34;
+
 /// Modifiers on a single backend primitive call: the controls in scope
 /// plus a `power` to raise this one primitive to. Control indices are
 /// global qubit indices.
@@ -192,6 +198,10 @@ pub(crate) fn apply_gphase<B: QuantumBackend + ?Sized>(
 /// browser event loop).
 #[async_trait(?Send)]
 pub trait QuantumBackend {
+    /// The number of qubits the backend holds, indexed `0..num_qubits`. The
+    /// VM refuses to run a program that needs more.
+    fn num_qubits(&self) -> u32;
+
     /// Apply `U(θ, φ, λ)` to `target` under the given modifiers.
     fn u(
         &mut self,
@@ -293,6 +303,10 @@ pub trait QuantumBackend {
 /// backend (`Box<dyn QuantumBackend>`) without monomorphizing per choice.
 #[async_trait(?Send)]
 impl QuantumBackend for Box<dyn QuantumBackend> {
+    fn num_qubits(&self) -> u32 {
+        (**self).num_qubits()
+    }
+
     fn u(
         &mut self,
         target: u32,

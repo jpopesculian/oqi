@@ -16,7 +16,7 @@ use num_traits::Float;
 use oqi_quantum::{Gate, Unitary};
 use wide::{f32x8, f64x4};
 
-use crate::backend::{GateModifiers, QuantumBackend};
+use crate::backend::{GateModifiers, MAX_STATE_BYTES, QuantumBackend};
 use crate::error::{KindResult, VmError, VmErrorKind, VmResult};
 use crate::measure::renorm;
 use crate::rng::Rng;
@@ -136,14 +136,13 @@ impl<F: SimdLane> SimdSim<F> {
         // Match StateVector::try_zero: an overcommitting allocator can grant the
         // reservations below for a multi-TiB pair of arrays and only OOM-kill
         // the process when `resize` faults the pages in. Refuse anything past
-        // the same 16 GiB ceiling up front. The re/im arrays together hold
+        // the same ceiling up front. The re/im arrays together hold
         // 2·len·size_of::<F>() bytes. `u64` math so the ceiling stays valid on
         // 32-bit targets like wasm32.
-        const MAX_SIMD_STATE_BYTES: u64 = 1 << 34;
         let bytes = (len as u64)
             .checked_mul(2 * std::mem::size_of::<F>() as u64)
             .ok_or_else(too_many)?;
-        if bytes > MAX_SIMD_STATE_BYTES {
+        if bytes > MAX_STATE_BYTES {
             return Err(too_many());
         }
         let mut re: Vec<F> = Vec::new();
@@ -237,6 +236,10 @@ impl<F: SimdLane> SimdSim<F> {
 
 #[async_trait(?Send)]
 impl<F: SimdLane> QuantumBackend for SimdSim<F> {
+    fn num_qubits(&self) -> u32 {
+        self.re.len().trailing_zeros()
+    }
+
     fn u(
         &mut self,
         target: u32,

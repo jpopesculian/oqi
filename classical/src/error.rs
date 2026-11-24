@@ -12,19 +12,30 @@ pub enum Error {
     /// There is no cast from `from` to `to` (docs/types.rst, "Allowed
     /// casts").
     UnsupportedCast {
+        /// The type cast from.
         from: Box<ValueTy>,
+        /// The type cast to.
         to: Box<ValueTy>,
     },
     /// A value of type `received` where `expected` was required.
     UnexpectedTy {
+        /// The type required.
         expected: Box<ValueTy>,
+        /// The type given.
         received: Box<ValueTy>,
     },
     /// `op` has no definition for operands of these types.
-    UnsupportedOp { op: Operator, args: Vec<ValueTy> },
+    UnsupportedOp {
+        /// The operation.
+        op: Operator,
+        /// The operand types, in order.
+        args: Vec<ValueTy>,
+    },
     /// `index` does not select anything in a value of type `value`.
     IndexOutOfBounds {
+        /// The type of the indexed value.
         value: Box<ValueTy>,
+        /// The subscript.
         index: Vec<Index>,
     },
     /// A signed integer result does not fit its width.
@@ -32,15 +43,38 @@ pub enum Error {
     /// Division or remainder by zero.
     DivideByZero,
     /// `value` has no representation in `ty`.
-    TypeMismatch { value: Primitive, ty: PrimitiveTy },
+    TypeMismatch {
+        /// The value.
+        value: Primitive,
+        /// The type it was to be represented in.
+        ty: PrimitiveTy,
+    },
     /// An `int`/`uint`/`angle` width outside `1..=max` bits.
-    InvalidWidth { received: usize, max: usize },
+    InvalidWidth {
+        /// The width asked for.
+        received: usize,
+        /// The widest allowed.
+        max: usize,
+    },
     /// An array rank outside `1..=max` dimensions.
-    InvalidRank { received: usize, max: usize },
+    InvalidRank {
+        /// The rank asked for.
+        received: usize,
+        /// The highest allowed.
+        max: usize,
+    },
     /// An array with more than `max` elements.
-    TooManyElements { max: usize },
+    TooManyElements {
+        /// The most allowed.
+        max: usize,
+    },
     /// An array built from the wrong number of elements.
-    LengthMismatch { expected: usize, received: usize },
+    LengthMismatch {
+        /// The number of elements the shape holds.
+        expected: usize,
+        /// The number given.
+        received: usize,
+    },
     /// A write through a `readonly` array reference.
     ReadOnly,
     /// An array was read or written while a mutable reference to it was in

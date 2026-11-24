@@ -366,6 +366,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// inputs. If the program declares any `input`, prefer
     /// [`Vm::run_with_named_inputs`] — running with none errors on the
     /// first missing input.
+    ///
+    /// # Errors
+    ///
+    /// The first runtime [`Error`]: a missing input, a backend or extern
+    /// failure, a classical error such as a division by zero, and so on.
     pub async fn run(&mut self) -> Result<RunResult> {
         self.run_with_inputs(HashMap::new()).await
     }
@@ -374,6 +379,10 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// `inputs` (keyed by symbol id). Every declared input must be present
     /// and castable to its declared type; a value for a symbol that isn't a
     /// declared input is rejected.
+    ///
+    /// # Errors
+    ///
+    /// As for [`run`](Self::run).
     pub async fn run_with_inputs(&mut self, inputs: HashMap<SymbolId, Value>) -> Result<RunResult> {
         self.current_span = Span::default();
         self.run_inner(inputs)
@@ -384,6 +393,11 @@ impl<'m, B: QuantumBackend, E: ExternProvider> Vm<'m, B, E> {
     /// [`run_with_inputs`](Self::run_with_inputs) with the inputs given by
     /// name as host values, coerced to their declared types (see
     /// [`HostValue::coerce_to`]).
+    ///
+    /// # Errors
+    ///
+    /// As for [`run`](Self::run), and for a name that is not an input or a
+    /// value that does not fit its input's type.
     pub async fn run_with_named_inputs(
         &mut self,
         inputs: &[(String, HostValue)],

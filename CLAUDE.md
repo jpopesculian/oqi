@@ -4,13 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`oqi` is an OpenQASM 3.0 compiler and CPU simulator, written as a Rust workspace
-(edition 2024). It lexes, parses, type-checks, and lowers OpenQASM (including the
-OpenPulse grammar) to a bytecode IR, then interprets that bytecode against a
-state-vector simulator. The single binary is `oqi` (built from `cli/`, which uses
-the `oqi` facade crate).
+`oqi` is an OpenQASM 3.0 compiler and quantum simulator, written as a Rust
+workspace (edition 2024). It lexes, parses, type-checks, and lowers OpenQASM
+(including the OpenPulse grammar) to a bytecode IR, then interprets that bytecode
+on a choice of simulators (dense state vectors on CPU or WebGPU, a stabilizer /
+sum-over-Cliffords router, matrix product states). The single binary is `oqi`
+(built from `cli/`, which uses the `oqi` facade crate); `js/` and `py/` are the
+WebAssembly and Python bindings.
 
 ## Commands
+
+The dev machine has no swap: a runaway allocation freezes it. Run tests,
+benches and the binary under a memory cap, e.g.
+`systemd-run --user --scope -q -p MemoryMax=24G -p MemorySwapMax=0 -- cargo test`.
 
 ```bash
 cargo build                       # build the whole workspace
@@ -18,7 +24,10 @@ cargo test                        # run all tests
 cargo test -p oqi-compile         # test a single crate
 cargo test -p oqi-compile teleport  # run a single test by name
 cargo fmt
-cargo clippy --all-targets
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --exclude oqi-js --exclude oqi-py
+wasm-pack test --node js          # the wasm bindings
+(cd py && maturin develop && python -m pytest tests)  # the Python bindings, in a venv
 
 # Run the CLI
 cargo run -p oqi-cli -- compile fixtures/qasm/teleport.qasm --dump      # bytecode
@@ -163,6 +172,21 @@ testable variant.
 - `classical/src/ops/tests/` holds the operator tests, one module per operator;
   `agreement.rs` there checks that type-checking and evaluation accept exactly
   the same operands.
+
+## Releasing
+
+The published crates share `[workspace.package]` (one version, license
+`MIT OR Apache-2.0`, `rust-version`) and depend on each other through
+`[workspace.dependencies]` (path + version). Publish order: `oqi-lex`,
+`oqi-classical`, `oqi-parse`, `oqi-diagnostics`, `oqi-format`, `oqi-compile`,
+`oqi-vm`, `oqi`, `oqi-cli`; `oqi-js` (npm) and `oqi-py` (PyPI) are
+`publish = false`. Every published library has `#![warn(missing_docs)]`, a
+README and symlinked license files; integration tests that read the repo's
+`fixtures/` are excluded from the packages. `rust-version` is the highest
+`rust-version` among the locked dependencies (all features); clippy's
+`incompatible_msrv` checks std usage against it. CI (`.github/workflows/ci.yml`)
+runs fmt, clippy, tests, wasm and Python tests, docs, an MSRV check and
+`cargo package --workspace`.
 
 ## Reference material
 

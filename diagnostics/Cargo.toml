@@ -1,8 +1,17 @@
 [package]
 name = "oqi-diagnostics"
-version = "0.1.0"
-edition = "2024"
+description = "Stable error codes and source-annotated diagnostic rendering for the oqi OpenQASM 3 toolchain"
+keywords = ["openqasm", "qasm", "quantum", "diagnostics"]
+categories = ["development-tools", "science"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-oqi-lex = { path = "../lex" }
+oqi-lex.workspace = true
 ariadne = "0.6"

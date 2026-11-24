@@ -1,7 +1,17 @@
 [package]
 name = "oqi-format"
-version = "0.1.0"
-edition = "2024"
+description = "Source formatter for OpenQASM 3 programs, part of the oqi toolchain"
+keywords = ["openqasm", "qasm", "quantum", "formatter"]
+categories = ["development-tools", "science"]
+readme = "README.md"
+exclude = ["tests/fixtures.rs"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-oqi-parse = { path = "../parse" }
+oqi-parse.workspace = true

@@ -6,6 +6,11 @@
 //! [`ValueTy`] describes it. Operators are values too: [`ops::BinOp`] and
 //! [`ops::UnOp`] type-check with `return_ty` and evaluate with `apply`.
 //!
+//! This crate is a building block of [`oqi`](https://docs.rs/oqi), the
+//! OpenQASM 3 compiler and simulator, which re-exports it as
+//! `oqi::classical`: program inputs, outputs and `extern` arguments are
+//! these values.
+//!
 //! ```
 //! use oqi_classical::{FloatWidth, IntWidth, Value, ValueTy, ops::BinOp};
 //!
@@ -29,6 +34,7 @@
 //!
 //! - `serde`: serialize and deserialize values and types (used by the
 //!   bytecode format of `oqi-compile`).
+#![warn(missing_docs)]
 
 mod array;
 mod array_ref;

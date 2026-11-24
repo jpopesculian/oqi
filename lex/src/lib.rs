@@ -1,3 +1,32 @@
+//! The lexer for OpenQASM 3, including the OpenPulse calibration grammar.
+//!
+//! This crate is a building block of [`oqi`](https://docs.rs/oqi), the
+//! OpenQASM 3 compiler and simulator; most users want that crate (or
+//! `oqi-parse`, for a syntax tree) instead.
+//!
+//! [`Lexer`] turns source text into [`Token`]s with byte-offset [`Span`]s,
+//! following the reference ANTLR grammar (`lexer.g4`), including its modes for
+//! the version number, `include`/`defcalgrammar` strings, `pragma` and
+//! annotation lines, and calibration blocks. Comments are tokens too, so a
+//! formatter can keep them.
+//!
+//! ```
+//! use oqi_lex::{Lexer, Token};
+//!
+//! let tokens: Vec<Token> = Lexer::new("OPENQASM 3; qubit q;")
+//!     .map(|token| token.map(|(token, _span)| token))
+//!     .collect::<Result<_, _>>()?;
+//! assert_eq!(tokens[0], Token::OpenQasm);
+//! assert_eq!(tokens[1], Token::VersionSpecifier("3"));
+//! assert_eq!(tokens[3], Token::Qubit);
+//! # Ok::<(), oqi_lex::Error>(())
+//! ```
+//!
+//! # Features
+//!
+//! - `serde`: `Serialize`/`Deserialize` for [`Span`].
+#![warn(missing_docs)]
+
 mod error;
 mod span;
 mod token;
@@ -29,7 +58,11 @@ enum Mode {
 
 type Lexed<'a> = Option<Result<(Token<'a>, Span)>>;
 
-#[derive(Clone)]
+/// An iterator over the tokens of a source text, each with its [`Span`].
+///
+/// It yields `Err` for text that is not a token (an unexpected character, an
+/// unterminated comment or string) and continues after it.
+#[derive(Debug, Clone)]
 pub struct Lexer<'a> {
     source: &'a str,
     pos: usize,
@@ -38,6 +71,7 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
+    /// A lexer for an OpenQASM 3 program.
     pub fn new(source: &'a str) -> Self {
         Self {
             source,

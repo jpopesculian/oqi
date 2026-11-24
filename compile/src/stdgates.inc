@@ -1,5 +1,8 @@
 // OpenQASM 3.0 standard gate library
 //
+// From the OpenQASM project (https://github.com/openqasm/openqasm),
+// licensed under the Apache License, Version 2.0.
+//
 // Note: the gates defined by this file are exactly the set that the OpenQASM
 // 3.0 specification defined, as are the unitary actions, but implementations
 // have some scope for how they handle the file internally.  See the

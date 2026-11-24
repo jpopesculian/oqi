@@ -25,7 +25,12 @@ pub enum ErrorKind {
     /// An `extern` call's host implementation failed: it threw/rejected,
     /// or returned a value that can't be coerced to the declared return
     /// type.
-    Extern { name: String, message: String },
+    Extern {
+        /// The extern function.
+        name: String,
+        /// What went wrong.
+        message: String,
+    },
     /// A `GateCall` referenced a gate with no executable definition
     /// (not a built-in and no lifted gate body).
     UndefinedGate(String),
@@ -39,11 +44,19 @@ pub enum ErrorKind {
     /// An error surfaced by the classical value layer.
     Classical(oqi_classical::Error),
     /// A resolved qubit index fell outside the backend's register.
-    QubitOutOfRange { qubit: usize, num_qubits: usize },
+    QubitOutOfRange {
+        /// The qubit index.
+        qubit: usize,
+        /// How many qubits the backend has.
+        num_qubits: usize,
+    },
     /// A backend can't hold this many qubits: the state it needs (a state
     /// vector, a tableau, a matrix-product state, a GPU buffer) is larger
     /// than the memory it may use.
-    TooManyQubits { requested: u32 },
+    TooManyQubits {
+        /// The number of qubits asked for.
+        requested: u32,
+    },
     /// A calibration/pulse operation failed (raised by the installed
     /// [`OpenPulseHandler`](crate::OpenPulseHandler) /
     /// [`OpaqueCalHandler`](crate::OpaqueCalHandler), or by the VM when
@@ -52,8 +65,11 @@ pub enum ErrorKind {
     /// The auto backend's sum-over-Cliffords term budget was exhausted on
     /// a non-Clifford gate and the dense fallback is unavailable.
     RankOverflow {
+        /// The number of stabilizer terms the gate would need.
         rank: usize,
+        /// The term budget.
         max_rank: usize,
+        /// The number of qubits simulated.
         qubits: u32,
     },
     /// The requested backend can't be constructed here (no GPU adapter, or
@@ -64,7 +80,10 @@ pub enum ErrorKind {
     /// or measuring.
     Backend(String),
     /// Calls nested more than `limit` deep (unbounded recursion).
-    CallDepth { limit: u32 },
+    CallDepth {
+        /// The deepest nesting allowed.
+        limit: u32,
+    },
     /// Execution reached a block marked unreachable.
     Unreachable,
 }

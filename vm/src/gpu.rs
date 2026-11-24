@@ -101,6 +101,13 @@ fn apply_gate(@builtin(global_invocation_id) gid: vec3<u32>) {
 "#;
 
 /// A `wgpu`-backed state-vector simulator (single precision).
+///
+/// The state stays in GPU memory across gates (one compute dispatch per
+/// gate); a measurement reads it back, samples and collapses on the host,
+/// and uploads it again. WGSL has no `f64`, so amplitudes are `f32`. The
+/// constructor and readback are `async` so the backend works on the
+/// browser's main thread; natively, block on them (e.g. with `pollster`).
+/// At most 32 qubits, and only as many as one device buffer holds.
 pub struct GpuSim {
     device: wgpu::Device,
     queue: wgpu::Queue,

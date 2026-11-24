@@ -15,13 +15,19 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Index {
+    /// One position; drops the dimension it indexes.
     Item(isize),
     /// `start`, `start + step`, … up to but excluding `end`.
     Slice {
+        /// The first position (the start of the dimension if `None`).
         start: Option<isize>,
+        /// The step (1 if `None`).
         step: Option<isize>,
+        /// The position the slice stops before (the end of the dimension
+        /// if `None`).
         end: Option<isize>,
     },
+    /// The listed positions, in order: an index set.
     Select(Vec<isize>),
 }
 
@@ -399,6 +405,13 @@ impl Scalar {
         })
     }
 
+    /// Bit-level indexing (`x[i]`, `x[a:b]`) of an `int`, `uint`, `angle` or
+    /// `bit[n]`: a `bit` for one position, a `bit[k]` for several.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IndexOutOfBounds`] for a scalar without bits or a position
+    /// outside them.
     pub fn get(&self, indices: &[Index]) -> Result<Scalar> {
         if indices.is_empty() {
             return Ok(self.clone());
@@ -423,6 +436,12 @@ impl Scalar {
         }
     }
 
+    /// Write the bits a subscript selects (`x[i] = b`, `x[a:b] = "0101"`).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IndexOutOfBounds`] as for [`get`](Self::get);
+    /// [`Error::UnexpectedTy`] if `value` does not supply that many bits.
     pub fn set(&mut self, indices: &[Index], value: Scalar) -> Result<()> {
         if indices.is_empty() {
             if !self.ty().is_compatible(value.ty()) {
@@ -469,6 +488,12 @@ impl Scalar {
 }
 
 impl Array {
+    /// The element or sub-array a subscript selects: one index per
+    /// dimension, then any further indices into the element's bits.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IndexOutOfBounds`] if the subscript selects nothing.
     pub fn get(&self, indices: &[Index]) -> Result<Value> {
         if indices.is_empty() {
             return Ok(Value::Array(self.clone()));
@@ -495,6 +520,12 @@ impl Array {
         }
     }
 
+    /// Write `value` to the element or sub-array a subscript selects.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IndexOutOfBounds`] if the subscript selects nothing;
+    /// [`Error::UnexpectedTy`] if `value` has the wrong type or shape.
     pub fn set(&mut self, indices: &[Index], value: Value) -> Result<()> {
         if indices.is_empty() {
             return match value {
@@ -560,6 +591,13 @@ impl ArrayRef {
             .ok_or_else(|| index_error(self.ty().into(), indices))
     }
 
+    /// The element, or a narrower reference to the part of the array, that
+    /// a subscript selects within this reference.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IndexOutOfBounds`] if the subscript selects nothing;
+    /// [`Error::BadBorrow`] if the array is being written.
     pub fn get(&self, indices: &[Index]) -> Result<Value> {
         if indices.is_empty() {
             return Ok(Value::ArrayRef(self.clone()));
@@ -576,6 +614,12 @@ impl ArrayRef {
         }
     }
 
+    /// Write through the reference to the part a subscript selects.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ReadOnly`] for a `readonly` reference, and the errors of
+    /// [`Array::set`].
     pub fn set(&mut self, indices: &[Index], value: Value) -> Result<()> {
         if matches!(self.ty().access(), RefAccess::Readonly) {
             return Err(Error::ReadOnly);
@@ -596,6 +640,10 @@ impl Value {
     /// Index into the value. An owned array yields an owned element or
     /// sub-array (a copy: writing to it does not write to `self`); an array
     /// reference yields a narrower reference to the same array.
+    ///
+    /// # Errors
+    ///
+    /// As for the indexed type's own `get`.
     pub fn get(&self, indices: &[Index]) -> Result<Value> {
         if indices.is_empty() {
             return Ok(self.clone());
@@ -608,6 +656,12 @@ impl Value {
         }
     }
 
+    /// Write `value` to the part a subscript selects (all of it for an empty
+    /// subscript).
+    ///
+    /// # Errors
+    ///
+    /// As for the indexed type's own `set`.
     pub fn set(&mut self, indices: &[Index], value: Value) -> Result<()> {
         if indices.is_empty() {
             if !self.ty().is_compatible(&value.ty()) {
@@ -631,6 +685,11 @@ impl Value {
 }
 
 impl ValueTy {
+    /// The type of what a subscript selects from a value of this type.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::IndexOutOfBounds`] if the subscript selects nothing.
     pub fn get(&self, indices: &[Index]) -> Result<ValueTy> {
         if indices.is_empty() {
             return Ok(*self);

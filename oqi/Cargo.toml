@@ -1,17 +1,24 @@
 [package]
 name = "oqi"
-version = "0.1.0"
-edition = "2024"
 description = "OpenQASM 3 compiler and quantum simulator: compile, run, sample and format OpenQASM 3 programs"
+keywords = ["openqasm", "qasm", "quantum", "simulator", "compiler"]
+categories = ["compilers", "simulation", "science"]
 readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-oqi-compile = { path = "../compile" }
-oqi-diagnostics = { path = "../diagnostics" }
-oqi-format = { path = "../format" }
-oqi-parse = { path = "../parse" }
-oqi-vm = { path = "../vm", default-features = false }
-pollster = { version = "1", optional = true }
+oqi-compile.workspace = true
+oqi-diagnostics.workspace = true
+oqi-format.workspace = true
+oqi-parse.workspace = true
+oqi-vm.workspace = true
+pollster = { workspace = true, optional = true }
 
 [features]
 default = ["blocking", "parallel", "mps"]
@@ -24,6 +31,10 @@ parallel = ["oqi-vm/parallel"]
 mps = ["oqi-vm/mps"]
 # The WebGPU simulator (`GpuSim`, backend names `gpu` and `prefer-gpu`).
 gpu = ["oqi-vm/gpu"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }

@@ -4,8 +4,13 @@
 //! (`oqi_compile::CompileError`) and runtime errors (`oqi_vm::Error`) —
 //! implement [`Diagnostic`]: a stable [`Code`], a headline message, source
 //! [`DiagLabel`]s (one primary plus optional secondary labels) and free-form
-//! notes. [`emit`] renders a diagnostic to stderr; [`render_to_string`]
-//! produces the same report without colour, for tests and tooling.
+//! notes. [`emit`] renders a diagnostic to stderr (in colour on a terminal,
+//! unless `NO_COLOR` is set); [`render_to_string`] produces the same report
+//! without colour, for tests and tooling.
+//!
+//! This crate is a building block of [`oqi`](https://docs.rs/oqi), the
+//! OpenQASM 3 compiler and simulator, which re-exports [`Diagnostic`],
+//! [`emit`] and [`render_to_string`].
 //!
 //! ```
 //! use std::path::Path;
@@ -24,8 +29,9 @@
 //! number identifies the specific error within that category.
 //!
 //! - `C####` — compile errors (`oqi_compile::ErrorKind`)
-//! - `R####` — runtime errors (`oqi_vm::VmError`)
+//! - `R####` — runtime errors (`oqi_vm::ErrorKind`)
 //! - `S####` — syntax errors (`oqi_lex::Error`, also `oqi_parse::Error`)
+#![warn(missing_docs)]
 
 use std::borrow::Cow;
 use std::fmt;

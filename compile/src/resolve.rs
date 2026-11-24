@@ -27,6 +27,12 @@ pub enum IncludeSource {
 /// filesystem and serve the embedded OpenQASM standard library, so a
 /// resolver only overrides what it needs: serving files from memory, say, or
 /// refusing file includes ([`LibOnlyResolver`]).
+///
+/// # Errors
+///
+/// Both methods return any error for a file or library that cannot be
+/// served; the compiler reports it as an include-not-found error at the
+/// `include` statement.
 pub trait IncludeResolver {
     /// The text of the file at `path`. Defaults to reading it from disk.
     fn resolve_path(

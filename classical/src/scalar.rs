@@ -41,25 +41,40 @@ impl Scalar {
         Scalar { value, ty }
     }
 
+    /// The value.
     #[inline]
     pub const fn value(&self) -> &Primitive {
         &self.value
     }
 
+    /// The value, without its type.
     #[inline]
     pub fn into_value(self) -> Primitive {
         self.value
     }
 
+    /// The type.
     #[inline]
     pub const fn ty(&self) -> PrimitiveTy {
         self.ty
     }
 
+    /// `value` represented as `ty` (wrapped or rounded to its width).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TypeMismatch`](crate::Error::TypeMismatch) if `value` has no representation in
+    /// `ty`.
     pub fn new(value: Primitive, ty: PrimitiveTy) -> Result<Self> {
         Ok(Scalar::new_unchecked(value.as_ty(ty)?, ty))
     }
 
+    /// Cast to `to` under the spec's table of allowed casts.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedCast`](crate::Error::UnsupportedCast) if the cast is not
+    /// allowed.
     #[inline]
     pub fn cast(self, to: PrimitiveTy) -> Result<Self> {
         self.ty.cast(to)?;
@@ -78,6 +93,7 @@ impl Scalar {
         Self::new(value, to)
     }
 
+    /// A `bit`.
     #[inline]
     pub const fn bit(v: bool) -> Self {
         Self::new_unchecked(Primitive::bit(v), PrimitiveTy::Bit)
@@ -105,6 +121,7 @@ impl Scalar {
             PrimitiveTy::Complex(fw),
         )
     }
+    /// A `duration` of `v` in `unit`.
     #[inline]
     pub const fn duration(v: f64, unit: DurationUnit) -> Self {
         Self::new_unchecked(Primitive::duration(v, unit), PrimitiveTy::Duration)
@@ -122,6 +139,7 @@ impl Scalar {
     pub fn bitreg_u128(bits: u128, width: u32) -> Self {
         Self::bitreg(BitReg::from(bits), width)
     }
+    /// An `angle[128]` of `radians`, reduced modulo 2π.
     #[inline]
     pub fn angle(radians: f64) -> Self {
         Self::from(Primitive::angle(radians))

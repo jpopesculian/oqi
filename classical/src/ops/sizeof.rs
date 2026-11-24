@@ -20,6 +20,11 @@ fn unsupported(value: ValueTy, dim: Option<ValueTy>) -> Error {
 
 /// The type of `sizeof(value)` or `sizeof(value, dim)`, or an error if
 /// `value` has no size or `dim` is not an integer.
+///
+/// # Errors
+///
+/// [`Error::UnsupportedOp`] if `value` has no size;
+/// [`Error::UnsupportedCast`] if `dim` is not an integer.
 pub fn sizeof_ty(value: ValueTy, dim: Option<ValueTy>) -> Result<ValueTy> {
     if value.sizeof_rank().is_none() {
         return Err(unsupported(value, dim));
@@ -31,6 +36,11 @@ pub fn sizeof_ty(value: ValueTy, dim: Option<ValueTy>) -> Result<ValueTy> {
 }
 
 /// The size of dimension `dim` (default 0) of a value of type `value`.
+///
+/// # Errors
+///
+/// As [`sizeof_ty`], and [`Error::IndexOutOfBounds`] if `dim` is not a
+/// dimension of `value` or its size is not known from the type.
 pub fn sizeof(value: ValueTy, dim: Option<Value>) -> Result<Value> {
     let dim_ty = dim.as_ref().map(Value::ty);
     sizeof_ty(value, dim_ty)?;

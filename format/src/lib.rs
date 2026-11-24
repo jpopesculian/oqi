@@ -3,6 +3,26 @@
 //! [`format()`] parses the source and prints the syntax tree back out with
 //! canonical spacing. Blank lines between statements and (outside compact
 //! mode) comments are carried over from the source.
+//!
+//! ```
+//! use oqi_format::{format, Config};
+//!
+//! let source = "OPENQASM 3;\nqubit[2] q;  // two qubits\nh q[0];cx q[0],q[1];\n";
+//! assert_eq!(
+//!     format(source, Config::default())?,
+//!     "OPENQASM 3;\nqubit[2] q; // two qubits\nh q[0];\ncx q[0], q[1];\n",
+//! );
+//! assert_eq!(
+//!     format(source, Config::default().compact(true))?,
+//!     "OPENQASM 3;\nqubit[2] q; h q[0]; cx q[0], q[1];\n",
+//! );
+//! # Ok::<(), oqi_format::Error>(())
+//! ```
+//!
+//! This crate is a building block of [`oqi`](https://docs.rs/oqi), the
+//! OpenQASM 3 compiler and simulator, which re-exports [`format()`] and
+//! [`Config`] (as `oqi::FormatConfig`). The `oqi fmt` command uses it.
+#![warn(missing_docs)]
 
 pub use oqi_parse::Error;
 use oqi_parse::{ast, parse_with_comments};

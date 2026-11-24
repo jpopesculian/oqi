@@ -28,19 +28,29 @@ impl Array {
         Array { values, ty }
     }
 
+    /// The elements, in row-major order.
     pub fn values(&self) -> &[Primitive] {
         &self.values
     }
 
+    /// The elements, in row-major order, for writing. Each must keep the
+    /// element type's representation.
     pub fn values_mut(&mut self) -> &mut [Primitive] {
         &mut self.values
     }
 
+    /// The array's type.
     pub fn ty(&self) -> ArrayTy {
         self.ty
     }
 
     /// Build an array from `values`, converting each to the element type.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::LengthMismatch`] if `values` does not fill the shape;
+    /// [`Error::TypeMismatch`] if a value has no representation in the element
+    /// type.
     pub fn new(values: Vec<Primitive>, ty: ArrayTy) -> Result<Self> {
         if values.len() != ty.shape().total() {
             return Err(Error::LengthMismatch {
@@ -60,11 +70,13 @@ impl Array {
         self.values
     }
 
+    /// A `readonly` reference to the whole array.
     #[inline]
     pub fn into_ref(self) -> ArrayRef {
         ArrayRef::new(Shared::new(self), vec![], RefAccess::Readonly).unwrap()
     }
 
+    /// A `mutable` reference to the whole array.
     #[inline]
     pub fn into_ref_mut(self) -> ArrayRef {
         ArrayRef::new(Shared::new(self), vec![], RefAccess::Mutable).unwrap()
@@ -79,6 +91,12 @@ impl Array {
         }
     }
 
+    /// Cast every element to `to`'s element type.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedCast`] if the element cast is not allowed or the
+    /// shapes differ.
     #[inline]
     pub fn cast(self, to: ArrayTy) -> Result<Self> {
         self.ty.cast(to)?;
@@ -168,6 +186,11 @@ impl ArrayDim {
     /// docs/types.rst: arrays have "a maximum of 7 total dimensions".
     pub const MAX: usize = 7;
 
+    /// A rank of `dim` dimensions.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidRank`] unless `dim` is in `1..=ArrayDim::MAX`.
     #[inline]
     pub const fn new(dim: usize) -> Result<Self> {
         if dim == 0 || dim > Self::MAX {
@@ -179,6 +202,7 @@ impl ArrayDim {
         Ok(Self(dim))
     }
 
+    /// The number of dimensions.
     #[inline]
     pub fn get(&self) -> usize {
         self.0
@@ -235,6 +259,13 @@ impl ArrayShape {
     /// memory at once.
     pub const MAX_ELEMENTS: usize = 1 << 26;
 
+    /// A shape with the given dimension sizes, outermost first.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidRank`] for zero or more than [`ArrayDim::MAX`]
+    /// dimensions; [`Error::TooManyElements`] for more than
+    /// [`ArrayShape::MAX_ELEMENTS`] elements.
     pub fn new(shape: Vec<usize>) -> Result<Self> {
         let dim = ArrayDim::new(shape.len())?;
         let total = shape
@@ -253,6 +284,7 @@ impl ArrayShape {
         })
     }
 
+    /// The number of dimensions.
     #[inline]
     pub fn dim(&self) -> ArrayDim {
         self.dim
@@ -264,6 +296,7 @@ impl ArrayShape {
         &self.shape[..self.dim.get()]
     }
 
+    /// The number of elements.
     #[inline]
     pub fn total(&self) -> usize {
         self.dims().iter().product()
@@ -290,6 +323,7 @@ macro_rules! shape {
 #[cfg(test)]
 pub(crate) use shape;
 
+/// The type of an array: its element type and shape.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArrayTy {
@@ -298,11 +332,13 @@ pub struct ArrayTy {
 }
 
 impl ArrayTy {
+    /// An array of `ty` elements in `shape`.
     #[inline]
     pub const fn new(ty: PrimitiveTy, shape: ArrayShape) -> Self {
         Self { ty, shape }
     }
 
+    /// The shape.
     #[inline]
     pub const fn shape(&self) -> ArrayShape {
         self.shape
@@ -327,6 +363,11 @@ impl ArrayTy {
 
     /// Check the cast to `to` (same element count and an allowed element
     /// cast), returning `to`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedCast`] if the element cast is not allowed or the
+    /// element counts differ.
     #[inline]
     pub fn cast(self, to: ArrayTy) -> Result<Self> {
         if self.shape.total() != to.shape.total() {

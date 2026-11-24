@@ -188,6 +188,7 @@ impl<F: Amplitude> SimdSim<F> {
     /// Run the SIMD kernel across blocks of the state on several threads
     /// (rayon).
     #[cfg(feature = "parallel")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "parallel")))]
     pub fn with_parallel(mut self, parallel: bool) -> Self {
         self.parallel = parallel;
         self

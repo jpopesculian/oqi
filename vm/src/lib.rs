@@ -21,6 +21,10 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
+//! This crate is a building block of [`oqi`](https://docs.rs/oqi), the
+//! OpenQASM 3 compiler and simulator, which re-exports its supported API
+//! and adds blocking helpers by default; most users want that crate.
+//!
 //! Running is `async` so a GPU or remote backend can await its device (in
 //! the browser, nothing may block); with the CPU simulators every future is
 //! ready at once, so native callers block on it (e.g. with `pollster`).
@@ -50,6 +54,8 @@
 //! - `gpu`: the WebGPU simulator.
 //! - `blocking`: `Runner::run_blocking` and `Runner::sample_blocking`,
 //!   for native callers that don't use an async runtime.
+#![warn(missing_docs)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod auto;
 mod backend;
@@ -86,9 +92,11 @@ pub use cal::{FrameHandle, OpaqueCalHandler, OpenPulseHandler, PortHandle, Wavef
 pub use error::{Error, ErrorKind, Result};
 pub use extern_fns::{ExternProvider, FnRegistry, NoExterns};
 #[cfg(feature = "gpu")]
+#[cfg_attr(docsrs, doc(cfg(feature = "gpu")))]
 pub use gpu::GpuSim;
 pub use host::HostValue;
 #[cfg(feature = "mps")]
+#[cfg_attr(docsrs, doc(cfg(feature = "mps")))]
 pub use mps::MpsSim;
 pub use runner::{Histogram, Runner, Samples};
 pub use sim::StateVectorSim;

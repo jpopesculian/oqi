@@ -19,12 +19,16 @@ use crate::{
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Value {
+    /// A scalar.
     Scalar(Scalar),
+    /// An owned array.
     Array(Array),
+    /// A reference to all or part of an array.
     ArrayRef(ArrayRef),
 }
 
 impl Value {
+    /// The value's type.
     pub fn ty(&self) -> ValueTy {
         match self {
             Value::Scalar(s) => ValueTy::Scalar(s.ty()),
@@ -35,6 +39,11 @@ impl Value {
 
     /// Cast to `ty` under the language's cast rules. Arrays and array
     /// references cast element-wise into a new owned array.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedCast`] if the cast is not allowed;
+    /// [`Error::BadBorrow`] if a referenced array is being written.
     pub fn cast(self, ty: ValueTy) -> Result<Self> {
         match (self, ty) {
             (Value::Scalar(s), ValueTy::Scalar(ty)) => Ok(Value::Scalar(s.cast(ty)?)),
@@ -52,6 +61,10 @@ impl Value {
 
     /// Materialise an array reference into (a copy of) the array it views;
     /// scalars and owned arrays pass through.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::BadBorrow`] if the referenced array is being written.
     pub fn into_owned(self) -> Result<Self> {
         match self {
             Value::ArrayRef(ar) => ar.to_array().map(Value::Array),
@@ -59,38 +72,47 @@ impl Value {
         }
     }
 
+    /// A `bit`.
     #[inline]
     pub const fn bit(v: bool) -> Self {
         Self::Scalar(Scalar::bit(v))
     }
+    /// An `int[bw]`, wrapped to `bw` bits.
     #[inline]
     pub const fn int(v: i128, bw: IntWidth) -> Self {
         Self::Scalar(Scalar::int(v, bw))
     }
+    /// A `uint[bw]`, wrapped to `bw` bits.
     #[inline]
     pub const fn uint(v: u128, bw: IntWidth) -> Self {
         Self::Scalar(Scalar::uint(v, bw))
     }
+    /// A `float[fw]` (rounded to `f32` at 32 bits).
     #[inline]
     pub const fn float(v: f64, fw: FloatWidth) -> Self {
         Self::Scalar(Scalar::float(v, fw))
     }
+    /// A `complex[float[fw]]` (each part rounded to `f32` at 32 bits).
     #[inline]
     pub const fn complex(re: f64, im: f64, fw: FloatWidth) -> Self {
         Self::Scalar(Scalar::complex(re, im, fw))
     }
+    /// A `duration` of `v` in `unit`.
     #[inline]
     pub const fn duration(v: f64, unit: DurationUnit) -> Self {
         Self::Scalar(Scalar::duration(v, unit))
     }
+    /// A `bit[width]` holding the low `width` bits of `reg`.
     #[inline]
     pub fn bitreg(reg: BitReg, width: u32) -> Self {
         Self::Scalar(Scalar::bitreg(reg, width))
     }
+    /// A `bit[width]` holding the low `width` bits of `bits`.
     #[inline]
     pub fn bitreg_u128(bits: u128, width: u32) -> Self {
         Self::Scalar(Scalar::bitreg_u128(bits, width))
     }
+    /// An `angle` of `radians`, reduced modulo 2π.
     #[inline]
     pub fn angle(radians: f64) -> Self {
         Value::Scalar(Scalar::angle(radians))
@@ -168,15 +190,26 @@ impl fmt::Display for Value {
     }
 }
 
+/// The type of a [`Value`].
 #[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ValueTy {
+    /// A scalar type.
     Scalar(PrimitiveTy),
+    /// An array type.
     Array(ArrayTy),
+    /// An array reference type.
     ArrayRef(ArrayRefTy),
 }
 
 impl ValueTy {
+    /// Check that a value of this type may be cast to `ty`, and return `ty`.
+    /// Scalars follow the spec's table of allowed casts; arrays cast
+    /// element-wise and must have the same shape.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedCast`] if the cast is not allowed.
     pub fn cast(self, ty: ValueTy) -> Result<Self> {
         match (self, ty) {
             (ValueTy::Scalar(from), ValueTy::Scalar(to)) => Ok(ValueTy::Scalar(from.cast(to)?)),
@@ -231,6 +264,10 @@ impl ValueTy {
         }
     }
 
+    /// What `sizeof(value, dim)` returns for a value of this type: the size
+    /// of dimension `dim` of an array (the bit width at `dim == rank`), the
+    /// bit width of a scalar at `dim == 0`. `None` when that is not known
+    /// from the type (a `#dim` reference) or `dim` is out of range.
     pub fn size(&self, dim: usize) -> Option<usize> {
         match self {
             ValueTy::Scalar(ty) if dim == 0 => ty.bit_count().map(|bw| bw as usize),
@@ -255,56 +292,67 @@ impl ValueTy {
         }
     }
 
+    /// `bit`
     #[inline]
     pub const fn bit() -> Self {
         Self::Scalar(PrimitiveTy::Bit)
     }
 
+    /// `bool`
     #[inline]
     pub const fn bool() -> Self {
         Self::Scalar(PrimitiveTy::Bool)
     }
 
+    /// `int[bw]`
     #[inline]
     pub const fn int(bw: IntWidth) -> Self {
         Self::Scalar(PrimitiveTy::Int(bw))
     }
 
+    /// `uint[bw]`
     #[inline]
     pub const fn uint(bw: IntWidth) -> Self {
         Self::Scalar(PrimitiveTy::Uint(bw))
     }
 
+    /// `float[fw]`
     #[inline]
     pub const fn float(fw: FloatWidth) -> Self {
         Self::Scalar(PrimitiveTy::Float(fw))
     }
 
+    /// `complex[float[fw]]`
     #[inline]
     pub const fn complex(fw: FloatWidth) -> Self {
         Self::Scalar(PrimitiveTy::Complex(fw))
     }
 
+    /// `angle[bw]`
     #[inline]
     pub const fn angle(bw: IntWidth) -> Self {
         Self::Scalar(PrimitiveTy::Angle(bw))
     }
 
+    /// `duration`
     #[inline]
     pub const fn duration() -> Self {
         Self::Scalar(PrimitiveTy::Duration)
     }
 
+    /// `bit[width]`
     #[inline]
     pub const fn bitreg(width: u32) -> Self {
         Self::Scalar(PrimitiveTy::BitReg(width))
     }
 
+    /// `array[ty, shape…]`
     #[inline]
     pub const fn array(ty: PrimitiveTy, shape: ArrayShape) -> Self {
         Self::Array(ArrayTy::new(ty, shape))
     }
 
+    /// A `readonly` or `mutable` reference to an array of `ty`.
     #[inline]
     pub const fn array_ref(ty: PrimitiveTy, shape: ArrayRefShape, access: RefAccess) -> Self {
         Self::ArrayRef(ArrayRefTy::new(ty, shape, access))

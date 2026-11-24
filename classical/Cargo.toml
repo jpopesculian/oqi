@@ -1,11 +1,20 @@
 [package]
 name = "oqi-classical"
-version = "0.1.0"
-edition = "2024"
+description = "OpenQASM 3 classical values, types and operators, a building block of the oqi toolchain"
+keywords = ["openqasm", "qasm", "quantum", "classical"]
+categories = ["science", "mathematics"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-num-complex = "0.4"
-serde = { version = "1", features = ["derive"], optional = true }
+num-complex.workspace = true
+serde = { workspace = true, optional = true }
 turns = "0.1.2"
 
 [features]
@@ -14,4 +23,4 @@ turns = "0.1.2"
 serde = ["dep:serde", "num-complex/serde", "turns/serde"]
 
 [dev-dependencies]
-postcard = { version = "1", features = ["alloc"] }
+postcard.workspace = true

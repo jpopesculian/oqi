@@ -282,6 +282,10 @@ pub trait QuantumBackend {
     fn num_qubits(&self) -> u32;
 
     /// Apply `U(θ, φ, λ)` to `target` under the given modifiers.
+    ///
+    /// # Errors
+    ///
+    /// Any [`ErrorKind`] (usually [`ErrorKind::Backend`]); it stops the run.
     fn u(
         &mut self,
         target: u32,
@@ -294,6 +298,10 @@ pub trait QuantumBackend {
     /// Multiply the state by the global phase `e^{iγ}`. Only ever
     /// uncontrolled: a controlled global phase reaches the backend as
     /// [`u`](Self::u) calls.
+    ///
+    /// # Errors
+    ///
+    /// As for [`u`](Self::u).
     fn gphase(&mut self, gamma: f64) -> Result<(), ErrorKind>;
 
     /// Measure `qubit` in the Z basis, collapsing the state, and return
@@ -321,6 +329,10 @@ pub trait QuantumBackend {
     /// backend, leaving the measurement RNG stream untouched so runs stay
     /// independent and reproducible from the initial seed. The VM calls it
     /// before every run but the first.
+    ///
+    /// # Errors
+    ///
+    /// As for [`u`](Self::u).
     fn reset_state(&mut self) -> Result<(), ErrorKind>;
 
     /// A scheduling barrier across `qubits`. No effect on state.

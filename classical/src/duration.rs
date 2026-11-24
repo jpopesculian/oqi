@@ -2,19 +2,25 @@ use std::fmt;
 use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
 use std::str::FromStr;
 
+/// A `duration`: an amount of time in a unit. Arithmetic and comparison
+/// convert between units.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Duration {
+    /// The amount, in `unit`s.
     pub value: f64,
+    /// The unit.
     pub unit: DurationUnit,
 }
 
 impl Duration {
+    /// `value` `unit`s.
     #[inline]
     pub const fn new(value: f64, unit: DurationUnit) -> Self {
         Self { value, unit }
     }
 
+    /// The same duration expressed in `unit`.
     #[inline]
     pub fn to_unit(self, unit: DurationUnit) -> Self {
         let multiplier = self.unit.multiplier() / unit.multiplier();
@@ -145,12 +151,17 @@ impl fmt::Display for Duration {
     }
 }
 
+/// The SI unit of a [`Duration`].
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DurationUnit {
+    /// Nanoseconds: `ns`.
     Ns,
+    /// Microseconds: `us` or `µs`.
     Us,
+    /// Milliseconds: `ms`.
     Ms,
+    /// Seconds: `s`.
     S,
 }
 
@@ -166,6 +177,8 @@ impl DurationUnit {
     }
 }
 
+/// The error from parsing a [`DurationUnit`] that is not one of `ns`, `us`,
+/// `µs`, `ms` or `s` (`dt` depends on the target and is not a unit here).
 #[derive(Debug, Clone, Copy)]
 pub struct DurationUnitParseError;
 

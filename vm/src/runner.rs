@@ -176,6 +176,7 @@ impl<'p, E: ExternProvider> Runner<'p, E> {
     ///
     /// As for [`run`](Self::run).
     #[cfg(feature = "blocking")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "blocking")))]
     pub fn run_blocking(self) -> Result<RunResult> {
         pollster::block_on(self.run())
     }
@@ -188,6 +189,7 @@ impl<'p, E: ExternProvider> Runner<'p, E> {
     ///
     /// As for [`run`](Self::run).
     #[cfg(feature = "blocking")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "blocking")))]
     pub fn sample_blocking(self, shots: u32) -> Result<Samples> {
         pollster::block_on(self.sample(shots))
     }

@@ -1,17 +1,29 @@
 [package]
 name = "oqi-cli"
-version = "0.1.0"
-edition = "2024"
+description = "The oqi command-line tool: compile, run, sample and format OpenQASM 3 programs"
+keywords = ["openqasm", "qasm", "quantum", "simulator", "cli"]
+categories = ["command-line-utilities", "simulation", "science"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [[bin]]
 name = "oqi"
 path = "src/main.rs"
+# The binary has no API docs, and its name would clash with the `oqi` crate's.
+doc = false
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-oqi = { path = "../oqi" }
-rayon = "1"
-serde_json = "1"
+oqi = { workspace = true, features = ["blocking", "parallel", "mps"] }
+rayon.workspace = true
+serde_json.workspace = true
 
 [features]
+# The WebGPU backend (`--backend gpu` / `prefer-gpu`).
 gpu = ["oqi/gpu"]

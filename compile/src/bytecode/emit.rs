@@ -41,6 +41,11 @@ use super::types::{
 };
 
 /// Lower a SIR program to bytecode.
+///
+/// # Errors
+///
+/// A [`CompileError`](crate::CompileError) for a program the bytecode
+/// cannot express (e.g. a loop the CFG builder rejects).
 pub fn emit(program: &sir::Program) -> Result<bc::Program> {
     // Building the graphs adds the hidden variables of `for` loops.
     let mut symbols = program.symbols.clone();

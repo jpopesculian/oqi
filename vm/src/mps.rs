@@ -118,6 +118,18 @@ impl Site {
 /// entanglement (bond dimension) instead of 2ⁿ, truncating to at most
 /// `max_bond` singular values per bond.
 ///
+/// The state is a chain of one tensor per qubit; after every multi-qubit
+/// gate the bonds are recompressed by SVD, dropping singular values that
+/// carry a negligible share of the weight and keeping at most `max_bond`
+/// ([`with_max_bond`](Self::with_max_bond)). **Past that cap the state is
+/// truncated and renormalized, so results become approximate**;
+/// [`truncation_error`](Self::truncation_error) reports how much weight was
+/// discarded. Wide circuits with modest entanglement (chains, shallow
+/// circuits, GHZ states) stay exact and cheap; highly entangling circuits
+/// need a large bond cap or a dense backend. Controlled gates may span any
+/// distance. Shots are sampled from the chain itself, without writing out
+/// amplitudes.
+///
 /// Like the dense simulators it keeps its state under 16 GiB: a gate that
 /// would grow the tensors past that fails with [`ErrorKind::Backend`]
 /// (lower the bond cap to trade accuracy for memory), and

@@ -72,6 +72,11 @@ impl ArrayRef {
 
     /// Copy out the viewed (sub-)array, cast to the element type and shape
     /// of `ty`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedCast`] as for [`ArrayRefTy::cast`];
+    /// [`Error::BadBorrow`] if the array is being written.
     pub fn cast(&self, ty: ArrayRefTy) -> Result<Array> {
         self.ty.cast(ty)?;
         let owned = self.to_array()?;
@@ -100,10 +105,13 @@ impl fmt::Display for ArrayRef {
     }
 }
 
+/// Whether an array reference may be written through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RefAccess {
+    /// `readonly`: only read.
     Readonly,
+    /// `mutable`: read and written.
     Mutable,
 }
 
@@ -121,7 +129,9 @@ impl fmt::Display for RefAccess {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ArrayRefShape {
+    /// Every dimension's size is known: `array[int, 2, 3]`.
     Fixed(ArrayShape),
+    /// Only the number of dimensions is known: `array[int, #dim = 2]`.
     Dim(ArrayDim),
 }
 
@@ -132,6 +142,7 @@ impl From<ArrayShape> for ArrayRefShape {
 }
 
 impl ArrayRefShape {
+    /// The number of dimensions.
     pub fn dim(&self) -> ArrayDim {
         match self {
             ArrayRefShape::Fixed(shape) => shape.dim(),
@@ -159,6 +170,7 @@ impl fmt::Display for ArrayRefShape {
     }
 }
 
+/// The type of an array reference: element type, shape and access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArrayRefTy {
@@ -168,16 +180,19 @@ pub struct ArrayRefTy {
 }
 
 impl ArrayRefTy {
+    /// A reference to an array of `ty` elements.
     #[inline]
     pub const fn new(ty: PrimitiveTy, shape: ArrayRefShape, access: RefAccess) -> Self {
         Self { ty, shape, access }
     }
 
+    /// What is known of the shape.
     #[inline]
     pub fn shape(&self) -> ArrayRefShape {
         self.shape
     }
 
+    /// Whether it may be written through.
     #[inline]
     pub fn access(&self) -> RefAccess {
         self.access
@@ -191,6 +206,10 @@ impl ArrayRefTy {
 
     /// The type of the array a fixed-shape reference views. A `#dim`
     /// reference has no owned type: its sizes are only known at run time.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedCast`] for a `#dim` reference.
     pub fn array_ty(self) -> Result<ArrayTy> {
         match self.shape {
             ArrayRefShape::Fixed(shape) => Ok(ArrayTy::new(self.ty, shape)),
@@ -203,6 +222,11 @@ impl ArrayRefTy {
 
     /// Check the cast to `ty` (same element count, or same rank for `#dim`
     /// references, and an allowed element cast), returning `ty`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedCast`] if the element cast is not allowed or the
+    /// shapes do not fit.
     pub fn cast(self, ty: ArrayRefTy) -> Result<ArrayRefTy> {
         let fits = match (self.shape, ty.shape) {
             (ArrayRefShape::Fixed(s), ArrayRefShape::Fixed(t)) => s.total() == t.total(),

@@ -1,18 +1,26 @@
 [package]
 name = "oqi-py"
-version = "0.1.0"
-edition = "2024"
+description = "Python bindings for the oqi OpenQASM 3 compiler and simulators"
+# Published to PyPI with maturin (see pyproject.toml), not to crates.io.
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "oqi_py"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-oqi-compile = { path = "../compile" }
-oqi-diagnostics = { path = "../diagnostics" }
-oqi-vm = { path = "../vm" }
-num-complex = "0.4"
-pollster = "1"
+oqi-compile.workspace = true
+oqi-diagnostics.workspace = true
+oqi-vm = { workspace = true, features = ["parallel", "mps"] }
+num-complex.workspace = true
+pollster.workspace = true
 pyo3 = { version = "0.30", features = ["abi3-py310", "num-complex"] }
 
 [features]

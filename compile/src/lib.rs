@@ -7,9 +7,33 @@
 //! [`CompileError`]s, which render as source-annotated diagnostics through
 //! `oqi-diagnostics`.
 //!
+//! ```
+//! let program = oqi_compile::compile(
+//!     r#"include "stdgates.inc";
+//!        input int n;
+//!        qubit[2] q;
+//!        h q[0];
+//!        cx q[0], q[1];
+//!        bit[2] c = measure q;"#,
+//! )?;
+//! assert_eq!(program.num_qubits(), 2);
+//! assert!(program.input("n").is_some());
+//!
+//! // A compiled program can be saved and loaded again.
+//! let bytes = program.to_bytes()?;
+//! let loaded = oqi_compile::Program::from_bytes(&bytes)?;
+//! assert_eq!(loaded.to_string(), program.to_string());
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! This crate is a building block of [`oqi`](https://docs.rs/oqi), the
+//! OpenQASM 3 compiler and simulator, which re-exports its supported API;
+//! most users want that crate.
+//!
 //! The intermediate representations ([`sir`], the bytecode instruction set
 //! in [`bytecode`]) are public for the VM and for debugging output, but are
 //! not a stable API.
+#![warn(missing_docs)]
 
 pub mod bytecode;
 mod cfg;

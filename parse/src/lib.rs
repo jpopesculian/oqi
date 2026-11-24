@@ -6,6 +6,9 @@
 //! OpenQASM project. Errors are [`Error`]s: a message and the [`ast::Span`]
 //! it refers to.
 //!
+//! This crate is a building block of [`oqi`](https://docs.rs/oqi), the
+//! OpenQASM 3 compiler and simulator, which re-exports it as `oqi::syntax`.
+//!
 //! ```
 //! use oqi_parse::{ast, parse};
 //!
@@ -14,7 +17,9 @@
 //! assert_eq!(program.body.len(), 2);
 //! # Ok::<(), oqi_parse::Error>(())
 //! ```
+#![warn(missing_docs)]
 
+/// The syntax tree [`parse`] produces.
 pub mod ast;
 
 use ast::*;

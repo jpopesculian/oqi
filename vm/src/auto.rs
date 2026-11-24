@@ -97,6 +97,28 @@ enum Mode {
 /// Simulator that starts in stabilizer-tableau mode, moves to an exact
 /// sum-over-Cliffords on the first non-Clifford gate, and escalates to a
 /// dense state vector only when the term budget is exhausted.
+///
+/// ```text
+/// tableau ──(first non-Clifford gate)──▶ sum-over-Cliffords ──(term budget)──▶ dense
+/// ```
+///
+/// - **Tableau**: pure-Clifford circuits cost O(n²) per gate, so thousands of
+///   qubits are cheap.
+/// - **Sum over Cliffords**: an exact sum of stabilizer terms whose number
+///   grows only with the count of non-Clifford gates (each multiplies it
+///   by 2–3), so a 150-qubit circuit with a few `t` gates stays exact and cheap.
+/// - **Dense**: when the terms would exceed [`SumPolicy::max_rank`], the
+///   circuit so far is replayed onto a state vector if 2ⁿ amplitudes fit in
+///   memory; otherwise the gate fails with [`ErrorKind::RankOverflow`]. With
+///   [`SumPolicy::dense_escape`] off (the `sum` backend) it always fails.
+///
+/// Memory is bounded like the dense simulators' (16 GiB): a tableau takes
+/// about 4n² bytes and each term 3n², so `AutoSim` refuses more than about
+/// 65 000 qubits with [`ErrorKind::TooManyQubits`], and the term budget
+/// shrinks when the budgeted terms would not fit. Gates are recognised as
+/// Clifford from their matrices. Sampling stays seeded across tier changes,
+/// but a run that escalates is not distribution-identical to a dense run
+/// with the same seed.
 pub struct AutoSim {
     n: u32,
     mode: Mode,

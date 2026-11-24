@@ -1,37 +1,50 @@
 [package]
 name = "oqi-vm"
-version = "0.1.0"
-edition = "2024"
+description = "Bytecode VM and quantum simulators (state vector, SIMD, stabilizer, MPS, WebGPU) for OpenQASM 3 programs"
+keywords = ["openqasm", "qasm", "quantum", "simulator", "quantum-computing"]
+categories = ["simulation", "science"]
+readme = "README.md"
+# These tests run the example programs in the repository's `fixtures/`.
+exclude = ["tests/run.rs", "tests/semantics.rs", "tests/bytecode.rs", "tests/cal.rs"]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
-oqi-compile = { path = "../compile" }
-oqi-classical = { path = "../classical" }
-oqi-lex = { path = "../lex" }
-oqi-diagnostics = { path = "../diagnostics" }
-num-complex = "0.4"
+oqi-compile.workspace = true
+oqi-classical.workspace = true
+oqi-lex.workspace = true
+oqi-diagnostics.workspace = true
+num-complex.workspace = true
 num-traits = "0.2"
 async-trait = "0.1"
 stacker = "0.1"
 faer = { version = "0.24", default-features = false, features = ["std"], optional = true }
 wide = "1"
-rayon = { version = "1", optional = true }
+rayon = { workspace = true, optional = true }
 wgpu = { version = "30", optional = true }
 bytemuck = { version = "1", features = ["derive"], optional = true }
 futures-channel = { version = "0.3", optional = true }
-pollster = { version = "1", optional = true }
+pollster = { workspace = true, optional = true }
 
 [features]
 default = ["parallel", "mps"]
+# Multi-threaded state-vector kernels (the `rayon` and `rayon-simd` backends).
 parallel = ["dep:rayon"]
 # The matrix-product-state backend (`MpsSim`, backend name "mps"); pulls in `faer`.
 mps = ["dep:faer"]
+# The WebGPU backend (`GpuSim`, backend names "gpu" and "prefer-gpu").
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:futures-channel"]
 # `Runner::run_blocking` and `Runner::sample_blocking`, for native callers.
 blocking = ["dep:pollster"]
 
 [dev-dependencies]
 criterion = "0.8"
-pollster = "1"
+pollster.workspace = true
 
 [[test]]
 name = "run"
@@ -41,3 +54,10 @@ required-features = ["mps"]
 name = "backends"
 harness = false
 required-features = ["mps", "parallel"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(docsrs)'] }

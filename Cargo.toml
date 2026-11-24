@@ -12,4 +12,35 @@ members = [
   "js",
   "py",
 ]
-resolver = "2"
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# The highest `rust-version` among the locked dependencies: `wgpu-hal` (the
+# `gpu` feature) pulls in `ordered-float` 5.5, which needs 1.90; with default
+# features `wide` needs 1.89.
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+authors = ["Julian Popescu"]
+repository = "https://github.com/jpopesculian/oqi"
+homepage = "https://jpopesculian.github.io/oqi/"
+
+[workspace.dependencies]
+# The workspace's own crates, published together at one version.
+oqi = { path = "oqi", version = "0.1.0", default-features = false }
+oqi-classical = { path = "classical", version = "0.1.0" }
+oqi-compile = { path = "compile", version = "0.1.0" }
+oqi-diagnostics = { path = "diagnostics", version = "0.1.0" }
+oqi-format = { path = "format", version = "0.1.0" }
+oqi-lex = { path = "lex", version = "0.1.0" }
+oqi-parse = { path = "parse", version = "0.1.0" }
+oqi-vm = { path = "vm", version = "0.1.0", default-features = false }
+
+# External dependencies used by more than one crate.
+num-complex = "0.4"
+pollster = "1"
+postcard = { version = "1", features = ["alloc"] }
+rayon = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,47 +1,5 @@
-//! Pluggable calibration handling.
-//!
-//! Two extension points, mirroring [`ExternProvider`](crate::ExternProvider):
-//!
-//! - [`OpenPulseHandler`] — typed callbacks for the OpenPulse intrinsics
-//!   (`newframe`, `gaussian`, `play`, `capture`, `shift_phase`,
-//!   `threshold`). Installing one activates calibration execution:
-//!   inline `cal` blocks run, and gate/measure/reset operations on
-//!   hardware qubits that match a `defcal` execute the defcal body in
-//!   place of the gate's unitary definition (docs/pulses.rst), routing
-//!   pulse operations to the handler.
-//! - [`OpaqueCalHandler`] — receives the raw text of inline `cal`
-//!   blocks written in a non-OpenPulse `defcalgrammar`.
-//!
-//! Without a handler installed the VM ignores calibrations entirely:
-//! inline `cal` blocks are no-ops and defcals stay dormant.
-//!
-//! Pulse values (ports, frames, waveforms) are opaque `u64` handles
-//! minted by the handler; the VM stores them in ordinary `uint[64]`
-//! registers and never inspects them.
-//!
-//! # `durationof` timing passes
-//!
-//! A `durationof({...})` expression runs its block in a timing pass:
-//! no gates, pulses, measurements, or resets are emitted; instead
-//! `delay[d]`/`box[d]` advance a base clock, and — with a pulse
-//! handler installed — dispatched defcal bodies advance per-frame
-//! clocks by [`OpenPulseHandler::waveform_duration`] /
-//! [`OpenPulseHandler::capture_duration`]. Constructor intrinsics
-//! (`newframe`, `gaussian`, port minting) still call the handler so
-//! handles are real and their durations queryable. The result is the
-//! maximum across all timelines (frames and the qubit timeline are
-//! modeled as independent; a `barrier` synchronizes them). Gates with
-//! no dispatched calibration contribute zero. A `measure` in a timing
-//! pass yields a deterministic `0` and records nothing — the spec
-//! requires control-flow branches in calibrations to have equal
-//! durations, so the value must not matter (docs/pulses.rst).
-//!
-//! Dispatch is deliberately conservative. Known limitations:
-//! - Calls carrying `ctrl`/`negctrl`/`pow`/`inv` modifiers (or
-//!   inherited controls) never dispatch to a defcal — they take the
-//!   unitary path.
-//! - Expression-specialized defcals (`defcal rx(pi/2) $0`) and `delay`
-//!   defcals never dispatch.
+//! Calibration handling: the [`OpenPulseHandler`] and [`OpaqueCalHandler`]
+//! extension points (documented on the traits).
 
 use num_complex::Complex64;
 use oqi_classical::Duration;
@@ -60,8 +18,47 @@ pub struct FrameHandle(pub u64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WaveformHandle(pub u64);
 
-/// Host implementation of the OpenPulse intrinsics. Angles arrive in
+/// Host implementation of the OpenPulse intrinsics (`newframe`, `gaussian`,
+/// `play`, `capture`, `shift_phase`, `threshold`). Angles arrive in
 /// radians; durations keep their source unit (e.g. `dt`).
+///
+/// Installing one ([`Vm::with_pulse_handler`](crate::Vm::with_pulse_handler))
+/// activates calibration execution: inline `cal` blocks run, and gate,
+/// `measure` and `reset` operations on physical qubits that match a `defcal`
+/// run the defcal body in place of the gate's unitary definition
+/// (docs/pulses.rst), routing pulse operations here. Without a handler the
+/// VM ignores calibrations entirely: `cal` blocks are no-ops and defcals stay
+/// dormant.
+///
+/// Pulse values (ports, frames, waveforms) are opaque `u64` handles minted
+/// by the handler; the VM stores them and never inspects them.
+///
+/// # `durationof`
+///
+/// A `durationof({...})` the compiler did not resolve runs its block in a
+/// timing pass: no gates, pulses, measurements or resets take effect;
+/// `delay[d]` and `box[d]` advance a base clock, and dispatched defcal bodies
+/// advance per-frame clocks by [`waveform_duration`](Self::waveform_duration)
+/// and [`capture_duration`](Self::capture_duration). Constructors
+/// (`newframe`, `gaussian`, ports) still call the handler, so handles are
+/// real and their durations can be queried. The result is the maximum across
+/// all timelines (frames and the qubit timeline are independent; a `barrier`
+/// synchronizes them). Gates without a dispatched calibration take no time.
+/// A `measure` in a timing pass yields `0` and records nothing: the spec
+/// requires calibration branches to have equal durations, so the value must
+/// not matter.
+///
+/// # Errors
+///
+/// Every method may return an [`ErrorKind`] (usually [`ErrorKind::Pulse`]),
+/// which stops the run; the defaults of the optional methods do.
+///
+/// # Limitations
+///
+/// - Calls with `ctrl`, `negctrl`, `pow` or `inv` modifiers (or inherited
+///   controls) never dispatch to a defcal; they take the unitary path.
+/// - Defcals specialised on an expression (`defcal rx(pi/2) $0`) and
+///   `delay` defcals never dispatch.
 pub trait OpenPulseHandler {
     /// Resolve an `extern port` declaration by name.
     fn port(&mut self, name: &str) -> Result<PortHandle, ErrorKind>;
@@ -127,7 +124,14 @@ pub trait OpenPulseHandler {
     }
 }
 
-/// Host handler for calibration text in a non-OpenPulse grammar.
+/// Host handler for calibration text in a non-OpenPulse grammar: it
+/// receives the raw text of each inline `cal` block when the program's
+/// `defcalgrammar` is not `"openpulse"`. Without one those blocks are
+/// no-ops.
+///
+/// # Errors
+///
+/// An [`ErrorKind`] from [`cal`](Self::cal) stops the run.
 pub trait OpaqueCalHandler {
     /// Handle the raw text of an inline `cal { ... }` block. `grammar`
     /// is the program's `defcalgrammar` (quotes stripped), if declared.

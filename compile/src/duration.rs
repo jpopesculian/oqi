@@ -16,9 +16,9 @@
 //! durations (uncalibrated gates are zero-width). On that runtime path an
 //! unresolved `stretch` reads as its default-initialized value (0 ns) via
 //! register zero-seeding, so stretchy delays execute zero-width — the
-//! minimal solution for an unconstrained stretch. This pass instead errors
-//! on `stretch` ("resolution is not implemented") until a real constraint
-//! solver exists.
+//! minimal solution for an unconstrained stretch. This pass instead solves
+//! the program's `stretch` constraints (the `stretch` submodule) and
+//! substitutes the resulting durations.
 
 use std::collections::{HashMap, HashSet};
 

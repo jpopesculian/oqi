@@ -1,0 +1,18 @@
+oqi
+Copyright 2026 Julian Popescu
+
+oqi is licensed under either of the MIT license (LICENSE-MIT) or the
+Apache License, Version 2.0 (LICENSE-APACHE), at your option.
+
+This repository contains material from the OpenQASM project
+(https://github.com/openqasm/openqasm), copyright the OpenQASM
+contributors and licensed under the Apache License, Version 2.0:
+
+- compile/src/stdgates.inc: the OpenQASM 3 standard gate library, shipped
+  in the oqi-compile crate.
+- lexer.g4 and parser.g4: the reference ANTLR grammar.
+- docs/*.rst: the OpenQASM 3 language specification.
+- fixtures/qasm/*.qasm: example programs, some of them adapted.
+
+The grammar, the specification and the examples are used for development and
+testing and are not part of any published crate.

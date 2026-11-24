@@ -36,29 +36,47 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BinOp {
+    /// `+`.
     Add,
+    /// `-`.
     Sub,
+    /// `*` (on arrays, the matrix product).
     Mul,
+    /// `/`.
     Div,
     /// `%`, and the built-in `mod(a, b)`.
     Mod,
+    /// `**`.
     Pow,
+    /// `&`.
     BitAnd,
+    /// `|`.
     BitOr,
+    /// `^`.
     BitXor,
+    /// `<<`.
     Shl,
+    /// `>>`.
     Shr,
     /// The built-in `rotl(value, distance)`.
     Rotl,
     /// The built-in `rotr(value, distance)`.
     Rotr,
+    /// `&&`.
     LogAnd,
+    /// `||`.
     LogOr,
+    /// `==`.
     Eq,
+    /// `!=`.
     Neq,
+    /// `<`.
     Lt,
+    /// `>`.
     Gt,
+    /// `<=`.
     Lte,
+    /// `>=`.
     Gte,
 }
 
@@ -66,22 +84,39 @@ pub enum BinOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UnOp {
+    /// `-x`.
     Neg,
+    /// `~x`.
     BitNot,
+    /// `!x`.
     LogNot,
+    /// `sin(x)`.
     Sin,
+    /// `cos(x)`.
     Cos,
+    /// `tan(x)`.
     Tan,
+    /// `arcsin(x)`.
     Arcsin,
+    /// `arccos(x)`.
     Arccos,
+    /// `arctan(x)`.
     Arctan,
+    /// `exp(x)`.
     Exp,
+    /// `log(x)`, the natural logarithm.
     Log,
+    /// `sqrt(x)`.
     Sqrt,
+    /// `ceiling(x)`.
     Ceiling,
+    /// `floor(x)`.
     Floor,
+    /// `popcount(x)`, the number of set bits.
     Popcount,
+    /// `real(z)`.
     Real,
+    /// `imag(z)`.
     Imag,
 }
 
@@ -166,11 +201,23 @@ impl BinOp {
 
     /// The type of `lhs op rhs`, or an error if the operator is not
     /// defined for those operands.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedOp`] for operand types the operator is not defined
+    /// for.
     pub fn return_ty(self, lhs: ValueTy, rhs: ValueTy) -> Result<ValueTy> {
         Ok(self.check(lhs, rhs)?.2)
     }
 
     /// Evaluate `lhs op rhs`.
+    ///
+    /// # Errors
+    ///
+    /// As [`return_ty`](Self::return_ty), plus run-time failures:
+    /// [`Error::DivideByZero`], [`Error::Overflow`] for a signed integer
+    /// result that does not fit its width, [`Error::BadBorrow`] for an array
+    /// reference in use.
     pub fn apply(self, lhs: Value, rhs: Value) -> Result<Value> {
         // References are read once, up front: every array below is owned.
         let (lhs, rhs) = (lhs.into_owned()?, rhs.into_owned()?);
@@ -317,11 +364,21 @@ impl UnOp {
 
     /// The type of `op arg`, or an error if the operator is not defined
     /// for that operand.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedOp`] for an operand type the operator is not
+    /// defined for.
     pub fn return_ty(self, arg: ValueTy) -> Result<ValueTy> {
         self.check(arg).map(|(_, out)| ValueTy::Scalar(out))
     }
 
     /// Evaluate `op arg`.
+    ///
+    /// # Errors
+    ///
+    /// As [`return_ty`](Self::return_ty), and [`Error::Overflow`] for a
+    /// negation that does not fit its width.
     pub fn apply(self, arg: Value) -> Result<Value> {
         let (operand, out) = self.check(arg.ty())?;
         let Value::Scalar(arg) = arg else {

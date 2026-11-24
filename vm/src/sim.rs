@@ -52,6 +52,7 @@ impl<F: Amplitude> StateVectorSim<F> {
 
     /// Apply gates with the multi-threaded (rayon) kernel.
     #[cfg(feature = "parallel")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "parallel")))]
     pub fn with_parallel(mut self, parallel: bool) -> Self {
         self.parallel = parallel;
         self

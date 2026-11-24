@@ -17,62 +17,80 @@ use turns::{Angle8, Angle16, Angle32, Angle64, Angle128};
 #[derive(Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Primitive {
+    /// A `bit` or `bool`.
     Bit(bool),
+    /// A `bit[n]` register.
     BitReg(BitReg),
+    /// A `uint[n]`, zero-extended to 128 bits.
     Uint(u128),
+    /// An `int[n]`, sign-extended to 128 bits.
     Int(i128),
+    /// A `float[n]` (a `float[32]` is held rounded to `f32`).
     Float(f64),
+    /// A `complex[float[n]]`.
     Complex(Complex64),
+    /// A `duration`.
     Duration(Duration),
+    /// An `angle[n]`, as a fraction of a full turn in 128 bits.
     Angle(#[cfg_attr(feature = "serde", serde(with = "turns::serde::raw"))] Angle128),
 }
 
 impl Primitive {
+    /// A `bit` or `bool`.
     #[inline]
     pub const fn bit(v: bool) -> Self {
         Self::Bit(v)
     }
 
+    /// An integer, as given (not truncated to any width).
     #[inline]
     pub const fn int(v: i128) -> Self {
         Self::Int(v)
     }
 
+    /// An unsigned integer, as given (not truncated to any width).
     #[inline]
     pub const fn uint(v: u128) -> Self {
         Self::Uint(v)
     }
 
+    /// A float.
     #[inline]
     pub const fn float(v: f64) -> Self {
         Self::Float(v)
     }
 
+    /// A complex number.
     #[inline]
     pub const fn complex(re: f64, im: f64) -> Self {
         Self::Complex(Complex64 { re, im })
     }
 
+    /// A duration of `v` in `unit`.
     #[inline]
     pub const fn duration(v: f64, unit: DurationUnit) -> Self {
         Self::Duration(Duration::new(v, unit))
     }
 
+    /// An angle of `radians`, reduced modulo 2π.
     #[inline]
     pub fn angle(radians: f64) -> Self {
         Self::Angle(Angle128::from_radians(radians))
     }
 
+    /// A bit register.
     #[inline]
     pub fn bitreg(reg: BitReg) -> Self {
         Self::BitReg(reg)
     }
 
+    /// A bit register holding the low bits of `bits`.
     #[inline]
     pub fn bitreg_u128(bits: u128) -> Self {
         Self::BitReg(BitReg::from(bits))
     }
 
+    /// The value as a `bit`: whether it is non-zero.
     #[inline]
     pub fn as_bit(&self) -> bool {
         match self {
@@ -87,6 +105,8 @@ impl Primitive {
         }
     }
 
+    /// The value as an `int[bits]`, wrapped to that width; `None` for an
+    /// angle.
     #[inline]
     pub fn as_int(&self, bits: IntWidth) -> Option<i128> {
         let v = match self {
@@ -102,6 +122,8 @@ impl Primitive {
         Some(resize_int(v, bits))
     }
 
+    /// The value as a `uint[bits]`, wrapped to that width; `None` for an
+    /// angle.
     #[inline]
     pub fn as_uint(&self, bits: IntWidth) -> Option<u128> {
         let v = match self {
@@ -117,6 +139,8 @@ impl Primitive {
         Some(resize_uint(v, bits))
     }
 
+    /// The value as a `float[width]` (an angle in radians); `None` for a bit
+    /// register.
     #[inline]
     pub fn as_float(&self, width: FloatWidth) -> Option<f64> {
         let v = match self {
@@ -135,6 +159,7 @@ impl Primitive {
         })
     }
 
+    /// The value as a `complex[float[width]]`; `None` for a bit register.
     #[inline]
     pub fn as_complex(&self, width: FloatWidth) -> Option<Complex64> {
         let v = match self {
@@ -153,6 +178,7 @@ impl Primitive {
         })
     }
 
+    /// The duration, if the value is one.
     #[inline]
     pub fn as_duration(&self) -> Option<Duration> {
         match self {
@@ -178,6 +204,8 @@ impl Primitive {
         })
     }
 
+    /// The value's bits as a `bit[width]`; `None` for a float, complex,
+    /// duration or angle.
     #[inline]
     pub fn as_bitreg(&self, width: u32) -> Option<BitReg> {
         let reg = match self {
@@ -204,6 +232,12 @@ impl Primitive {
         }
     }
 
+    /// The value represented as `ty` (no cast-table check: see
+    /// [`PrimitiveTy::cast`]).
+    ///
+    /// # Errors
+    ///
+    /// [`Error::TypeMismatch`] if the value has no representation in `ty`.
     pub fn as_ty(self, ty: PrimitiveTy) -> Result<Primitive> {
         use PrimitiveTy::*;
         let result = match ty {
@@ -310,14 +344,18 @@ impl fmt::Debug for Primitive {
     }
 }
 
+/// The width of a `float` or of each part of a `complex`.
 #[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FloatWidth {
+    /// `float[32]`
     F32,
+    /// `float[64]`
     F64,
 }
 
 impl FloatWidth {
+    /// The width in bits.
     pub const fn get(self) -> usize {
         match self {
             FloatWidth::F32 => 32,
@@ -352,9 +390,16 @@ impl From<IntWidth> for u32 {
 impl IntWidth {
     /// Integers are carried in 128-bit machine words.
     pub const MAX: u32 = 128;
+    /// 128 bits, the widest.
     pub const B128: IntWidth = IntWidth(128);
+    /// 64 bits, the default width of `int`, `uint` and `angle`.
     pub const B64: IntWidth = IntWidth(64);
 
+    /// A width of `bits`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidWidth`] unless `bits` is in `1..=IntWidth::MAX`.
     #[inline]
     pub const fn new(bits: u32) -> Result<Self> {
         if bits == 0 || bits > Self::MAX {
@@ -367,6 +412,7 @@ impl IntWidth {
         }
     }
 
+    /// The width in bits.
     pub const fn get(self) -> u32 {
         self.0
     }
@@ -412,21 +458,32 @@ impl fmt::Display for Primitive {
     }
 }
 
+/// The type of a scalar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PrimitiveTy {
+    /// `bool`
     Bool,
+    /// `bit`
     Bit,
+    /// `bit[n]`
     BitReg(u32),
+    /// `int[n]`
     Int(IntWidth),
+    /// `uint[n]`
     Uint(IntWidth),
+    /// `float[n]`
     Float(FloatWidth),
+    /// `complex[float[n]]`
     Complex(FloatWidth),
+    /// `duration`
     Duration,
+    /// `angle[n]`
     Angle(IntWidth),
 }
 
 impl PrimitiveTy {
+    /// The width of an `int`, `uint` or `angle`.
     pub const fn int_width(&self) -> Option<IntWidth> {
         match self {
             PrimitiveTy::Int(n) | PrimitiveTy::Uint(n) | PrimitiveTy::Angle(n) => Some(*n),
@@ -434,6 +491,8 @@ impl PrimitiveTy {
         }
     }
 
+    /// How many bits the type has for bit-level indexing: the width of an
+    /// `int`, `uint` or `angle`, the size of a `bit[n]`.
     pub const fn bit_count(&self) -> Option<u32> {
         match self {
             PrimitiveTy::Int(n) | PrimitiveTy::Uint(n) | PrimitiveTy::Angle(n) => Some(n.get()),
@@ -442,6 +501,7 @@ impl PrimitiveTy {
         }
     }
 
+    /// The float width of a `float` or `complex`.
     pub fn fw(&self) -> Option<FloatWidth> {
         match self {
             PrimitiveTy::Float(w) | PrimitiveTy::Complex(w) => Some(*w),
@@ -464,6 +524,10 @@ impl PrimitiveTy {
     /// (C99): everything numeric converts to it, and it converts to `bool`.
     /// Scalar `bit` is accepted wherever `bool` is as a cast *target*
     /// (`val != 0`), the two being interchangeable.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::UnsupportedCast`] if the cast is not allowed.
     pub fn cast(self, ty: PrimitiveTy) -> Result<Self> {
         use PrimitiveTy::*;
         let allowed = match (self, ty) {

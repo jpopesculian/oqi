@@ -336,3 +336,68 @@ def test_bad_programs_are_errors():
         oqi.run(compiled.bytecode[:-2])
     with pytest.raises(TypeError, match="expected a program"):
         oqi.run(3)
+
+
+def test_errors_carry_code_and_span():
+    source = "OPENQASM 3.0;\nint é = ;\n"
+    with pytest.raises(oqi.OqiError) as excinfo:
+        oqi.compile(source)
+    err = excinfo.value
+    assert err.code == "S0001"
+    start, end = err.span
+    # Character offsets: they index the Python string, past the `é`.
+    assert source[start:end] in (";", " ") and start > source.index("é")
+
+    with pytest.raises(oqi.OqiError) as excinfo:
+        oqi.run("input int n; output int m; m = n;")
+    assert excinfo.value.code == "R0002"
+
+    # Errors that are not program diagnostics have neither.
+    with pytest.raises(oqi.OqiError) as excinfo:
+        oqi.run(BELL, backend="cpu")
+    assert excinfo.value.code is None and excinfo.value.span is None
+
+
+def test_reprs_show_every_field():
+    compiled = oqi.compile(BELL)
+    assert repr(compiled).startswith("CompileResult(bytecode=<")
+    assert "disassembly=<" in repr(compiled)
+
+    result = oqi.run(BELL, seed=1, statevector=True)
+    text = repr(result)
+    for field in ("measurements=[", "outputs={", "statevector=<4 amplitudes>",
+                  "backend='scalar'", "precision='f64'"):
+        assert field in text, text
+
+    samples = oqi.sample(BELL, shots=8, seed=1)
+    text = repr(samples)
+    for field in ("shots=8", "histograms={'c': {", "backend='scalar'", "precision='f64'"):
+        assert field in text, text
+
+
+def test_the_stub_matches_the_module():
+    import ast
+    import pathlib
+
+    stub = pathlib.Path(__file__).parent.parent / "oqi.pyi"
+    tree = ast.parse(stub.read_text())
+    declared = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef))
+    }
+    # The wheel is a package re-exporting its native submodule `oqi.oqi`.
+    public = {name for name in dir(oqi) if not name.startswith("_")} - {"oqi"}
+    assert declared == public
+
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name != "OqiError":
+            cls = getattr(oqi, node.name)
+            props = {f.name for f in node.body if isinstance(f, ast.FunctionDef)}
+            assert props == {a for a in dir(cls) if not a.startswith("_")}, node.name
+        if isinstance(node, ast.FunctionDef):
+            args = node.args
+            names = [a.arg for a in args.args + args.kwonlyargs]
+            sig = getattr(oqi, node.name).__text_signature__
+            for name in names:
+                assert name in sig, (node.name, name, sig)

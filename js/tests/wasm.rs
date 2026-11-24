@@ -45,7 +45,7 @@ fn options(json: &str) -> JsValue {
 }
 
 async fn run(source: &str, opts: JsValue) -> Result<RunOutput, JsValue> {
-    let result = oqi_js::run(source.into(), opts).await?;
+    let result = oqi_js::run(source.into(), Some(opts)).await?;
     Ok(serde_wasm_bindgen::from_value(result).unwrap())
 }
 
@@ -71,7 +71,7 @@ struct SampleOutput {
 }
 
 async fn sample(source: &str, opts: JsValue) -> Result<SampleOutput, JsValue> {
-    let result = oqi_js::sample(source.into(), opts).await?;
+    let result = oqi_js::sample(source.into(), Some(opts)).await?;
     Ok(serde_wasm_bindgen::from_value(result).unwrap())
 }
 
@@ -569,7 +569,9 @@ async fn bytecode_runs_like_its_source() {
 
     let opts = r#"{ "seed": 7, "statevector": true }"#;
     let from_source = run(BELL, options(opts)).await.unwrap();
-    let from_bytes = oqi_js::run(bytes.clone(), options(opts)).await.unwrap();
+    let from_bytes = oqi_js::run(bytes.clone(), Some(options(opts)))
+        .await
+        .unwrap();
     let from_bytes: RunOutput = serde_wasm_bindgen::from_value(from_bytes).unwrap();
     assert_eq!(
         format!("{:?}", from_bytes.measurements),
@@ -579,7 +581,9 @@ async fn bytecode_runs_like_its_source() {
 
     let opts = r#"{ "seed": 7, "shots": 64 }"#;
     let hist = |out: SampleOutput| format!("{:?}", out.histograms);
-    let sampled = oqi_js::sample(bytes.clone(), options(opts)).await.unwrap();
+    let sampled = oqi_js::sample(bytes.clone(), Some(options(opts)))
+        .await
+        .unwrap();
     let sampled: SampleOutput = serde_wasm_bindgen::from_value(sampled).unwrap();
     assert_eq!(
         hist(sampled),
@@ -591,7 +595,7 @@ async fn bytecode_runs_like_its_source() {
 
     // Timing options are for source; damaged bytes and other values are
     // errors.
-    let err = oqi_js::run(bytes, options(r#"{ "dt": "1ns" }"#))
+    let err = oqi_js::run(bytes, Some(options(r#"{ "dt": "1ns" }"#)))
         .await
         .unwrap_err();
     assert!(error_message(err).contains("bytecode"));
@@ -602,4 +606,39 @@ async fn bytecode_runs_like_its_source() {
     assert!(error_message(err).contains("malformed bytecode"));
     let err = oqi_js::compile(JsValue::from_f64(3.0)).err().unwrap();
     assert!(error_message(err).contains("expected a program"));
+}
+
+/// `run` runs once and `sample` keeps no state vector: each rejects the
+/// other's option rather than ignoring it.
+#[wasm_bindgen_test]
+async fn options_of_the_other_call_are_rejected() {
+    let err = run(BELL, options(r#"{ "shots": 10 }"#)).await.unwrap_err();
+    assert!(error_message(err).contains("`shots` is an option of `sample`"));
+    let err = sample(BELL, options(r#"{ "statevector": true }"#))
+        .await
+        .unwrap_err();
+    assert!(error_message(err).contains("`statevector` is an option of `run`"));
+    // Both still take no options at all.
+    run(BELL, JsValue::UNDEFINED).await.unwrap();
+    let out = oqi_js::run(BELL.into(), None).await.unwrap();
+    assert!(!out.is_undefined());
+}
+
+/// Program errors carry their diagnostic code; option errors do not.
+#[wasm_bindgen_test]
+async fn errors_carry_their_code() {
+    let code = |err: &JsValue| js_sys::Reflect::get(err, &JsValue::from_str("code")).unwrap();
+    let err = oqi_js::compile("OPENQASM 3.0\n".into()).err().unwrap();
+    assert_eq!(code(&err).as_string().as_deref(), Some("S0001"));
+    let err = oqi_js::compile("qubit q; undefined_gate q;".into())
+        .err()
+        .unwrap();
+    assert_eq!(code(&err).as_string().as_deref(), Some("C0001"));
+    let err = run("input int n; output int m; m = n;", JsValue::UNDEFINED)
+        .await
+        .unwrap_err();
+    assert_eq!(code(&err).as_string().as_deref(), Some("R0002"));
+    let err = run(BELL, options(r#"{ "nope": 1 }"#)).await.unwrap_err();
+    assert!(code(&err).is_undefined());
+    assert!(error_message(err).contains("unknown option `nope`"));
 }

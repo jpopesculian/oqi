@@ -1,6 +1,6 @@
 import { StreamLanguage, type StringStream } from '@codemirror/language';
 
-// Keyword sets lifted from the oqi lexer (lex/src/lib.rs).
+// Keyword sets lifted from the oqi lexer (lex/src/token.rs).
 const KEYWORDS = new Set([
   'OPENQASM', 'include', 'defcalgrammar', 'def', 'cal', 'defcal', 'gate',
   'extern', 'box', 'let', 'break', 'continue', 'if', 'else', 'end', 'return',

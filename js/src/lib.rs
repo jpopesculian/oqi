@@ -8,7 +8,12 @@
 //! `extern` implementations (the `externs` option), synchronous or
 //! Promise-returning. Includes are limited to the embedded `stdgates.inc`;
 //! file includes are rejected. Errors surface as thrown JS `Error`s whose
-//! message is the rendered diagnostic.
+//! message is the rendered diagnostic, with the diagnostic's `code` and,
+//! when it points into the source, its `span`.
+//!
+//! The TypeScript types of the options and results are declared in
+//! [`TYPES`]; doc comments on exported items become the `.d.ts` docs, so
+//! they avoid rustdoc link syntax.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -25,9 +30,173 @@ use wasm_bindgen_futures::JsFuture;
 /// Name used for the root source in rendered diagnostics.
 const SOURCE_NAME: &str = "<source>";
 
-/// The most shots [`sample`] runs: every shot's result is held in memory at
-/// once, and a wasm module's memory is small.
+/// TypeScript declarations for the options and results, which wasm-bindgen
+/// only sees as `JsValue`s.
+#[wasm_bindgen(typescript_custom_section)]
+const TYPES: &str = r#"
+/** A value as JavaScript sees it: booleans and numbers natively; integers
+ * beyond 2^53 and other types (bit registers, angles, complex numbers,
+ * durations, arrays) as their OpenQASM text. */
+export type Value = boolean | number | string;
+
+/** A value for an `input` declaration: a scalar (numbers, booleans, or text
+ * such as "0101" for `bit[n]`, "1.5-2im" for `complex`, "100ns" for
+ * `duration`), or an array, nested for multi-dimensional arrays. */
+export type InputValue = boolean | number | string | InputValue[];
+
+/** A backend, by the CLI's `--backend` names. The multi-threaded `rayon`
+ * backends are not available in WebAssembly. */
+export type BackendName =
+  | "scalar"
+  | "simd"
+  | "gpu"
+  | "prefer-gpu"
+  | "auto"
+  | "sum"
+  | "mps";
+
+/** Amplitude precision of the state-vector simulators. */
+export type Precision = "f64" | "f32";
+
+/** A host implementation of an `extern` function. Arguments arrive as
+ * values; the return value (or what a returned Promise resolves to) is
+ * coerced to the declared return type. */
+export type ExternFunction = (...args: Value[]) => Value | void | Promise<Value | void>;
+
+/** Options shared by `run` and `sample`. */
+export interface CommonOptions {
+  /** Values for the program's `input` declarations, by name. */
+  inputs?: Record<string, InputValue>;
+  /** Random seed; a given seed reproduces a run or a whole histogram. */
+  seed?: number | bigint;
+  /** Implementations of the program's `extern` functions, by name. */
+  externs?: Record<string, ExternFunction>;
+  /** Durations of named operations (`measure` and `reset` reserved) as
+   * timing literals ("50ns", "4dt"). Present (even `{}`), it resolves
+   * `durationof` at compile time, from these and the program's defcal
+   * bodies. Source programs only. */
+  timings?: Record<string, string>;
+  /** Duration of one `dt`, as a timing literal ("0.5ns"). Source programs
+   * only. */
+  dt?: string;
+  /** The simulator to run on (default "scalar"). "prefer-gpu" runs on the
+   * GPU when WebGPU is available, else on "scalar". */
+  backend?: BackendName;
+  /** Amplitude precision of the CPU state-vector simulators (default
+   * "f64"). The GPU simulator is always "f32". */
+  precision?: Precision;
+  /** Most stabilizer terms the "auto" and "sum" backends' exact
+   * sum-over-Cliffords tier may hold. */
+  maxRank?: number;
+  /** Largest bond dimension of the "mps" backend; past it the state is
+   * truncated. */
+  maxBond?: number;
+}
+
+/** Options of `run`. */
+export interface RunOptions extends CommonOptions {
+  /** Include the final state vector in the result. */
+  statevector?: boolean;
+}
+
+/** Options of `sample`. */
+export interface SampleOptions extends CommonOptions {
+  /** How many shots to run: 1 to 100 000 (default 1024). */
+  shots?: number;
+}
+
+/** One qubit's measurement outcome. */
+export interface Measurement {
+  /** The qubit's index in the program's qubit memory. */
+  qubit: number;
+  value: boolean;
+}
+
+/** One output variable's final value. */
+export interface Output {
+  name: string;
+  value: Value;
+}
+
+/** The result of `run`. */
+export interface RunResult {
+  /** Every measurement, in the order the program made them. */
+  measurements: Measurement[];
+  /** The program's output variables, in program order. */
+  outputs: Output[];
+  /** The backend that ran ("prefer-gpu" resolves to "gpu" or "scalar"). */
+  backend: BackendName;
+  /** The amplitude precision that ran. */
+  precision: Precision;
+  /** The final state vector as interleaved `[re0, im0, re1, im1, ...]`,
+   * when `statevector` was requested. */
+  statevector?: number[];
+}
+
+/** One observed value and how many shots produced it. */
+export interface HistogramBar {
+  label: string;
+  count: number;
+}
+
+/** How often each value of one output variable was observed. */
+export interface Histogram {
+  name: string;
+  /** The number of shots counted (equal to `shots`). */
+  total: number;
+  /** Observed values and their counts, sorted by value. */
+  bars: HistogramBar[];
+}
+
+/** The result of `sample`. */
+export interface SampleResult {
+  shots: number;
+  /** The backend that ran ("prefer-gpu" resolves to "gpu" or "scalar"). */
+  backend: BackendName;
+  /** The amplitude precision that ran. */
+  precision: Precision;
+  /** One histogram per output variable, in program order. */
+  histograms: Histogram[];
+}
+
+/**
+ * Run an OpenQASM 3 program once on a simulator. `program` is source text,
+ * or bytecode (a `Uint8Array` from `compile`).
+ *
+ * `options.externs` maps each `extern` function's name to a JS
+ * implementation, which may return its result directly or as a `Promise`.
+ * Return values are coerced to the declared return type (radians for
+ * `angle[n]`, MSB-first "0101" strings for `bit[n]`). An extern with no
+ * implementation, or one that throws, aborts the run with an `OqiError`.
+ */
+export function run(program: string | Uint8Array, options?: RunOptions): Promise<RunResult>;
+
+/**
+ * Run an OpenQASM 3 program (source text or bytecode, as for `run`) for many
+ * shots, returning a histogram of observed values per output variable. A
+ * given `seed` reproduces the whole histogram.
+ */
+export function sample(program: string | Uint8Array, options?: SampleOptions): Promise<SampleResult>;
+
+/** What `compile`, `run` and `sample` throw for a program error: an
+ * `Error` whose message is the rendered diagnostic. */
+export interface OqiError extends Error {
+  /** The diagnostic's stable code, e.g. "S0001" (syntax), "C0001"
+   * (compile), "R0002" (runtime). Absent for errors that are not program
+   * diagnostics, such as invalid options. */
+  code?: string;
+  /** Byte offsets of the offending source text, when the error points into
+   * the program's own source. */
+  span?: { start: number; end: number };
+}
+"#;
+
+/// The most shots [`sample`] runs, so a run's time stays bounded in the
+/// browser.
 const MAX_SHOTS: u32 = 100_000;
+
+/// Shots [`sample`] runs when `shots` is not given.
+const DEFAULT_SHOTS: u32 = 1024;
 
 /// Largest integer a JS `number` represents exactly (2^53 - 1).
 const MAX_SAFE_INTEGER: u128 = (1 << 53) - 1;
@@ -42,10 +211,10 @@ fn included_file(path: &Path) -> Option<String> {
 }
 
 /// Render any workspace diagnostic against the root source as a thrown JS
-/// `Error`. The rendered diagnostic is the `message`; when the primary label
-/// has a real span in the root source (not in an included library), it's
-/// attached as a `{ start, end }` byte-offset `span` property so callers
-/// (e.g. the playground) can highlight it.
+/// `Error`. The rendered diagnostic is the `message` and its code the
+/// `code`; when the primary label has a real span in the root source (not in
+/// an included library), it's attached as a `{ start, end }` byte-offset
+/// `span` property so callers (e.g. the playground) can highlight it.
 fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> JsValue {
     let err = js_sys::Error::new(&oqi_diagnostics::render_to_string(
         diag,
@@ -53,6 +222,11 @@ fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> JsValue {
         source,
         &included_file,
     ));
+    let _ = js_sys::Reflect::set(
+        &err,
+        &JsValue::from_str("code"),
+        &JsValue::from_str(&diag.code().to_string()),
+    );
     let in_root = diag
         .path()
         .is_none_or(|path| path == Path::new(SOURCE_NAME));
@@ -137,17 +311,21 @@ fn load(
     Ok((module, String::new()))
 }
 
+/// The result of `compile`.
 #[wasm_bindgen(getter_with_clone)]
 pub struct CompileResult {
     /// The program as bytecode: `run` and `sample` take it in place of the
     /// source.
+    #[wasm_bindgen(readonly)]
     pub bytecode: Vec<u8>,
     /// Textual disassembly of the bytecode.
+    #[wasm_bindgen(readonly)]
     pub disassembly: String,
 }
 
 /// Compile an OpenQASM 3 program (source text) to bytecode, or disassemble
-/// bytecode (a `Uint8Array`).
+/// bytecode (a `Uint8Array`). Throws an `OqiError` for an error in the
+/// program.
 #[wasm_bindgen]
 pub fn compile(
     #[wasm_bindgen(unchecked_param_type = "string | Uint8Array")] program: JsValue,
@@ -184,18 +362,23 @@ impl From<InputValue> for HostValue {
     }
 }
 
+/// The options of `run` and `sample` (see `RunOptions` and `SampleOptions`
+/// in [`TYPES`]). One struct serves both; [`Session::new`] rejects unknown
+/// fields (serde-wasm-bindgen reads only the fields a struct declares, so
+/// `deny_unknown_fields` would never fire) and the field the other call
+/// owns.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RunOptions {
+#[serde(rename_all = "camelCase")]
+struct Options {
     /// Values for the program's `input` declarations, keyed by name.
     #[serde(default)]
     inputs: BTreeMap<String, InputValue>,
     /// Simulator RNG seed (number or bigint).
     #[serde(default)]
     seed: Option<u64>,
-    /// Include the final state vector in the result.
+    /// Include the final state vector in the result (`run` only).
     #[serde(default)]
-    statevector: bool,
+    statevector: Option<bool>,
     /// Extern implementations: an object mapping extern name → function.
     /// Captured raw — JS functions can't pass through serde.
     #[serde(default, with = "serde_wasm_bindgen::preserve")]
@@ -227,14 +410,31 @@ struct RunOptions {
     /// truncated.
     #[serde(default)]
     max_bond: Option<usize>,
-    /// Number of shots for [`sample`] (ignored by [`run`]): 1 to
-    /// [`MAX_SHOTS`].
-    #[serde(default = "default_shots")]
-    shots: u32,
+    /// Number of shots (`sample` only): 1 to [`MAX_SHOTS`], default 1024.
+    #[serde(default)]
+    shots: Option<u32>,
 }
 
-fn default_shots() -> u32 {
-    1024
+/// Every field of [`Options`], as JavaScript spells it.
+const OPTION_NAMES: [&str; 11] = [
+    "inputs",
+    "seed",
+    "statevector",
+    "externs",
+    "timings",
+    "dt",
+    "backend",
+    "precision",
+    "maxRank",
+    "maxBond",
+    "shots",
+];
+
+/// Which call the options are for.
+#[derive(Clone, Copy, PartialEq)]
+enum Call {
+    Run,
+    Sample,
 }
 
 #[derive(Serialize)]
@@ -304,21 +504,46 @@ struct Session {
     module: Program,
     /// The source text errors render against (empty for bytecode).
     source: String,
-    opts: RunOptions,
+    opts: Options,
     backend: BackendSpec,
 }
 
 impl Session {
-    fn new(program: &JsValue, options: JsValue) -> Result<Session, JsValue> {
+    fn new(program: &JsValue, options: Option<JsValue>, call: Call) -> Result<Session, JsValue> {
         let invalid = |e: String| JsError::new(&format!("invalid options: {e}"));
         // An absent options object still gets every field's default.
-        let options = if options.is_undefined() || options.is_null() {
-            js_sys::Object::new().into()
-        } else {
-            options
+        let options = match options {
+            Some(options) if !options.is_undefined() && !options.is_null() => options,
+            _ => js_sys::Object::new().into(),
         };
-        let opts: RunOptions =
+        if let Some(object) = options.dyn_ref::<js_sys::Object>() {
+            for key in js_sys::Object::keys(object).iter() {
+                let key = key.as_string().unwrap_or_default();
+                if !OPTION_NAMES.contains(&key.as_str()) {
+                    let known = OPTION_NAMES.join(", ");
+                    return Err(invalid(format!(
+                        "unknown option `{key}` (expected one of {known})"
+                    ))
+                    .into());
+                }
+            }
+        }
+        let opts: Options =
             serde_wasm_bindgen::from_value(options).map_err(|e| invalid(e.to_string()))?;
+        match call {
+            Call::Run if opts.shots.is_some() => {
+                return Err(
+                    invalid("`shots` is an option of `sample`; `run` runs once".into()).into(),
+                );
+            }
+            Call::Sample if opts.statevector.is_some() => {
+                return Err(invalid(
+                    "`statevector` is an option of `run`; `sample` keeps no state vector".into(),
+                )
+                .into());
+            }
+            _ => {}
+        }
         let (module, source) = load(program, opts.timings.as_ref(), opts.dt.as_deref())?;
 
         let name = opts.backend.as_deref().unwrap_or("scalar");
@@ -359,27 +584,12 @@ fn to_js(value: &impl Serialize) -> Result<JsValue, JsValue> {
         .map_err(|e| JsError::new(&format!("result serialization failed: {e}")).into())
 }
 
-/// Run an OpenQASM 3 program on a simulator. `program` is source text, or
-/// bytecode (a `Uint8Array` from [`compile`]).
-///
-/// `options` is an optional object:
-/// `{ inputs?, seed?, statevector?, externs?, timings?, dt?, backend?, precision?, maxRank?, maxBond? }`.
-/// `externs` maps each `extern` function's name to a JS implementation, which
-/// may return its result directly or as a `Promise` (awaited). Return values
-/// are coerced to the declared return type (radians for `angle[n]`, MSB-first
-/// "0101" strings for `bit[n]`). An extern with no implementation, or one
-/// that throws, aborts the run with a diagnostic error. `timings` maps
-/// operation names to duration literals and enables compile-time
-/// `durationof` resolution (defcal bodies included); `dt` sets the device
-/// time unit; both apply to source only. Returns
-/// `{ measurements, outputs, backend, precision, statevector? }`.
-#[wasm_bindgen]
-pub async fn run(
-    #[wasm_bindgen(unchecked_param_type = "string | Uint8Array")] program: JsValue,
-    options: JsValue,
-) -> Result<JsValue, JsValue> {
-    let mut session = Session::new(&program, options)?;
-    let statevector = session.opts.statevector;
+/// Run a program once (source text or bytecode). Its TypeScript declaration,
+/// with the options and result types, is in [`TYPES`].
+#[wasm_bindgen(skip_typescript)]
+pub async fn run(program: JsValue, options: Option<JsValue>) -> Result<JsValue, JsValue> {
+    let mut session = Session::new(&program, options, Call::Run)?;
+    let statevector = session.opts.statevector.unwrap_or(false);
     let result = session
         .runner()?
         .statevector(statevector)
@@ -409,20 +619,13 @@ pub async fn run(
     })
 }
 
-/// Sample an OpenQASM 3 program (source text or bytecode, as for [`run`])
-/// over many shots, returning a histogram of observed values per named
-/// output variable.
-///
-/// `options` accepts the same object as [`run`] plus `shots` (default 1024,
-/// at most 100 000). A given `seed` reproduces the whole histogram.
-/// Returns `{ shots, backend, precision, histograms: [{ name, total, bars: [{ label, count }] }] }`.
-#[wasm_bindgen]
-pub async fn sample(
-    #[wasm_bindgen(unchecked_param_type = "string | Uint8Array")] program: JsValue,
-    options: JsValue,
-) -> Result<JsValue, JsValue> {
-    let mut session = Session::new(&program, options)?;
-    let shots = session.opts.shots;
+/// Run a program for many shots (source text or bytecode) and return a
+/// histogram per output. Its TypeScript declaration, with the options and
+/// result types, is in [`TYPES`].
+#[wasm_bindgen(skip_typescript)]
+pub async fn sample(program: JsValue, options: Option<JsValue>) -> Result<JsValue, JsValue> {
+    let mut session = Session::new(&program, options, Call::Sample)?;
+    let shots = session.opts.shots.unwrap_or(DEFAULT_SHOTS);
     if !(1..=MAX_SHOTS).contains(&shots) {
         let message = format!("`shots` must be between 1 and {MAX_SHOTS}, not {shots}");
         return Err(js_sys::Error::new(&message).into());
@@ -456,8 +659,8 @@ pub async fn sample(
     })
 }
 
-/// Extern implementations supplied from JS (`run`'s `externs` option):
-/// name → function.
+/// Extern implementations supplied from JS (the `externs` option): name →
+/// function.
 struct JsExterns {
     fns: HashMap<String, js_sys::Function>,
 }

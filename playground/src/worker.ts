@@ -3,13 +3,13 @@
 // terminate() a runaway run.
 import init, { sample } from 'oqi-js';
 
-import type { RunOptions } from './runner';
+import type { SampleOptions } from './runner';
 
 interface RunRequest {
   type: 'run';
   id: number;
   source: string;
-  options: RunOptions;
+  options: SampleOptions;
 }
 
 const ready = init().then(() => {

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -11,8 +12,9 @@ use oqi_format::Config;
 use oqi_vm::{BackendSpec, DEFAULT_SEED, HostValue, Precision, Runner, SumPolicy};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
+/// Compile, run and format OpenQASM 3 programs.
 #[derive(Parser)]
-#[command(name = "oqi")]
+#[command(name = "oqi", version)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -44,7 +46,7 @@ struct TimingArgs {
     /// `reset`, and `dt`. Repeatable --timing flags override file entries;
     /// --dt overrides the file's "dt". Presence enables compile-time
     /// resolution
-    #[arg(long = "timings", value_name = "FILE")]
+    #[arg(long, value_name = "FILE")]
     timings_file: Option<PathBuf>,
 }
 
@@ -71,10 +73,10 @@ impl TimingArgs {
             None => BTreeMap::new(),
             Some(file) => {
                 let text = fs::read_to_string(file)
-                    .map_err(|e| fail(format!("--timings {}: {e}", file.display())))?;
+                    .map_err(|e| fail(format!("--timings-file {}: {e}", file.display())))?;
                 serde_json::from_str(&text).map_err(|e| {
                     fail(format!(
-                        "--timings {}: expected a flat JSON object of name → duration literal: {e}",
+                        "--timings-file {}: expected a flat JSON object of name → duration literal: {e}",
                         file.display()
                     ))
                 })?
@@ -83,8 +85,8 @@ impl TimingArgs {
 
         let mut compiler = Compiler::new().source_name(path);
         if let Some(spec) = file.remove("dt") {
-            let dt =
-                oqi_compile::parse_dt(&spec).map_err(|e| fail(format!("--timings dt: {e}")))?;
+            let dt = oqi_compile::parse_dt(&spec)
+                .map_err(|e| fail(format!("--timings-file dt: {e}")))?;
             compiler = compiler.dt(dt);
         }
         if let Some(spec) = &self.dt {
@@ -144,17 +146,18 @@ enum Command {
     /// simulator
     Run(RunArgs),
 
-    /// Format OpenQASM files
+    /// Format OpenQASM files in place, or standard input to standard output
+    /// when no files are given
     Fmt {
-        /// Use compact formatting
+        /// Use compact formatting (drops comments)
         #[arg(long)]
         compact: bool,
 
-        /// Print to stdout instead of writing back to file
+        /// Print to stdout instead of writing back to the files
         #[arg(long)]
         stdout: bool,
 
-        /// Files to format
+        /// Files to format; none reads standard input
         paths: Vec<PathBuf>,
     },
 }
@@ -215,7 +218,8 @@ struct RunArgs {
     shots: Option<u32>,
 
     /// Supply a value for a declared input (repeatable). Angles are
-    /// radians, `bit[n]` an MSB-first bit string, and arrays a
+    /// radians, `bit[n]` an MSB-first bit string, complex numbers like
+    /// `1.5-2im`, durations a timing literal like `100ns`, and arrays a
     /// comma-separated list, optionally bracketed: `NAME=1,2,3`.
     #[arg(long = "input", value_name = "NAME=VALUE")]
     input: Vec<String>,
@@ -283,7 +287,6 @@ fn no_timings_for_bytecode(path: &Path, timing: &TimingArgs) -> Result<(), ExitC
     Ok(())
 }
 
-/// The timing entries as the borrowed pairs the compiler takes.
 /// The text of a file a diagnostic points into, read the way `include`
 /// read it.
 fn included_file(path: &Path) -> Option<String> {
@@ -501,6 +504,9 @@ fn parse_inputs(module: &Program, specs: &[String]) -> Result<Vec<(String, HostV
 
 fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {
     let config = Config::default().compact(compact);
+    if paths.is_empty() {
+        return fmt_stdin(config);
+    }
 
     // Format in parallel; report and print in the order the files were given.
     let results: Vec<_> = paths
@@ -542,5 +548,25 @@ fn fmt(compact: bool, stdout: bool, paths: &[PathBuf]) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// Format standard input to standard output.
+fn fmt_stdin(config: Config) -> ExitCode {
+    let path = Path::new("<stdin>");
+    let mut source = String::new();
+    if let Err(e) = std::io::stdin().read_to_string(&mut source) {
+        eprintln!("{}: {e}", path.display());
+        return ExitCode::FAILURE;
+    }
+    match oqi_format::format(&source, config) {
+        Ok(formatted) => {
+            print!("{formatted}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            oqi_diagnostics::emit(&e, path, &source, &|_| None);
+            ExitCode::FAILURE
+        }
     }
 }

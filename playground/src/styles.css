@@ -322,3 +322,9 @@ body {
 .outputs .value {
   font-family: var(--mono);
 }
+
+.backend-badge.mps {
+  color: #d2a8ff;
+  border-color: #8957e526;
+  background: #8957e515;
+}

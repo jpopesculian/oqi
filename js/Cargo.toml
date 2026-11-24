@@ -2,6 +2,14 @@
 name = "oqi-js"
 version = "0.1.0"
 edition = "2024"
+description = "Compile, run and sample OpenQASM 3 programs in JavaScript (WebAssembly)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/jpopesculian/oqi"
+homepage = "https://jpopesculian.github.io/oqi/"
+readme = "README.md"
+keywords = ["openqasm", "quantum", "simulator", "wasm"]
+# Published to npm with wasm-pack, not to crates.io.
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]

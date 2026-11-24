@@ -1,46 +1,19 @@
 // Main-thread client for the wasm worker: spawns it, matches responses to
 // requests by id, and supports Stop via terminate + respawn.
 
-export type InputValue = boolean | number | string | InputValue[];
+import type { OqiError, SampleOptions, SampleResult } from 'oqi-js';
 
-/** oqi-js backend names (the CLI's `--backend` names, minus the threaded ones). */
-export type BackendChoice = 'scalar' | 'simd' | 'gpu' | 'prefer-gpu' | 'auto' | 'sum';
-export type Precision = 'f32' | 'f64';
-
-export interface RunOptions {
-  inputs: Record<string, InputValue>;
-  seed?: number | bigint;
-  backend?: BackendChoice;
-  precision?: Precision;
-  shots: number;
-}
-
-export interface HistoBar {
-  label: string;
-  count: number;
-}
-
-export interface Histogram {
-  name: string;
-  total: number;
-  bars: HistoBar[];
-}
+export type {
+  BackendName,
+  Histogram,
+  InputValue,
+  Precision,
+  SampleOptions,
+  SampleResult,
+} from 'oqi-js';
 
 /** Byte-offset range into the source for an error's offending span. */
-export interface ErrorSpan {
-  start: number;
-  end: number;
-}
-
-export interface SampleResult {
-  shots: number;
-  /** The backend that actually ran (`prefer-gpu` reports `gpu` or `scalar`). */
-  backend: Exclude<BackendChoice, 'prefer-gpu'>;
-  /** The amplitude precision that ran. */
-  precision: Precision;
-  /** One histogram per named output variable, in program order. */
-  histograms: Histogram[];
-}
+export type ErrorSpan = NonNullable<OqiError['span']>;
 
 type WorkerReply =
   | { type: 'ready' }
@@ -109,7 +82,7 @@ export class Runner {
   }
 
   /** Sample the program over `options.shots` and return per-variable histograms. */
-  run(source: string, options: RunOptions): Promise<SampleResult> {
+  run(source: string, options: SampleOptions): Promise<SampleResult> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });

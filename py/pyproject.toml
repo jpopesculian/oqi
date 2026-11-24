@@ -4,9 +4,25 @@ build-backend = "maturin"
 
 [project]
 name = "oqi-py"
-version = "0.1.0"
-description = "Python bindings for the oqi OpenQASM 3 compiler and state-vector simulator"
+description = "Compile, run and sample OpenQASM 3 programs on state-vector, stabilizer and matrix-product-state simulators"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
 requires-python = ">=3.10"
+keywords = ["openqasm", "quantum", "simulator", "compiler"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Typing :: Typed",
+]
+# The version comes from Cargo.toml.
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/jpopesculian/oqi"
+Playground = "https://jpopesculian.github.io/oqi/"
 
 [tool.maturin]
 module-name = "oqi"

@@ -1,4 +1,4 @@
-//! Python (PyO3) bindings for the oqi compiler and VM.
+//! Python (PyO3) bindings for the oqi compiler and VM: the `oqi` module.
 //!
 //! Exposes a minimal API: [`compile`] (program → bytecode + disassembly),
 //! [`run`] (program → simulated results) and [`sample`] (program →
@@ -7,8 +7,12 @@
 //! `run` and `sample` can call host-supplied
 //! `extern` implementations (the `externs` option), as synchronous callables.
 //! Includes are limited to the embedded `stdgates.inc`; file includes are
-//! rejected. Errors raise [`OqiError`] whose message is the rendered
-//! diagnostic.
+//! rejected. Errors raise `OqiError`, whose message is the rendered
+//! diagnostic, with its `code` and `span`.
+//!
+//! Doc comments on exported items become Python docstrings, so they avoid
+//! rustdoc link syntax. The type stub `py/oqi.pyi` mirrors this module and
+//! ships in the wheel; keep the two in step.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -32,7 +36,11 @@ create_exception!(
     oqi,
     OqiError,
     PyException,
-    "Compile or runtime error; the message is the rendered diagnostic."
+    "An error in a program, or in the options it was given. The message is \
+     the rendered diagnostic. `code` is the diagnostic's stable code (e.g. \
+     \"S0001\" for a syntax error) and `span` the `(start, end)` character \
+     offsets of the offending source text; either is None when it doesn't \
+     apply."
 );
 
 /// The text of a file a diagnostic points into: whatever the include
@@ -44,14 +52,32 @@ fn included_file(path: &Path) -> Option<String> {
         .map(|text| text.into_owned())
 }
 
-/// Render any workspace diagnostic against the root source as an `OqiError`.
+/// Render any workspace diagnostic against the root source as an `OqiError`
+/// carrying the diagnostic's `code` and, when it points into the root
+/// source, its `span` as character offsets (Python string indices).
 fn diag_err(diag: &dyn oqi_diagnostics::Diagnostic, source: &str) -> PyErr {
-    OqiError::new_err(oqi_diagnostics::render_to_string(
-        diag,
-        Path::new(SOURCE_NAME),
-        source,
-        &included_file,
-    ))
+    let message =
+        oqi_diagnostics::render_to_string(diag, Path::new(SOURCE_NAME), source, &included_file);
+    let in_root = diag
+        .path()
+        .is_none_or(|path| path == Path::new(SOURCE_NAME));
+    let span = oqi_diagnostics::primary_span(diag)
+        .filter(|_| in_root)
+        .and_then(|span| {
+            let chars = |end: usize| source.get(..end).map(|s| s.chars().count());
+            Some((chars(span.start)?, chars(span.end)?))
+        });
+    Python::attach(|py| {
+        let err = OqiError::new_err(message);
+        let value = err.value(py);
+        let attrs = value
+            .setattr("code", diag.code().to_string())
+            .and_then(|()| value.setattr("span", span));
+        match attrs {
+            Ok(()) => err,
+            Err(e) => e,
+        }
+    })
 }
 
 /// Source → bytecode module. With `timings` supplied (even an empty dict),
@@ -120,7 +146,7 @@ fn load(
     Ok((module, String::new()))
 }
 
-/// Result of [`compile`]: the program as bytecode, plus its disassembly.
+/// The result of `compile`: the program as bytecode, plus its disassembly.
 #[pyclass(frozen, get_all, module = "oqi")]
 struct CompileResult {
     /// The program as bytecode: `run` and `sample` take it in place of the
@@ -133,12 +159,16 @@ struct CompileResult {
 #[pymethods]
 impl CompileResult {
     fn __repr__(&self) -> String {
-        format!("CompileResult(bytecode=<{} bytes>)", self.bytecode.len())
+        format!(
+            "CompileResult(bytecode=<{} bytes>, disassembly=<{} lines>)",
+            self.bytecode.len(),
+            self.disassembly.lines().count()
+        )
     }
 }
 
 /// Compile an OpenQASM 3 program (source text) to bytecode, or disassemble
-/// bytecode.
+/// bytecode. Raises `OqiError` for an error in the program.
 #[pyfunction]
 fn compile(program: &Bound<'_, PyAny>) -> PyResult<CompileResult> {
     let (module, _) = load(program, None, None)?;
@@ -151,7 +181,7 @@ fn compile(program: &Bound<'_, PyAny>) -> PyResult<CompileResult> {
     })
 }
 
-/// Result of [`run`].
+/// The result of `run`.
 #[pyclass(frozen, get_all, module = "oqi")]
 struct RunResult {
     /// `(global qubit index, measured bit)` pairs in program order.
@@ -168,16 +198,28 @@ struct RunResult {
 
 #[pymethods]
 impl RunResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "RunResult(measurements={:?}, outputs=<{} entries>)",
-            self.measurements,
-            Python::attach(|py| self.outputs.bind(py).len()),
-        )
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let statevector = match &self.statevector {
+            Some(amps) => format!("<{} amplitudes>", amps.len()),
+            None => "None".to_string(),
+        };
+        let measurements = self
+            .measurements
+            .iter()
+            .map(|(qubit, bit)| format!("({qubit}, {})", if *bit { "True" } else { "False" }))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(format!(
+            "RunResult(measurements=[{measurements}], outputs={}, statevector={statevector}, \
+             backend='{}', precision='{}')",
+            self.outputs.bind(py).repr()?,
+            self.backend,
+            self.precision,
+        ))
     }
 }
 
-/// Result of [`sample`].
+/// The result of `sample`.
 #[pyclass(frozen, get_all, module = "oqi")]
 struct SampleResult {
     /// The number of shots that ran.
@@ -194,12 +236,14 @@ struct SampleResult {
 
 #[pymethods]
 impl SampleResult {
-    fn __repr__(&self) -> String {
-        format!(
-            "SampleResult(shots={}, histograms=<{} entries>)",
+    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        Ok(format!(
+            "SampleResult(shots={}, histograms={}, backend='{}', precision='{}')",
             self.shots,
-            Python::attach(|py| self.histograms.bind(py).len()),
-        )
+            self.histograms.bind(py).repr()?,
+            self.backend,
+            self.precision,
+        ))
     }
 }
 
@@ -241,14 +285,19 @@ fn backend_spec(
     Ok(spec)
 }
 
-/// Run an OpenQASM 3 program on a simulator. `program` is source text
-/// (`str`), or bytecode (`bytes` from [`compile`]).
+/// Run an OpenQASM 3 program once on a simulator. `program` is source text
+/// (`str`), or bytecode (`bytes` from `compile`).
+///
+/// `inputs` maps `input` names to values: `bool`, `int`, `float`, `complex`,
+/// `str` (e.g. "0101" for `bit[n]`, "100ns" for `duration`), or (nested)
+/// lists of them for arrays. `seed` makes the run reproducible and
+/// `statevector=True` adds the final state vector to the result.
 ///
 /// `externs` maps each `extern` function's name to a synchronous Python
 /// callable. Return values are coerced to the declared return type (radians
 /// for `angle[n]`, MSB-first "0101" strings for `bit[n]`). An extern with no
-/// implementation, or one that raises, aborts the run with a diagnostic
-/// error; a callable returning an awaitable is rejected.
+/// implementation, or one that raises, aborts the run with an `OqiError`; a
+/// callable returning an awaitable is rejected.
 ///
 /// `timings` maps operation names (`measure`/`reset` reserved) to duration
 /// strings ("50ns", "4dt") and enables compile-time `durationof` resolution,
@@ -306,10 +355,10 @@ fn run(
     })
 }
 
-/// Sample an OpenQASM 3 program (source text or bytecode, as for [`run`])
-/// over `shots` runs, returning a histogram of observed values per named
-/// output variable. Takes the same options as [`run`]; a given `seed`
-/// reproduces the whole histogram.
+/// Run an OpenQASM 3 program (source text or bytecode, as for `run`) for
+/// `shots` shots, returning a histogram of observed values per output
+/// variable. Takes the options of `run` except `statevector`; a given
+/// `seed` reproduces the whole histogram.
 #[pyfunction]
 #[pyo3(signature = (program, *, shots=1024, inputs=None, seed=None, externs=None, timings=None, dt=None, backend="scalar", precision="f64", max_rank=None, max_bond=None))]
 #[allow(clippy::too_many_arguments)]
@@ -490,6 +539,13 @@ impl ExternProvider for PyExterns {
     }
 }
 
+/// Compile, run and sample OpenQASM 3 programs.
+///
+/// `compile(program)` turns OpenQASM source into bytecode (or disassembles
+/// bytecode); `run(program, ...)` runs a program once on a simulator and
+/// `sample(program, shots=..., ...)` runs it many times and counts the
+/// outputs. Programs are source text (`str`) or bytecode (`bytes`). Errors
+/// raise `OqiError`.
 #[pymodule]
 fn oqi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compile, m)?)?;
@@ -498,6 +554,11 @@ fn oqi(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<CompileResult>()?;
     m.add_class::<RunResult>()?;
     m.add_class::<SampleResult>()?;
-    m.add("OqiError", m.py().get_type::<OqiError>())?;
+    // Errors that aren't program diagnostics (bad options, bad bytecode) have
+    // no code or span; the class attributes are their defaults.
+    let error = m.py().get_type::<OqiError>();
+    error.setattr("code", m.py().None())?;
+    error.setattr("span", m.py().None())?;
+    m.add("OqiError", error)?;
     Ok(())
 }

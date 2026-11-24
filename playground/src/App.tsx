@@ -7,8 +7,10 @@ import {
   RunError,
   Runner,
   RunnerStoppedError,
+  type BackendName,
   type ErrorSpan,
   type InputValue,
+  type Precision,
   type SampleResult,
 } from './runner';
 import { SourceEditor } from './SourceEditor';
@@ -18,18 +20,19 @@ const MAX_SEED = 1n << 64n;
 const MAX_SHOTS = 100_000;
 
 /** Backend dropdown choices, mapped to oqi-js `{ backend, precision }`. */
-export type BackendSel = 'cpu-f64' | 'cpu-f32' | 'gpu';
+export type BackendSel = 'cpu-f64' | 'cpu-f32' | 'mps' | 'gpu';
 
 const BACKENDS: Record<
   BackendSel,
-  { label: string; backend: 'scalar' | 'gpu'; precision: 'f32' | 'f64' }
+  { backend: BackendName; precision: Precision }
 > = {
-  'cpu-f64': { label: 'CPU · f64', backend: 'scalar', precision: 'f64' },
-  'cpu-f32': { label: 'CPU · f32', backend: 'scalar', precision: 'f32' },
-  gpu: { label: 'GPU · f32', backend: 'gpu', precision: 'f32' },
+  'cpu-f64': { backend: 'scalar', precision: 'f64' },
+  'cpu-f32': { backend: 'scalar', precision: 'f32' },
+  mps: { backend: 'mps', precision: 'f64' },
+  gpu: { backend: 'gpu', precision: 'f32' },
 };
 
-/** Positive integer shot count, clamped by the wasm side to 1..=100_000. */
+/** Positive integer shot count, 1 to 100 000 (the most oqi-js samples). */
 function parseShots(text: string): number {
   const trimmed = text.trim();
   if (!/^\d+$/.test(trimmed)) {

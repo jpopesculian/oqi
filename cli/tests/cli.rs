@@ -233,12 +233,12 @@ fn timings_file_is_combined_with_flags() {
     );
     let (src, profile) = (src.to_str().unwrap(), profile.to_str().unwrap());
     // File: x = 20ns, h = 1ns, dt = 0.5ns → 20 + 1 + 2.
-    assert_eq!(ok(&["run", src, "--timings", profile]), "d = 23ns\n");
+    assert_eq!(ok(&["run", src, "--timings-file", profile]), "d = 23ns\n");
     // Flags override the file's entries and its dt.
     let args = [
         "run",
         src,
-        "--timings",
+        "--timings-file",
         profile,
         "--timing",
         "h=10ns",
@@ -325,4 +325,35 @@ fn errors_running_bytecode_are_reported_by_message() {
     let (success, _, stderr) = oqi(&["run", damaged.to_str().unwrap()]);
     assert!(!success);
     assert!(stderr.contains("malformed bytecode"), "{stderr}");
+}
+
+#[test]
+fn fmt_without_paths_formats_standard_input() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oqi"))
+        .arg("fmt")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn oqi");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"qubit   q ;h q;")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "qubit q;\nh q;\n");
+}
+
+#[test]
+fn version_and_about_are_shown() {
+    let version = ok(&["--version"]);
+    assert_eq!(version, format!("oqi {}\n", env!("CARGO_PKG_VERSION")));
+    assert!(ok(&["--help"]).contains("Compile, run and format OpenQASM 3 programs"));
 }

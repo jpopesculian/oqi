@@ -28,22 +28,24 @@ npm run preview    # http://localhost:4173/oqi/
 
 ## How it works
 
-- **`src/worker.ts`** owns the wasm module and calls `oqi-js`'s `run()`. Because
-  `run()` is CPU-synchronous inside wasm, it lives in a Web Worker so the UI stays
+- **`src/worker.ts`** owns the wasm module and calls `oqi-js`'s `sample()`. Because
+  sampling is CPU-bound inside wasm, it lives in a Web Worker so the UI stays
   responsive and a runaway program can be terminated with **Stop**.
 - **`src/runner.ts`** is the main-thread client: it matches worker replies to
   requests by id and re-spawns the worker on Stop.
 - **`src/qasm.ts`** is a small CodeMirror `StreamLanguage` highlighter for
-  OpenQASM (keyword lists mirror the lexer in `../lex`).
+  OpenQASM (keyword lists mirror the lexer's `../lex/src/token.rs`).
 - The app **samples**: it runs the program `shots` times (default 1024) via
   `oqi-js`'s `sample()` and renders a histogram per named output variable. One RNG
   stream advances across shots, so a given seed reproduces the whole histogram.
 - Inputs are a JSON object (`{ "name": value }`) passed straight to the `inputs`
   option; the seed and shots fields feed `seed` and `shots`.
-- **Backend**: a toolbar dropdown selects the simulator — **CPU f64** (default),
-  **CPU f32**, or **GPU** (the WebGPU `wgpu` sim, always `f32`). It maps to `sample()`'s
-  `backend` (`"scalar"` or `"gpu"`) and `precision` options, and the results badge echoes what ran plus the shot
-  count. GPU requires a WebGPU-capable browser (Chrome/Edge, recent Firefox/Safari) over
+- **Backend**: a toolbar dropdown selects the simulator — **CPU f32** (default),
+  **CPU f64**, **MPS** (the matrix-product-state sim, always `f64`) or **GPU** (the
+  WebGPU `wgpu` sim, always `f32`). It maps to `sample()`'s `backend` (`"scalar"`,
+  `"mps"` or `"gpu"`) and `precision` options, and the results badge echoes what ran
+  plus the shot count. The option and result types come from `oqi-js`'s TypeScript
+  declarations. GPU requires a WebGPU-capable browser (Chrome/Edge, recent Firefox/Safari) over
   HTTPS — GitHub Pages qualifies; selecting GPU where it's unavailable surfaces a clear
   error. Note that GPU shots re-upload |0> and read back each measurement per shot, so
   large shot counts can be slower on GPU than CPU at small qubit sizes.

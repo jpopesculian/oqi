@@ -5,6 +5,7 @@ import type { Phase } from './ResultsPane';
 const BACKEND_OPTIONS: { value: BackendSel; label: string }[] = [
   { value: 'cpu-f64', label: 'CPU f64' },
   { value: 'cpu-f32', label: 'CPU f32' },
+  { value: 'mps', label: 'MPS' },
   { value: 'gpu', label: 'GPU' },
 ];
 

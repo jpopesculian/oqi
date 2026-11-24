@@ -47,7 +47,7 @@ function BackendBadge({
   precision: 'f32' | 'f64';
   shots: number;
 }) {
-  const device = backend === 'gpu' ? 'gpu' : 'cpu';
+  const device = backend === 'gpu' ? 'gpu' : backend === 'mps' ? 'mps' : 'cpu';
   const label = `${device.toUpperCase()} · ${precision} · ${shots} shots`;
   return (
     <div

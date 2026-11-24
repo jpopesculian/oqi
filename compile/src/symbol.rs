@@ -10,13 +10,13 @@ use crate::types::Type;
 pub struct SymbolId(pub usize);
 
 /// Central symbol table holding all declared names.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct SymbolTable {
     symbols: Vec<Symbol>,
     temp_counter: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct Symbol {
     pub id: SymbolId,
     pub name: String,

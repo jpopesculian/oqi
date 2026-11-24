@@ -277,9 +277,9 @@ impl ChForm {
     }
 
     /// Left Pauli `Z_q` (image `Z^{G_q}`). Completes the `left_*` Clifford
-    /// family alongside [`Self::left_x`]; currently exercised only in tests
-    /// (Z propagation never gates the sum tier), hence `allow(dead_code)`.
-    #[allow(dead_code)]
+    /// family alongside [`Self::left_x`]; only the tests use it (Z
+    /// propagation never gates the sum tier).
+    #[cfg(test)]
     pub(crate) fn left_z(&mut self, q: usize) {
         let g = self.g[q].clone();
         let zeros = vec![false; self.n];

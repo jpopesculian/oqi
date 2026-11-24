@@ -1,7 +1,5 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
 use crate::array::{Array, ArrayDim, ArrayShape, ArrayTy};
 use crate::array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
 use crate::bitreg::BitReg;
@@ -14,7 +12,8 @@ use crate::{
 
 /// One step of indexing into an array dimension or a bit register.
 /// Negative positions count from the end.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Index {
     Item(isize),
     /// `start`, `start + step`, … up to but excluding `end`.

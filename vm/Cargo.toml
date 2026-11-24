@@ -6,13 +6,12 @@ edition = "2024"
 [dependencies]
 oqi-compile = { path = "../compile" }
 oqi-classical = { path = "../classical" }
-oqi-quantum = { path = "../quantum", default-features = false }
 oqi-lex = { path = "../lex" }
 oqi-diagnostics = { path = "../diagnostics" }
 num-complex = "0.4"
 num-traits = "0.2"
 async-trait = "0.1"
-faer = { version = "0.24", default-features = false, features = ["std"] }
+faer = { version = "0.24", default-features = false, features = ["std"], optional = true }
 wide = "1"
 rayon = { version = "1", optional = true }
 wgpu = { version = "30", optional = true }
@@ -20,14 +19,21 @@ bytemuck = { version = "1", features = ["derive"], optional = true }
 futures-channel = { version = "0.3", optional = true }
 
 [features]
-default = ["parallel"]
-parallel = ["dep:rayon", "oqi-quantum/parallel"]
+default = ["parallel", "mps"]
+parallel = ["dep:rayon"]
+# The matrix-product-state backend (`MpsSim`, backend name "mps"); pulls in `faer`.
+mps = ["dep:faer"]
 gpu = ["dep:wgpu", "dep:bytemuck", "dep:futures-channel"]
 
 [dev-dependencies]
 criterion = "0.8"
 pollster = "1"
 
+[[test]]
+name = "run"
+required-features = ["mps"]
+
 [[bench]]
 name = "backends"
 harness = false
+required-features = ["mps"]

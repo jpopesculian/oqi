@@ -72,8 +72,8 @@ source → parse → resolve (includes) → lower → cfg → bytecode → vm
   `BcOp::Unary`) and the VM all carry the one enum and never dispatch on it
   themselves. `PrimitiveTy::cast` is the spec's allowed-casts table; operator
   promotions (e.g. `angle + float`) are separate and not casts. Used by both
-  compile and vm.
-- **`quantum/`** (`oqi-quantum`) — quantum memory model and complex-amplitude math.
+  compile and vm. Its `serde` feature (and `oqi-lex`'s, for `Span`) exists for
+  the bytecode format; compile turns both on.
 - **`vm/`** (`oqi-vm`) — interprets bytecode. Two pluggable extension points:
   `QuantumBackend` (the `StateVectorSim`, or future GPU/hardware) and
   `ExternProvider` (host implementations of `extern` functions). Backends supply
@@ -84,6 +84,12 @@ source → parse → resolve (includes) → lower → cfg → bytecode → vm
   and amplitude readback are `async`. It also holds what the front doors
   share: `BackendSpec` (backend selection by name), `HostValue` + `coerce`
   (host values ↔ typed values, `vm/src/host.rs`) and `Vm::sample` (shots).
+  `vm/src/state.rs` holds the dense state vector and the `U`-with-modifiers
+  matrix the dense backends share; compile's flat qubit memory and registers
+  are in `compile/src/register.rs`. Features: `parallel` (rayon kernels) and
+  `mps` (the `MpsSim` backend, pulls in `faer`) are on by default; `gpu`
+  (wgpu) is opt-in. A backend whose feature is off still parses by name and
+  fails to build with "backend unavailable".
 - **`cli/`**, **`js/`** (wasm-bindgen), **`py/`** (PyO3) — the three front
   doors. Keep them thin: native value ↔ `HostValue` mapping and error mapping
   only; anything two of them need belongs in `vm` or `compile`.

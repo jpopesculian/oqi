@@ -1,9 +1,8 @@
 use std::fmt;
 use std::ops::{BitAnd, BitOr, BitXor, Not, Range, Shl, Shr};
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BitReg {
     Stack(u128),
     Heap(Box<[u8]>),

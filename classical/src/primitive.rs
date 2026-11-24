@@ -7,10 +7,10 @@ use crate::{
     error::{Error, Result},
 };
 use num_complex::{Complex32, Complex64, c64};
-use serde::{Deserialize, Serialize};
 use turns::{Angle8, Angle16, Angle32, Angle64, Angle128};
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Primitive {
     Bit(bool),
     BitReg(BitReg),
@@ -19,7 +19,7 @@ pub enum Primitive {
     Float(f64),
     Complex(Complex64),
     Duration(Duration),
-    Angle(#[serde(with = "turns::serde::raw")] Angle128),
+    Angle(#[cfg_attr(feature = "serde", serde(with = "turns::serde::raw"))] Angle128),
 }
 
 impl Primitive {
@@ -310,7 +310,8 @@ impl fmt::Debug for Primitive {
     }
 }
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum FloatWidth {
     F32,
     F64,
@@ -326,7 +327,8 @@ impl FloatWidth {
 }
 
 /// Bit width of an `int`, `uint` or `angle`: `1..=IntWidth::MAX`.
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct IntWidth(u32);
 
 impl IntWidth {
@@ -390,7 +392,8 @@ impl fmt::Display for Primitive {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PrimitiveTy {
     Bool,
     Bit,

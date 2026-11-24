@@ -1,14 +1,13 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
 use crate::array_ref::{ArrayRef, ArrayRefShape, ArrayRefTy, RefAccess};
 use crate::primitive::{Primitive, PrimitiveTy};
 use crate::scalar::Scalar;
 use crate::shared::Shared;
 use crate::{Error, Result};
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Array {
     values: Vec<Primitive>,
     ty: ArrayTy,
@@ -132,7 +131,8 @@ impl fmt::Display for Array {
 }
 
 /// The rank of an array: `1..=ArrayDim::MAX` dimensions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArrayDim(usize);
 
 impl ArrayDim {
@@ -165,7 +165,8 @@ pub fn adim(value: usize) -> ArrayDim {
     ArrayDim::new(value).unwrap()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArrayShape {
     shape: [usize; ArrayDim::MAX],
     dim: ArrayDim,
@@ -228,7 +229,8 @@ macro_rules! shape {
 #[cfg(test)]
 pub(crate) use shape;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArrayTy {
     ty: PrimitiveTy,
     shape: ArrayShape,

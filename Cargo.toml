@@ -7,7 +7,6 @@ members = [
   "compile",
   "cli",
   "classical",
-  "quantum",
   "vm",
   "js",
   "py",

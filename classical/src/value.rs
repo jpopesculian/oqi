@@ -1,7 +1,6 @@
 use std::fmt;
 
 use num_complex::{Complex32, Complex64};
-use serde::{Deserialize, Serialize};
 
 use crate::{
     BitReg, FloatWidth, IntWidth, Primitive,
@@ -13,7 +12,8 @@ use crate::{
     scalar::Scalar,
 };
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Value {
     Scalar(Scalar),
     Array(Array),
@@ -168,7 +168,8 @@ impl fmt::Display for Value {
     }
 }
 
-#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ValueTy {
     Scalar(PrimitiveTy),
     Array(ArrayTy),

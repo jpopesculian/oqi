@@ -1,7 +1,5 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
 use crate::array::{Array, ArrayDim, ArrayShape, ArrayTy};
 use crate::error::{Error, Result};
 use crate::index::Index;
@@ -9,7 +7,8 @@ use crate::primitive::PrimitiveTy;
 use crate::shared::Shared;
 use crate::value::{Value, ValueTy};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArrayRef {
     array: Shared<Array>,
     indices: Vec<Index>,
@@ -83,7 +82,8 @@ impl fmt::Display for ArrayRef {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum RefAccess {
     Readonly,
     Mutable,
@@ -100,7 +100,8 @@ impl fmt::Display for RefAccess {
 
 /// The shape of an array reference: fully known, or only its rank
 /// (`#dim = N`, sizes supplied by the referenced array at run time).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ArrayRefShape {
     Fixed(ArrayShape),
     Dim(ArrayDim),
@@ -140,7 +141,8 @@ impl fmt::Display for ArrayRefShape {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ArrayRefTy {
     ty: PrimitiveTy,
     shape: ArrayRefShape,

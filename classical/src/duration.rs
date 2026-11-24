@@ -2,9 +2,8 @@ use std::fmt;
 use std::ops::{Add, Div, Mul, Neg, Rem, Sub};
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Duration {
     pub value: f64,
     pub unit: DurationUnit,
@@ -146,7 +145,8 @@ impl fmt::Display for Duration {
     }
 }
 
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DurationUnit {
     Ns,
     Us,

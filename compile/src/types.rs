@@ -1,7 +1,6 @@
 use oqi_classical::ops;
 use oqi_lex::Span;
 use oqi_parse::ast;
-use serde::{Deserialize, Serialize};
 
 use crate::classical::{
     ArrayDim, ArrayRefShape, ArrayRefTy, ArrayShape, ArrayTy, Duration, DurationUnit, IntWidth,
@@ -19,7 +18,7 @@ pub use crate::classical::FloatWidth;
 /// one (a cast, an assignment, a loop variable, a sized binary operand), so it
 /// never reaches the bytecode/VM. An *un*collapsed value falls back to the
 /// historical carrier width via [`Type::value_ty`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnsizedType {
     Int,
     Uint,
@@ -28,7 +27,7 @@ pub enum UnsizedType {
 }
 
 /// Fully resolved type — no expression designators, no lifetimes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     Void,
     Classical(ValueTy),

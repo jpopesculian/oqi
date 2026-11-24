@@ -24,9 +24,9 @@
 
 use std::borrow::Cow;
 
+use crate::state::{Gate, Unitary};
 use async_trait::async_trait;
 use num_complex::Complex;
-use oqi_quantum::{Gate, Unitary};
 use wgpu::util::DeviceExt;
 
 use crate::backend::{GateModifiers, QuantumBackend};

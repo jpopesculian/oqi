@@ -16,7 +16,7 @@ gpu = ["oqi-vm/gpu"]
 js-sys = "0.3"
 oqi-compile = { path = "../compile" }
 oqi-diagnostics = { path = "../diagnostics" }
-oqi-vm = { path = "../vm", default-features = false }
+oqi-vm = { path = "../vm", default-features = false, features = ["mps"] }
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
 wasm-bindgen = "0.2"

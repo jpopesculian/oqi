@@ -21,8 +21,6 @@ mod tests;
 
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
 pub use sizeof::{sizeof, sizeof_ty};
 
 use crate::{
@@ -35,7 +33,8 @@ use crate::{
 };
 
 /// A binary operator, or a two-argument built-in function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BinOp {
     Add,
     Sub,
@@ -64,7 +63,8 @@ pub enum BinOp {
 }
 
 /// A unary operator, or a one-argument built-in function.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UnOp {
     Neg,
     BitNot,

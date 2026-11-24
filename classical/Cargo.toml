@@ -4,10 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-num-complex = { version = "0.4", features = ["serde"] }
-num-traits = "0.2"
-serde = { version = "1", features = ["derive", "rc"] }
-turns = { version = "0.1.2", features = ["serde"] }
+num-complex = "0.4"
+serde = { version = "1", features = ["derive"], optional = true }
+turns = "0.1.2"
+
+[features]
+# Serialize and deserialize values and types (used by the bytecode format in
+# `oqi-compile`).
+serde = ["dep:serde", "num-complex/serde", "turns/serde"]
 
 [dev-dependencies]
 postcard = { version = "1", features = ["alloc"] }

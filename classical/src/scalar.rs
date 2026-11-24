@@ -1,7 +1,6 @@
 use std::fmt;
 
 use num_complex::{Complex32, Complex64};
-use serde::{Deserialize, Serialize};
 
 use crate::bitreg::BitReg;
 use crate::duration::{Duration, DurationUnit};
@@ -19,7 +18,8 @@ const fn round_to(v: f64, fw: FloatWidth) -> f64 {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Scalar {
     value: Primitive,
     ty: PrimitiveTy,

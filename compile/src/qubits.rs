@@ -6,11 +6,11 @@
 //! module builds that layout from a [`sir::Program`] and resolves
 //! register references — including `let` aliases built from slices,
 //! discrete index sets, and `++` concatenation — to global qubit
-//! indices via [`oqi_quantum::QuantumMemory`].
+//! indices via [`QuantumMemory`].
 //!
 //! The bytecode emitter consumes the layout to rewrite symbolic qubit
-//! operands into global references; the `oqi_quantum` types never
-//! cross the serialization boundary.
+//! operands into global references; the register types never cross
+//! into the bytecode.
 //!
 //! Qubit parameters of gates and subroutines cannot be resolved
 //! statically (they bind at call time); the layout maps them to
@@ -19,10 +19,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use oqi_quantum::{QuantumMemory, QuantumRegister};
-
 use crate::classical::Primitive;
 use crate::error::{CompileError, ErrorKind, Result};
+use crate::register::{QuantumMemory, QuantumRegister};
 use crate::sir::{self, Expr, ExprKind, IndexItem, IndexKind, IndexOp, RangeExpr};
 use crate::symbol::{SymbolId, SymbolKind, SymbolTable};
 use crate::types::Type;

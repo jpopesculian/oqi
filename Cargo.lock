@@ -1299,7 +1299,6 @@ name = "oqi-classical"
 version = "0.1.0"
 dependencies = [
  "num-complex",
- "num-traits",
  "postcard",
  "serde",
  "turns",
@@ -1327,7 +1326,6 @@ dependencies = [
  "oqi-diagnostics",
  "oqi-lex",
  "oqi-parse",
- "oqi-quantum",
  "postcard",
  "serde",
 ]
@@ -1344,7 +1342,6 @@ dependencies = [
 name = "oqi-format"
 version = "0.1.0"
 dependencies = [
- "oqi-lex",
  "oqi-parse",
 ]
 
@@ -1395,15 +1392,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oqi-quantum"
-version = "0.1.0"
-dependencies = [
- "num-complex",
- "num-traits",
- "rayon",
-]
-
-[[package]]
 name = "oqi-vm"
 version = "0.1.0"
 dependencies = [
@@ -1418,7 +1406,6 @@ dependencies = [
  "oqi-compile",
  "oqi-diagnostics",
  "oqi-lex",
- "oqi-quantum",
  "pollster",
  "rayon",
  "wgpu",

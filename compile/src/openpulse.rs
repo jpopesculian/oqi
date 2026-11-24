@@ -1,10 +1,8 @@
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
-
 use crate::classical::{FloatWidth, IntWidth};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrimitiveTy {
     Port,
     Frame(FloatWidth, IntWidth),

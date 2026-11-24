@@ -10,7 +10,7 @@
 //!
 //! Implementations: [`StateVectorSim`](crate::StateVectorSim),
 //! [`SimdSim`](crate::SimdSim), [`AutoSim`](crate::AutoSim),
-//! [`MpsSim`](crate::MpsSim) and, with the `gpu` feature, `GpuSim`. A
+//! `MpsSim` (with the `mps` feature) and `GpuSim` (with the `gpu` feature). A
 //! hardware provider would implement the same trait.
 
 use std::f64::consts::PI;

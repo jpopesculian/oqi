@@ -139,7 +139,7 @@ pub struct MpsSim {
 
 impl MpsSim {
     /// The default cap on the bond dimension.
-    pub const DEFAULT_MAX_BOND: usize = 256;
+    pub const DEFAULT_MAX_BOND: usize = crate::spec::DEFAULT_MAX_BOND;
 
     /// A fresh simulator with `num_qubits` qubits in |0…0⟩, an RNG seed for
     /// measurement sampling, and a cap on the bond dimension.

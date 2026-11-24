@@ -4,10 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-oqi-lex = { path = "../lex" }
+oqi-lex = { path = "../lex", features = ["serde"] }
 oqi-parse = { path = "../parse" }
 oqi-diagnostics = { path = "../diagnostics" }
-oqi-classical = { path = "../classical" }
-oqi-quantum = { path = "../quantum", default-features = false }
+oqi-classical = { path = "../classical", features = ["serde"] }
 postcard = { version = "1", features = ["alloc"] }
 serde = { version = "1", features = ["derive"] }

@@ -26,6 +26,7 @@ use crate::cfg::{self, Cfg, Terminator};
 use crate::classical::{PrimitiveTy, Scalar, iw};
 use crate::error::{CompileError, ErrorKind, Result};
 use crate::qubits::{self, QubitLayout, Resolved};
+use crate::register::QuantumRegister;
 use crate::scope::ScopeId;
 use crate::sir::{
     self, CallTarget, Expr, ExprKind, GateModifier, IndexItem, IndexKind, IndexOp, LValue,
@@ -126,7 +127,7 @@ struct EmitCtx<'a> {
 /// static alias, or another runtime-bound alias.
 enum AliasSrc {
     Region {
-        reg: oqi_quantum::QuantumRegister,
+        reg: QuantumRegister,
         origin: SymbolId,
     },
     Alias(qubits::DynAlias),
@@ -315,18 +316,14 @@ impl<'a> EmitCtx<'a> {
         BcOperand::HardwareQubit(n)
     }
 
-    fn must_global(&self, reg: &oqi_quantum::QuantumRegister, local: usize) -> u32 {
+    fn must_global(&self, reg: &QuantumRegister, local: usize) -> u32 {
         self.layout
             .global_index(reg, local)
             .expect("local index validated against register length") as u32
     }
 
     /// Intern a region for `reg`, deduplicating on its global ranges.
-    fn region_for(
-        &mut self,
-        reg: &oqi_quantum::QuantumRegister,
-        origin: Option<SymbolId>,
-    ) -> QubitRegionId {
+    fn region_for(&mut self, reg: &QuantumRegister, origin: Option<SymbolId>) -> QubitRegionId {
         let ranges = self.layout.global_ranges(reg);
         if let Some(&id) = self.region_index.get(&ranges) {
             return id;

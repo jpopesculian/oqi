@@ -9,13 +9,15 @@ use std::str::FromStr;
 use crate::auto::{AutoSim, SumPolicy};
 use crate::backend::QuantumBackend;
 use crate::error::{VmError, VmErrorKind, VmResult};
-use crate::mps::MpsSim;
 use crate::sim::StateVectorSim;
 use crate::sim_simd::SimdSim;
 
 /// RNG seed used when the host doesn't supply one, so runs of the same
 /// program agree across front doors.
 pub const DEFAULT_SEED: u64 = 0x2545F4914F6CDD1D;
+
+/// Default bond-dimension cap of the MPS simulator (`MpsSim::DEFAULT_MAX_BOND`).
+pub(crate) const DEFAULT_MAX_BOND: usize = 256;
 
 /// Which simulator to run on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,7 +36,8 @@ pub enum BackendKind {
     /// then (if [`SumPolicy::dense_escape`]) a dense state vector.
     Auto,
     /// Matrix-product-state simulator, truncating each bond to at most
-    /// [`BackendSpec::max_bond`] singular values.
+    /// [`BackendSpec::max_bond`] singular values. Needs the `mps` build
+    /// feature (on by default).
     Mps,
 }
 
@@ -101,7 +104,7 @@ impl Default for BackendSpec {
             seed: DEFAULT_SEED,
             parallel: false,
             sum_policy: SumPolicy::default(),
-            max_bond: MpsSim::DEFAULT_MAX_BOND,
+            max_bond: DEFAULT_MAX_BOND,
         }
     }
 }
@@ -188,7 +191,7 @@ impl BackendSpec {
             }
             (BackendKind::Mps, _) => {
                 self.precision = Precision::F64;
-                Box::new(MpsSim::new(num_qubits, self.seed, self.max_bond)?)
+                mps(num_qubits, self.seed, self.max_bond)?
             }
             (BackendKind::PreferGpu, _) => unreachable!("resolved above"),
         };
@@ -233,6 +236,20 @@ impl FromStr for BackendSpec {
 
 fn unavailable(why: &str) -> VmError {
     VmError::new(VmErrorKind::BackendUnavailable(why.to_string()))
+}
+
+#[cfg(feature = "mps")]
+fn mps(num_qubits: u32, seed: u64, max_bond: usize) -> VmResult<Box<dyn QuantumBackend>> {
+    Ok(Box::new(crate::mps::MpsSim::new(
+        num_qubits, seed, max_bond,
+    )?))
+}
+
+#[cfg(not(feature = "mps"))]
+fn mps(_num_qubits: u32, _seed: u64, _max_bond: usize) -> VmResult<Box<dyn QuantumBackend>> {
+    Err(unavailable(
+        "this build has no MPS support (the `mps` feature is off)",
+    ))
 }
 
 #[cfg(feature = "gpu")]
@@ -292,6 +309,7 @@ mod tests {
         })
     }
 
+    #[cfg(feature = "mps")]
     #[test]
     fn mps_is_f64_and_samples_shots() {
         pollster::block_on(async {

@@ -10,10 +10,10 @@
 //! fall back to a scalar SoA loop that tests the control mask per element
 //! (the control bit pattern is not uniform within a block).
 
+use crate::state::{Gate, Unitary};
 use async_trait::async_trait;
 use num_complex::Complex;
 use num_traits::Float;
-use oqi_quantum::{Gate, Unitary};
 use wide::{f32x8, f64x4};
 
 use crate::backend::{GateModifiers, MAX_STATE_BYTES, QuantumBackend};

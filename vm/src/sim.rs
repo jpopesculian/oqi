@@ -1,9 +1,9 @@
 //! A CPU state-vector simulator backend.
 
+use crate::state::{Gate, StateVector, Unitary};
 use async_trait::async_trait;
 use num_complex::Complex;
 use num_traits::Float;
-use oqi_quantum::{Gate, StateVector, Unitary};
 
 use crate::backend::{GateModifiers, QuantumBackend};
 use crate::error::{KindResult, VmError, VmErrorKind, VmResult};

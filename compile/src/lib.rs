@@ -16,6 +16,7 @@ mod error;
 mod lower;
 mod openpulse;
 mod qubits;
+mod register;
 mod resolve;
 mod scope;
 pub mod sir;

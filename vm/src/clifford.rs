@@ -13,8 +13,8 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::sync::OnceLock;
 
+use crate::state::{Gate, Unitary};
 use num_complex::Complex;
-use oqi_quantum::{Gate, Unitary};
 
 use crate::backend::GateModifiers;
 

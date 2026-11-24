@@ -20,7 +20,7 @@ pub use primitive::{FloatWidth, IntWidth, Primitive, PrimitiveTy, iw};
 pub use scalar::Scalar;
 pub use value::{Value, ValueTy};
 
-#[cfg(test)]
+#[cfg(all(test, feature = "serde"))]
 mod serde_tests {
     use crate::array::{ArrayTy, ashape};
     use crate::array_ref::{ArrayRefShape, RefAccess};
